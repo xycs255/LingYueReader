@@ -1,45 +1,21 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import com.xycs.lingyuereader.data.ReaderTheme
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ThemeController
 
-/** 朱砂红作强调色。 */
+/** 阅读页的强调色。界面其余部分用 miuix 默认配色，随系统深浅色切换。 */
 private val Cinnabar = Color(0xFFA23B2A)
 private val CinnabarLight = Color(0xFFE08A74)
 
-private val LightColors = lightColorScheme(
-    primary = Cinnabar,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFF6DDD5),
-    onPrimaryContainer = Color(0xFF3F0A02),
-    secondary = Color(0xFF6E5B4B),
-    background = Color(0xFFFBF8F3),
-    surface = Color(0xFFFBF8F3),
-    surfaceContainer = Color(0xFFF3EEE6),
-    surfaceContainerHigh = Color(0xFFEDE7DE),
-)
-
-private val DarkColors = darkColorScheme(
-    primary = CinnabarLight,
-    onPrimary = Color(0xFF3F0A02),
-    primaryContainer = Color(0xFF6B2416),
-    onPrimaryContainer = Color(0xFFFFDAD1),
-    secondary = Color(0xFFD5C2B1),
-    background = Color(0xFF16130F),
-    surface = Color(0xFF16130F),
-)
-
 @Composable
 fun LingYueTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        content = content,
-    )
+    val controller = remember { ThemeController(ColorSchemeMode.System) }
+    MiuixTheme(controller = controller, content = content)
 }
 
 data class ReaderPalette(

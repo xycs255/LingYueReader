@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
@@ -33,27 +34,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.List
-import androidx.compose.material.icons.outlined.ChevronLeft
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.TextFields
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -91,6 +71,26 @@ import com.xycs.lingyuereader.data.ReaderTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.basic.SwitchDefaults
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.icon.extended.ListView
+import top.yukonga.miuix.kmp.icon.extended.Search
+import top.yukonga.miuix.kmp.icon.extended.Tune
+import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 
 /** 列表里第 0 项是章名，正文块从第 1 项开始。 */
 private const val HEADER_ITEMS = 1
@@ -105,14 +105,17 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     SystemBarsAppearance(darkBackground = palette.isDark)
     KeepScreenOn(settings.keepScreenOn)
 
-    val loaded = book?.takeIf { it.entry.id == screen.bookId }
-    if (loaded == null) {
-        Box(Modifier.fillMaxSize().background(palette.background)) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center), color = palette.accent)
+    // 阅读页铺满全屏自己处理边距；外面套一层 Scaffold 是为了给底部弹窗提供宿主。
+    Scaffold(containerColor = palette.background, contentWindowInsets = WindowInsets(0)) {
+        val loaded = book?.takeIf { it.entry.id == screen.bookId }
+        if (loaded == null) {
+            Box(Modifier.fillMaxSize()) {
+                InfiniteProgressIndicator(Modifier.align(Alignment.Center), color = palette.secondary)
+            }
+        } else {
+            Reader(vm, screen, loaded.entry, loaded.content, settings)
         }
-        return
     }
-    Reader(vm, screen, loaded.entry, loaded.content, settings)
 }
 
 /** 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。 */
@@ -127,7 +130,6 @@ private fun resolveStart(screen: Screen.Reader, entry: BookEntry, content: BookC
     return if (index >= 0) Triple(index, p.itemIndex, p.itemOffset) else Triple(p.chapterIndex.coerceIn(content.chapters.indices), 0, 0)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Reader(vm: AppViewModel, screen: Screen.Reader, entry: BookEntry, content: BookContent, settings: ReaderSettings) {
     val palette = settings.theme.palette()
@@ -180,18 +182,18 @@ private fun Reader(vm: AppViewModel, screen: Screen.Reader, entry: BookEntry, co
                     .fillMaxWidth()
                     .background(palette.bar)
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = { vm.back() }) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回书架", tint = palette.text)
+                    Icon(MiuixIcons.Back, contentDescription = "返回书架", tint = palette.text)
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(entry.title, color = palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                    Text(entry.title, color = palette.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                     Text(chapter.title, color = palette.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
-                    Icon(Icons.Outlined.Search, contentDescription = "书内搜索", tint = palette.text)
+                    Icon(MiuixIcons.Search, contentDescription = "书内搜索", tint = palette.text)
                 }
             }
         }
@@ -210,35 +212,36 @@ private fun Reader(vm: AppViewModel, screen: Screen.Reader, entry: BookEntry, co
                     .padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
-                BarButton("上一章", Icons.Outlined.ChevronLeft, palette.text, enabled = chapterIndex > 0) {
+                BarButton("上一章", MiuixIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
                     goTo(chapterIndex - 1)
                 }
-                BarButton("目录", Icons.AutoMirrored.Outlined.List, palette.text) { sheet = ReaderSheet.CATALOG }
-                BarButton("设置", Icons.Outlined.TextFields, palette.text) { sheet = ReaderSheet.SETTINGS }
-                BarButton("下一章", Icons.Outlined.ChevronRight, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
+                BarButton("目录", MiuixIcons.ListView, palette.text) { sheet = ReaderSheet.CATALOG }
+                BarButton("设置", MiuixIcons.Tune, palette.text) { sheet = ReaderSheet.SETTINGS }
+                BarButton("下一章", MiuixIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
                     goTo(chapterIndex + 1)
                 }
             }
         }
     }
 
-    when (sheet) {
-        ReaderSheet.CATALOG -> ModalBottomSheet(
-            onDismissRequest = { sheet = null },
-            containerColor = palette.background,
-        ) {
-            CatalogSheet(content.chapters, chapterIndex, palette.text, palette.accent, palette.secondary) {
-                sheet = null
-                goTo(it)
-            }
+    OverlayBottomSheet(
+        show = sheet == ReaderSheet.CATALOG,
+        title = "目录 · 共 ${content.chapters.size} 章",
+        backgroundColor = palette.background,
+        onDismissRequest = { sheet = null },
+    ) {
+        CatalogSheet(content.chapters, chapterIndex, palette.text, palette.accent) {
+            sheet = null
+            goTo(it)
         }
-        ReaderSheet.SETTINGS -> ModalBottomSheet(
-            onDismissRequest = { sheet = null },
-            containerColor = palette.background,
-        ) {
-            SettingsSheet(settings, palette.text, palette.accent, vm::updateSettings)
-        }
-        null -> Unit
+    }
+    OverlayBottomSheet(
+        show = sheet == ReaderSheet.SETTINGS,
+        title = "阅读设置",
+        backgroundColor = palette.background,
+        onDismissRequest = { sheet = null },
+    ) {
+        SettingsSheet(settings, palette.text, palette.accent, vm::updateSettings)
     }
 }
 
@@ -308,11 +311,11 @@ internal fun ChapterText(
                 Modifier.fillMaxWidth().padding(vertical = 48.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("— 本章完 —", color = palette.secondary, fontFamily = fontFamily)
+                Text("— 本章完 —", color = palette.secondary, fontFamily = fontFamily, fontSize = 14.sp)
                 Spacer(Modifier.height(24.dp))
                 if (nextTitle != null) {
-                    OutlinedButton(onClick = onNext) {
-                        Text("下一章　$nextTitle", color = palette.accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Button(onClick = onNext, colors = ButtonDefaults.buttonColors(color = palette.bar)) {
+                        Text("下一章　$nextTitle", color = palette.accent, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 } else {
                     Text("全书完", color = palette.secondary, fontSize = 13.sp)
@@ -372,20 +375,14 @@ private fun BarButton(label: String, icon: ImageVector, tint: Color, enabled: Bo
             .padding(horizontal = 14.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, contentDescription = null, tint = color)
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
         Text(label, color = color, fontSize = 12.sp)
     }
 }
 
 @Composable
-private fun CatalogSheet(chapters: List<Chapter>, current: Int, textColor: Color, accent: Color, secondary: Color, onPick: (Int) -> Unit) {
+private fun CatalogSheet(chapters: List<Chapter>, current: Int, textColor: Color, accent: Color, onPick: (Int) -> Unit) {
     val state = rememberLazyListState((current - 3).coerceAtLeast(0))
-    Text(
-        "共 ${chapters.size} 章",
-        color = secondary,
-        fontSize = 13.sp,
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
-    )
     LazyColumn(state = state, modifier = Modifier.fillMaxWidth().height(480.dp)) {
         itemsIndexed(chapters) { index, chapter ->
             Text(
@@ -393,12 +390,14 @@ private fun CatalogSheet(chapters: List<Chapter>, current: Int, textColor: Color
                 color = if (index == current) accent else textColor,
                 fontWeight = if (index == current) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Serif,
+                fontSize = 16.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable { onPick(index) }
-                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                    .padding(horizontal = 12.dp, vertical = 14.dp),
             )
         }
     }
@@ -411,14 +410,8 @@ internal fun SettingsSheet(
     accent: Color,
     update: ((ReaderSettings) -> ReaderSettings) -> Unit,
 ) {
-    val sliderColors = SliderDefaults.colors(
-        thumbColor = accent,
-        activeTrackColor = accent,
-        inactiveTrackColor = textColor.copy(alpha = 0.15f),
-        activeTickColor = Color.Transparent,
-        inactiveTickColor = Color.Transparent,
-    )
-    Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
+    val sliderColors = SliderDefaults.sliderColors(foregroundColor = accent, backgroundColor = textColor.copy(alpha = 0.12f))
+    Column(Modifier.padding(bottom = 24.dp)) {
         LabeledSlider("字号", "${settings.fontSize.toInt()}", textColor) {
             Slider(
                 value = settings.fontSize,
@@ -444,16 +437,14 @@ internal fun SettingsSheet(
                 colors = sliderColors,
             )
         }
-        Spacer(Modifier.height(8.dp))
-        Text("背景", color = textColor, fontSize = 14.sp)
-        Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("背景", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
+        Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             ReaderTheme.entries.forEach { theme ->
                 val p = theme.palette()
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         Modifier
-                            .width(48.dp)
-                            .height(48.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
                             .background(if (settings.theme == theme) accent else p.secondary.copy(alpha = 0.4f))
                             .padding(3.dp)
@@ -462,53 +453,65 @@ internal fun SettingsSheet(
                             .clickable { update { it.copy(theme = theme) } },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("文", color = p.text, fontFamily = FontFamily.Serif)
+                        Text("文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 16.sp)
                     }
                     Text(theme.label, color = textColor, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("字体", color = textColor, fontSize = 14.sp)
+        Row(
+            Modifier.padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("字体", color = textColor, fontSize = 14.sp, modifier = Modifier.width(40.dp))
             listOf(true to "宋体", false to "黑体").forEach { (serif, label) ->
-                FilterChip(
-                    selected = settings.serif == serif,
-                    onClick = { update { it.copy(serif = serif) } },
-                    label = { Text(label, fontFamily = if (serif) FontFamily.Serif else FontFamily.SansSerif) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        labelColor = textColor,
-                        selectedContainerColor = accent.copy(alpha = 0.18f),
-                        selectedLabelColor = accent,
-                    ),
+                val selected = settings.serif == serif
+                Text(
+                    label,
+                    color = if (selected) accent else textColor,
+                    fontFamily = if (serif) FontFamily.Serif else FontFamily.SansSerif,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (selected) accent.copy(alpha = 0.15f) else textColor.copy(alpha = 0.06f))
+                        .clickable { update { it.copy(serif = serif) } }
+                        .padding(horizontal = 18.dp, vertical = 8.dp),
                 )
             }
         }
         SwitchRow("点击左右两侧翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
         SwitchRow("阅读时屏幕常亮", settings.keepScreenOn, textColor, accent) { v -> update { it.copy(keepScreenOn = v) } }
-        TextButton(onClick = { update { ReaderSettings(theme = it.theme) } }) {
-            Text("恢复默认排版", color = accent)
-        }
+        TextButton(
+            text = "恢复默认排版",
+            onClick = { update { ReaderSettings(theme = it.theme) } },
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
+        )
     }
 }
 
 @Composable
 private fun LabeledSlider(label: String, value: String, textColor: Color, slider: @Composable () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = textColor, fontSize = 14.sp, modifier = Modifier.width(40.dp))
         Box(Modifier.weight(1f)) { slider() }
-        Text(value, color = textColor, fontSize = 13.sp, textAlign = TextAlign.End, modifier = Modifier.width(36.dp))
+        Text(value, color = textColor, fontSize = 13.sp, textAlign = TextAlign.End, modifier = Modifier.width(40.dp))
     }
 }
 
 @Composable
 private fun SwitchRow(label: String, checked: Boolean, textColor: Color, accent: Color, onChange: (Boolean) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = textColor, fontSize = 14.sp, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedTrackColor = accent))
+        Text(label, color = textColor, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.switchColors(checkedTrackColor = accent, uncheckedTrackColor = textColor.copy(alpha = 0.15f)),
+        )
     }
 }
 

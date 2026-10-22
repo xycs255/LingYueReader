@@ -21,7 +21,7 @@
 
 ## 构建
 
-需要 JDK 17+ 和 Android SDK（compileSdk 35）。
+需要 JDK 21 和 Android SDK（compileSdk 37）。界面基于 [miuix](https://github.com/compose-miuix-ui/miuix)（HyperOS 风格的 Compose 组件库）。
 
 ```
 ./gradlew :app:testDebugUnitTest :app:assembleRelease
@@ -36,7 +36,7 @@
 | `data/MarkdownParser.kt` | Markdown 文稿与文档两种读法 |
 | `data/BookParser.kt` | 格式分派、合集合并、书内搜索 |
 | `data/Library.kt` | 书架存储与刷新 |
-| `ui/` | Jetpack Compose 界面 |
+| `ui/` | Jetpack Compose + miuix 界面 |
 
 ## 计划
 
