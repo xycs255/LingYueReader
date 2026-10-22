@@ -21,7 +21,7 @@
 
 ## 构建
 
-需要 JDK 21 和 Android SDK（compileSdk 37）。界面基于 [miuix](https://github.com/compose-miuix-ui/miuix)（HyperOS 风格的 Compose 组件库）。
+需要 JDK 21 和 Android SDK（compileSdk 37）。界面基于 miuix（HyperOS 风格的 Compose 组件库，`top.yukonga.miuix.kmp:miuix-ui`）。
 
 ```
 ./gradlew :app:testDebugUnitTest :app:assembleRelease
