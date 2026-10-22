@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.LingYue" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FBF8F3</item>
+    </style>
+</resources>
