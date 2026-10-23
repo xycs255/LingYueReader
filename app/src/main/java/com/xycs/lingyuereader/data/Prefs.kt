@@ -31,7 +31,17 @@ data class ReaderSettings(
     val fullscreen: Boolean = false,
     /** 系统处于深色模式时自动改用夜间背景。 */
     val autoNight: Boolean = true,
+    /** 听书语速，1 为正常。 */
+    val ttsRate: Float = 1f,
 )
+
+enum class ShelfSort(val label: String) {
+    RECENT("最近阅读"),
+    TITLE("书名"),
+    ADDED("添加时间"),
+}
+
+data class ShelfPrefs(val sort: ShelfSort = ShelfSort.RECENT, val list: Boolean = false)
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
@@ -51,6 +61,7 @@ class Prefs(context: Context) {
             brightness = sp.getFloat("brightness", d.brightness),
             fullscreen = sp.getBoolean("fullscreen", d.fullscreen),
             autoNight = sp.getBoolean("autoNight", d.autoNight),
+            ttsRate = sp.getFloat("ttsRate", d.ttsRate),
         )
     }
 
@@ -68,6 +79,49 @@ class Prefs(context: Context) {
             putFloat("brightness", s.brightness)
             putBoolean("fullscreen", s.fullscreen)
             putBoolean("autoNight", s.autoNight)
+            putFloat("ttsRate", s.ttsRate)
+        }
+    }
+
+    fun shelf(): ShelfPrefs = ShelfPrefs(
+        sort = runCatching { ShelfSort.valueOf(sp.getString("shelf.sort", null)!!) }.getOrDefault(ShelfSort.RECENT),
+        list = sp.getBoolean("shelf.list", false),
+    )
+
+    fun saveShelf(p: ShelfPrefs) {
+        sp.edit {
+            putString("shelf.sort", p.sort.name)
+            putBoolean("shelf.list", p.list)
+        }
+    }
+
+    /** 全部设置（阅读排版、书架显示）导出成 JSON，供备份使用。 */
+    fun exportJson(): org.json.JSONObject {
+        val o = org.json.JSONObject()
+        sp.all.forEach { (k, v) ->
+            when (v) {
+                is Boolean -> o.put(k, org.json.JSONObject().put("b", v))
+                is Float -> o.put(k, org.json.JSONObject().put("f", v.toDouble()))
+                is Int -> o.put(k, org.json.JSONObject().put("i", v))
+                is Long -> o.put(k, org.json.JSONObject().put("l", v))
+                is String -> o.put(k, org.json.JSONObject().put("s", v))
+            }
+        }
+        return o
+    }
+
+    fun importJson(o: org.json.JSONObject) {
+        sp.edit {
+            o.keys().forEach { k ->
+                val v = o.optJSONObject(k) ?: return@forEach
+                when {
+                    v.has("b") -> putBoolean(k, v.getBoolean("b"))
+                    v.has("f") -> putFloat(k, v.getDouble("f").toFloat())
+                    v.has("i") -> putInt(k, v.getInt("i"))
+                    v.has("l") -> putLong(k, v.getLong("l"))
+                    v.has("s") -> putString(k, v.getString("s"))
+                }
+            }
         }
     }
 }

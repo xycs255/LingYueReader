@@ -10,6 +10,8 @@ import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -173,5 +175,94 @@ class OpenWithUiTest {
         val index = JSONArray(File(context.filesDir, "books/index.json").readText())
         assertEquals(1, index.length())
         assertEquals("外部的书", index.getJSONObject(0).getString("title"))
+    }
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
+class ShelfUiTest {
+    private val seed = object : ExternalResource() {
+        override fun before() {
+            seedBook("SCROLL")
+            // 再加一本，测搜索和排序。
+            val files = context.filesDir
+            val dir = File(files, "books/b2").apply { mkdirs() }
+            File(dir, "s0.txt").writeText("第一章 起\n　　乙书正文。\n")
+            val index = JSONArray(File(files, "books/index.json").readText())
+            index.put(
+                JSONObject().put("id", "b2").put("title", "乙书").put("author", "某人").put("format", "TXT")
+                    .put("addedAt", 2L).put("openedAt", 0L).put("chapterCount", 1).put("charCount", 5).put("readMillis", 3_720_000L)
+                    .put("sources", JSONArray().put(JSONObject().put("name", "乙书.txt").put("uri", "").put("file", "s0.txt"))),
+            )
+            File(files, "books/index.json").writeText(index.toString())
+        }
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    private fun waitForText(text: String) {
+        compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun searchFiltersByTitleOrAuthor() {
+        waitForText("测试书")
+        compose.onNodeWithContentDescription("搜索书架").performClick()
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("某人")
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("测试书").fetchSemanticsNodes().isEmpty() }
+        waitForText("乙书")
+    }
+
+    @Test
+    fun listViewAndDetailPage() {
+        waitForText("测试书")
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("列表显示")
+        compose.onNodeWithText("列表显示").performClick()
+        // 列表里有作者一栏
+        waitForText("某人 · TXT")
+        compose.onAllNodesWithContentDescription("操作")[0].performClick()
+        waitForText("详情")
+        compose.onNodeWithText("详情").performClick()
+        waitForText("书籍详情")
+        waitForText("累计阅读")
+    }
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
+class ListenUiTest {
+    private val seed = object : ExternalResource() {
+        override fun before() = seedBook("SCROLL")
+        override fun after() = com.xycs.lingyuereader.tts.ReadAloud.resetForTest()
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    private fun waitForText(text: String) {
+        compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun listenFromMenuShowsControlBarAndStops() {
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("第1段")
+        // 状态行显示时间（HH:mm）
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(androidx.compose.ui.test.SemanticsMatcher("clock") { n ->
+                n.config.getOrElseNullable(androidx.compose.ui.semantics.SemanticsProperties.Text) { null }
+                    ?.any { t -> Regex("""^\d{2}:\d{2}$""").matches(t.text) } == true
+            }).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onRoot().performTouchInput { click(center) }
+        compose.onNodeWithText("听书").performClick()
+        waitForText("正在听书")
+        compose.onNodeWithContentDescription("停止听书").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("正在听书").fetchSemanticsNodes().isEmpty() }
     }
 }

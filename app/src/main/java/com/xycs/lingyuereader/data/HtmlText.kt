@@ -14,7 +14,8 @@ object HtmlText {
         "br", "hr", "tr", "td", "th", "dt", "dd", "pre", "figure", "figcaption", "body", "aside",
     )
 
-    fun toBlocks(html: String): List<Block> {
+    /** [resolveImage] 把图片的相对路径换算成书内路径；为空时忽略图片。 */
+    fun toBlocks(html: String, resolveImage: ((String) -> String)? = null): List<Block> {
         val source = html.replace(comments, "").replace(dropped, "")
         val blocks = mutableListOf<Block>()
         val text = StringBuilder()
@@ -38,6 +39,15 @@ object HtmlText {
             text.append(source, last, m.range.first)
             last = m.range.last + 1
             val name = m.groupValues[2].lowercase().substringAfter(':')
+            if ((name == "img" || name == "image") && m.groupValues[1] != "/" && resolveImage != null) {
+                val attrs = m.groupValues[3]
+                val src = attr(attrs, "src") ?: attr(attrs, "xlink:href") ?: attr(attrs, "href")
+                if (src != null && !src.startsWith("data:")) {
+                    flush()
+                    blocks += Block.Image(resolveImage(src.substringBefore('#')), attr(attrs, "alt").orEmpty())
+                }
+                continue
+            }
             if (name !in blockTags) continue
             flush()
             val closing = m.groupValues[1] == "/"
@@ -56,6 +66,9 @@ object HtmlText {
         flush()
         return blocks
     }
+
+    private fun attr(attrs: String, name: String): String? =
+        Regex("""(?:^|\s)${Regex.escape(name)}\s*=\s*(["'])(.*?)\1""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(2)?.let(::decodeEntities)
 
     fun decodeEntities(s: String): String {
         if ('&' !in s) return s

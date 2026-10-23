@@ -21,6 +21,11 @@ object EpubParser {
             .find(opf)?.groupValues?.get(1)?.let { HtmlText.decodeEntities(it).trim() }?.ifEmpty { null }
         val author = Regex("""<dc:creator\b[^>]*>(.*?)</dc:creator>""", RegexOption.DOT_MATCHES_ALL)
             .find(opf)?.groupValues?.get(1)?.let { HtmlText.decodeEntities(it).trim() }?.ifEmpty { null }
+        // 简介里常夹着 HTML 标签（有时还被转义过一次）。
+        val description = Regex("""<dc:description\b[^>]*>(.*?)</dc:description>""", RegexOption.DOT_MATCHES_ALL)
+            .find(opf)?.groupValues?.get(1)
+            ?.let { HtmlText.decodeEntities(HtmlText.decodeEntities(it)).replace(Regex("<[^>]+>"), "").normalizeSpaces() }
+            ?.ifEmpty { null }
 
         data class Item(val href: String, val type: String, val properties: String)
         val manifest = Regex("""<item\b[^>]*>""").findAll(opf).mapNotNull { m ->
@@ -28,6 +33,11 @@ object EpubParser {
             val href = attr(m.value, "href") ?: return@mapNotNull null
             id to Item(resolve(base, href), attr(m.value, "media-type").orEmpty(), attr(m.value, "properties").orEmpty())
         }.toMap()
+        // 封面：EPUB3 的 properties="cover-image"，或 EPUB2 的 <meta name="cover" content="图片id">。
+        val coverId = Regex("""<meta\b[^>]*>""").findAll(opf).map { it.value }
+            .firstOrNull { attr(it, "name") == "cover" }?.let { attr(it, "content") }
+        var cover = (manifest.values.firstOrNull { "cover-image" in it.properties.split(' ') } ?: coverId?.let(manifest::get))
+            ?.takeIf { it.type.startsWith("image/") }?.href
         val spineTag = Regex("""<spine\b[^>]*>""").find(opf)?.value.orEmpty()
         val spine = Regex("""<itemref\b[^>]*>""").findAll(opf)
             .filter { attr(it.value, "linear") != "no" }
@@ -41,16 +51,25 @@ object EpubParser {
         val chapters = mutableListOf<Chapter>()
         for (item in spine) {
             val html = files[item.href]?.let(TextDecoder::decode) ?: continue
-            var blocks = HtmlText.toBlocks(html)
-            if (blocks.none { it is Block.Para || it is Block.Quote || it is Block.ListItem }) continue // 封面、插图页
+            val htmlBase = item.href.substringBeforeLast('/', "")
+            var blocks = HtmlText.toBlocks(html) { src -> resolve(htmlBase, src) }
+            // 只有封面图的页面不单独成章（封面另有显示）；没文字也没图的页面略过。
+            blocks = blocks.filterNot { it is Block.Image && it.src == cover }
+            // 没声明封面时，开头只有一张图的页面就当作封面。
+            if (cover == null && chapters.isEmpty() && blocks.size == 1 && blocks[0] is Block.Image) {
+                cover = (blocks[0] as Block.Image).src
+                continue
+            }
+            if (blocks.none { it is Block.Para || it is Block.Quote || it is Block.ListItem || it is Block.Image }) continue
             val firstHeading = blocks.firstOrNull() as? Block.Heading
-            val chapterTitle = tocTitles[item.href] ?: firstHeading?.text ?: "第 ${chapters.size + 1} 节"
+            val chapterTitle = tocTitles[item.href] ?: firstHeading?.text
+                ?: if (blocks.all { it is Block.Image }) "插图" else "第 ${chapters.size + 1} 节"
             if (firstHeading != null && firstHeading.text.normalizeSpaces() == chapterTitle.normalizeSpaces()) {
                 blocks = blocks.drop(1)
             }
             chapters += ChapterTitles.chapter(chapterTitle, blocks)
         }
-        return BookContent(title ?: fallbackTitle, author, chapters)
+        return BookContent(title ?: fallbackTitle, author, chapters, description, cover)
     }
 
     /** 目录：EPUB3 的 nav 或 EPUB2 的 NCX；同一文件取第一个标题。 */

@@ -65,6 +65,8 @@ internal class Paginator(
     private val fitter: TextFitter,
     private val styles: ReaderStyles,
     private val density: Density,
+    /** 插图的高宽比；不知道时按 3:4 估计。 */
+    private val imageAspect: (String) -> Float? = { null },
 ) {
     fun paginate(chapter: Chapter, widthPx: Int, heightPx: Int): List<Page> {
         val pages = mutableListOf<Page>()
@@ -114,6 +116,10 @@ internal class Paginator(
                         if (!isEnd) newPage()
                     }
                 }
+                is Block.Image -> {
+                    val h = minOf(widthPx * (imageAspect(block.src) ?: 0.75f), avail - gap)
+                    place(PageItem.Whole(index), h + gap)
+                }
                 else -> place(PageItem.Whole(index), wholeHeight(block, widthPx, gap))
             }
         }
@@ -132,7 +138,7 @@ internal class Paginator(
         is Block.Table -> gap + block.rows.size * (fitter.height(AnnotatedString("表"), styles.table, widthPx) + px(17f))
         Block.Rule -> gap * 2 + px(1f)
         Block.SceneBreak -> px(styles.settings.fontSize * 1.6f) + fitter.height(AnnotatedString("＊"), styles.sceneBreak, widthPx)
-        is Block.Para -> 0f
+        is Block.Para, is Block.Image -> 0f
     }
 
     private fun px(dp: Float): Float = dp * density.density

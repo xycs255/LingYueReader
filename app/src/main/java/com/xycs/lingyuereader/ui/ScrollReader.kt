@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
+import com.xycs.lingyuereader.data.Utterance
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -50,6 +51,8 @@ internal fun ScrollReader(
     onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
+    /** 听书时正在读的一句（本章内）。 */
+    speaking: Utterance? = null,
 ) {
     val palette = styles.palette
     val scope = rememberCoroutineScope()
@@ -63,6 +66,16 @@ internal fun ScrollReader(
             scope.launch { listState.animateScrollBy(if (forward) distance else -distance) }
         }
         onDispose { }
+    }
+
+    // 听书：正在读的段落不在屏幕上时滚过去。
+    LaunchedEffect(speaking?.block) {
+        val item = (speaking ?: return@LaunchedEffect).block + HEADER_ITEMS
+        val visible = listState.layoutInfo.visibleItemsInfo
+        val fullyVisible = visible.any {
+            it.index == item && it.offset >= 0 && it.offset + it.size <= listState.layoutInfo.viewportEndOffset
+        }
+        if (!fullyVisible) listState.animateScrollToItem(item)
     }
 
     LaunchedEffect(listState) {
@@ -99,6 +112,7 @@ internal fun ScrollReader(
                 styles,
                 marks.notesIn(chapterIndex, index),
                 modifier = Modifier.readerGestures(index, onTap) { onLongPress(index) },
+                speaking = speaking?.takeIf { it.block == index }?.let { it.start until it.end },
             )
         }
         item {

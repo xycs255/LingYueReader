@@ -15,7 +15,7 @@ object BookParser {
 
     fun titleOf(name: String): String = name.substringBeforeLast('.').trim().ifEmpty { name }
 
-    fun parseOne(source: SourceBytes): BookContent {
+    private fun parseOne(source: SourceBytes): BookContent {
         val fallback = titleOf(source.name)
         return when (formatOf(source.name)) {
             BookFormat.EPUB -> EpubParser.parse(source.bytes, fallback)
@@ -30,8 +30,11 @@ object BookParser {
      * 这样把改过的新稿和旧稿一起导入，读到的是新稿。
      */
     fun parse(sources: List<SourceBytes>): BookContent {
-        if (sources.size == 1) return parseOne(sources.single())
-        val parsed = sources.sortedWith(compareBy(NaturalOrder) { it.name }).map(::parseOne)
+        // 插图和封面路径前加上来源序号（“序号|书内路径”），导入时据此从对应文件里解出图片。
+        val parsed = sources.withIndex()
+            .sortedWith(compareBy(NaturalOrder) { it.value.name })
+            .map { (i, source) -> tagImages(parseOne(source), i) }
+        if (parsed.size == 1) return parsed.single()
         val all = parsed.flatMap { it.chapters }
         val chapters = if (all.isNotEmpty() && all.all { it.number != null }) {
             val byKey = linkedMapOf<Pair<Int, Int>, Chapter>()
@@ -40,7 +43,21 @@ object BookParser {
         } else {
             all
         }
-        return BookContent(parsed.firstNotNullOfOrNull { it.title }, parsed.firstNotNullOfOrNull { it.author }, chapters)
+        return BookContent(
+            title = parsed.firstNotNullOfOrNull { it.title },
+            author = parsed.firstNotNullOfOrNull { it.author },
+            chapters = chapters,
+            description = parsed.firstNotNullOfOrNull { it.description },
+            cover = parsed.firstNotNullOfOrNull { it.cover },
+        )
+    }
+
+    private fun tagImages(content: BookContent, index: Int): BookContent {
+        val chapters = content.chapters.map { c ->
+            if (c.blocks.none { it is Block.Image }) c
+            else c.withBlocks(c.blocks.map { if (it is Block.Image) it.copy(src = "$index|${it.src}") else it })
+        }
+        return content.copy(chapters = chapters, cover = content.cover?.let { "$index|$it" })
     }
 
     fun search(content: BookContent, query: String, limit: Int = 300): List<SearchHit> {

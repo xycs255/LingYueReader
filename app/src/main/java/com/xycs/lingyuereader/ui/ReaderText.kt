@@ -89,7 +89,7 @@ internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPal
 }
 
 /** 块在阅读页上显示的完整文字（含段首缩进），以及加粗和批注的样式。 */
-internal fun blockText(block: Block, notes: List<Note>): AnnotatedString? {
+internal fun blockText(block: Block, notes: List<Note>, speaking: IntRange? = null, speakingColor: Color = Color.Unspecified): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
         is Block.Heading -> block.text
@@ -115,6 +115,12 @@ internal fun blockText(block: Block, notes: List<Note>): AnnotatedString? {
                 end,
             )
         }
+        // 听书时正在读的那一句。
+        speaking?.let { r ->
+            val start = (r.first + shift).coerceIn(0, length)
+            val end = (r.last + 1 + shift).coerceIn(start, length)
+            addStyle(SpanStyle(background = speakingColor), start, end)
+        }
     }
 }
 
@@ -132,10 +138,11 @@ internal fun BlockView(
     modifier: Modifier = Modifier,
     range: IntRange? = null,
     isEnd: Boolean = true,
+    speaking: IntRange? = null,
 ) {
     val palette = styles.palette
     val gap = styles.gap
-    val text = remember(block, notes) { blockText(block, notes) }
+    val text = remember(block, notes, speaking) { blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f)) }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     when (block) {
         is Block.Para -> Text(
@@ -188,5 +195,6 @@ internal fun BlockView(
             style = styles.sceneBreak,
             modifier = modifier.fillMaxWidth().padding(vertical = (styles.settings.fontSize * 0.8f).dp),
         )
+        is Block.Image -> BookImage(block.src, palette.bar, modifier.padding(bottom = gap))
     }
 }

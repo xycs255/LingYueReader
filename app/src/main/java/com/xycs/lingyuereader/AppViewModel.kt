@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.BookParser
+import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.Bookmark
 import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.Marks
@@ -17,10 +18,16 @@ import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReadingProgress
 import com.xycs.lingyuereader.data.SearchHit
+import com.xycs.lingyuereader.data.ShelfPrefs
+import com.xycs.lingyuereader.data.ShelfSort
+import com.xycs.lingyuereader.tts.ReadAloud
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,6 +44,7 @@ sealed interface Screen {
         val fromEnd: Boolean = false,
     ) : Screen
     data class Search(val bookId: String) : Screen
+    data class Detail(val bookId: String) : Screen
 }
 
 /** 正在读的书：书架条目加上解析好的正文。 */
@@ -49,6 +57,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _shelf = MutableStateFlow<List<BookEntry>>(emptyList())
     val shelf: StateFlow<List<BookEntry>> = _shelf.asStateFlow()
+
+    private val _shelfPrefs = MutableStateFlow(prefs.shelf())
+    val shelfPrefs: StateFlow<ShelfPrefs> = _shelfPrefs.asStateFlow()
+
+    private val _shelfQuery = MutableStateFlow("")
+    val shelfQuery: StateFlow<String> = _shelfQuery.asStateFlow()
+
+    /** 书架上实际显示的书：按搜索词过滤、按所选方式排序。 */
+    val visibleShelf: StateFlow<List<BookEntry>> = combine(_shelf, _shelfPrefs, _shelfQuery) { books, p, q ->
+        val query = q.trim()
+        val filtered = if (query.isEmpty()) books else books.filter {
+            it.title.contains(query, ignoreCase = true) || it.author?.contains(query, ignoreCase = true) == true
+        }
+        when (p.sort) {
+            ShelfSort.RECENT -> filtered.sortedByDescending { maxOf(it.openedAt, it.addedAt) }
+            ShelfSort.ADDED -> filtered.sortedByDescending { it.addedAt }
+            ShelfSort.TITLE -> {
+                val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
+                filtered.sortedWith { a, b -> collator.compare(a.title, b.title) }
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _shelfLoaded = MutableStateFlow(false)
     val shelfLoaded: StateFlow<Boolean> = _shelfLoaded.asStateFlow()
@@ -86,11 +116,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             loadShelf()
             _shelfLoaded.value = true
         }
+        // 听书时跟着朗读位置记进度，锁屏听完再打开也能接着读。
+        viewModelScope.launch {
+            ReadAloud.state.collect { s ->
+                val u = s?.current ?: return@collect
+                val book = _openBook.value?.takeIf { it.entry.id == s.bookId } ?: return@collect
+                val block = book.content.chapters.getOrNull(s.chapterIndex)?.blocks?.getOrNull(u.block)
+                val indent = if (block is Block.Para && block.prose) 2 else 0
+                saveProgress(s.chapterIndex, u.block + 1, 0, u.start + indent)
+            }
+        }
+    }
+
+    /** 从当前阅读位置开始听书。 */
+    fun startReadAloud(chapterIndex: Int, block: Int, char: Int) {
+        val book = _openBook.value ?: return
+        ReadAloud.start(
+            getApplication(), book.entry.id, book.entry.title, book.content,
+            chapterIndex, block.coerceAtLeast(0), char, _settings.value.ttsRate,
+        )
+    }
+
+    fun setReadAloudRate(rate: Float) {
+        updateSettings { it.copy(ttsRate = rate) }
+        ReadAloud.setRate(rate)
     }
 
     private suspend fun loadShelf() {
         _shelf.value = withContext(Dispatchers.IO) { library.list() }
-            .sortedByDescending { maxOf(it.openedAt, it.addedAt) }
+    }
+
+    fun setShelfQuery(query: String) {
+        _shelfQuery.value = query
+    }
+
+    fun updateShelfPrefs(transform: (ShelfPrefs) -> ShelfPrefs) {
+        _shelfPrefs.update(transform)
+        prefs.saveShelf(_shelfPrefs.value)
+    }
+
+    /** 阅读页在前台的时长，离开或切到后台时累加。 */
+    fun addReadingTime(bookId: String, millis: Long) {
+        if (millis < 1_000) return
+        _shelf.update { list -> list.map { if (it.id == bookId) it.copy(readMillis = it.readMillis + millis) else it } }
+        viewModelScope.launch(Dispatchers.IO) { library.addReadingTime(bookId, millis) }
     }
 
     fun pick(uris: List<Uri>) {
@@ -238,6 +307,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
+
+    fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
+
+    fun backup(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openOutputStream(uri)!!.use { library.backup(it, prefs.exportJson()) }
+                }
+            }
+            _busy.value = false
+            _messages.value = result.fold({ "已备份 $it 本书" }, { "备份失败：${it.message}" })
+        }
+    }
+
+    fun restore(uri: Uri) {
+        viewModelScope.launch {
+            _busy.value = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openInputStream(uri)!!.use { library.restore(it) }
+                }
+            }
+            result.getOrNull()?.settings?.let { s ->
+                prefs.importJson(s)
+                _settings.value = prefs.settings()
+                _shelfPrefs.value = prefs.shelf()
+            }
+            _openBook.value = null
+            loadShelf()
+            _busy.value = false
+            _messages.value = result.fold({ "已恢复 ${it.books} 本书" }, { "恢复失败：${it.message}" })
+        }
+    }
 
     fun notesMarkdown(): String? {
         val book = _openBook.value ?: return null

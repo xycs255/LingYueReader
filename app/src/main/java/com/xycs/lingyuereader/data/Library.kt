@@ -19,6 +19,14 @@ class Library(private val context: Context) {
     private val root = File(context.filesDir, "books").apply { mkdirs() }
     private val indexFile = File(root, "index.json")
 
+    private companion object {
+        const val CACHE = "cache.bin"
+        const val BACKUP_MANIFEST = "lingyue-backup.json"
+        val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
+        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json)""")
+        val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
+    }
+
     class Picked(val uri: Uri, val name: String)
 
     @Synchronized
@@ -46,7 +54,7 @@ class Library(private val context: Context) {
                 }
                 SourceRef(picked.name, picked.uri.toString(), file)
             }
-            val content = BookParser.parse(load(dir, sources))
+            val content = buildCache(dir, sources)
             require(content.chapters.isNotEmpty()) { "没有读出正文" }
             val now = System.currentTimeMillis()
             val entry = BookEntry(
@@ -60,6 +68,8 @@ class Library(private val context: Context) {
                 chapterCount = content.chapters.size,
                 charCount = content.charCount,
                 progress = null,
+                description = content.description,
+                cover = content.cover,
             )
             update { it + entry }
             return entry
@@ -69,7 +79,67 @@ class Library(private val context: Context) {
         }
     }
 
-    fun content(entry: BookEntry): BookContent = BookParser.parse(load(File(root, entry.id), entry.sources))
+    /** 读出一本书。优先用缓存（只读目录，章节按需加载）；缓存不在或过期时重新解析并写缓存。 */
+    fun content(entry: BookEntry): BookContent {
+        val dir = File(root, entry.id)
+        return BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources)) ?: buildCache(dir, entry.sources)
+    }
+
+    /** 书籍目录里的文件（解出的插图、封面）。 */
+    fun bookFile(id: String, name: String): File = File(File(root, id), name)
+
+    /**
+     * 解析来源文件，把 EPUB 里用到的插图和封面解到书籍目录，写缓存，再从缓存读回（释放解析时占用的内存）。
+     */
+    private fun buildCache(dir: File, sources: List<SourceRef>): BookContent {
+        val parsed = BookParser.parse(load(dir, sources))
+        val withImages = extractImages(dir, sources, parsed)
+        val fingerprint = fingerprint(dir, sources)
+        val cacheFile = File(dir, CACHE)
+        BookCache.write(cacheFile, withImages, fingerprint)
+        return BookCache.read(cacheFile, fingerprint) ?: withImages
+    }
+
+    /** 来源副本的大小和修改时间，加上缓存版本；任一变化都会让缓存作废。 */
+    private fun fingerprint(dir: File, sources: List<SourceRef>): String =
+        "v${BookCache.VERSION}|" + sources.joinToString("|") { s ->
+            val f = File(dir, s.file)
+            "${s.file}:${f.length()}:${f.lastModified()}"
+        }
+
+    /** 把书内路径（“来源序号|路径”）的图片解出到 img/ 目录，块里的路径改成文件名；找不到或不支持的图片去掉。 */
+    private fun extractImages(dir: File, sources: List<SourceRef>, content: BookContent): BookContent {
+        val wanted = buildSet {
+            content.cover?.let(::add)
+            content.chapters.forEach { c -> c.blocks.forEach { if (it is Block.Image) add(it.src) } }
+        }
+        val imgDir = File(dir, "img")
+        imgDir.deleteRecursively()
+        if (wanted.isEmpty()) return content
+        imgDir.mkdirs()
+        val saved = mutableMapOf<String, String>()
+        wanted.groupBy { it.substringBefore('|').toIntOrNull() }.forEach { (index, refs) ->
+            val source = index?.let(sources::getOrNull) ?: return@forEach
+            runCatching {
+                java.util.zip.ZipFile(File(dir, source.file)).use { zip ->
+                    refs.forEach { ref ->
+                        val path = ref.substringAfter('|')
+                        val ext = path.substringAfterLast('.', "").lowercase()
+                        if (ext !in IMAGE_EXTENSIONS) return@forEach
+                        val entry = zip.getEntry(path) ?: return@forEach
+                        val name = "img/${saved.size}.$ext"
+                        zip.getInputStream(entry).use { input -> File(dir, name).outputStream().use { input.copyTo(it) } }
+                        saved[ref] = name
+                    }
+                }
+            }
+        }
+        val chapters = content.chapters.map { c ->
+            if (c.blocks.none { it is Block.Image }) c
+            else c.withBlocks(c.blocks.mapNotNull { b -> if (b is Block.Image) saved[b.src]?.let { b.copy(src = it) } else b })
+        }
+        return content.copy(chapters = chapters, cover = content.cover?.let(saved::get))
+    }
 
     /** 从原位置重读每份文件。返回是否有变化；读不到的保留旧副本。 */
     fun refresh(entry: BookEntry): RefreshResult {
@@ -89,8 +159,14 @@ class Library(private val context: Context) {
             }
         }
         if (changed > 0) {
-            val content = content(entry)
-            update { list -> list.map { if (it.id == entry.id) it.copy(chapterCount = content.chapters.size, charCount = content.charCount) else it } }
+            val content = buildCache(dir, entry.sources)
+            update { list ->
+                list.map {
+                    if (it.id == entry.id) {
+                        it.copy(chapterCount = content.chapters.size, charCount = content.charCount, cover = content.cover, description = content.description)
+                    } else it
+                }
+            }
         }
         return RefreshResult(changed, failed)
     }
@@ -120,6 +196,86 @@ class Library(private val context: Context) {
             val f = File(File(root, e.id), e.sources[0].file)
             f.isFile && f.length() == bytes.size.toLong() && f.readBytes().contentEquals(bytes)
         }
+    }
+
+    data class RestoreResult(val books: Int, val settings: JSONObject?)
+
+    /**
+     * 备份：书架索引、每本书的来源副本和书签批注，以及传入的设置。缓存和解出的插图可重建，不打包。
+     */
+    fun backup(out: java.io.OutputStream, settings: JSONObject): Int {
+        val entries = list()
+        java.util.zip.ZipOutputStream(out).use { zip ->
+            fun put(name: String, write: (java.io.OutputStream) -> Unit) {
+                zip.putNextEntry(java.util.zip.ZipEntry(name))
+                write(zip)
+                zip.closeEntry()
+            }
+            put(BACKUP_MANIFEST) {
+                it.write(JSONObject().put("format", 1).put("createdAt", System.currentTimeMillis()).put("settings", settings).toString().toByteArray())
+            }
+            put("books/index.json") { it.write(indexFile.readBytesOrEmpty()) }
+            entries.forEach { e ->
+                val dir = File(root, e.id)
+                (e.sources.map { it.file } + "marks.json").forEach { name ->
+                    val f = File(dir, name)
+                    if (f.isFile) put("books/${e.id}/$name") { o -> f.inputStream().use { it.copyTo(o) } }
+                }
+            }
+        }
+        return entries.size
+    }
+
+    /**
+     * 恢复：备份里的书加回书架，同一本书（同一 id）用备份里的版本整体替换。
+     * 只接受固定格式的条目路径，防止压缩包里的“../”之类路径写到书架目录之外。
+     */
+    fun restore(input: java.io.InputStream): RestoreResult {
+        val staging = File(context.cacheDir, "restore-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            var manifest: JSONObject? = null
+            var index: JSONArray? = null
+            java.util.zip.ZipInputStream(input).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    val name = entry.name
+                    when {
+                        entry.isDirectory -> Unit
+                        name == BACKUP_MANIFEST -> manifest = JSONObject(zip.readBytes().toString(Charsets.UTF_8))
+                        name == "books/index.json" -> index = JSONArray(zip.readBytes().toString(Charsets.UTF_8))
+                        BACKUP_BOOK_FILE.matches(name) -> {
+                            val target = File(staging, name)
+                            target.parentFile!!.mkdirs()
+                            target.outputStream().use { zip.copyTo(it) }
+                        }
+                        else -> Unit // 不认识的条目一律忽略
+                    }
+                }
+            }
+            val books = index ?: throw IllegalArgumentException("不是灵阅的备份文件")
+            requireNotNull(manifest) { "不是灵阅的备份文件" }
+            val restored = (0 until books.length()).mapNotNull { i ->
+                val e = runCatching { books.getJSONObject(i).toEntry() }.getOrNull() ?: return@mapNotNull null
+                if (!BACKUP_ID.matches(e.id)) return@mapNotNull null
+                val from = File(staging, "books/${e.id}")
+                if (e.sources.any { !File(from, it.file).isFile }) return@mapNotNull null
+                val to = File(root, e.id)
+                to.deleteRecursively()
+                from.copyRecursively(to, overwrite = true)
+                e
+            }
+            val ids = restored.map { it.id }.toSet()
+            update { current -> current.filterNot { it.id in ids } + restored }
+            return RestoreResult(restored.size, manifest?.optJSONObject("settings"))
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
+    private fun File.readBytesOrEmpty(): ByteArray = if (isFile) readBytes() else "[]".toByteArray()
+
+    fun addReadingTime(id: String, millis: Long) = update { list ->
+        list.map { if (it.id == id) it.copy(readMillis = it.readMillis + millis) else it }
     }
 
     fun rename(id: String, title: String) = update { list -> list.map { if (it.id == id) it.copy(title = title) else it } }
@@ -169,6 +325,9 @@ class Library(private val context: Context) {
         .put("openedAt", openedAt)
         .put("chapterCount", chapterCount)
         .put("charCount", charCount)
+        .put("description", description.orEmpty())
+        .put("cover", cover.orEmpty())
+        .put("readMillis", readMillis)
         .put("sources", JSONArray().apply {
             sources.forEach { put(JSONObject().put("name", it.name).put("uri", it.uri.orEmpty()).put("file", it.file)) }
         })
@@ -198,6 +357,9 @@ class Library(private val context: Context) {
             openedAt = optLong("openedAt"),
             chapterCount = optInt("chapterCount"),
             charCount = optInt("charCount"),
+            description = optString("description").ifEmpty { null },
+            cover = optString("cover").ifEmpty { null },
+            readMillis = optLong("readMillis"),
             progress = optJSONObject("progress")?.let {
                 ReadingProgress(it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"), it.optInt("char"))
             },

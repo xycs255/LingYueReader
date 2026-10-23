@@ -1,5 +1,13 @@
 package com.xycs.lingyuereader.ui
 
+import top.yukonga.miuix.kmp.icon.extended.VolumeUp
+import com.xycs.lingyuereader.tts.ReadAloud
+import androidx.core.content.ContextCompat
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.os.Build
+import android.content.pm.PackageManager
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -34,11 +42,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -47,6 +57,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -56,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
@@ -153,6 +166,7 @@ private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
     data object Settings : ReaderSheet
     data class Paragraph(val block: Int) : ReaderSheet
+    data object ReadAloud : ReaderSheet
 }
 
 /** 子组件登记的“翻一页”动作，供点按两侧和音量键共用。 */
@@ -181,7 +195,34 @@ private fun Reader(
     val turner = remember { Turner() }
     val context = LocalContext.current
 
+    val aloud by ReadAloud.state.collectAsStateWithLifecycle()
+    val listening = aloud?.takeIf { it.bookId == entry.id }
+    val speaking = listening?.takeIf { it.chapterIndex == chapterIndex }?.current
+    // 听书读进下一章时，阅读页跟着换章。
+    LaunchedEffect(listening?.chapterIndex) {
+        val l = listening ?: return@LaunchedEffect
+        if (l.chapterIndex != chapterIndex) vm.replaceTop(Screen.Reader(entry.id, l.chapterIndex, l.current?.block))
+    }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val startListening = {
+        // 通知栏的控制按钮需要通知权限；不给也能听，只是看不到通知。
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val block = pos.block.coerceAtLeast(0)
+        val indent = chapter.blocks.getOrNull(block)?.let(::indentOf) ?: 0
+        vm.startReadAloud(chapterIndex, block, (pos.char - indent).coerceAtLeast(0))
+        menuVisible = false
+    }
+
     SystemBars(darkBackground = palette.isDark, hidden = settings.fullscreen && !menuVisible)
+    // 只计阅读页在前台的时间：切到后台或离开阅读页时把这段时长记下。
+    LifecycleResumeEffect(entry.id) {
+        val start = System.currentTimeMillis()
+        onPauseOrDispose { vm.addReadingTime(entry.id, System.currentTimeMillis() - start) }
+    }
     VolumeKeys(settings.volumeKeys && sheet == null) { forward -> turner.turn?.invoke(forward) }
 
     // 停下 300 毫秒再存进度，免得滚动时频繁写文件。
@@ -214,54 +255,70 @@ private fun Reader(
     val topInset = (if (settings.fullscreen) 0.dp else bars.calculateTopPadding()) + 16.dp
     val bottomInset = navBars.calculateBottomPadding() + 28.dp
 
+    val images = remember(entry.id) { BookImages { name -> vm.bookFile(entry.id, name) } }
+    val screenHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
+
     Box(Modifier.fillMaxSize().background(palette.background)) {
-        if (settings.pageMode == PageMode.SCROLL) {
-            key(screen, content) {
-                val start = remember { pos }
-                val listState = rememberLazyListState(start.item, start.offset)
-                ScrollReader(
-                    chapter = chapter,
-                    chapterIndex = chapterIndex,
-                    nextTitle = content.chapters.getOrNull(chapterIndex + 1)?.title,
-                    styles = styles,
-                    marks = marks,
-                    listState = listState,
-                    topInset = topInset,
-                    bottomInset = bottomInset,
-                    onTap = onTap,
-                    onLongPress = onLongPress,
-                    onPosition = { item, offset, fraction ->
-                        pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
-                    },
-                    onNext = { goTo(chapterIndex + 1, null) },
-                    registerTurner = { turner.turn = it },
-                )
-            }
-        } else {
-            // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
-            key(screen, content, styles) {
-                val start = remember { pos }
-                PagedReader(
-                    content = content,
-                    chapterIndex = chapterIndex,
-                    start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
-                    styles = styles,
-                    mode = settings.pageMode,
-                    marks = marks,
-                    topInset = topInset,
-                    bottomInset = bottomInset,
-                    onTap = onTap,
-                    onLongPress = onLongPress,
-                    onPosition = { block, char, fraction, label ->
-                        pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
-                    },
-                    onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
-                    registerTurner = { turner.turn = it },
-                )
+        CompositionLocalProvider(LocalBookImages provides images, LocalImageMaxHeight provides screenHeight * 0.8f) {
+            if (settings.pageMode == PageMode.SCROLL) {
+                key(screen, content) {
+                    val start = remember { pos }
+                    val listState = rememberLazyListState(start.item, start.offset)
+                    ScrollReader(
+                        chapter = chapter,
+                        chapterIndex = chapterIndex,
+                        nextTitle = content.chapters.getOrNull(chapterIndex + 1)?.title,
+                        styles = styles,
+                        marks = marks,
+                        listState = listState,
+                        topInset = topInset,
+                        bottomInset = bottomInset,
+                        onTap = onTap,
+                        onLongPress = onLongPress,
+                        onPosition = { item, offset, fraction ->
+                            pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
+                        },
+                        onNext = { goTo(chapterIndex + 1, null) },
+                        registerTurner = { turner.turn = it },
+                        speaking = speaking,
+                    )
+                }
+            } else {
+                // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
+                key(screen, content, styles) {
+                    val start = remember { pos }
+                    PagedReader(
+                        content = content,
+                        chapterIndex = chapterIndex,
+                        start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                        styles = styles,
+                        mode = settings.pageMode,
+                        marks = marks,
+                        topInset = topInset,
+                        bottomInset = bottomInset,
+                        onTap = onTap,
+                        onLongPress = onLongPress,
+                        onPosition = { block, char, fraction, label ->
+                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
+                        },
+                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                        registerTurner = { turner.turn = it },
+                        speaking = speaking,
+                    )
+                }
             }
         }
 
         StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label}", palette, Modifier.align(Alignment.BottomCenter))
+
+        AnimatedVisibility(
+            visible = listening != null && !menuVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            listening?.let { l -> ReadAloudBar(l, palette, onSettings = { sheet = ReaderSheet.ReadAloud }) }
+        }
 
         AnimatedVisibility(
             visible = menuVisible,
@@ -318,6 +375,14 @@ private fun Reader(
                     }
                     BarButton("目录", MiuixIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
                     BarButton("设置", MiuixIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
+                BarButton(if (listening != null) "听书中" else "听书", MiuixIcons.VolumeUp, if (listening != null) palette.accent else palette.text) {
+                    if (listening != null) {
+                        menuVisible = false
+                        sheet = ReaderSheet.ReadAloud
+                    } else {
+                        startListening()
+                    }
+                }
                     BarButton("下一章", MiuixIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
                         goTo(chapterIndex + 1, null)
                     }
@@ -357,6 +422,14 @@ private fun Reader(
         onDismissRequest = { sheet = null },
     ) {
         SettingsSheet(settings, palette, vm::updateSettings)
+    }
+    OverlayBottomSheet(
+        show = sheet == ReaderSheet.ReadAloud && aloud != null,
+        title = "听书",
+        backgroundColor = palette.background,
+        onDismissRequest = { sheet = null },
+    ) {
+        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate) }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }
@@ -429,16 +502,60 @@ private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, pa
 
 @Composable
 private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier) {
+    val time = rememberClock()
+    val battery = rememberBattery()
     Row(
         modifier
             .fillMaxWidth()
             .background(palette.background.copy(alpha = 0.92f))
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 24.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(title, color = palette.secondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Text(label, color = palette.secondary, fontSize = 11.sp)
+        Text(time, color = palette.secondary, fontSize = 11.sp)
+        battery?.let { Text("电量 $it%", color = palette.secondary, fontSize = 11.sp) }
     }
+}
+
+/** 当前时间“HH:mm”，在每分钟开始时更新。 */
+@Composable
+private fun rememberClock(): String {
+    val format = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+    val time by produceState(format.format(java.util.Date())) {
+        while (true) {
+            val now = System.currentTimeMillis()
+            value = format.format(java.util.Date(now))
+            delay(60_000 - now % 60_000)
+        }
+    }
+    return time
+}
+
+/** 电量百分比；系统广播是粘性的，注册时立即拿到当前值，之后随变化更新。 */
+@Composable
+private fun rememberBattery(): Int? {
+    val context = LocalContext.current
+    var level by remember { mutableStateOf<Int?>(null) }
+    DisposableEffect(context) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                val l = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                if (l >= 0 && scale > 0) level = l * 100 / scale
+            }
+        }
+        val sticky = androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            receiver,
+            android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        sticky?.let { receiver.onReceive(context, it) }
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    return level
 }
 
 @Composable

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -33,6 +34,7 @@ import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
+import com.xycs.lingyuereader.data.Utterance
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
 
@@ -54,13 +56,19 @@ internal fun PagedReader(
     onPosition: (block: Int, char: Int, fraction: Float, pageLabel: String) -> Unit,
     onChapterChange: (index: Int, fromEnd: Boolean) -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
+    /** 听书时正在读的一句（本章内）。 */
+    speaking: Utterance? = null,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val measurer = rememberTextMeasurer(cacheSize = 0)
         val widthPx = with(density) { (maxWidth - styles.horizontalPadding * 2).roundToPx() }
         val heightPx = with(density) { (maxHeight - topInset - bottomInset).roundToPx() }
-        val paginator = remember(styles, density) { Paginator(ComposeTextFitter(measurer), styles, density) }
+        val imageMaxHeight = maxHeight - topInset - bottomInset - styles.gap
+        val images = LocalBookImages.current
+        val paginator = remember(styles, density, images) {
+            Paginator(ComposeTextFitter(measurer), styles, density) { src -> images?.aspect(src) }
+        }
 
         fun pagesOf(index: Int): List<Page>? = content.chapters.getOrNull(index)?.let { paginator.paginate(it, widthPx, heightPx) }
 
@@ -87,6 +95,14 @@ internal fun PagedReader(
                 scope.launch { pager.animateScrollToPage((pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)) }
             }
             onDispose { }
+        }
+
+        // 听书：读到下一页时自动翻过去。
+        LaunchedEffect(speaking, pages) {
+            val u = speaking ?: return@LaunchedEffect
+            val indent = indentOf(chapter.blocks[u.block])
+            val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
+            if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) pager.animateScrollToPage(lead + target)
         }
 
         LaunchedEffect(pager, pages) {
@@ -139,7 +155,14 @@ internal fun PagedReader(
                     .background(styles.palette.background)
                     .pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) },
             ) {
-                PageContent(content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap, onLongPress.takeIf { pageChapter == chapterIndex })
+                // 插图最高一页，与分页时的估算一致（再减去段距）。
+                CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
+                    PageContent(
+                        content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
+                        onLongPress.takeIf { pageChapter == chapterIndex },
+                        speaking.takeIf { pageChapter == chapterIndex },
+                    )
+                }
             }
         }
     }
@@ -155,7 +178,9 @@ private fun PageContent(
     topInset: Dp,
     onTap: (Float) -> Unit,
     onLongPress: ((Int) -> Unit)?,
+    speaking: Utterance?,
 ) {
+    fun speakRange(block: Int) = speaking?.takeIf { it.block == block }?.let { it.start until it.end }
     Column(Modifier.fillMaxWidth().padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset)) {
         page.items.forEach { item ->
             when (item) {
@@ -171,12 +196,14 @@ private fun PageContent(
                     modifier = Modifier.readerGestures(item, onTap, onLongPress?.let { { it(item.block) } }),
                     range = item.start until item.end,
                     isEnd = item.isEnd,
+                    speaking = speakRange(item.block),
                 )
                 is PageItem.Whole -> BlockView(
                     chapter.blocks[item.block],
                     styles,
                     marks.notesIn(chapterIndex, item.block),
                     modifier = Modifier.readerGestures(item, onTap, onLongPress?.let { { it(item.block) } }),
+                    speaking = speakRange(item.block),
                 )
             }
         }

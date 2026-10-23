@@ -189,6 +189,37 @@ class ParserTest {
     }
 
     @Test
+    fun epubImagesCoverAndDescription() {
+        val epub = zip(
+            "META-INF/container.xml" to """<container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>""",
+            "OPS/book.opf" to """
+                <package><metadata><dc:title>图书</dc:title><dc:description>&lt;p&gt;一本&lt;b&gt;好书&lt;/b&gt;&lt;/p&gt;</dc:description>
+                <meta name="cover" content="cov"/></metadata>
+                <manifest>
+                  <item id="cov" href="images/cover.jpg" media-type="image/jpeg"/>
+                  <item id="p0" href="text/cover.xhtml" media-type="application/xhtml+xml"/>
+                  <item id="p1" href="text/c1.xhtml" media-type="application/xhtml+xml"/>
+                  <item id="p2" href="text/plate.xhtml" media-type="application/xhtml+xml"/>
+                </manifest>
+                <spine><itemref idref="p0"/><itemref idref="p1"/><itemref idref="p2"/></spine></package>
+            """.trimIndent(),
+            "OPS/text/cover.xhtml" to """<html><body><svg><image xlink:href="../images/cover.jpg"/></svg></body></html>""",
+            "OPS/text/c1.xhtml" to """<html><body><h1>第一章</h1><p>开头</p><p><img src="../images/map.png" alt="地图"/></p><p>结尾</p></body></html>""",
+            "OPS/text/plate.xhtml" to """<html><body><img src="../images/plate%201.png"/></body></html>""",
+        )
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("x.epub", epub)))
+        assertEquals("0|OPS/images/cover.jpg", book.cover)
+        assertEquals("一本好书", book.description)
+        // 封面页不单独成章；插图页成为“插图”章。
+        assertEquals(listOf("第一章", "插图"), book.chapters.map { it.title })
+        assertEquals(
+            listOf(Block.Para("开头"), Block.Image("0|OPS/images/map.png", "地图"), Block.Para("结尾")),
+            book.chapters[0].blocks,
+        )
+        assertEquals(listOf(Block.Image("0|OPS/images/plate 1.png")), book.chapters[1].blocks)
+    }
+
+    @Test
     fun searchFindsEveryOccurrence() {
         val book = BookParser.parse(listOf(md("a.md", manuscript)))
         val hits = BookParser.search(book, "干渠")

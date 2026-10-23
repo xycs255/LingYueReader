@@ -77,6 +77,13 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import top.yukonga.miuix.kmp.icon.extended.More
+import top.yukonga.miuix.kmp.icon.extended.Search
+import top.yukonga.miuix.kmp.basic.PopupPositionProvider
+import com.xycs.lingyuereader.data.ShelfSort
 
 @Composable
 fun App(vm: AppViewModel = viewModel()) {
@@ -93,23 +100,36 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.Shelf -> ShelfScreen(vm)
             is Screen.Reader -> ReaderScreen(vm, screen)
             is Screen.Search -> SearchScreen(vm, screen.bookId)
+            is Screen.Detail -> DetailScreen(vm, screen.bookId)
         }
     }
 }
 
 @Composable
 private fun ShelfScreen(vm: AppViewModel) {
-    val shelf by vm.shelf.collectAsStateWithLifecycle()
+    val all by vm.shelf.collectAsStateWithLifecycle()
+    val shelf by vm.visibleShelf.collectAsStateWithLifecycle()
+    val shelfPrefs by vm.shelfPrefs.collectAsStateWithLifecycle()
+    val query by vm.shelfQuery.collectAsStateWithLifecycle()
     val loaded by vm.shelfLoaded.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val pending by vm.pendingImport.collectAsStateWithLifecycle()
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scrollBehavior = MiuixScrollBehavior()
+    var searching by rememberSaveable { mutableStateOf(query.isNotEmpty()) }
+    var moreMenu by remember { mutableStateOf(false) }
+    var confirmRestore by remember { mutableStateOf<android.net.Uri?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.pick(it) }
     // 各家文件管理器给 .md/.epub 报的类型不一，干脆不按类型过滤，选完再按扩展名判断。
     val pickFiles = { picker.launch(arrayOf("*/*")) }
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        uri?.let(vm::backup)
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        confirmRestore = uri
+    }
 
     LaunchedEffect(message) {
         message?.let {
@@ -124,33 +144,100 @@ private fun ShelfScreen(vm: AppViewModel) {
                 title = "灵阅",
                 scrollBehavior = scrollBehavior,
                 actions = {
-                    IconButton(onClick = pickFiles, enabled = !busy, modifier = Modifier.padding(end = 12.dp)) {
+                    IconButton(onClick = {
+                        searching = !searching
+                        if (!searching) vm.setShelfQuery("")
+                    }) {
+                        Icon(MiuixIcons.Search, contentDescription = "搜索书架")
+                    }
+                    IconButton(onClick = pickFiles, enabled = !busy) {
                         Icon(MiuixIcons.Add, contentDescription = "导入")
+                    }
+                    Box(Modifier.padding(end = 12.dp)) {
+                        IconButton(onClick = { moreMenu = true }) {
+                            Icon(MiuixIcons.More, contentDescription = "更多")
+                        }
+                        val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
+                        val options = ShelfSort.entries.map { "排序：${it.label}" } +
+                            listOf(if (shelfPrefs.list) "网格显示" else "列表显示", "备份书架…", "从备份恢复…")
+                        OverlayListPopup(
+                            show = moreMenu,
+                            alignment = PopupPositionProvider.Align.End,
+                            onDismissRequest = { moreMenu = false },
+                        ) {
+                            ListPopupColumn {
+                                options.forEachIndexed { index, label ->
+                                    DropdownImpl(
+                                        text = label,
+                                        optionSize = options.size,
+                                        isSelected = index == shelfPrefs.sort.ordinal,
+                                        index = index,
+                                        onSelectedIndexChange = { i ->
+                                            moreMenu = false
+                                            when {
+                                                i < ShelfSort.entries.size -> vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
+                                                i == ShelfSort.entries.size -> vm.updateShelfPrefs { it.copy(list = !it.list) }
+                                                i == ShelfSort.entries.size + 1 -> backupLauncher.launch("灵阅备份-${stamp.format(java.util.Date())}.zip")
+                                                else -> restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     }
                 },
                 bottomContent = {
-                    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                    Column {
+                        if (searching) {
+                            TextField(
+                                value = query,
+                                onValueChange = vm::setShelfQuery,
+                                label = "搜索书名或作者",
+                                useLabelAsPlaceholder = true,
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                            )
+                        }
+                        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                    }
                 },
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
+        val listModifier = Modifier
+            .fillMaxSize()
+            .scrollEndHaptic()
+            .overScrollVertical()
+            .nestedScroll(scrollBehavior.nestedScrollConnection)
+        val contentPadding = PaddingValues(
+            start = 20.dp,
+            end = 20.dp,
+            top = padding.calculateTopPadding() + 8.dp,
+            bottom = padding.calculateBottomPadding() + 20.dp,
+        )
         when {
             !loaded -> Unit
-            shelf.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
+            all.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
+            shelf.isEmpty() -> Text(
+                "没有找到“$query”",
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(padding).padding(top = 48.dp),
+            )
+            shelfPrefs.list -> LazyColumn(
+                modifier = listModifier,
+                contentPadding = contentPadding,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                overscrollEffect = null,
+            ) {
+                items(shelf, key = { it.id }) { entry -> ShelfRow(entry, vm) }
+            }
             else -> LazyVerticalGrid(
                 columns = GridCells.Adaptive(108.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .scrollEndHaptic()
-                    .overScrollVertical()
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding() + 20.dp,
-                ),
+                modifier = listModifier,
+                contentPadding = contentPadding,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 overscrollEffect = null,
@@ -161,6 +248,19 @@ private fun ShelfScreen(vm: AppViewModel) {
     }
 
     pending?.let { files -> ImportDialog(files, vm) }
+    confirmRestore?.let { uri ->
+        OverlayDialog(
+            show = true,
+            title = "从备份恢复",
+            summary = "备份里的书会加回书架；同一本书会用备份里的版本（含进度、书签批注）覆盖。阅读设置也会恢复。",
+            onDismissRequest = { confirmRestore = null },
+        ) {
+            DialogButtons(confirm = "恢复", onDismiss = { confirmRestore = null }) {
+                vm.restore(uri)
+                confirmRestore = null
+            }
+        }
+    }
 }
 
 @Composable
@@ -197,71 +297,130 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
     }
 }
 
+internal fun progressLabel(entry: BookEntry): String =
+    if (entry.progress == null) "未读 · ${entry.chapterCount} 章" else "读到 ${(entry.readFraction * 100).toInt()}%"
+
+/** 网格里的一本书：点开阅读，长按弹出操作菜单。 */
 @Composable
 private fun ShelfItem(entry: BookEntry, vm: AppViewModel) {
+    val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    val actions = buildList {
-        if (entry.sources.any { it.uri != null }) add("从原文件刷新" to { vm.refresh(entry) })
-        add("重命名" to { renaming = true })
-        add("移除" to { confirmDelete = true })
-    }
-
     Column {
         Box {
             BookCover(
                 entry.title,
                 entry.format.label,
+                cover = entry.cover?.let { vm.bookFile(entry.id, it) },
                 onClick = { vm.open(Screen.Reader(entry.id)) },
                 onLongPress = { menu = true },
             )
-            OverlayListPopup(show = menu, onDismissRequest = { menu = false }) {
-                ListPopupColumn {
-                    actions.forEachIndexed { index, (label, action) ->
-                        DropdownImpl(
-                            text = label,
-                            optionSize = actions.size,
-                            isSelected = false,
-                            index = index,
-                            onSelectedIndexChange = {
-                                menu = false
-                                action()
-                            },
-                        )
-                    }
-                }
-            }
+            BookMenu(entry, vm, menu, dialogs) { menu = false }
         }
         Spacer(Modifier.height(8.dp))
         Text(entry.title, style = MiuixTheme.textStyles.body2, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(
-            if (entry.progress == null) "未读 · ${entry.chapterCount} 章" else "读到 ${(entry.readFraction * 100).toInt()}%",
-            style = MiuixTheme.textStyles.footnote2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
+        Text(progressLabel(entry), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
+    BookDialogs(entry, vm, dialogs)
+}
 
-    if (renaming) {
-        var title by remember { mutableStateOf(entry.title) }
-        OverlayDialog(show = true, title = "重命名", onDismissRequest = { renaming = false }) {
-            TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            DialogButtons(confirm = "确定", onDismiss = { renaming = false }) {
-                vm.rename(entry, title)
-                renaming = false
+/** 列表里的一本书：小封面、书名、作者、进度。 */
+@Composable
+private fun ShelfRow(entry: BookEntry, vm: AppViewModel) {
+    val dialogs = remember { BookDialogState() }
+    var menu by remember { mutableStateOf(false) }
+    Card(
+        pressFeedbackType = PressFeedbackType.Sink,
+        onClick = { vm.open(Screen.Reader(entry.id)) },
+        onLongPress = { menu = true },
+        insideMargin = PaddingValues(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(52.dp)) {
+                BookCover(entry.title, "", cover = entry.cover?.let { vm.bookFile(entry.id, it) }, compact = true)
+            }
+            Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                Text(entry.title, style = MiuixTheme.textStyles.title4, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    listOfNotNull(entry.author, entry.format.label).joinToString(" · "),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                Text(
+                    progressLabel(entry),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(MiuixIcons.More, contentDescription = "操作", tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
+                BookMenu(entry, vm, menu, dialogs) { menu = false }
             }
         }
     }
-    if (confirmDelete) {
+    BookDialogs(entry, vm, dialogs)
+}
+
+/** 书的操作菜单与对话框，书架和详情页共用。 */
+internal class BookDialogState {
+    var renaming by mutableStateOf(false)
+    var removing by mutableStateOf(false)
+}
+
+@Composable
+private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs: BookDialogState, onDismiss: () -> Unit) {
+    val actions = buildList {
+        add("详情" to { vm.open(Screen.Detail(entry.id)) })
+        if (entry.sources.any { it.uri != null }) add("从原文件刷新" to { vm.refresh(entry) })
+        add("重命名" to { dialogs.renaming = true })
+        add("移除" to { dialogs.removing = true })
+    }
+    OverlayListPopup(show = show, onDismissRequest = onDismiss) {
+        ListPopupColumn {
+            actions.forEachIndexed { index, (label, action) ->
+                DropdownImpl(
+                    text = label,
+                    optionSize = actions.size,
+                    isSelected = false,
+                    index = index,
+                    onSelectedIndexChange = {
+                        onDismiss()
+                        action()
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialogState, onRemoved: () -> Unit = {}) {
+    if (dialogs.renaming) {
+        var title by remember { mutableStateOf(entry.title) }
+        OverlayDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
+            TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            DialogButtons(confirm = "确定", onDismiss = { dialogs.renaming = false }) {
+                vm.rename(entry, title)
+                dialogs.renaming = false
+            }
+        }
+    }
+    if (dialogs.removing) {
         OverlayDialog(
             show = true,
             title = "移除《${entry.title}》",
-            summary = "会删除本机副本和阅读进度，原文件不受影响。",
-            onDismissRequest = { confirmDelete = false },
+            summary = "会删除本机副本、阅读进度和书签批注，原文件不受影响。",
+            onDismissRequest = { dialogs.removing = false },
         ) {
-            DialogButtons(confirm = "移除", onDismiss = { confirmDelete = false }) {
+            DialogButtons(confirm = "移除", onDismiss = { dialogs.removing = false }) {
                 vm.remove(entry)
-                confirmDelete = false
+                dialogs.removing = false
+                onRemoved()
             }
         }
     }
@@ -291,6 +450,9 @@ fun BookCover(
     title: String,
     label: String,
     modifier: Modifier = Modifier,
+    cover: java.io.File? = null,
+    /** 列表里的小封面：不写书名，只留色块。 */
+    compact: Boolean = false,
     onClick: (() -> Unit)? = null,
     onLongPress: (() -> Unit)? = null,
 ) {
@@ -304,7 +466,22 @@ fun BookCover(
         pressFeedbackType = PressFeedbackType.Sink,
     ) {
         Box(Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(color)) {
-            Box(Modifier.width(8.dp).fillMaxHeight().background(Color.Black.copy(alpha = 0.18f)))
+            if (cover?.isFile == true) {
+                CoverImage(cover, Modifier.fillMaxSize())
+                return@Box
+            }
+            Box(Modifier.width(if (compact) 4.dp else 8.dp).fillMaxHeight().background(Color.Black.copy(alpha = 0.18f)))
+            if (compact) {
+                Text(
+                    title.take(1),
+                    color = Color(0xFFF7EFE2),
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+                return@Box
+            }
             Text(
                 title,
                 color = Color(0xFFF7EFE2),
