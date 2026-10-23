@@ -56,4 +56,31 @@ class VocabularyTest {
         val md = v.toMarkdown()
         assertTrue(md, md.contains("## 排队（pái duì）") && md.contains("> 排着长队。") && md.contains("——《测试书》"))
     }
+
+    @Test
+    fun reviewsSpreadOutUntilTheWordIsMastered() {
+        val v = Vocabulary(File(tmp.root, "srs.json"))
+        v.add(VocabWord("萧索", "xiāo suǒ", "bleak", "", "b", "书", 0))
+        var now = java.util.Calendar.getInstance().apply { set(2026, 9, 23, 21, 0, 0) }.timeInMillis
+        assertTrue(v.list().single().isDue(now))
+        val intervals = mutableListOf<Int>()
+        repeat(6) {
+            v.review("萧索", known = true, now = now)
+            val w = v.list().single()
+            intervals += w.interval
+            assertFalse(w.isDue(now))
+            // 到期日是那天零点：第二天一早就能复习。
+            assertEquals(Vocabulary.startOfDay(now) + w.interval * Vocabulary.DAY, w.due)
+            now = w.due + 8 * 60 * 60 * 1000L
+        }
+        assertEquals(listOf(1, 3, 8, 20, 50, 125), intervals)
+        assertTrue(v.list().single().mastered)
+
+        // 忘了：从头来，马上又到期。
+        v.review("萧索", known = false, now = now)
+        val w = v.list().single()
+        assertEquals(0, w.interval)
+        assertFalse(w.mastered)
+        assertTrue(w.isDue(now))
+    }
 }

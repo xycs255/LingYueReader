@@ -20,7 +20,14 @@ data class VocabWord(
     val lookups: Int = 1,
     val mastered: Boolean = false,
     val reviewedAt: Long = 0,
-)
+    /** 复习间隔（天）：0 表示刚收进来或上次没记住。 */
+    val interval: Int = 0,
+    /** 下次该复习的时间；0 表示随时。 */
+    val due: Long = 0,
+) {
+    /** 学习中、且到了该复习的时候。 */
+    fun isDue(now: Long): Boolean = !mastered && due <= now
+}
 
 /** 生词本，存在 files/vocabulary.json。按词去重，后收的覆盖原句与释义。 */
 class Vocabulary(private val file: File) {
@@ -45,7 +52,20 @@ class Vocabulary(private val file: File) {
     fun remove(word: String) = update { list -> list.filterNot { it.word == word } }
 
     fun setMastered(word: String, mastered: Boolean, now: Long = System.currentTimeMillis()) = update { list ->
-        list.map { if (it.word == word) it.copy(mastered = mastered, reviewedAt = now) else it }
+        list.map { if (it.word == word) it.copy(mastered = mastered, reviewedAt = now, interval = if (mastered) it.interval else 0, due = if (mastered) it.due else 0) else it }
+    }
+
+    /**
+     * 复习了一次（按遗忘曲线排下次）：记得就把间隔拉长（1 天 → 3 天 → 约 2.5 倍），到期日从当天零点算起；
+     * 没记住就从头来，今天还会再出现。间隔超过两个月就算掌握了。
+     */
+    fun review(word: String, known: Boolean, now: Long = System.currentTimeMillis()) = update { list ->
+        list.map { w ->
+            if (w.word != word) return@map w
+            if (!known) return@map w.copy(interval = 0, due = now, reviewedAt = now, mastered = false)
+            val interval = nextInterval(w.interval)
+            w.copy(interval = interval, due = startOfDay(now) + interval * DAY, reviewedAt = now, mastered = interval > MASTERED_AFTER)
+        }
     }
 
     /** 恢复备份：按词合并，两边都有时取较新的。 */
@@ -79,7 +99,8 @@ class Vocabulary(private val file: File) {
             array.put(
                 JSONObject().put("word", w.word).put("reading", w.reading).put("gloss", w.gloss).put("context", w.context)
                     .put("bookId", w.bookId).put("bookTitle", w.bookTitle).put("addedAt", w.addedAt)
-                    .put("lookups", w.lookups).put("mastered", w.mastered).put("reviewedAt", w.reviewedAt),
+                    .put("lookups", w.lookups).put("mastered", w.mastered).put("reviewedAt", w.reviewedAt)
+                    .put("interval", w.interval).put("due", w.due),
             )
         }
         file.parentFile?.mkdirs()
@@ -107,11 +128,32 @@ class Vocabulary(private val file: File) {
                 lookups = o.optInt("lookups", 1),
                 mastered = o.optBoolean("mastered"),
                 reviewedAt = o.optLong("reviewedAt"),
+                interval = o.optInt("interval"),
+                due = o.optLong("due"),
             )
         }
     }
 
     companion object {
+        const val DAY = 24 * 60 * 60 * 1000L
+
+        /** 间隔超过这么多天就算掌握。 */
+        const val MASTERED_AFTER = 60
+
+        fun nextInterval(current: Int): Int = when {
+            current <= 0 -> 1
+            current == 1 -> 3
+            else -> kotlin.math.round(current * 2.5).toInt()
+        }
+
+        fun startOfDay(time: Long): Long = java.util.Calendar.getInstance().apply {
+            timeInMillis = time
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
         /** 取 [range] 所在的那一句作原句，太长就截取词前后各一段。 */
         fun contextOf(text: String, range: IntRange, maxLength: Int = 80): String {
             if (text.isEmpty()) return ""

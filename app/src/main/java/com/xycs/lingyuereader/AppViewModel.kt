@@ -725,6 +725,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.setMastered(word, mastered); vocabulary.list() } }
     }
 
+    fun reviewWord(word: String, known: Boolean) {
+        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.review(word, known); vocabulary.list() } }
+    }
+
     fun vocabularyMarkdown(words: List<VocabWord>): String = vocabulary.toMarkdown(words)
 
     fun closeLookup() {

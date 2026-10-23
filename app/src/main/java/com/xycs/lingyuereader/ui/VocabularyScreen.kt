@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,6 +70,9 @@ fun VocabularyScreen(vm: AppViewModel) {
     val context = LocalContext.current
     LaunchedEffect(Unit) { vm.reloadVocabulary() }
     val learning = words.filterNot { it.mastered }
+    // 到期的词：按遗忘曲线排到今天或更早的。
+    val now = remember(words) { System.currentTimeMillis() }
+    val due = learning.filter { it.isDue(now) }.sortedWith(compareBy({ it.due }, { it.addedAt }))
     val shown = words.filter { it.mastered == mastered }
 
     GlassScaffold(
@@ -98,7 +102,7 @@ fun VocabularyScreen(vm: AppViewModel) {
         },
     ) { padding ->
         if (reviewing) {
-            Review(learning, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.setMastered(w.word, known) }, onDone = { reviewing = false })
+            Review(due, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.reviewWord(w.word, known) }, onDone = { reviewing = false })
             return@GlassScaffold
         }
         LazyColumn(
@@ -111,8 +115,15 @@ fun VocabularyScreen(vm: AppViewModel) {
                     Tab("学习中 ${learning.size}", !mastered) { mastered = false }
                     Tab("已掌握 ${words.size - learning.size}", mastered) { mastered = true }
                     Spacer(Modifier.weight(1f))
-                    if (learning.isNotEmpty()) {
-                        TextButton("复习", onClick = { reviewing = true }, colors = ButtonDefaults.textButtonColorsPrimary())
+                    if (due.isNotEmpty()) {
+                        TextButton("复习 ${due.size}", onClick = { reviewing = true }, colors = ButtonDefaults.textButtonColorsPrimary())
+                    } else if (learning.isNotEmpty()) {
+                        val next = learning.minOf { it.due }
+                        Text(
+                            "下次复习：${dueLabel(next, now)}",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
                     }
                 }
             }
@@ -177,7 +188,11 @@ private fun WordCard(w: VocabWord, onToggleMastered: () -> Unit, onRemove: () ->
         }
         Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                listOfNotNull(w.bookTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }, dateFormat.format(Date(w.addedAt))).joinToString(" · "),
+                listOfNotNull(
+                    w.bookTitle.takeIf { it.isNotBlank() }?.let { "《$it》" },
+                    dateFormat.format(Date(w.addedAt)),
+                    if (w.mastered) null else "下次复习 " + dueLabel(w.due, System.currentTimeMillis()),
+                ).joinToString(" · "),
                 style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.weight(1f),
@@ -197,19 +212,45 @@ private fun highlighted(text: String, word: String) = buildAnnotatedString {
     }
 }
 
-/** 翻卡片复习：先看词和原句，想一想，点开看释义，再答“记得”或“还不熟”。 */
+/** 下次复习的日子：今天、明天、后天，或几月几日。 */
+internal fun dueLabel(due: Long, now: Long): String {
+    val days = ((VocabularyDays.startOfDay(due) - VocabularyDays.startOfDay(now)) / VocabularyDays.DAY).toInt()
+    return when {
+        days <= 0 -> "今天"
+        days == 1 -> "明天"
+        days == 2 -> "后天"
+        else -> SimpleDateFormat("M月d日", Locale.CHINA).format(Date(due))
+    }
+}
+
+private typealias VocabularyDays = com.xycs.lingyuereader.data.Vocabulary.Companion
+
+/**
+ * 翻卡片复习到期的词：先看词和原句，想一想，点开看释义，再答“记得”或“还不熟”。
+ * 记得的按遗忘曲线排到以后；还不熟的这一轮最后再出现一次。
+ */
 @Composable
 private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabWord, Boolean) -> Unit, onDone: () -> Unit) {
-    // 复习开始时定下顺序：最久没复习的在前。
-    val deck = remember { words.sortedBy { it.reviewedAt } }
+    // 复习开始时定下这一轮的顺序（最早到期的在前）。
+    val deck = remember { words.toMutableStateList() }
+    // 复习中每答一个，外面到期的词就会变；这一轮有几个词以开始时为准。
+    val total = remember { words.size }
+    val requeued = remember { mutableSetOf<String>() }
+    // 最后一次还答“不熟”的词。
+    val forgotten = remember { mutableSetOf<String>() }
     var index by remember { mutableIntStateOf(0) }
     var revealed by remember { mutableStateOf(false) }
-    var known by remember { mutableIntStateOf(0) }
     Column(modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         if (index >= deck.size) {
             Spacer(Modifier.height(80.dp))
             Text("复习完了", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("记得 $known 个，还不熟 ${deck.size - known} 个。", modifier = Modifier.padding(top = 12.dp))
+            Text("记得 ${total - forgotten.size} 个，还不熟 ${forgotten.size} 个。", modifier = Modifier.padding(top = 12.dp))
+            Text(
+                "记得的会隔几天再出现，越熟隔得越久。",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 8.dp),
+            )
             TextButton("返回生词本", onClick = onDone, colors = ButtonDefaults.textButtonColorsPrimary(), modifier = Modifier.padding(top = 24.dp))
             return@Column
         }
@@ -242,6 +283,8 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
                 "还不熟",
                 onClick = {
                     onAnswer(w, false)
+                    forgotten += w.word
+                    if (requeued.add(w.word)) deck.add(w)
                     revealed = false
                     index++
                 },
@@ -251,7 +294,7 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
                 "记得",
                 onClick = {
                     onAnswer(w, true)
-                    known++
+                    forgotten -= w.word
                     revealed = false
                     index++
                 },
