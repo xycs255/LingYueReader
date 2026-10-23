@@ -45,6 +45,8 @@ data class ReaderSettings(
     val justify: Boolean = true,
     /** 阅读时繁简转换。 */
     val chineseConvert: ChineseConvert = ChineseConvert.NONE,
+    /** 导入的字体文件名；为空时按 [serif] 用内置宋体或黑体。 */
+    val font: String = "",
 )
 
 enum class ShelfSort(val label: String) {
@@ -90,6 +92,7 @@ class Prefs(context: Context) {
             breakReminder = sp.getBoolean("breakReminder", d.breakReminder),
             indent = sp.getBoolean("indent", d.indent),
             justify = sp.getBoolean("justify", d.justify),
+            font = sp.getString("font", d.font) ?: d.font,
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -114,6 +117,7 @@ class Prefs(context: Context) {
             putBoolean("indent", s.indent)
             putBoolean("justify", s.justify)
             putString("chineseConvert", s.chineseConvert.name)
+            putString("font", s.font)
             putFloat("ttsRate", s.ttsRate)
         }
     }

@@ -20,6 +20,7 @@ import com.xycs.lingyuereader.dict.Dictionaries
 import com.xycs.lingyuereader.dict.LookupResult
 import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.FontStore
 import com.xycs.lingyuereader.data.TextRules
 import com.xycs.lingyuereader.data.DayStats
 import com.xycs.lingyuereader.data.ReadingStats
@@ -769,6 +770,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _openBook.value = null
                 ensureLoaded(id)
             }
+        }
+    }
+
+    // ---------- 字体 ----------
+
+    private val fontStore = FontStore(java.io.File(app.filesDir, "fonts"))
+    private val _fonts = MutableStateFlow(fontStore.list())
+    val fonts: StateFlow<List<String>> = _fonts.asStateFlow()
+    private val fontFamilies = HashMap<String, androidx.compose.ui.text.font.FontFamily>()
+
+    /** 导入字体并直接选用最后一个。 */
+    fun importFonts(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val resolver = getApplication<Application>().contentResolver
+            val results = withContext(Dispatchers.IO) {
+                library.describe(uris).map { p -> runCatching { fontStore.import(p.name, resolver.openInputStream(p.uri)!!) } }
+            }
+            _fonts.value = withContext(Dispatchers.IO) { fontStore.list() }
+            results.lastOrNull { it.isSuccess }?.getOrNull()?.let { name -> updateSettings { it.copy(font = name) } }
+            val failed = results.count { it.isFailure }
+            if (failed > 0) _messages.value = "有 $failed 个文件不是 TTF/OTF 字体，没有导入"
+        }
+    }
+
+    fun deleteFont(name: String) {
+        if (_settings.value.font == name) updateSettings { it.copy(font = "") }
+        synchronized(fontFamilies) { fontFamilies.remove(name) }
+        viewModelScope.launch { _fonts.value = withContext(Dispatchers.IO) { fontStore.delete(name); fontStore.list() } }
+    }
+
+    /** 设置里选的导入字体；文件不在了返回空（退回内置字体）。 */
+    fun fontFamily(name: String): androidx.compose.ui.text.font.FontFamily? {
+        if (name.isEmpty()) return null
+        synchronized(fontFamilies) {
+            fontFamilies[name]?.let { return it }
+            val file = fontStore.file(name) ?: return null
+            return androidx.compose.ui.text.font.FontFamily(androidx.compose.ui.text.font.Font(file)).also { fontFamilies[name] = it }
         }
     }
 

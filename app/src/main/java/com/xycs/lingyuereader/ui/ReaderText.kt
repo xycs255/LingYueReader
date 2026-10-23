@@ -93,10 +93,16 @@ internal const val CJK_FEATURES = "\"chws\" 1"
  * [chinese] 为真时把正文标成中文：弯引号“”‘’、省略号……、破折号——这些中西文共用的标点，
  * Android 按文字的语言挑字体，标成中文才会用中文字体排成全角；否则跟着系统语言走，英文系统下会变窄。
  */
-internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPalette, val chinese: Boolean = true) {
+internal class ReaderStyles(
+    val settings: ReaderSettings,
+    val palette: ReaderPalette,
+    val chinese: Boolean = true,
+    /** 导入的字体；为空时用内置宋体/黑体。 */
+    customFont: FontFamily? = null,
+) {
     private val locale: LocaleList? = if (chinese) LocaleList("zh-CN") else null
 
-    val fontFamily: FontFamily = if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
+    val fontFamily: FontFamily = customFont ?: if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
     private val size = settings.fontSize
 
     val gap: Dp = (size * settings.paragraphSpacing).dp

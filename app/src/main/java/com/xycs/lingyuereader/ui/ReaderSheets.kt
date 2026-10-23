@@ -1,5 +1,12 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.data.FontStore
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -292,6 +299,9 @@ internal fun SettingsSheet(
     settings: ReaderSettings,
     palette: ReaderPalette,
     update: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    fonts: List<String> = emptyList(),
+    onImportFonts: (List<android.net.Uri>) -> Unit = {},
+    onDeleteFont: (String) -> Unit = {},
 ) {
     val textColor = palette.text
     val accent = palette.accent
@@ -374,7 +384,7 @@ internal fun SettingsSheet(
         )
         SwitchRow("日落后逐渐变暖", settings.eveningWarmth, textColor, accent) { v -> update { it.copy(eveningWarmth = v) } }
         SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
-        ChoiceRow("字体", listOf(true to "宋体", false to "黑体"), settings.serif, palette) { v -> update { it.copy(serif = v) } }
+        FontRow(settings, palette, fonts, update, onImportFonts, onDeleteFont)
         ChoiceRow("繁简", ChineseConvert.entries.map { it to it.label }, settings.chineseConvert, palette) { v -> update { it.copy(chineseConvert = v) } }
         SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
@@ -388,6 +398,65 @@ internal fun SettingsSheet(
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
         )
+    }
+}
+
+/** 字体：内置宋体、黑体，导入的字体（长按删除），以及“导入字体”。 */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@Composable
+private fun FontRow(
+    settings: ReaderSettings,
+    palette: ReaderPalette,
+    fonts: List<String>,
+    update: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    onImport: (List<android.net.Uri>) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { onImport(it) }
+    var deleting by remember { mutableStateOf<String?>(null) }
+    val current = settings.font.takeIf { it in fonts }
+    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.Top) {
+        Text("字体", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp).padding(top = 8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            @Composable
+            fun Chip(label: String, on: Boolean, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+                Text(
+                    label,
+                    color = if (on) palette.accent else palette.text,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
+                        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
+            Chip("宋体", current == null && settings.serif) { update { it.copy(serif = true, font = "") } }
+            Chip("黑体", current == null && !settings.serif) { update { it.copy(serif = false, font = "") } }
+            fonts.forEach { f ->
+                Chip(FontStore.label(f), current == f, onLongClick = { deleting = f }) { update { it.copy(font = f) } }
+            }
+            Chip("＋ 导入字体", false) { picker.launch(arrayOf("*/*")) }
+        }
+    }
+    if (fonts.isNotEmpty()) {
+        Text("长按导入的字体可以删除。", color = palette.secondary, fontSize = 12.sp, modifier = Modifier.padding(start = 40.dp))
+    }
+    deleting?.let { f ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("删除字体“${FontStore.label(f)}”？", color = palette.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Text("取消", color = palette.secondary, fontSize = 14.sp, modifier = Modifier.clickable { deleting = null }.padding(8.dp))
+            Text(
+                "删除",
+                color = palette.accent,
+                fontSize = 14.sp,
+                modifier = Modifier.clickable {
+                    onDelete(f)
+                    deleting = null
+                }.padding(8.dp),
+            )
+        }
     }
 }
 

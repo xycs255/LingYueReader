@@ -219,7 +219,8 @@ private fun Reader(
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
-    val styles = remember(settings, palette, chinese) { ReaderStyles(settings, palette, chinese) }
+    val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
+    val styles = remember(settings, palette, chinese, customFont) { ReaderStyles(settings, palette, chinese, customFont) }
     val initial = remember(screen, content) { startOf(screen, entry, content) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
@@ -556,7 +557,8 @@ private fun Reader(
         backgroundColor = palette.background,
         onDismissRequest = { sheet = null },
     ) {
-        SettingsSheet(settings, palette, vm::updateSettings)
+        val fonts by vm.fonts.collectAsStateWithLifecycle()
+        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont)
     }
     OverlayBottomSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
