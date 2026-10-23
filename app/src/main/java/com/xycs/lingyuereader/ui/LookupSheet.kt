@@ -212,29 +212,12 @@ private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.javaScriptEnabled = false
-                webViewClient = object : WebViewClient() {
-                    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
-                        val url = request.url
-                        if (url.host == HOST) {
-                            val path = url.path.orEmpty().removePrefix("/$dictId/")
-                            val bytes = vm.dictResource(dictId, Uri.decode(path))
-                            if (bytes != null) return WebResourceResponse(mimeOf(path), null, ByteArrayInputStream(bytes))
-                        }
-                        // 不让释义页联网。
-                        return WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
-                    }
-
-                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                        val url = request.url.toString()
-                        when {
-                            url.startsWith("entry://") || url.startsWith("bword://") ->
-                                vm.lookupWord(Uri.decode(url.substringAfter("://")).trim('/').substringBefore('#'))
-                            url.startsWith("http://") || url.startsWith("https://") ->
-                                if (request.url.host != HOST) openUrl(view.context, url)
-                        }
-                        return true
-                    }
-                }
+                webViewClient = DictWebClient(
+                    dictId = dictId,
+                    resource = { path -> vm.dictResource(dictId, path) },
+                    onEntry = vm::lookupWord,
+                    onLink = { url -> openUrl(context, url) },
+                )
             }
         },
         update = { it.loadDataWithBaseURL(base, html, "text/html", "utf-8", null) },
@@ -242,6 +225,45 @@ private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier
 }
 
 private const val HOST = "dict.lingyue.local"
+
+/**
+ * 词典释义页的 WebView 客户端：图片、样式从词典的 .mdd 和同目录文件里取，其他请求一律拦下（释义页不联网）；
+ * 点 entry:// 链接在面板里接着查，点普通网址交给浏览器。
+ */
+internal class DictWebClient(
+    private val dictId: String,
+    private val resource: (String) -> ByteArray?,
+    private val onEntry: (String) -> Unit,
+    private val onLink: (String) -> Unit,
+) : WebViewClient() {
+
+    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? = intercept(request)
+
+    internal fun intercept(request: WebResourceRequest): WebResourceResponse? {
+        val url = request.url
+        // 释义页本身（loadDataWithBaseURL 给的内容）要放行：较新的 WebView 也会把它交到这里，
+        // 拦成 404 就只剩一张“网页无法使用”。它不经过网络。
+        if (request.isForMainFrame || url.scheme == "data") return null
+        if (url.host == HOST) {
+            val path = Uri.decode(url.path.orEmpty().removePrefix("/$dictId/"))
+            val bytes = path.takeIf { it.isNotEmpty() }?.let(resource)
+            if (bytes != null) return WebResourceResponse(mimeOf(path), null, ByteArrayInputStream(bytes))
+        }
+        // 不让释义页联网。
+        return WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+    }
+
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+        val url = request.url.toString()
+        when {
+            url.startsWith("entry://") || url.startsWith("bword://") ->
+                onEntry(Uri.decode(url.substringAfter("://")).trim('/').substringBefore('#'))
+            url.startsWith("http://") || url.startsWith("https://") ->
+                if (request.url.host != HOST) onLink(url)
+        }
+        return true
+    }
+}
 
 private fun mimeOf(path: String): String = when (path.substringAfterLast('.').lowercase()) {
     "css" -> "text/css"

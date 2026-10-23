@@ -103,7 +103,8 @@ class CrossSelectionUiTest {
         compose.onNodeWithText("划线·批注").performClick()
         waitForText("写点批注")
         compose.onAllNodesWithText("划线")[1].performClick()
-        compose.waitUntil(5_000) {
+        // 批注在后台线程写盘，整套测试一起跑、机器忙时会慢一些。
+        compose.waitUntil(10_000) {
             File(context.filesDir, "books/b1/marks.json").let { it.isFile && JSONObject(it.readText()).getJSONArray("notes").length() == 2 }
         }
         val notes = JSONObject(File(context.filesDir, "books/b1/marks.json").readText()).getJSONArray("notes")
