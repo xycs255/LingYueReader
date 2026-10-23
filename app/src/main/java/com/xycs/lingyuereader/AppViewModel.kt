@@ -7,6 +7,11 @@ import androidx.lifecycle.viewModelScope
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.BookParser
+import com.xycs.lingyuereader.data.Bookmark
+import com.xycs.lingyuereader.data.MarkColor
+import com.xycs.lingyuereader.data.Marks
+import com.xycs.lingyuereader.data.Note
+import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.data.Library
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
@@ -19,11 +24,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 sealed interface Screen {
     data object Shelf : Screen
     /** [chapterIndex] 为空时从上次读到的位置开始。 */
-    data class Reader(val bookId: String, val chapterIndex: Int? = null, val blockIndex: Int? = null) : Screen
+    data class Reader(
+        val bookId: String,
+        val chapterIndex: Int? = null,
+        val blockIndex: Int? = null,
+        /** 翻页模式下从上一章翻回来时，停在该章最后一页。 */
+        val fromEnd: Boolean = false,
+    ) : Screen
     data class Search(val bookId: String) : Screen
 }
 
@@ -43,6 +55,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _openBook = MutableStateFlow<OpenBook?>(null)
     val openBook: StateFlow<OpenBook?> = _openBook.asStateFlow()
+
+    /** 当前打开的书的书签与批注。 */
+    private val _marks = MutableStateFlow(Marks())
+    val marks: StateFlow<Marks> = _marks.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -163,7 +179,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _openBook.value = null
         viewModelScope.launch {
             val content = withContext(Dispatchers.IO) { runCatching { library.content(entry) } }
-            content.onSuccess { _openBook.value = OpenBook(entry, it) }
+            content.onSuccess {
+                _marks.value = withContext(Dispatchers.IO) { library.marks(entry.id).resolve(it) }
+                _openBook.value = OpenBook(entry, it)
+            }
                 .onFailure {
                     _messages.value = "打不开《${entry.title}》：${it.message}"
                     back()
@@ -171,14 +190,83 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int) {
+    fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
         val book = _openBook.value ?: return
         val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
-        val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset)
+        val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset)
         if (book.entry.progress == progress) return
         _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
         _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
         viewModelScope.launch(Dispatchers.IO) { library.saveProgress(book.entry.id, progress) }
+    }
+
+    private fun updateMarks(transform: (Marks) -> Marks) {
+        val book = _openBook.value ?: return
+        _marks.update(transform)
+        val snapshot = _marks.value
+        viewModelScope.launch(Dispatchers.IO) { library.saveMarks(book.entry.id, snapshot) }
+    }
+
+    /** 在某块的某个位置加或删书签（同一块已有书签时删除）。 */
+    fun toggleBookmark(chapterIndex: Int, blockIndex: Int, charOffset: Int) {
+        val book = _openBook.value ?: return
+        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val itemIndex = blockIndex + 1
+        val existing = _marks.value.bookmarks.filter { it.chapterIndex == chapterIndex && it.itemIndex == itemIndex }
+        if (existing.isNotEmpty()) {
+            updateMarks { m -> m.copy(bookmarks = m.bookmarks - existing.toSet()) }
+            _messages.value = "已删除书签"
+            return
+        }
+        val excerpt = chapter.blocks.getOrNull(blockIndex)?.displayText?.trim()?.take(40) ?: chapter.title
+        val bookmark = Bookmark(UUID.randomUUID().toString(), chapterIndex, chapter.title, itemIndex, charOffset, excerpt, System.currentTimeMillis())
+        updateMarks { m -> m.copy(bookmarks = m.bookmarks + bookmark) }
+        _messages.value = "已加书签"
+    }
+
+    fun deleteBookmark(id: String) = updateMarks { m -> m.copy(bookmarks = m.bookmarks.filterNot { it.id == id }) }
+
+    fun addNote(chapterIndex: Int, blockIndex: Int, start: Int, end: Int, text: String, color: MarkColor) {
+        val book = _openBook.value ?: return
+        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val shown = chapter.blocks.getOrNull(blockIndex)?.displayText ?: return
+        val s = start.coerceIn(0, shown.length)
+        val e = end.coerceIn(s, shown.length)
+        val (from, to) = if (s == e) 0 to shown.length else s to e
+        val note = Note(UUID.randomUUID().toString(), chapterIndex, chapter.title, blockIndex, from, to, shown.substring(from, to), text.trim(), color, System.currentTimeMillis())
+        updateMarks { m -> m.copy(notes = m.notes + note) }
+    }
+
+    fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
+
+    fun notesMarkdown(): String? {
+        val book = _openBook.value ?: return null
+        return _marks.value.toMarkdown(book.entry.title, book.content)
+    }
+
+    /** 从别的应用“用灵阅打开”或分享过来的文件：导入（或找回已有的那本）并直接打开。 */
+    fun openExternal(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val picked = withContext(Dispatchers.IO) { library.describe(uris) }.filter { BookParser.isSupported(it.name) }
+            if (picked.isEmpty()) {
+                _messages.value = "暂不支持这种文件"
+                return@launch
+            }
+            if (picked.size > 1) {
+                _stack.value = listOf(Screen.Shelf)
+                _pendingImport.value = picked
+                return@launch
+            }
+            _busy.value = true
+            val entry = withContext(Dispatchers.IO) {
+                runCatching { library.findSame(picked.single()) ?: library.add(picked, null) }
+            }
+            loadShelf()
+            _busy.value = false
+            entry.onSuccess { _stack.value = listOf(Screen.Shelf, Screen.Reader(it.id)) }
+                .onFailure { _messages.value = "打不开 ${picked.single().name}：${it.message ?: "读取失败"}" }
+        }
     }
 
     fun consumeMessage() {

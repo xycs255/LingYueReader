@@ -57,7 +57,6 @@ class OverlayUiTest {
     private fun openReaderMenu() {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
-        // 上一个用例的进度可能异步写回，阅读页不一定停在第一章。
         waitForText("正文")
         compose.onRoot().performTouchInput { click(center) }
         compose.waitForIdle()
@@ -75,7 +74,7 @@ class OverlayUiTest {
     fun catalogSheetOpensAndJumps() {
         openReaderMenu()
         compose.onNodeWithText("目录").performClick()
-        waitForText("共 2 章")
+        waitForText("目录 2")
         compose.onAllNodesWithText("第二章 路上")[0].performClick()
         waitForText("正文二。")
     }

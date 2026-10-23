@@ -97,6 +97,31 @@ class Library(private val context: Context) {
 
     data class RefreshResult(val changed: Int, val failed: Int)
 
+    fun marks(id: String): Marks {
+        val file = File(File(root, id), "marks.json")
+        if (!file.isFile) return Marks()
+        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrDefault(Marks())
+    }
+
+    @Synchronized
+    fun saveMarks(id: String, marks: Marks) {
+        val dir = File(root, id).takeIf { it.isDirectory } ?: return
+        val tmp = File(dir, "marks.json.tmp")
+        tmp.writeText(marks.toJson().toString())
+        tmp.renameTo(File(dir, "marks.json"))
+    }
+
+    /** 从别的应用打开同一个文件时，找回书架上已有的那本，而不是再导入一份。 */
+    fun findSame(picked: Picked): BookEntry? {
+        val candidates = list().filter { e -> e.sources.size == 1 && e.sources[0].name == picked.name }
+        if (candidates.isEmpty()) return null
+        val bytes = runCatching { readUri(picked.uri) }.getOrNull() ?: return null
+        return candidates.firstOrNull { e ->
+            val f = File(File(root, e.id), e.sources[0].file)
+            f.isFile && f.length() == bytes.size.toLong() && f.readBytes().contentEquals(bytes)
+        }
+    }
+
     fun rename(id: String, title: String) = update { list -> list.map { if (it.id == id) it.copy(title = title) else it } }
 
     fun saveProgress(id: String, progress: ReadingProgress) = update { list ->
@@ -153,7 +178,8 @@ class Library(private val context: Context) {
                     .put("chapter", it.chapterIndex)
                     .put("title", it.chapterTitle)
                     .put("item", it.itemIndex)
-                    .put("offset", it.itemOffset))
+                    .put("offset", it.itemOffset)
+                    .put("char", it.charOffset))
             }
         }
 
@@ -173,7 +199,7 @@ class Library(private val context: Context) {
             chapterCount = optInt("chapterCount"),
             charCount = optInt("charCount"),
             progress = optJSONObject("progress")?.let {
-                ReadingProgress(it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"))
+                ReadingProgress(it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"), it.optInt("char"))
             },
         )
     }

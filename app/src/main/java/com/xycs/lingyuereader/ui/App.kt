@@ -113,8 +113,8 @@ private fun ShelfScreen(vm: AppViewModel) {
 
     LaunchedEffect(message) {
         message?.let {
-            snackbar.showSnackbar(it)
             vm.consumeMessage()
+            snackbar.showSnackbar(it)
         }
     }
 

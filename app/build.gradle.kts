@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.junit)
     testImplementation(libs.androidx.ui.test.junit4)

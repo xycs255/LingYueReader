@@ -10,6 +10,12 @@ enum class ReaderTheme(val label: String) {
     NIGHT("夜间"),
 }
 
+enum class PageMode(val label: String) {
+    SCROLL("上下滚动"),
+    SLIDE("左右平移"),
+    COVER("左右覆盖"),
+}
+
 data class ReaderSettings(
     val fontSize: Float = 19f,
     val lineHeight: Float = 1.8f,
@@ -18,6 +24,13 @@ data class ReaderSettings(
     val theme: ReaderTheme = ReaderTheme.PAPER,
     val keepScreenOn: Boolean = true,
     val tapToTurn: Boolean = true,
+    val pageMode: PageMode = PageMode.SCROLL,
+    val volumeKeys: Boolean = true,
+    /** 0..1；为负表示跟随系统亮度。 */
+    val brightness: Float = -1f,
+    val fullscreen: Boolean = false,
+    /** 系统处于深色模式时自动改用夜间背景。 */
+    val autoNight: Boolean = true,
 )
 
 class Prefs(context: Context) {
@@ -33,6 +46,11 @@ class Prefs(context: Context) {
             theme = runCatching { ReaderTheme.valueOf(sp.getString("theme", null)!!) }.getOrDefault(d.theme),
             keepScreenOn = sp.getBoolean("keepScreenOn", d.keepScreenOn),
             tapToTurn = sp.getBoolean("tapToTurn", d.tapToTurn),
+            pageMode = runCatching { PageMode.valueOf(sp.getString("pageMode", null)!!) }.getOrDefault(d.pageMode),
+            volumeKeys = sp.getBoolean("volumeKeys", d.volumeKeys),
+            brightness = sp.getFloat("brightness", d.brightness),
+            fullscreen = sp.getBoolean("fullscreen", d.fullscreen),
+            autoNight = sp.getBoolean("autoNight", d.autoNight),
         )
     }
 
@@ -45,6 +63,11 @@ class Prefs(context: Context) {
             putString("theme", s.theme.name)
             putBoolean("keepScreenOn", s.keepScreenOn)
             putBoolean("tapToTurn", s.tapToTurn)
+            putString("pageMode", s.pageMode.name)
+            putBoolean("volumeKeys", s.volumeKeys)
+            putFloat("brightness", s.brightness)
+            putBoolean("fullscreen", s.fullscreen)
+            putBoolean("autoNight", s.autoNight)
         }
     }
 }

@@ -8,6 +8,7 @@ lifecycle = "2.9.0"
 miuix = "0.9.4"
 junit = "4.13.2"
 robolectric = "4.17"
+orgJson = "20240303"
 androidxTestJunit = "1.2.1"
 
 [libraries]
@@ -22,6 +23,7 @@ miuix-ui = { module = "top.yukonga.miuix.kmp:miuix-ui", version.ref = "miuix" }
 miuix-preference = { module = "top.yukonga.miuix.kmp:miuix-preference", version.ref = "miuix" }
 miuix-icons = { module = "top.yukonga.miuix.kmp:miuix-icons", version.ref = "miuix" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestJunit" }
 androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }

@@ -11,10 +11,32 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 在文件管理器等应用里“用灵阅打开”。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/markdown" />
+                <data android:mimeType="text/x-markdown" />
+                <data android:mimeType="application/epub+zip" />
+            </intent-filter>
+            <!-- 从别的应用分享文件到灵阅。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/markdown" />
+                <data android:mimeType="text/x-markdown" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
     </application>

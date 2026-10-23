@@ -56,8 +56,12 @@ data class ReadingProgress(
     val chapterIndex: Int,
     /** 记下章名：文稿刷新后章序可能变了，按章名找回原处。 */
     val chapterTitle: String,
+    /** 阅读列表的项序号：0 是章名，正文第 n 块是 n + 1。 */
     val itemIndex: Int,
+    /** 滚动模式下该项已滚出屏幕的像素。 */
     val itemOffset: Int,
+    /** 翻页模式下当前页从该块的第几个字开始。 */
+    val charOffset: Int = 0,
 )
 
 data class BookEntry(
