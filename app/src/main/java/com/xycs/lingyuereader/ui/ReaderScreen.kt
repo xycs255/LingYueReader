@@ -143,7 +143,7 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
         else -> settings.theme
     }
     val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f
-    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(theme.palette().adjusted(dim, warmth))
+    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(settings.paletteOf(theme).adjusted(dim, warmth))
 
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }

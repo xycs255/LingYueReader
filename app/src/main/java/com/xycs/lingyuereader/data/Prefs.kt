@@ -8,6 +8,7 @@ enum class ReaderTheme(val label: String) {
     PARCHMENT("宣黄"),
     GREEN("护眼"),
     NIGHT("夜间"),
+    CUSTOM("自定义"),
 }
 
 enum class PageMode(val label: String) {
@@ -63,6 +64,13 @@ data class ReaderSettings(
     val pinyin: Boolean = false,
     /** 横屏且屏幕够宽时一次显示两页。 */
     val twoPage: Boolean = true,
+    /** 正文左右留白（dp）。 */
+    val margin: Float = 24f,
+    /** 字间距（em）。 */
+    val letterSpacing: Float = 0.03f,
+    /** 自定义背景的底色和字色（ARGB）。 */
+    val customBackground: Int = 0xFFF4F2EC.toInt(),
+    val customText: Int = 0xFF2A2724.toInt(),
 )
 
 enum class ShelfSort(val label: String) {
@@ -116,6 +124,10 @@ class Prefs(context: Context) {
             goalReminder = sp.getBoolean("goalReminder", d.goalReminder),
             pinyin = sp.getBoolean("pinyin", d.pinyin),
             twoPage = sp.getBoolean("twoPage", d.twoPage),
+            margin = sp.getFloat("margin", d.margin),
+            letterSpacing = sp.getFloat("letterSpacing", d.letterSpacing),
+            customBackground = sp.getInt("customBackground", d.customBackground),
+            customText = sp.getInt("customText", d.customText),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -148,6 +160,10 @@ class Prefs(context: Context) {
             putBoolean("goalReminder", s.goalReminder)
             putBoolean("pinyin", s.pinyin)
             putBoolean("twoPage", s.twoPage)
+            putFloat("margin", s.margin)
+            putFloat("letterSpacing", s.letterSpacing)
+            putInt("customBackground", s.customBackground)
+            putInt("customText", s.customText)
             putFloat("ttsRate", s.ttsRate)
         }
     }

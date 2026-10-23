@@ -38,6 +38,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -378,6 +380,23 @@ internal fun SettingsSheet(
                 colors = sliderColors,
             )
         }
+        LabeledSlider("字距", "%.2f".format(settings.letterSpacing), textColor) {
+            Slider(
+                value = settings.letterSpacing,
+                onValueChange = { v -> update { it.copy(letterSpacing = v) } },
+                valueRange = 0f..0.2f,
+                colors = sliderColors,
+            )
+        }
+        LabeledSlider("边距", "${settings.margin.toInt()}", textColor) {
+            Slider(
+                value = settings.margin,
+                onValueChange = { v -> update { it.copy(margin = v) } },
+                valueRange = 8f..48f,
+                steps = 9,
+                colors = sliderColors,
+            )
+        }
         LabeledSlider("亮度", if (settings.brightness < 0) "系统" else "${(settings.brightness * 100).toInt()}%", textColor) {
             Slider(
                 value = if (settings.brightness < 0) 0.5f else settings.brightness,
@@ -392,8 +411,12 @@ internal fun SettingsSheet(
         Text("背景", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
         Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             ReaderTheme.entries.forEach { theme ->
-                val p = theme.palette()
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val p = settings.paletteOf(theme)
+                // 圆和下面的名字都能点。
+                Column(
+                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { update { it.copy(theme = theme) } },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Box(
                         Modifier
                             .size(48.dp)
@@ -401,8 +424,7 @@ internal fun SettingsSheet(
                             .background(if (settings.theme == theme) accent else p.secondary.copy(alpha = 0.4f))
                             .padding(3.dp)
                             .clip(CircleShape)
-                            .background(p.background)
-                            .clickable { update { it.copy(theme = theme) } },
+                            .background(p.background),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text("文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 16.sp)
@@ -411,6 +433,7 @@ internal fun SettingsSheet(
                 }
             }
         }
+        if (settings.theme == ReaderTheme.CUSTOM) CustomColors(settings, palette, update)
         SwitchRow("系统深色时自动用夜间背景", settings.autoNight, textColor, accent) { v -> update { it.copy(autoNight = v) } }
         Text("护眼", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
         SwitchRow("跟随环境光调整背景", settings.ambientLight, textColor, accent) { v -> update { it.copy(ambientLight = v) } }
@@ -449,12 +472,65 @@ internal fun SettingsSheet(
         SwitchRow("阅读时屏幕常亮", settings.keepScreenOn, textColor, accent) { v -> update { it.copy(keepScreenOn = v) } }
         TextButton(
             text = "恢复默认排版",
-            onClick = { update { it.copy(fontSize = ReaderSettings().fontSize, lineHeight = ReaderSettings().lineHeight, paragraphSpacing = ReaderSettings().paragraphSpacing) } },
+            onClick = {
+                val d = ReaderSettings()
+                update { it.copy(fontSize = d.fontSize, lineHeight = d.lineHeight, paragraphSpacing = d.paragraphSpacing, letterSpacing = d.letterSpacing, margin = d.margin) }
+            },
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
         )
     }
 }
+
+/** 自定义背景的底色、字色，和两者的对比度。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CustomColors(settings: ReaderSettings, palette: ReaderPalette, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
+    @Composable
+    fun Swatches(label: String, colors: List<Long>, selected: Int, onPick: (Int) -> Unit) {
+        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                colors.forEach { c ->
+                    val argb = c.toInt()
+                    Box(
+                        Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(if (argb == selected) palette.accent else palette.secondary.copy(alpha = 0.35f))
+                            .padding(if (argb == selected) 3.dp else 1.dp)
+                            .clip(CircleShape)
+                            .background(Color(argb))
+                            .clickable { onPick(argb) }
+                            .semantics { contentDescription = "$label #%06X".format(argb and 0xFFFFFF) },
+                    )
+                }
+            }
+        }
+    }
+    Swatches("底色", CUSTOM_BACKGROUNDS, settings.customBackground) { c -> update { it.copy(customBackground = c) } }
+    Swatches("字色", CUSTOM_TEXTS, settings.customText) { c -> update { it.copy(customText = c) } }
+    val ratio = contrastRatio(Color(settings.customBackground), Color(settings.customText))
+    Text(
+        "对比度 %.1f : 1".format(ratio) + when {
+            ratio < 4.5f -> "，太低，看久了费眼，换一个更深（或更浅）的字色吧。"
+            ratio < 7f -> "，可以读，再拉开一点更不累眼。"
+            else -> "，适合长时间阅读。"
+        },
+        color = if (ratio < 4.5f) palette.accent else palette.secondary,
+        fontSize = 12.sp,
+    )
+}
+
+/** 自定义背景可选的底色：几种纸色、浅蓝、浅粉，和几种深底。 */
+private val CUSTOM_BACKGROUNDS = listOf(
+    0xFFF4F2EC, 0xFFFFFFFF, 0xFFEFE6D8, 0xFFF2E6CC, 0xFFDCEBD2, 0xFFDDE7EE, 0xFFF1E4E4,
+    0xFF2B2B2B, 0xFF1E2A35, 0xFF151413, 0xFF000000,
+)
+private val CUSTOM_TEXTS = listOf(
+    0xFF2A2724, 0xFF000000, 0xFF3E3222, 0xFF26331F, 0xFF1F2D3D, 0xFF5A4636,
+    0xFFC4B48E, 0xFFD6D2C8, 0xFFB8C7D6, 0xFFFFFFFF,
+)
 
 /** 字体：内置宋体、黑体，导入的字体（长按删除），以及“导入字体”。 */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)

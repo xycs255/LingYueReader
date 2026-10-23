@@ -3,7 +3,9 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -36,7 +38,25 @@ fun ReaderTheme.palette(): ReaderPalette = when (this) {
     ReaderTheme.GREEN -> ReaderPalette(Color(0xFFDCEBD2), Color(0xFF26331F), Color(0xFF6C7D62), Color(0xFF3E6B2E), Color(0xFFCCDFC0), false)
     // 深底配偏暖的浅黄字（不用纯白），对比度约 9:1。
     ReaderTheme.NIGHT -> ReaderPalette(Color(0xFF151413), Color(0xFFC4B48E), Color(0xFF7D7565), Amber, Color(0xFF22201E), true)
+    ReaderTheme.CUSTOM -> customPalette(Color(ReaderSettings().customBackground), Color(ReaderSettings().customText))
 }
+
+/** 自定义背景：次要文字取字色和底色之间，深底用琥珀色强调。 */
+fun customPalette(background: Color, text: Color): ReaderPalette {
+    val dark = background.luminance() < 0.3f
+    return ReaderPalette(
+        background = background,
+        text = text,
+        secondary = lerp(text, background, 0.45f),
+        accent = if (dark) Amber else Cinnabar,
+        bar = lerp(background, text, 0.07f),
+        isDark = dark,
+    )
+}
+
+/** [theme] 的配色；自定义背景用设置里的颜色。 */
+fun ReaderSettings.paletteOf(theme: ReaderTheme = this.theme): ReaderPalette =
+    if (theme == ReaderTheme.CUSTOM) customPalette(Color(customBackground), Color(customText)) else theme.palette()
 
 /**
  * 按环境调整配色：[dim] 是背景亮度系数（1 为不变，昏暗环境下压到约 0.88），

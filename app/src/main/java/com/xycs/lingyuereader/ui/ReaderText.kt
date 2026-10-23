@@ -121,7 +121,7 @@ internal class ReaderStyles(
     private val size = settings.fontSize
 
     val gap: Dp = (size * settings.paragraphSpacing).dp
-    val horizontalPadding: Dp = 24.dp
+    val horizontalPadding: Dp = settings.margin.dp
 
     /*
      * 中文排版：
@@ -135,7 +135,7 @@ internal class ReaderStyles(
         fontSize = size.sp,
         lineHeight = bodyLineHeight,
         lineHeightStyle = bodyLineStyle,
-        letterSpacing = 0.03.em,
+        letterSpacing = settings.letterSpacing.em,
         textAlign = if (settings.justify) TextAlign.Justify else TextAlign.Start,
         lineBreak = CJK_LINE_BREAK,
         fontFeatureSettings = CJK_FEATURES,

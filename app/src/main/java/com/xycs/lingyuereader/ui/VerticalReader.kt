@@ -211,7 +211,7 @@ internal fun VerticalReader(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val fontPx = with(density) { styles.settings.fontSize * density.fontScale * density.density }
-        val cellH = fontPx * 1.08f
+        val cellH = fontPx * (1.05f + styles.settings.letterSpacing)
         val colW = fontPx * styles.settings.lineHeight
         val paddingPx = with(density) { styles.horizontalPadding.toPx() }
         val topPx = with(density) { topInset.toPx() }
