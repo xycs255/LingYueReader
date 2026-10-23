@@ -70,7 +70,7 @@ fun HomeScreen(vm: AppViewModel) {
     val pager = rememberPagerState(initialPage = tab.ordinal) { HomeTab.entries.size }
     LaunchedEffect(tab) {
         if (pager.currentPage != tab.ordinal) {
-            if (Effects.reduced) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal)
+            if (Effects.noMotion) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal)
         }
     }
 

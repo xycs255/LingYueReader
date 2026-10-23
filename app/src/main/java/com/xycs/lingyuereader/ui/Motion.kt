@@ -36,6 +36,11 @@ object Motion {
     const val LONG = 420
     /** 换主题时的扩散。 */
     const val REVEAL = 560
+    /**
+     * 点按 / 音量键翻一页、滚一屏。Klein 与 Bederson（CHI 2005）比较了瞬间跳转和不同时长的滚动动画：
+     * 阅读任务里 300 毫秒的动画最好，出错率最多降低 54%——眼睛能跟住文字移到了哪里。
+     */
+    const val TURN = 300
 
     /** 标准：起步快、收尾柔，屏幕内的移动都用它。 */
     val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -44,7 +49,7 @@ object Motion {
     /** 离场：慢慢起步、加速离开。 */
     val Exit = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
 
-    private val reduced get() = Effects.reduced
+    private val reduced get() = Effects.noMotion
 
     fun <T> standard(duration: Int = MEDIUM, delay: Int = 0): FiniteAnimationSpec<T> =
         if (reduced) snap() else tween(duration, delay, Standard)
@@ -75,7 +80,7 @@ object Motion {
 @Composable
 fun Modifier.pressScale(source: InteractionSource, pressed: Float = 0.95f): Modifier {
     val down by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (down && !Effects.reduced) pressed else 1f, Motion.press(), label = "press")
+    val scale by animateFloatAsState(if (down && !Effects.noMotion) pressed else 1f, Motion.press(), label = "press")
     return graphicsLayer {
         scaleX = scale
         scaleY = scale
@@ -111,7 +116,7 @@ object OpenFrom {
 /** 第一次出现时从 0 长到 [target]，之后数值变了再平滑过去（统计数字、进度条）。 */
 @Composable
 fun animateFromZero(target: Float, duration: Int = 700): Float {
-    val value = remember { Animatable(if (Effects.reduced) target else 0f) }
+    val value = remember { Animatable(if (Effects.noMotion) target else 0f) }
     LaunchedEffect(target) { value.animateTo(target, Motion.emphasized(duration)) }
     return value.value
 }

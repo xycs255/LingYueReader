@@ -175,7 +175,7 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
     val colors = HEAT_LEVELS.indices.map { heatColor(it) }
     val readDays = days.count { (d, s) -> !d.isBefore(start) && s.millis >= 60_000 }
     // 从左往右一列列亮起来。
-    val reveal = remember { Animatable(if (Effects.reduced) 1f else 0f) }
+    val reveal = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
     LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(900)) }
     Canvas(
         Modifier

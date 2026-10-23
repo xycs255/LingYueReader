@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -244,7 +245,7 @@ internal fun VerticalReader(
             registerTurner { forward ->
                 scope.launch {
                     val target = (pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)
-                    if (Effects.reduced) pager.scrollToPage(target) else pager.animateScrollToPage(target)
+                    if (Effects.noMotion) pager.scrollToPage(target) else pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
                 }
             }
             onDispose { }

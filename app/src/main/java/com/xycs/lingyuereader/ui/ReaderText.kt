@@ -269,6 +269,7 @@ internal fun BlockView(
     val tap by rememberUpdatedState(onTap)
     val select by rememberUpdatedState(selector)
     val footnote by rememberUpdatedState(onFootnote)
+    val landing = LocalLanding.current?.takeIf { it.block == blockIndex }
     val base = range?.first ?: 0
     val indent = indentOf(block, styles.settings.indent)
     // 排版里的位置 ↔ 块文字（不含缩进）里的位置。
@@ -307,6 +308,17 @@ internal fun BlockView(
                     register()
                 },
                 modifier = Modifier.drawWithContent {
+                    // 刚跳过来的这一段：铺一层淡淡的强调色，慢慢褪掉。
+                    val glow = landing?.alpha?.invoke() ?: 0f
+                    if (glow > 0f) {
+                        val pad = 6.dp.toPx()
+                        drawRoundRect(
+                            palette.accent.copy(alpha = 0.16f * glow),
+                            topLeft = androidx.compose.ui.geometry.Offset(-pad, -pad / 2),
+                            size = androidx.compose.ui.geometry.Size(size.width + pad * 2, size.height + pad),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(pad * 1.5f),
+                        )
+                    }
                     drawContent()
                     val l = layout
                     if (readings != null && l != null) drawRuby(l, readings, style.fontSize.toPx(), rubyColor)
@@ -422,6 +434,11 @@ internal fun BlockView(
  * 正文里高亮的选区，可以跨段落：从第 [startBlock] 块第 [startChar] 字到第 [endBlock] 块第 [endChar] 字（含）。
  * [handles] 为真时两端显示把手。
  */
+/** 刚跳到的一段（第几块），[alpha] 从 1 褪到 0。 */
+internal class Landing(val block: Int, val alpha: () -> Float)
+
+internal val LocalLanding = androidx.compose.runtime.staticCompositionLocalOf<Landing?> { null }
+
 internal data class Highlight(val startBlock: Int, val startChar: Int, val endBlock: Int, val endChar: Int, val handles: Boolean) {
     /** 这一块里被选中的范围（块文字长 [length]）；不在选区里返回空。 */
     fun rangeIn(block: Int, length: Int): IntRange? {

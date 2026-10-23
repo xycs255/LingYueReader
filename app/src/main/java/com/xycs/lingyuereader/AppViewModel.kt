@@ -66,6 +66,8 @@ sealed interface Screen {
         /** 回到跳转前的位置时用：滚动模式的像素偏移、翻页模式的块内字。 */
         val offset: Int = 0,
         val char: Int = 0,
+        /** 跳到的那一段亮一下，告诉读者落在哪（书签、批注、搜索结果、回到刚才）。 */
+        val highlight: Boolean = false,
     ) : Screen
     data class Search(val bookId: String) : Screen
     /** 在书架上所有书的正文里搜索。 */
@@ -534,7 +536,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun jumpBack() {
         val p = _returnPoint.value ?: return
         _returnPoint.value = null
-        replaceTop(Screen.Reader(p.bookId, p.chapterIndex, p.block, offset = p.offset, char = p.char))
+        replaceTop(Screen.Reader(p.bookId, p.chapterIndex, p.block, offset = p.offset, char = p.char, highlight = true))
     }
 
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
@@ -1086,7 +1088,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             markJump(ReturnPoint(bookId, p.chapterIndex, p.itemIndex - com.xycs.lingyuereader.ui.HEADER_ITEMS, p.itemOffset, p.charOffset, p.chapterTitle))
         }
         _stack.update { stack ->
-            stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex)
+            stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex, highlight = true)
         }
     }
 

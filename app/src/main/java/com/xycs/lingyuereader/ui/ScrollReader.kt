@@ -1,6 +1,16 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.runtime.remember
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
@@ -37,6 +47,15 @@ import top.yukonga.miuix.kmp.basic.Text
 /** 列表里第 0 项是章名，正文块从第 1 项开始。 */
 internal const val HEADER_ITEMS = 1
 
+/**
+ * 滚动模式点一下翻多远：能看清的只有状态栏以下、状态行以上这一段，按这段的高度翻，再少翻一行半——
+ * 底边上被状态行挡住一半的那行不会漏掉，刚读完的最后一行也还留在顶上。
+ */
+internal fun pageScrollDistance(viewport: Float, topInset: Float, bottomInset: Float, lineHeight: Float): Float {
+    val readable = (viewport - topInset - bottomInset).coerceAtLeast(lineHeight * 2)
+    return (readable - lineHeight * 1.5f).coerceAtLeast(lineHeight)
+}
+
 @Composable
 internal fun ScrollReader(
     chapter: Chapter,
@@ -65,11 +84,26 @@ internal fun ScrollReader(
     val lineHeightPx = with(LocalDensity.current) { (styles.settings.fontSize * styles.settings.lineHeight).sp.toPx() }
     val total = chapter.blocks.size + 2
 
+    val density = LocalDensity.current
+    val topPx = with(density) { topInset.toPx() }
+    val bottomPx = with(density) { bottomInset.toPx() }
+    // 往下翻一屏后，在原来的底边（现在到了顶上）左边距划一道短横线：“上次读到这里”，眼睛不用重新找。
+    val marker = remember { Animatable(0f) }
+    var markerY by remember { mutableFloatStateOf(0f) }
+
     DisposableEffect(listState) {
         registerTurner { forward ->
-            val viewport = listState.layoutInfo.viewportSize.height
-            val distance = (viewport - lineHeightPx * 2).coerceAtLeast(lineHeightPx)
-            scope.launch { listState.animateScrollBy(if (forward) distance else -distance) }
+            val distance = pageScrollDistance(listState.layoutInfo.viewportSize.height.toFloat(), topPx, bottomPx, lineHeightPx)
+            scope.launch {
+                if (Effects.noMotion) listState.scrollBy(if (forward) distance else -distance)
+                else listState.animateScrollBy(if (forward) distance else -distance, tween<Float>(Motion.TURN, easing = Motion.Standard))
+                if (forward && !Effects.noMotion) {
+                    val viewport = listState.layoutInfo.viewportSize.height.toFloat()
+                    markerY = viewport - bottomPx - distance
+                    marker.snapTo(1f)
+                    marker.animateTo(0f, tween(1400, delayMillis = 500, easing = Motion.Standard))
+                }
+            }
         }
         registerScroller { dy -> listState.scrollBy(dy) }
         onDispose { registerScroller(null) }
@@ -94,10 +128,29 @@ internal fun ScrollReader(
             }
     }
 
+    // 手指自己滚动时，标记立刻消失（它只标翻屏前的位置）。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (scrolling && !marker.isRunning) marker.snapTo(0f) }
+    }
+
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .drawWithContent {
+                drawContent()
+                val a = marker.value
+                if (a > 0f) {
+                    // 左边距里一道短横线，标在原来的底边：线上是读过的，线下接着读。
+                    val margin = styles.horizontalPadding.toPx()
+                    drawRoundRect(
+                        palette.accent.copy(alpha = 0.6f * a),
+                        topLeft = Offset(margin * 0.2f, markerY - 1.dp.toPx()),
+                        size = Size(margin * 0.6f, 2.dp.toPx()),
+                        cornerRadius = CornerRadius(1.dp.toPx()),
+                    )
+                }
+            }
             .pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) },
         contentPadding = PaddingValues(
             start = styles.horizontalPadding,

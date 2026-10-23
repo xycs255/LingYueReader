@@ -13,6 +13,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xycs.lingyuereader.ui.App
 import com.xycs.lingyuereader.ui.LingYueTheme
+import com.xycs.lingyuereader.ui.Effects
+import android.provider.Settings
 import com.xycs.lingyuereader.ui.ThemeRevealHost
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -34,6 +36,14 @@ class MainActivity : ComponentActivity() {
         }
         // 只在首次启动时处理外部文件，旋转屏幕等重建时不再重复导入。
         if (savedInstanceState == null) handleIncoming(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 系统关了动画就跟着不做动效（回到前台时重读，设置可能刚改过）。
+        Effects.systemNoMotion = runCatching {
+            Settings.Global.getFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+        }.getOrDefault(false)
     }
 
     override fun onStop() {

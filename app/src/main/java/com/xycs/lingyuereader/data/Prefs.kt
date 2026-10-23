@@ -110,6 +110,8 @@ data class ReaderSettings(
     val tapZones: List<TapAction> = TapZones.DEFAULT,
     /** 阅读时锁定横屏或竖屏（仍可上下或左右颠倒）。 */
     val orientation: ReadingOrientation = ReadingOrientation.SYSTEM,
+    /** 翻页时在屏幕左右边缘画出读过 / 没读的“书页厚度”，像拿着纸书一样知道读到哪了。 */
+    val pageEdges: Boolean = true,
 )
 
 /** 界面的深浅色。 */
@@ -223,6 +225,7 @@ class Prefs(context: Context) {
             customBackground = sp.getInt("customBackground", d.customBackground),
             customText = sp.getInt("customText", d.customText),
             tapZones = TapZones.decode(sp.getString("tapZones", null)),
+            pageEdges = sp.getBoolean("pageEdges", d.pageEdges),
             orientation = runCatching { ReadingOrientation.valueOf(sp.getString("orientation", null)!!) }.getOrDefault(d.orientation),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
@@ -262,6 +265,7 @@ class Prefs(context: Context) {
             putInt("customText", s.customText)
             putString("tapZones", TapZones.encode(s.tapZones))
             putString("orientation", s.orientation.name)
+            putBoolean("pageEdges", s.pageEdges)
             putFloat("ttsRate", s.ttsRate)
         }
     }

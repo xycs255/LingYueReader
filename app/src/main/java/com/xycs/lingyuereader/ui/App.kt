@@ -128,7 +128,7 @@ import com.xycs.lingyuereader.data.ShelfSort
  * - 无 / 省电：直接切换。
  */
 private fun AnimatedContentTransitionScope<Screen>.screenTransform(style: PageTransition, forward: Boolean): ContentTransform {
-    if (Effects.reduced || style == PageTransition.NONE) return EnterTransition.None togetherWith ExitTransition.None
+    if (Effects.noMotion || style == PageTransition.NONE) return EnterTransition.None togetherWith ExitTransition.None
     val target = targetState
     val initial = initialState
     val origin = TransformOrigin(OpenFrom.pivotX, OpenFrom.pivotY)
@@ -183,7 +183,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Reader -> {
                 // 返回书架时缩回这本书的封面：封面的位置在书架排好后才知道，所以每帧现读。
                 val toCover = stack.last() == Screen.Shelf && OpenFrom.bookId == screen.bookId &&
-                    appearance.transition != PageTransition.NONE && !Effects.reduced
+                    appearance.transition != PageTransition.NONE && !Effects.noMotion
                 val shrink by transition.animateFloat({ Motion.emphasized() }, label = "cover") { state ->
                     if (state == EnterExitState.PostExit && toCover) OpenFrom.widthFraction else 1f
                 }

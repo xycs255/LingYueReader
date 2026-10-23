@@ -46,7 +46,7 @@ class ThemeReveal internal constructor(private val scope: CoroutineScope) {
 
     fun change(apply: () -> Unit) {
         val layer = layer
-        if (Effects.reduced || layer == null || snapshot != null) {
+        if (Effects.noMotion || layer == null || snapshot != null) {
             apply()
             return
         }

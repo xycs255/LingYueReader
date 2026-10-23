@@ -30,6 +30,13 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -331,17 +338,28 @@ private fun Reader(
         }
     }
 
-    val goTo: (Int, Int?) -> Unit = { index, block ->
+    val goTo: (Int, Int?, Boolean) -> Unit = { index, block, highlight ->
         if (index in content.chapters.indices) {
-            vm.replaceTop(Screen.Reader(entry.id, index, block))
+            vm.replaceTop(Screen.Reader(entry.id, index, block, highlight = highlight))
             menuVisible = false
         }
     }
     // 从目录、书签、进度条跳走：先记下现在读到哪里，跳过去后可以一键回来。
-    val jump: (Int, Int?) -> Unit = { index, block ->
+    val jump: (Int, Int?, Boolean) -> Unit = { index, block, highlight ->
         if (index in content.chapters.indices) {
             vm.markJump(ReturnPoint(entry.id, pos.chapter, pos.block, pos.offset, pos.char, content.chapters[pos.chapter].title))
-            goTo(index, block)
+            goTo(index, block, highlight)
+        }
+    }
+    // 跳过来的那一段：亮一下再慢慢褪掉（墨水屏上不渐变，亮两秒后消失）。
+    val landing = remember(screen) { Animatable(if (screen.highlight && screen.blockIndex != null) 1f else 0f) }
+    LaunchedEffect(screen) {
+        if (landing.value <= 0f) return@LaunchedEffect
+        if (Effects.noMotion) {
+            delay(2000)
+            landing.snapTo(0f)
+        } else {
+            landing.animateTo(0f, tween(1600, delayMillis = 700, easing = Motion.Standard))
         }
     }
     val returnPoint by vm.returnPoint.collectAsStateWithLifecycle()
@@ -433,7 +451,7 @@ private fun Reader(
                 val got = tracker.scroller?.invoke(want) ?: continue
                 if (got < want * 0.5f) {
                     // 滚到章末：有下一章就接着读，没有就停。
-                    if (chapterIndex < content.chapters.lastIndex) goTo(chapterIndex + 1, null) else autoScroll = false
+                    if (chapterIndex < content.chapters.lastIndex) goTo(chapterIndex + 1, null, false) else autoScroll = false
                     break
                 }
             }
@@ -518,7 +536,9 @@ private fun Reader(
     ) {
         // 书页（正文和状态行）记录成玻璃的取样源，菜单栏、控制条、操作条和底部面板都透出它。
         Box(Modifier.fillMaxSize().recordGlass(glassBackdrop)) {
+        val landingBlock = screen.blockIndex ?: -1
         CompositionLocalProvider(
+            LocalLanding provides remember(landingBlock, landing) { Landing(landingBlock) { landing.value } },
             LocalBookImages provides images,
             LocalImageMaxHeight provides screenHeight * 0.8f,
             LocalImageZoom provides { zoomed = it },
@@ -543,7 +563,7 @@ private fun Reader(
                         onPosition = { item, offset, fraction ->
                             pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
                         },
-                        onNext = { goTo(chapterIndex + 1, null) },
+                        onNext = { goTo(chapterIndex + 1, null, false) },
                         registerTurner = { turner.turn = it },
                         registerScroller = { tracker.scroller = it },
                         speaking = speaking,
@@ -602,11 +622,20 @@ private fun Reader(
             }
         }
 
+        // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
+        val bookFraction = run {
+            val total = chapterStarts.last().coerceAtLeast(1)
+            ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+        }
+        if (settings.pageEdges && settings.pageMode != PageMode.SCROLL) {
+            PageEdges(bookFraction, palette, rightToLeft = settings.pageMode == PageMode.VERTICAL, topInset, bottomInset)
+        }
         StatusLine(
             chapter.title,
             listOfNotNull("${chapterIndex + 1}/${content.chapters.size}", pos.label, chapterLeft).joinToString(" · "),
             palette,
             Modifier.align(Alignment.BottomCenter),
+            bookFraction,
         )
         }
 
@@ -722,10 +751,10 @@ private fun Reader(
                     .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
                     .padding(top = 8.dp, bottom = 6.dp),
             ) {
-                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block) }
+                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block, false) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     BarButton("上一章", MiuixIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
-                        goTo(chapterIndex - 1, null)
+                        goTo(chapterIndex - 1, null, false)
                     }
                     BarButton("目录", MiuixIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
                     BarButton("设置", MiuixIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
@@ -744,7 +773,7 @@ private fun Reader(
                     }
                 }
                     BarButton("下一章", MiuixIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
-                        goTo(chapterIndex + 1, null)
+                        goTo(chapterIndex + 1, null, false)
                     }
                 }
             }
@@ -816,11 +845,11 @@ private fun Reader(
             palette = palette,
             onPickChapter = {
                 sheet = null
-                jump(it, null)
+                jump(it, null, false)
             },
             onPickPosition = { ch, block ->
                 sheet = null
-                jump(ch, block)
+                jump(ch, block, true)
             },
             onDeleteBookmark = vm::deleteBookmark,
             onDeleteNote = vm::deleteNote,
@@ -943,7 +972,7 @@ private fun SelectionBar(
     modifier: Modifier = Modifier,
 ) {
     // 出现时从 0.9 倍弹到原大小。
-    val appear = remember { Animatable(if (Effects.reduced) 1f else 0f) }
+    val appear = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
     LaunchedEffect(Unit) { appear.animateTo(1f, Motion.pop()) }
     Box(
         modifier.graphicsLayer {
@@ -1050,6 +1079,33 @@ private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, pa
     }
 }
 
+/**
+ * 书页厚度：屏幕两侧画几道细线，左边是读过的、右边是还没读的（竖排反过来），
+ * 读得越多左边越厚。纸书拿在手里就能感到这个，电子书读者恰恰在“情节先后”上记得更差（Mangen 等 2019）。
+ */
+@Composable
+private fun PageEdges(fraction: Float, palette: ReaderPalette, rightToLeft: Boolean, topInset: Dp, bottomInset: Dp) {
+    val shown by animateFloatAsState(fraction, Motion.standard(Motion.MEDIUM), label = "edges")
+    Canvas(Modifier.fillMaxSize()) {
+        val lines = 6
+        // 读满一份才多一道，刚翻开时左边没有。
+        val read = (shown * lines).toInt().coerceIn(0, lines)
+        val gap = 2.dp.toPx()
+        val stroke = 1.dp.toPx()
+        val top = topInset.toPx() + 12.dp.toPx()
+        val bottom = size.height - bottomInset.toPx() - 12.dp.toPx()
+        fun side(count: Int, fromLeft: Boolean) {
+            for (i in 0 until count) {
+                val x = if (fromLeft) gap + i * gap else size.width - gap - i * gap
+                // 越靠外越淡，像纸页一层层叠着。
+                drawLine(palette.secondary.copy(alpha = 0.32f - i * 0.04f), Offset(x, top + i * 1.5f), Offset(x, bottom - i * 1.5f), stroke)
+            }
+        }
+        side(if (rightToLeft) lines - read else read, fromLeft = true)
+        side(if (rightToLeft) read else lines - read, fromLeft = false)
+    }
+}
+
 /** 跳转后浮在页底的“回到刚才”。 */
 @Composable
 private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop?, onReturn: () -> Unit, onDismiss: () -> Unit) {
@@ -1085,13 +1141,24 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
 }
 
 @Composable
-private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier) {
+private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f) {
     val time = rememberClock()
     val battery = rememberBattery()
+    // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳。
+    val shown by animateFloatAsState(bookFraction, Motion.standard(Motion.MEDIUM), label = "book")
     Row(
         modifier
             .fillMaxWidth()
             .background(palette.background.copy(alpha = 0.92f))
+            .drawBehind {
+                // 顶上一根细线：全书的进度。
+                val h = 1.5.dp.toPx()
+                val inset = 24.dp.toPx()
+                val w = size.width - inset * 2
+                drawRect(palette.secondary.copy(alpha = 0.18f), topLeft = Offset(inset, 0f), size = Size(w, h))
+                drawRect(palette.accent.copy(alpha = 0.55f), topLeft = Offset(inset, 0f), size = Size(w * shown, h))
+            }
+            .semantics { contentDescription = "全书已读 ${(bookFraction * 100).toInt()}%" }
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 24.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),

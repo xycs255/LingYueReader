@@ -361,6 +361,9 @@ internal fun SettingsSheet(
     val sliderColors = SliderDefaults.sliderColors(foregroundColor = accent, backgroundColor = textColor.copy(alpha = 0.12f))
     Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         ChoiceRow("翻页", PageMode.entries.map { it to it.label }, settings.pageMode, palette) { m -> update { it.copy(pageMode = m) } }
+        // 排版预设。宽松：字大、字距和行距都放开，年长读者和读字吃力时字挤在一起更难认（字距加大能减轻拥挤效应）。
+        val preset = LayoutPreset.entries.firstOrNull { it.matches(settings) }
+        ChoiceRow<LayoutPreset?>("排版", LayoutPreset.entries.map { it to it.label }, preset, palette) { p -> p?.let { update(it::apply) } }
         LabeledSlider("字号", "${settings.fontSize.toInt()}", textColor) {
             Slider(
                 value = settings.fontSize,
@@ -467,6 +470,7 @@ internal fun SettingsSheet(
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
         ChoiceRow("方向", ReadingOrientation.entries.map { it to it.label }, settings.orientation, palette) { v -> update { it.copy(orientation = v) } }
+        SwitchRow("书页厚度（翻页时两侧显示读过和剩下的）", settings.pageEdges, textColor, accent) { v -> update { it.copy(pageEdges = v) } }
         SwitchRow("横屏时双页", settings.twoPage, textColor, accent) { v -> update { it.copy(twoPage = v) } }
         SwitchRow("墨水屏 / 省电模式", settings.eInk, textColor, accent) { v -> update { it.copy(eInk = v) } }
         Text(
@@ -488,6 +492,19 @@ internal fun SettingsSheet(
             colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
         )
     }
+}
+
+/** 一键排版：字号、行距、段距、字距一起改。 */
+private enum class LayoutPreset(val label: String, val fontSize: Float, val lineHeight: Float, val paragraphSpacing: Float, val letterSpacing: Float) {
+    COMPACT("紧凑", 18f, 1.6f, 0.4f, 0.02f),
+    STANDARD("标准", 19f, 1.8f, 0.6f, 0.03f),
+    RELAXED("宽松", 22f, 2.0f, 0.8f, 0.1f),
+    ;
+
+    fun matches(s: ReaderSettings) =
+        s.fontSize == fontSize && s.lineHeight == lineHeight && s.paragraphSpacing == paragraphSpacing && s.letterSpacing == letterSpacing
+
+    fun apply(s: ReaderSettings) = s.copy(fontSize = fontSize, lineHeight = lineHeight, paragraphSpacing = paragraphSpacing, letterSpacing = letterSpacing)
 }
 
 /** 九格点击区域：点一格换下一种动作；下面两个按钮是常用的两种布局。 */

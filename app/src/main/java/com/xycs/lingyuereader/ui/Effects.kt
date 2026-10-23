@@ -14,9 +14,18 @@ import androidx.compose.ui.graphics.Color
 object Effects {
     var reduced by mutableStateOf(false)
 
-    /** 动画：省电模式下直接出现、直接消失。 */
-    fun enter(normal: EnterTransition): EnterTransition = if (reduced) EnterTransition.None else normal
-    fun exit(normal: ExitTransition): ExitTransition = if (reduced) ExitTransition.None else normal
+    /**
+     * 系统里关掉了动画（无障碍“移除动画”，或开发者选项里动画时长缩放为 0）。
+     * 对前庭敏感、看动画头晕的人，非必要的动效都应能关掉（WCAG 2.3.3）；只关动效，玻璃和配色照旧。
+     */
+    var systemNoMotion by mutableStateOf(false)
+
+    /** 不做动画：省电模式，或系统关了动画。 */
+    val noMotion: Boolean get() = reduced || systemNoMotion
+
+    /** 动画：不做动画时直接出现、直接消失。 */
+    fun enter(normal: EnterTransition): EnterTransition = if (noMotion) EnterTransition.None else normal
+    fun exit(normal: ExitTransition): ExitTransition = if (noMotion) ExitTransition.None else normal
 
     /** 墨水屏的书页：白底黑字；选了夜间就黑底白字。 */
     fun eInkPalette(night: Boolean): ReaderPalette =

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -125,7 +126,7 @@ internal fun PagedReader(
                 scope.launch {
                     val target = (pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)
                     // 墨水屏上翻页不带动画，免得一页页地闪。
-                    if (Effects.reduced) pager.scrollToPage(target) else pager.animateScrollToPage(target)
+                    if (Effects.noMotion) pager.scrollToPage(target) else pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
                 }
             }
             onDispose { }
@@ -138,7 +139,7 @@ internal fun PagedReader(
             val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
             val spread = lead + target / per
             if (target >= 0 && pager.currentPage != spread && !pager.isScrollInProgress) {
-                if (Effects.reduced) pager.scrollToPage(spread) else pager.animateScrollToPage(spread)
+                if (Effects.noMotion) pager.scrollToPage(spread) else pager.animateScrollToPage(spread, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
             }
         }
 
