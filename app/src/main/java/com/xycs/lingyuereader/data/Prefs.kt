@@ -11,9 +11,10 @@ enum class ReaderTheme(val label: String) {
 }
 
 enum class PageMode(val label: String) {
-    SCROLL("上下滚动"),
-    SLIDE("左右平移"),
-    COVER("左右覆盖"),
+    SCROLL("滚动"),
+    SLIDE("平移"),
+    COVER("覆盖"),
+    CURL("仿真"),
     VERTICAL("竖排"),
 }
 
@@ -60,6 +61,8 @@ data class ReaderSettings(
     val goalReminder: Boolean = true,
     /** 注音：在汉字上方标拼音。 */
     val pinyin: Boolean = false,
+    /** 横屏且屏幕够宽时一次显示两页。 */
+    val twoPage: Boolean = true,
 )
 
 enum class ShelfSort(val label: String) {
@@ -112,6 +115,7 @@ class Prefs(context: Context) {
             dailyGoal = sp.getInt("dailyGoal", d.dailyGoal),
             goalReminder = sp.getBoolean("goalReminder", d.goalReminder),
             pinyin = sp.getBoolean("pinyin", d.pinyin),
+            twoPage = sp.getBoolean("twoPage", d.twoPage),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -143,6 +147,7 @@ class Prefs(context: Context) {
             putInt("dailyGoal", s.dailyGoal)
             putBoolean("goalReminder", s.goalReminder)
             putBoolean("pinyin", s.pinyin)
+            putBoolean("twoPage", s.twoPage)
             putFloat("ttsRate", s.ttsRate)
         }
     }

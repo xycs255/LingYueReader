@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
@@ -24,6 +29,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -62,10 +69,25 @@ internal fun PagedReader(
     /** 正在查的词：第几块、哪一段。 */
     selected: Highlight? = null,
 ) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // 仿真翻页按手指按下的高度决定掀起哪个角。
+    var touchY by remember { mutableFloatStateOf(-1f) }
+    BoxWithConstraints(
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val e = awaitPointerEvent(PointerEventPass.Initial)
+                    if (e.type == PointerEventType.Press) touchY = e.changes.first().position.y
+                }
+            }
+        },
+    ) {
         val density = LocalDensity.current
         val measurer = rememberTextMeasurer(cacheSize = 0)
-        val widthPx = with(density) { (maxWidth - styles.horizontalPadding * 2).roundToPx() }
+        // 横屏且够宽：一次两页，像摊开的书。
+        val twoUp = styles.settings.twoPage && maxWidth > maxHeight && maxWidth >= 560.dp
+        val per = if (twoUp) 2 else 1
+        val pageWidth = if (twoUp) maxWidth / 2 else maxWidth
+        val widthPx = with(density) { (pageWidth - styles.horizontalPadding * 2).roundToPx() }
         val heightPx = with(density) { (maxHeight - topInset - bottomInset).roundToPx() }
         val imageMaxHeight = maxHeight - topInset - bottomInset - styles.gap
         val images = LocalBookImages.current
@@ -80,9 +102,13 @@ internal fun PagedReader(
         val pages = remember(chapter, paginator, widthPx, heightPx) { pagesOf(chapterIndex)!! }
         val prev = remember(chapterIndex, content, paginator, widthPx, heightPx) { pagesOf(chapterIndex - 1) }
         val next = remember(chapterIndex, content, paginator, widthPx, heightPx) { pagesOf(chapterIndex + 1) }
+        // 双页时两页一组翻。
+        val spreads = remember(pages, per) { pages.chunked(per) }
+        val prevSpread = remember(prev, per) { prev?.chunked(per)?.last() }
+        val nextSpread = remember(next, per) { next?.chunked(per)?.first() }
         // 两端各多放一页，显示相邻章节的末页/首页；翻到那里就切换章节，看起来是连着翻过去的。
         val lead = if (prev != null) 1 else 0
-        val count = lead + pages.size + if (next != null) 1 else 0
+        val count = lead + spreads.size + if (next != null) 1 else 0
 
         val startPage = remember(pages, start) {
             when {
@@ -91,7 +117,7 @@ internal fun PagedReader(
                 else -> pages.indexOfFirst { it.contains(start.block, start.char) }.coerceAtLeast(0)
             }
         }
-        val pager = rememberPagerState(initialPage = lead + startPage) { count }
+        val pager = key(per) { rememberPagerState(initialPage = lead + startPage / per) { count } }
         val scope = rememberCoroutineScope()
 
         DisposableEffect(pager) {
@@ -110,8 +136,9 @@ internal fun PagedReader(
             val u = speaking ?: return@LaunchedEffect
             val indent = indentOf(chapter.blocks[u.block], styles.settings.indent)
             val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
-            if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) {
-                if (Effects.reduced) pager.scrollToPage(lead + target) else pager.animateScrollToPage(lead + target)
+            val spread = lead + target / per
+            if (target >= 0 && pager.currentPage != spread && !pager.isScrollInProgress) {
+                if (Effects.reduced) pager.scrollToPage(spread) else pager.animateScrollToPage(spread)
             }
         }
 
@@ -121,8 +148,10 @@ internal fun PagedReader(
                     prev != null && p == 0 -> onChapterChange(chapterIndex - 1, true)
                     next != null && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
                     else -> {
-                        val i = (p - lead).coerceIn(pages.indices)
-                        onPosition(pages[i].firstBlock, pages[i].firstChar, (i + 1f) / pages.size, "${i + 1}/${pages.size} 页")
+                        val i = ((p - lead) * per).coerceIn(pages.indices)
+                        val last = (i + per - 1).coerceAtMost(pages.lastIndex)
+                        val label = if (last > i) "${i + 1}-${last + 1}/${pages.size} 页" else "${i + 1}/${pages.size} 页"
+                        onPosition(pages[i].firstBlock, pages[i].firstChar, (last + 1f) / pages.size, label)
                     }
                 }
             }
@@ -133,26 +162,50 @@ internal fun PagedReader(
             beyondViewportPageCount = 1,
             modifier = Modifier.fillMaxSize(),
         ) { p ->
-            val (pageChapter, page) = when {
-                prev != null && p == 0 -> chapterIndex - 1 to prev.last()
-                next != null && p == count - 1 -> chapterIndex + 1 to next.first()
-                else -> chapterIndex to pages[p - lead]
+            val (pageChapter, spread) = when {
+                prevSpread != null && p == 0 -> chapterIndex - 1 to prevSpread
+                nextSpread != null && p == count - 1 -> chapterIndex + 1 to nextSpread
+                else -> chapterIndex to spreads[p - lead]
             }
+            fun offset() = p - (pager.currentPage + pager.currentPageOffsetFraction)
             Box(
                 Modifier
                     .fillMaxSize()
                     // 覆盖式：后一页原地不动，当前页像纸一样盖在上面滑走。
                     .zIndex(-p.toFloat())
                     .graphicsLayer {
-                        if (mode == PageMode.COVER) {
-                            val r = p - (pager.currentPage + pager.currentPageOffsetFraction)
-                            if (r > 0f) translationX = -r * size.width
+                        val r = offset()
+                        when (mode) {
+                            PageMode.COVER -> if (r > 0f) translationX = -r * size.width
+                            // 仿真：两页都不动，前一页原地掀起来。
+                            PageMode.CURL -> if (r > -1f && r < 1f) translationX = -r * size.width
+                            else -> {}
                         }
                     }
+                    .then(
+                        if (mode == PageMode.CURL) {
+                            Modifier.pageCurl({ offset().let { if (it < 0f && it > -1f) -it else 0f } }, { touchY }, styles.palette.background)
+                        } else {
+                            Modifier
+                        },
+                    )
                     .drawWithContent {
                         drawContent()
+                        if (twoUp) {
+                            // 书脊：中间一道浅浅的阴影。
+                            val w = 28.dp.toPx()
+                            drawRect(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.07f), Color.Transparent),
+                                    size.width / 2 - w,
+                                    size.width / 2 + w,
+                                ),
+                                topLeft = Offset(size.width / 2 - w, 0f),
+                                size = Size(w * 2, size.height),
+                            )
+                        }
                         if (mode == PageMode.COVER) {
-                            val r = p - (pager.currentPage + pager.currentPageOffsetFraction)
+                            val r = offset()
                             if (r < 0f && r > -1f) {
                                 drawRect(
                                     Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.18f), Color.Transparent), size.width, size.width + 24.dp.toPx()),
@@ -167,13 +220,21 @@ internal fun PagedReader(
             ) {
                 // 插图最高一页，与分页时的估算一致（再减去段距）。
                 CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
-                    PageContent(
-                        content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
-                        selector.takeIf { pageChapter == chapterIndex },
-                        speaking.takeIf { pageChapter == chapterIndex },
-                        selected.takeIf { pageChapter == chapterIndex },
-                        onFootnote,
-                    )
+                    Row(Modifier.fillMaxSize()) {
+                        spread.forEach { page ->
+                            Box(Modifier.weight(1f)) {
+                                PageContent(
+                                    content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
+                                    selector.takeIf { pageChapter == chapterIndex },
+                                    speaking.takeIf { pageChapter == chapterIndex },
+                                    selected.takeIf { pageChapter == chapterIndex },
+                                    onFootnote,
+                                )
+                            }
+                        }
+                        // 章末只剩一页时右边留白。
+                        if (spread.size < per) Box(Modifier.weight(1f))
+                    }
                 }
             }
         }

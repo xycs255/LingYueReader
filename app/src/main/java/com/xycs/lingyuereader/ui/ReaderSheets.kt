@@ -434,6 +434,7 @@ internal fun SettingsSheet(
         SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
+        SwitchRow("横屏时双页", settings.twoPage, textColor, accent) { v -> update { it.copy(twoPage = v) } }
         SwitchRow("墨水屏 / 省电模式", settings.eInk, textColor, accent) { v -> update { it.copy(eInk = v) } }
         Text(
             "关掉玻璃、动画和环境光变色，书页纯黑白，翻页不带动画。墨水屏阅读器配合左右翻页最好。",
@@ -511,26 +512,26 @@ private fun FontRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, palette: ReaderPalette, onSelect: (T) -> Unit) {
-    Row(
-        Modifier.padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(label, color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp))
-        options.forEach { (value, text) ->
-            val on = value == selected
-            Text(
-                text,
-                color = if (on) palette.accent else palette.text,
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                    .clickable { onSelect(value) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-            )
+    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
+        // 选项多了换行，窄屏上不挤出屏幕。
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (value, text) ->
+                val on = value == selected
+                Text(
+                    text,
+                    color = if (on) palette.accent else palette.text,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
+                        .clickable { onSelect(value) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
