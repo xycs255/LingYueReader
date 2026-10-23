@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 阅读目标：开机后重新排上晚间提醒。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Android 11 起要声明才能找到系统的文字转语音引擎。 -->
     <queries>
@@ -77,6 +79,16 @@
             android:name=".tts.ReadAloudService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+        <receiver
+            android:name=".reminder.GoalReminderReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".reminder.GoalBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

@@ -53,6 +53,10 @@ data class ReaderSettings(
     val ttsVoice: String = "",
     /** 墨水屏 / 省电模式：关掉玻璃、动画和环境光变色，书页纯黑白。 */
     val eInk: Boolean = false,
+    /** 每天的阅读目标（分钟）；0 表示不设。 */
+    val dailyGoal: Int = 0,
+    /** 晚上还没读够目标时提醒。 */
+    val goalReminder: Boolean = true,
 )
 
 enum class ShelfSort(val label: String) {
@@ -102,6 +106,8 @@ class Prefs(context: Context) {
             autoScrollLines = sp.getFloat("autoScrollLines", d.autoScrollLines),
             ttsVoice = sp.getString("ttsVoice", d.ttsVoice) ?: d.ttsVoice,
             eInk = sp.getBoolean("eInk", d.eInk),
+            dailyGoal = sp.getInt("dailyGoal", d.dailyGoal),
+            goalReminder = sp.getBoolean("goalReminder", d.goalReminder),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -130,6 +136,8 @@ class Prefs(context: Context) {
             putFloat("autoScrollLines", s.autoScrollLines)
             putString("ttsVoice", s.ttsVoice)
             putBoolean("eInk", s.eInk)
+            putInt("dailyGoal", s.dailyGoal)
+            putBoolean("goalReminder", s.goalReminder)
             putFloat("ttsRate", s.ttsRate)
         }
     }

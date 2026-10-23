@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -95,6 +99,8 @@ fun StatsScreen(vm: AppViewModel) {
                         )
                     }
                 }
+                SmallTitle("每日目标")
+                GoalCard(vm, todayMinutes = ((days[today]?.millis ?: 0) / 60_000).toInt())
                 SmallTitle("近 20 周")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
                     Heatmap(days, today, weeks = 20)
@@ -182,6 +188,82 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
                     topLeft = Offset(w * cell + gap / 2, d * cell + gap / 2),
                     size = Size(cell - gap, cell - gap),
                     cornerRadius = CornerRadius(cell * 0.2f),
+                )
+            }
+        }
+    }
+}
+
+/** 每日目标：选几分钟，看今天读了多少；可以让它晚上 9 点还没读够时提醒一下。 */
+@Composable
+private fun GoalCard(vm: AppViewModel, todayMinutes: Int) {
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val goal = settings.dailyGoal
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val askPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { }
+    fun ensureNotifications() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+    GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
+        if (goal > 0) {
+            val done = todayMinutes >= goal
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("$todayMinutes", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text(" / $goal 分钟", style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(bottom = 4.dp))
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (done) "今天的目标完成了" else "还差 ${goal - todayMinutes} 分钟",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = if (done) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+            Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(MiuixTheme.colorScheme.secondaryContainer)) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth((todayMinutes.toFloat() / goal).coerceIn(0f, 1f)).background(MiuixTheme.colorScheme.primary))
+            }
+        } else {
+            Text("设一个每天的阅读目标，统计页会显示今天读到哪了。", style = MiuixTheme.textStyles.body2)
+        }
+        Row(Modifier.padding(top = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0, 15, 30, 45, 60, 90).forEach { m ->
+                val on = goal == m
+                Text(
+                    if (m == 0) "不设" else "$m 分钟",
+                    fontSize = 14.sp,
+                    color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer)
+                        .clickable {
+                            vm.updateSettings { it.copy(dailyGoal = m) }
+                            if (m > 0 && settings.goalReminder) ensureNotifications()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                )
+            }
+        }
+        if (goal > 0) {
+            Row(Modifier.padding(top = 12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("晚上 ${com.xycs.lingyuereader.reminder.GoalReminder.HOUR} 点提醒", style = MiuixTheme.textStyles.body1)
+                    Text(
+                        "还没读够目标时发一条通知；连续读了好几天、今天还没读的，提醒别断了",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                top.yukonga.miuix.kmp.basic.Switch(
+                    checked = settings.goalReminder,
+                    onCheckedChange = { on ->
+                        vm.updateSettings { it.copy(goalReminder = on) }
+                        if (on) ensureNotifications()
+                    },
+                    modifier = Modifier.padding(start = 12.dp),
                 )
             }
         }

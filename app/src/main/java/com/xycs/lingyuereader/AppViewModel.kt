@@ -253,6 +253,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             loadShelf()
             _shelfLoaded.value = true
             maybeAutoBackup()
+            com.xycs.lingyuereader.reminder.GoalReminder.schedule(getApplication())
         }
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         reloadVocabulary()
@@ -914,8 +915,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updateSettings(transform: (ReaderSettings) -> ReaderSettings) {
         val before = _settings.value.chineseConvert
+        val goalBefore = _settings.value.dailyGoal to _settings.value.goalReminder
         _settings.update(transform)
         prefs.saveSettings(_settings.value)
+        if (_settings.value.dailyGoal to _settings.value.goalReminder != goalBefore) {
+            com.xycs.lingyuereader.reminder.GoalReminder.schedule(getApplication())
+        }
         // 换了繁简转换方向：重新打开当前这本书。
         if (_settings.value.chineseConvert != before) {
             _openBook.value?.entry?.id?.let { id ->

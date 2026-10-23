@@ -11,6 +11,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -64,6 +65,19 @@ class StatsUiTest {
         waitForText("每分钟 200 字")
         waitForText("45 分钟")
         compose.onNodeWithContentDescription("近 20 周有 2 天在读书").assertExists()
+    }
+
+    @Test
+    fun dailyGoalShowsHowMuchIsLeftToday() {
+        waitForText("测试书")
+        compose.onNodeWithText("统计").performClick()
+        waitForText("设一个每天的阅读目标")
+        compose.onNodeWithText("30 分钟").performClick()
+        // 今天读了 25 分钟。
+        waitForText("/ 30 分钟")
+        waitForText("还差 5 分钟")
+        waitForText("晚上 21 点提醒")
+        assertEquals(30, context.getSharedPreferences("reader", Context.MODE_PRIVATE).getInt("dailyGoal", 0))
     }
 
     @Test
