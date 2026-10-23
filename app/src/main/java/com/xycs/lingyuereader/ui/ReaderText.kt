@@ -49,6 +49,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -69,24 +71,49 @@ import top.yukonga.miuix.kmp.basic.Text
 /** 段首缩进两个全角空格。批注位置不含这两个字，渲染时要错开。 */
 internal const val INDENT = "　　"
 
+/** 严格断行规则（避头尾）。逐行尽量排满（Simple），不做整段平衡：整段平衡会让中文行尾空出好几个字。 */
+internal val CJK_LINE_BREAK = LineBreak(
+    strategy = LineBreak.Strategy.Simple,
+    strictness = LineBreak.Strictness.Strict,
+    wordBreak = LineBreak.WordBreak.Default,
+)
+
+/** OpenType chws：相邻全角标点按上下文挤压成半宽。 */
+internal const val CJK_FEATURES = "\"chws\" 1"
+
 /**
  * 阅读页的排版参数。滚动模式直接用它渲染，翻页模式先用同一套样式量出每页放得下多少行，
  * 所以两边必须取自这里，不能各写一份。
  */
-internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPalette) {
+/**
+ * [chinese] 为真时把正文标成中文：弯引号“”‘’、省略号……、破折号——这些中西文共用的标点，
+ * Android 按文字的语言挑字体，标成中文才会用中文字体排成全角；否则跟着系统语言走，英文系统下会变窄。
+ */
+internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPalette, val chinese: Boolean = true) {
+    private val locale: LocaleList? = if (chinese) LocaleList("zh-CN") else null
+
     val fontFamily: FontFamily = if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
     private val size = settings.fontSize
 
     val gap: Dp = (size * settings.paragraphSpacing).dp
     val horizontalPadding: Dp = 24.dp
 
+    /*
+     * 中文排版：
+     * - 严格断行（避头尾）：句号、逗号、后引号等不出现在行首，前引号不留在行尾；
+     * - chws（相邻标点挤压）：“。”、“，「”这类连续全角标点之间不留整格空白，字体不支持时忽略；
+     * - 两端对齐，每行右边缘齐平，可在设置里关掉。
+     */
     val para = TextStyle(
         color = palette.text,
         fontFamily = fontFamily,
         fontSize = size.sp,
         lineHeight = settings.lineHeight.em,
         letterSpacing = 0.03.em,
-        textAlign = TextAlign.Justify,
+        textAlign = if (settings.justify) TextAlign.Justify else TextAlign.Start,
+        lineBreak = CJK_LINE_BREAK,
+        fontFeatureSettings = CJK_FEATURES,
+        localeList = locale,
     )
     val title = TextStyle(
         color = palette.text,
@@ -94,6 +121,7 @@ internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPal
         fontWeight = FontWeight.Bold,
         fontSize = (size * 1.35f).sp,
         lineHeight = (size * 1.35f * 1.4f).sp,
+        localeList = locale,
     )
     val titleTop: Dp = 24.dp
     val titleBottom: Dp = 32.dp
@@ -104,17 +132,21 @@ internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPal
         fontWeight = FontWeight.Bold,
         fontSize = (size * if (level <= 2) 1.2f else 1.08f).sp,
         lineHeight = 1.5.em,
+        localeList = locale,
     )
     val quote = TextStyle(
         color = palette.secondary,
         fontFamily = fontFamily,
         fontSize = (size * 0.92f).sp,
         lineHeight = settings.lineHeight.em,
+        lineBreak = CJK_LINE_BREAK,
+        fontFeatureSettings = CJK_FEATURES,
+        localeList = locale,
     )
     val quoteIndent: Dp = 15.dp
     val list = para.copy(textAlign = TextAlign.Start)
     val listMarkerWidth: Dp = (size * 1.6f).dp
-    val table = TextStyle(color = palette.text, fontSize = (size * 0.8f).sp)
+    val table = TextStyle(color = palette.text, fontSize = (size * 0.8f).sp, localeList = locale)
     val sceneBreak = TextStyle(color = palette.secondary, fontSize = size.sp, textAlign = TextAlign.Center)
 }
 
@@ -126,6 +158,7 @@ internal fun blockText(
     speakingColor: Color = Color.Unspecified,
     selected: IntRange? = null,
     selectedColor: Color = Color.Unspecified,
+    indent: Boolean = true,
 ): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
@@ -135,7 +168,7 @@ internal fun blockText(
         else -> return null
     }
     val parsed = InlineText.parse(raw)
-    val shift = if (block is Block.Para && block.prose) INDENT.length else 0
+    val shift = indentOf(block, indent)
     return buildAnnotatedString {
         if (shift > 0) append(INDENT)
         append(parsed.text)
@@ -167,7 +200,7 @@ internal fun blockText(
     }
 }
 
-internal fun indentOf(block: Block): Int = if (block is Block.Para && block.prose) INDENT.length else 0
+internal fun indentOf(block: Block, enabled: Boolean = true): Int = if (enabled && block is Block.Para && block.prose) INDENT.length else 0
 
 /**
  * 渲染一个块。[range] 不为空时只渲染其中一段文字（翻页模式下一段跨页的情形），
@@ -194,13 +227,13 @@ internal fun BlockView(
     val palette = styles.palette
     val gap = styles.gap
     val text = remember(block, notes, speaking, selected) {
-        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f))
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     val tap by rememberUpdatedState(onTap)
     val select by rememberUpdatedState(selector)
     val base = range?.first ?: 0
-    val indent = indentOf(block)
+    val indent = indentOf(block, styles.settings.indent)
     // 排版里的位置 ↔ 块文字（不含缩进）里的位置。
     val toChar = { layoutOffset: Int -> (layoutOffset + base - indent).coerceAtLeast(0) }
     val toLayout = { char: Int -> char + indent - base }
@@ -393,4 +426,19 @@ private fun SelectionHandle(layout: TextLayoutResult, offset: Int, isStart: Bool
                 .background(color),
         )
     }
+}
+
+/** 粗看一本书是不是中文：取开头几段，汉字占非空白字符的三成以上。 */
+internal fun looksChinese(blocks: List<Block>): Boolean {
+    var han = 0
+    var total = 0
+    for (b in blocks.take(30)) {
+        for (c in b.plainText) {
+            if (c.isWhitespace()) continue
+            total++
+            if (Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN) han++
+        }
+        if (total > 2_000) break
+    }
+    return total == 0 || han * 10 >= total * 3
 }

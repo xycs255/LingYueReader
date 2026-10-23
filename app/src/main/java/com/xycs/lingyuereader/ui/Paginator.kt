@@ -95,7 +95,7 @@ internal class Paginator(
         chapter.blocks.forEachIndexed { index, block ->
             when (block) {
                 is Block.Para -> {
-                    val text = blockText(block, emptyList()) ?: return@forEachIndexed
+                    val text = blockText(block, emptyList(), indent = styles.settings.indent) ?: return@forEachIndexed
                     val lines = fitter.lines(text, styles.para, widthPx)
                     var from = 0
                     while (from < lines.size) {

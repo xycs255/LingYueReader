@@ -216,7 +216,8 @@ private fun Reader(
     palette: ReaderPalette,
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
-    val styles = remember(settings, palette) { ReaderStyles(settings, palette) }
+    val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
+    val styles = remember(settings, palette, chinese) { ReaderStyles(settings, palette, chinese) }
     val initial = remember(screen, content) { startOf(screen, entry, content) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
@@ -243,7 +244,7 @@ private fun Reader(
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val block = pos.block.coerceAtLeast(0)
-        val indent = chapter.blocks.getOrNull(block)?.let(::indentOf) ?: 0
+        val indent = chapter.blocks.getOrNull(block)?.let { indentOf(it, settings.indent) } ?: 0
         vm.startReadAloud(chapterIndex, block, (pos.char - indent).coerceAtLeast(0))
         menuVisible = false
     }

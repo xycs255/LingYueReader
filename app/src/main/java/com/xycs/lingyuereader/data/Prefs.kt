@@ -39,6 +39,10 @@ data class ReaderSettings(
     val eveningWarmth: Boolean = true,
     /** 每连续阅读 20 分钟，提醒看远处 20 秒（20-20-20）。 */
     val breakReminder: Boolean = true,
+    /** 正文段首空两格。 */
+    val indent: Boolean = true,
+    /** 正文两端对齐。 */
+    val justify: Boolean = true,
 )
 
 enum class ShelfSort(val label: String) {
@@ -71,6 +75,8 @@ class Prefs(context: Context) {
             ambientLight = sp.getBoolean("ambientLight", d.ambientLight),
             eveningWarmth = sp.getBoolean("eveningWarmth", d.eveningWarmth),
             breakReminder = sp.getBoolean("breakReminder", d.breakReminder),
+            indent = sp.getBoolean("indent", d.indent),
+            justify = sp.getBoolean("justify", d.justify),
         )
     }
 
@@ -91,6 +97,8 @@ class Prefs(context: Context) {
             putBoolean("ambientLight", s.ambientLight)
             putBoolean("eveningWarmth", s.eveningWarmth)
             putBoolean("breakReminder", s.breakReminder)
+            putBoolean("indent", s.indent)
+            putBoolean("justify", s.justify)
             putFloat("ttsRate", s.ttsRate)
         }
     }

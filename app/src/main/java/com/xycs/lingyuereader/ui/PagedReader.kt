@@ -102,7 +102,7 @@ internal fun PagedReader(
         // 听书：读到下一页时自动翻过去。
         LaunchedEffect(speaking, pages) {
             val u = speaking ?: return@LaunchedEffect
-            val indent = indentOf(chapter.blocks[u.block])
+            val indent = indentOf(chapter.blocks[u.block], styles.settings.indent)
             val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
             if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) pager.animateScrollToPage(lead + target)
         }

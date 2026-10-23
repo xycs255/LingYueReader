@@ -73,3 +73,13 @@ class PaginatorTest {
         assertEquals(slice.start, third.firstChar)
     }
 }
+
+class ChineseDetectionTest {
+    @org.junit.Test
+    fun detectsChineseBooks() {
+        org.junit.Assert.assertTrue(looksChinese(listOf(com.xycs.lingyuereader.data.Block.Para("他说：“老师，还有什么要做的？”"))))
+        org.junit.Assert.assertFalse(looksChinese(listOf(com.xycs.lingyuereader.data.Block.Para("“Well,” he said, “what else is there to do?”"))))
+        // 夹几个英文词的中文仍算中文。
+        org.junit.Assert.assertTrue(looksChinese(listOf(com.xycs.lingyuereader.data.Block.Para("他打开 iPhone 看了看 Wi-Fi 信号，信号很弱。"))))
+    }
+}

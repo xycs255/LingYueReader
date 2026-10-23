@@ -374,6 +374,8 @@ internal fun SettingsSheet(
         SwitchRow("日落后逐渐变暖", settings.eveningWarmth, textColor, accent) { v -> update { it.copy(eveningWarmth = v) } }
         SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
         ChoiceRow("字体", listOf(true to "宋体", false to "黑体"), settings.serif, palette) { v -> update { it.copy(serif = v) } }
+        SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
+        SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
         SwitchRow("点击左右两侧翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
         SwitchRow("音量键翻页", settings.volumeKeys, textColor, accent) { v -> update { it.copy(volumeKeys = v) } }
