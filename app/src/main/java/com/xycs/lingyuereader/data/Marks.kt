@@ -119,6 +119,34 @@ object TextAnchors {
         }
         return best
     }
+
+    /** 等长显示转换的旧进度可在转换视图中命中，再换回来源文本；未命中则不猜测新位置。 */
+    fun rebaseProgress(source: BookContent, progress: ReadingProgress, alternateContents: List<BookContent> = emptyList()): ReadingProgress? {
+        for (view in listOf(source) + alternateContents) {
+            val byIndex = view.chapters.getOrNull(progress.chapterIndex)?.takeIf { it.title == progress.chapterTitle }
+            val chapterIndex = if (byIndex != null) progress.chapterIndex
+                else view.chapters.indexOfFirst { it.title == progress.chapterTitle }
+            val chapter = view.chapters.getOrNull(chapterIndex) ?: continue
+            val oldBlock = progress.itemIndex - 1
+            val found = if (progress.anchor.text.isEmpty()) TextLocation(oldBlock, progress.charOffset)
+                else resolve(chapter, oldBlock, progress.charOffset, progress.anchor) ?: continue
+            val sourceChapter = source.chapters.getOrNull(chapterIndex) ?: continue
+            val sourceText = sourceChapter.blocks.getOrNull(found.block)?.displayText
+            val viewText = chapter.blocks.getOrNull(found.block)?.displayText
+            if (view !== source && sourceText?.length != viewText?.length) continue
+            if (progress.anchor.text.isNotEmpty() && sourceText == null) continue
+            val char = found.char.coerceIn(0, sourceText?.length ?: 0)
+            return progress.copy(
+                chapterIndex = chapterIndex,
+                chapterTitle = sourceChapter.title,
+                itemIndex = found.block + 1,
+                itemOffset = if (progress.anchor.text.isEmpty()) progress.itemOffset else 0,
+                charOffset = char,
+                anchor = if (progress.anchor.text.isEmpty()) progress.anchor else capture(sourceChapter, found.block, char),
+            )
+        }
+        return null
+    }
 }
 
 enum class MarkColor(val label: String, val argb: Long) {
@@ -169,34 +197,62 @@ data class Marks(
      * 文稿刷新后章节和段落可能挪动。先按章名找章，再在章内按原文找段落和位置；
      * 原文已被改掉的批注和书签保留，但标为失联。
      */
-    fun resolve(content: BookContent): Marks {
-        fun chapterOf(index: Int, title: String): Int {
-            if (content.chapters.getOrNull(index)?.title == title) return index
-            return content.chapters.indexOfFirst { it.title == title }
+    fun resolve(content: BookContent, alternateContents: List<BookContent> = emptyList()): Marks {
+        fun chapterOf(view: BookContent, index: Int, title: String): Int {
+            if (view.chapters.getOrNull(index)?.title == title) return index
+            return view.chapters.indexOfFirst { it.title == title }
         }
-        val notes = notes.map { note ->
-            val ci = chapterOf(note.chapterIndex, note.chapterTitle)
-            val chapter = content.chapters.getOrNull(ci) ?: return@map note.copy(lost = true)
+
+        fun findNote(view: BookContent, note: Note): Pair<Int, TextLocation>? {
+            val ci = chapterOf(view, note.chapterIndex, note.chapterTitle)
+            val chapter = view.chapters.getOrNull(ci) ?: return null
             val sameBlock = chapter.blocks.getOrNull(note.blockIndex)?.displayText
-            if (sameBlock != null && note.end <= sameBlock.length && sameBlock.substring(note.start, note.end) == note.quote) {
-                return@map note.copy(chapterIndex = ci, lost = false)
+            if (sameBlock != null && note.start >= 0 && note.start <= note.end && note.end <= sameBlock.length &&
+                sameBlock.substring(note.start, note.end) == note.quote
+            ) {
+                return ci to TextLocation(note.blockIndex, note.start)
             }
             // 先找原段落附近，再找全章。
             val order = chapter.blocks.indices.sortedBy { kotlin.math.abs(it - note.blockIndex) }
             for (bi in order) {
                 val text = chapter.blocks[bi].displayText ?: continue
                 val at = text.indexOf(note.quote)
-                if (at >= 0) return@map note.copy(chapterIndex = ci, blockIndex = bi, start = at, end = at + note.quote.length, lost = false)
+                if (at >= 0) return ci to TextLocation(bi, at)
             }
-            note.copy(chapterIndex = ci, lost = true)
+            return null
         }
+
+        val notes = notes.map { note ->
+            val found = findNote(content, note) ?: alternateContents.firstNotNullOfOrNull { findNote(it, note) }
+                ?: return@map note.copy(lost = true)
+            val (ci, location) = found
+            val chapter = content.chapters.getOrNull(ci) ?: return@map note.copy(lost = true)
+            val sourceText = chapter.blocks.getOrNull(location.block)?.displayText ?: return@map note.copy(lost = true)
+            val end = location.char + note.quote.length
+            if (end > sourceText.length) return@map note.copy(lost = true)
+            note.copy(chapterIndex = ci, chapterTitle = chapter.title, blockIndex = location.block,
+                start = location.char, end = end, quote = sourceText.substring(location.char, end), lost = false)
+        }
+
+        fun findBookmark(view: BookContent, bookmark: Bookmark): Pair<Int, TextLocation>? {
+            val ci = chapterOf(view, bookmark.chapterIndex, bookmark.chapterTitle)
+            val chapter = view.chapters.getOrNull(ci) ?: return null
+            if (bookmark.anchor.text.isEmpty()) {
+                return ci to TextLocation(bookmark.itemIndex - 1, bookmark.charOffset)
+            }
+            val found = TextAnchors.resolve(chapter, bookmark.itemIndex - 1, bookmark.charOffset, bookmark.anchor)
+                ?: return null
+            return ci to found
+        }
+
         val bookmarks = bookmarks.map { b ->
-            val ci = chapterOf(b.chapterIndex, b.chapterTitle)
+            val found = findBookmark(content, b) ?: alternateContents.firstNotNullOfOrNull { findBookmark(it, b) }
+                ?: return@map b.copy(lost = true)
+            val (ci, location) = found
             val chapter = content.chapters.getOrNull(ci) ?: return@map b.copy(lost = true)
-            if (b.anchor.text.isEmpty()) return@map b.copy(chapterIndex = ci, lost = false)
-            val found = TextAnchors.resolve(chapter, b.itemIndex - 1, b.charOffset, b.anchor)
-            if (found == null) b.copy(chapterIndex = ci, lost = true)
-            else b.copy(chapterIndex = ci, itemIndex = found.block + 1, charOffset = found.char, lost = false)
+            val anchor = if (b.anchor.text.isEmpty()) b.anchor else TextAnchors.capture(chapter, location.block, location.char)
+            b.copy(chapterIndex = ci, chapterTitle = chapter.title, itemIndex = location.block + 1,
+                charOffset = location.char, anchor = anchor, lost = false)
         }
         return Marks(bookmarks, notes)
     }

@@ -17,15 +17,19 @@ import java.util.UUID
 class Library(private val context: Context) {
 
     private val root = File(context.filesDir, "books").apply { mkdirs() }
+    private val indexFile = File(root, "index.json")
 
     init {
         BookParser.pdfAspects = PdfPages::aspects
+        recoverInterruptedRules()
     }
-    private val indexFile = File(root, "index.json")
 
     private companion object {
         const val CACHE = "cache.bin"
         const val RULES = "rules.json"
+        const val RULES_INDEX_BEFORE = "index-before.json"
+        const val RULES_COMMITTED = "committed"
+        val RULES_STAGE = Regex("""\.rules-([A-Za-z0-9-]{1,64})-([0-9a-fA-F-]{36})""")
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
@@ -204,12 +208,14 @@ class Library(private val context: Context) {
     /** 保存文本规则并重新解析。 */
     @Synchronized
     fun saveRules(entry: BookEntry, rules: TextRules): BookContent {
+        recoverInterruptedRules()
         val dir = File(root, entry.id)
         require(dir.isDirectory) { "书籍文件不存在" }
         val staging = File(root, ".rules-${entry.id}-${UUID.randomUUID()}")
         val next = File(staging, "next")
         val previous = File(staging, "previous")
-        var committed = false
+        var swapped = false
+        var finished = false
         try {
             // 规则、插图和缓存都只改临时副本；重解析失败不能让原书变得不可读。
             check(dir.copyRecursively(next)) { "无法准备书籍规则目录" }
@@ -221,8 +227,13 @@ class Library(private val context: Context) {
             }
             val content = buildCache(next, entry.sources)
             require(content.chapters.isNotEmpty()) { "新规则没有读出正文" }
+            // 交换前保存旧索引。若进程死在目录交换与索引提交之间，启动时将二者一起回滚。
+            val indexBefore = indexFile.readBytes()
+            parseIndex(indexBefore.toString(Charsets.UTF_8))
+            File(staging, RULES_INDEX_BEFORE).writeBytes(indexBefore)
             try {
                 check(dir.renameTo(previous)) { "无法保存旧书籍文件" }
+                swapped = true
                 check(next.renameTo(dir)) { "无法应用新的文本规则" }
                 update { list ->
                     list.map {
@@ -230,23 +241,74 @@ class Library(private val context: Context) {
                         else it
                     }
                 }
-                committed = true
+                // buildCache 返回的章节懒读 staging；提交前先从正式路径重新打开。
+                val installed = this.content(entry)
+                val marker = File(staging, "$RULES_COMMITTED.tmp")
+                marker.writeText("ok")
+                check(marker.renameTo(File(staging, RULES_COMMITTED))) { "无法完成文本规则事务" }
+                finished = true
+                return installed
             } catch (error: Throwable) {
-                if (previous.isDirectory) {
-                    if (dir.exists() && !dir.renameTo(next) && !dir.deleteRecursively()) {
-                        error.addSuppressed(IllegalStateException("无法移走新规则书籍文件"))
-                    }
-                    if (!previous.renameTo(dir)) {
-                        error.addSuppressed(IllegalStateException("无法还原旧书籍文件：${previous.absolutePath}"))
+                if (swapped) {
+                    try {
+                        rollbackRules(staging, dir)
+                        finished = true
+                    } catch (rollbackError: Throwable) {
+                        error.addSuppressed(rollbackError)
                     }
                 }
                 throw error
             }
-            // buildCache 的章节按需读取 staging/cache.bin；目录已移动，须从正式路径重新打开。
-            return this.content(entry)
         } finally {
-            // 回滚失败时留下 previous，保留唯一的旧副本供人工恢复。
-            if (committed || !previous.exists()) staging.deleteRecursively()
+            // 回滚失败时保留 previous、旧索引快照与可能的新书副本，留待下次启动重试。
+            if (finished || !swapped) staging.deleteRecursively()
+        }
+    }
+
+    /** 修复进程死亡时遗留的规则目录事务；在首次读取书架前执行。 */
+    private fun recoverInterruptedRules() {
+        root.listFiles().orEmpty().forEach { staging ->
+            if (!staging.isDirectory) return@forEach
+            val id = RULES_STAGE.matchEntire(staging.name)?.groupValues?.get(1) ?: return@forEach
+            val dir = File(root, id)
+            val committed = File(staging, RULES_COMMITTED).isFile
+            if (committed && dir.isDirectory) {
+                staging.deleteRecursively()
+                return@forEach
+            }
+            // 已提交的目录异常失踪时仍优先救回旧副本，不能把索引中的书当成空书。
+            rollbackRules(staging, dir)
+            staging.deleteRecursively()
+        }
+    }
+
+    /** 未提交的交换总是恢复旧目录与旧索引；abandoned 使中途再次死亡时可幂等重试。 */
+    private fun rollbackRules(staging: File, dir: File) {
+        val previous = File(staging, "previous")
+        val abandoned = File(staging, "abandoned")
+        val changed = previous.isDirectory || abandoned.isDirectory
+        if (previous.isDirectory) {
+            if (dir.exists()) {
+                check(!abandoned.exists() && dir.renameTo(abandoned)) { "无法暂存未提交的规则目录：${dir.absolutePath}" }
+            }
+            check(previous.renameTo(dir)) { "无法还原旧书籍文件：${previous.absolutePath}" }
+        } else {
+            check(dir.isDirectory) { "规则事务的旧书籍目录失踪：${dir.absolutePath}" }
+        }
+        if (changed) {
+            File(staging, RULES_INDEX_BEFORE).takeIf { it.isFile }?.let { snapshot ->
+                val bytes = snapshot.readBytes()
+                parseIndex(bytes.toString(Charsets.UTF_8))
+                if (!indexFile.isFile || !indexFile.readBytes().contentEquals(bytes)) {
+                    val tmp = File(root, "index.rules-recovery-${UUID.randomUUID()}.tmp")
+                    try {
+                        tmp.writeBytes(bytes)
+                        check(tmp.renameTo(indexFile)) { "无法还原规则变更前的书架索引" }
+                    } finally {
+                        tmp.delete()
+                    }
+                }
+            }
         }
     }
 
@@ -394,6 +456,27 @@ class Library(private val context: Context) {
         return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrDefault(Marks())
     }
 
+    /** 本机旧版允许缺少书签文件；备份里一旦声明有书签文件，就必须能完整读回。 */
+    private fun validateBackupMarks(dir: File) {
+        val file = File(dir, "marks.json")
+        if (!file.exists()) return
+        require(file.isFile) { "书签文件无效" }
+        val json = JSONObject(file.readText())
+        // fromJson 为日常读取兼容旧数据，会把缺失/错误类型的数组当空列表；恢复时不能这样静默丢掉书签。
+        require(json.optJSONArray("bookmarks") != null && json.optJSONArray("notes") != null) {
+            "书签文件结构损坏"
+        }
+        val marks = Marks.fromJson(json)
+        require(marks.bookmarks.all { mark ->
+            mark.id.isNotBlank() && mark.chapterTitle.isNotBlank() && mark.chapterIndex >= 0 &&
+                mark.itemIndex >= 0 && mark.charOffset >= 0 && mark.anchor.offset in 0..mark.anchor.text.length
+        }) { "书签位置损坏" }
+        require(marks.notes.all { note ->
+            note.id.isNotBlank() && note.chapterTitle.isNotBlank() && note.chapterIndex >= 0 &&
+                note.blockIndex >= 0 && note.start >= 0 && note.end >= note.start && note.quote.isNotEmpty()
+        }) { "批注范围损坏" }
+    }
+
     @Synchronized
     fun saveMarks(id: String, marks: Marks) {
         val dir = File(root, id).takeIf { it.isDirectory } ?: return
@@ -499,6 +582,12 @@ class Library(private val context: Context) {
             }
             val books = index ?: throw IllegalArgumentException("不是灵阅的备份文件")
             requireNotNull(manifest) { "不是灵阅的备份文件" }
+            // 同一目录不能安装两次：重复 ID 会让回滚把刚还原的旧书再次移走。
+            val seenIds = HashSet<String>()
+            for (i in 0 until books.length()) {
+                val id = books.optJSONObject(i)?.optString("id").orEmpty()
+                if (BACKUP_ID.matches(id)) require(seenIds.add(id)) { "备份索引包含重复书籍 ID，未修改现有数据" }
+            }
             val candidates = (0 until books.length()).mapNotNull { i ->
                 val e = runCatching { books.getJSONObject(i).toEntry() }.getOrNull() ?: return@mapNotNull null
                 if (!BACKUP_ID.matches(e.id)) return@mapNotNull null
@@ -532,6 +621,7 @@ class Library(private val context: Context) {
                                 File(next, source.file).length() == 0L && old.isFile && old.length() > 0L
                             }) { "来源文件为空" }
                         }
+                        validateBackupMarks(next)
                         val parsed = buildCache(next, e.sources)
                         require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
                         parsed
@@ -543,7 +633,7 @@ class Library(private val context: Context) {
                     restored += e.copy(chapterCount = content.chapters.size, charCount = content.charCount,
                         cover = content.cover, description = content.description)
                 }
-                require(restored.isNotEmpty()) { "备份中的书籍均无法读取，未修改现有数据" }
+                require(restored.isNotEmpty()) { "备份中的书籍均无法读取（正文或书签损坏），未修改现有数据" }
                 try {
                     for (e in restored) {
                         val current = File(root, e.id)

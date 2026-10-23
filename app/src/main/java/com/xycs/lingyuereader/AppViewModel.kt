@@ -157,8 +157,8 @@ internal object SelectionSnap {
     }
 }
 
-/** 正在读的书：书架条目加上解析好的正文。 */
-data class OpenBook(val entry: BookEntry, val content: BookContent)
+/** 正在读的书：显示正文和未转换的来源正文共享块坐标；标记与进度锚在来源正文。 */
+data class OpenBook(val entry: BookEntry, val content: BookContent, val sourceContent: BookContent = content)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -645,11 +645,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         bookLoadJob = viewModelScope.launch {
             try {
                 val mode = _settings.value.chineseConvert
-                val content = withContext(Dispatchers.IO) { converted(library.content(entry), mode) }
-                val marks = withContext(Dispatchers.IO) { library.marks(entry.id).resolve(content) }
+                val (loaded, marks) = withContext(Dispatchers.IO) {
+                    val source = library.content(entry)
+                    val content = converted(source, mode)
+                    val stored = library.marks(entry.id)
+                    val direct = stored.resolve(source)
+                    val directProgress = entry.progress?.let { TextAnchors.rebaseProgress(source, it) }
+                    // 旧版可能把显示态的繁简文字写进锚点；等长转换视图只作定位，
+                    // 成功后统一换算回来源文字，不能在切换显示设置时改写 marks.json。
+                    val needsAlternates = direct.bookmarks.any { it.lost } || direct.notes.any { it.lost } ||
+                        (entry.progress != null && directProgress == null)
+                    val alternates = if (needsAlternates) listOf(
+                        converted(source, ChineseConvert.TO_SIMPLIFIED),
+                        converted(source, ChineseConvert.TO_TRADITIONAL),
+                    ) else emptyList()
+                    val marks = if (direct.bookmarks.any { it.lost } || direct.notes.any { it.lost })
+                        stored.resolve(source, alternates) else direct
+                    val progress = directProgress ?: entry.progress?.let { TextAnchors.rebaseProgress(source, it, alternates) }
+                    OpenBook(if (progress != null) entry.copy(progress = progress) else entry, content, source) to marks
+                }
                 if (generation != bookLoadGeneration) return@launch
                 _marks.value = marks
-                _openBook.value = OpenBook(entry, content)
+                _openBook.value = loaded
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -691,7 +708,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
         val book = _openBook.value ?: return
-        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
         val anchor = TextAnchors.capture(chapter, itemIndex - 1, charOffset)
         val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset, anchor)
         if (book.entry.progress == progress) return
@@ -711,7 +728,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 在某块的某个位置加或删书签（同一块已有书签时删除）。 */
     fun toggleBookmark(chapterIndex: Int, blockIndex: Int, charOffset: Int) {
         val book = _openBook.value ?: return
-        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
         val itemIndex = blockIndex + 1
         val existing = _marks.value.bookmarks.filter { it.chapterIndex == chapterIndex && it.itemIndex == itemIndex }
         if (existing.isNotEmpty()) {
@@ -732,7 +749,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addNote(chapterIndex: Int, blockIndex: Int, start: Int, end: Int, text: String, color: MarkColor) {
         val book = _openBook.value ?: return
-        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
         val shown = chapter.blocks.getOrNull(blockIndex)?.displayText ?: return
         val s = start.coerceIn(0, shown.length)
         val e = end.coerceIn(s, shown.length)

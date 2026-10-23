@@ -13,8 +13,8 @@ data class DayStats(val millis: Long = 0, val chars: Long = 0, val books: Map<St
  * 阅读统计，存在 files/stats.json：按天记时长与字数。
  * 字数只算顺着往下读的部分（跳章、拖进度条不算），用来估计个人阅读速度。
  */
-class ReadingStats(private val file: File) {
-    private val atomicFile = AtomicFile(file)
+class ReadingStats internal constructor(private val file: File, private val atomicFile: AtomicFile) {
+    constructor(file: File) : this(file, AtomicFile(file))
 
     @Synchronized
     fun days(): Map<LocalDate, DayStats> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyMap())
@@ -66,16 +66,16 @@ class ReadingStats(private val file: File) {
         }
         file.parentFile?.mkdirs()
         val bytes = JSONObject().put("days", days).toString().toByteArray(Charsets.UTF_8)
-        var output: FileOutputStream? = null
+        val output: FileOutputStream = atomicFile.startWrite()
         try {
-            output = atomicFile.startWrite()
             output.write(bytes)
-            atomicFile.finishWrite(output)
-            check(atomicFile.readFully().contentEquals(bytes)) { "无法保存阅读统计" }
         } catch (error: Exception) {
+            // 仅写入阶段可以回滚；旧版 Android 的 finishWrite 已删除 .bak。
             atomicFile.failWrite(output)
             throw error
         }
+        atomicFile.finishWrite(output)
+        check(atomicFile.readFully().contentEquals(bytes)) { "无法保存阅读统计" }
     }
 
     private fun parse(json: String): Map<LocalDate, DayStats> {

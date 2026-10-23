@@ -110,4 +110,63 @@ class MarksTest {
         assertTrue(restored.bookmarks.single().lost)
         assertEquals(restored, Marks.fromJson(JSONObject(restored.toJson().toString())))
     }
+
+    @Test
+    fun oldTraditionalDisplayAnchorRebasesToSimplifiedSourceAndSurvivesRestart() {
+        val source = book("第一章 开端" to listOf("她的头发很长，后来又走远了。"))
+        val toTraditional = ChineseConverter("开端\t開端\n头发\t頭髮\n后来\t後來\n".byteInputStream())
+        val traditional = toTraditional.convert(source)
+        val chapter = traditional.chapters.single()
+        val old = Bookmark("b", 0, chapter.title, 1, 2, "頭髮", 1, TextAnchors.capture(chapter, 0, 2))
+
+        val rebased = Marks(bookmarks = listOf(old)).resolve(source, listOf(traditional)).bookmarks.single()
+
+        assertFalse(rebased.lost)
+        assertEquals("第一章 开端", rebased.chapterTitle)
+        assertEquals(2, rebased.charOffset)
+        assertTrue(rebased.anchor.text.contains("头发"))
+        val reopened = Marks.fromJson(JSONObject(Marks(bookmarks = listOf(rebased)).toJson().toString())).resolve(source)
+        assertFalse(reopened.bookmarks.single().lost)
+
+        val deleted = book("第一章 开端" to listOf("她已经搬走，再无原句。"))
+        assertTrue(Marks(bookmarks = listOf(old)).resolve(deleted, listOf(toTraditional.convert(deleted))).bookmarks.single().lost)
+    }
+
+    @Test
+    fun oldSimplifiedDisplayAnchorRebasesToTraditionalSource() {
+        val source = book("第一章 開端" to listOf("她的頭髮很長，後來又走遠了。"))
+        val toSimplified = ChineseConverter("開端\t开端\n頭髮\t头发\n後來\t后来\n".byteInputStream())
+        val simplified = toSimplified.convert(source)
+        val chapter = simplified.chapters.single()
+        val old = Bookmark("b", 0, chapter.title, 1, 2, "头发", 1, TextAnchors.capture(chapter, 0, 2))
+
+        val rebased = Marks(bookmarks = listOf(old)).resolve(source, listOf(simplified)).bookmarks.single()
+
+        assertFalse(rebased.lost)
+        assertEquals("第一章 開端", rebased.chapterTitle)
+        assertEquals(2, rebased.charOffset)
+        assertTrue(rebased.anchor.text.contains("頭髮"))
+    }
+
+    @Test
+    fun convertedLegacyProgressRebasesToSourceChapterAndCharacter() {
+        val source = book(
+            "第一章 开端" to listOf("先走一段。"),
+            "第二章 头发" to listOf("长长的开头。", "她的头发很长，后来又走远了。"),
+        )
+        val toTraditional = ChineseConverter("开端\t開端\n头发\t頭髮\n后来\t後來\n".byteInputStream())
+        val traditional = toTraditional.convert(source)
+        val chapter = traditional.chapters[1]
+        val old = ReadingProgress(1, chapter.title, 2, 0, 2, TextAnchors.capture(chapter, 1, 2))
+
+        val direct = TextAnchors.rebaseProgress(source, old)
+        val rebased = TextAnchors.rebaseProgress(source, old, listOf(traditional))
+
+        assertEquals(null, direct)
+        assertEquals(1, rebased?.chapterIndex)
+        assertEquals("第二章 头发", rebased?.chapterTitle)
+        assertEquals(2, rebased?.itemIndex)
+        assertEquals(2, rebased?.charOffset)
+        assertTrue(rebased?.anchor?.text.orEmpty().contains("头发"))
+    }
 }

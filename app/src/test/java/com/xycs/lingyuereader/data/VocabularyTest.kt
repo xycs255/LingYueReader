@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.data
 
+import android.util.AtomicFile
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -11,6 +12,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
@@ -110,5 +112,43 @@ class VocabularyTest {
         assertTrue(blocker.deleteRecursively())
         v.add(word("门口"))
         assertEquals(listOf("门口", "银行"), v.list().map { it.word })
+    }
+
+    @Test
+    @Config(sdk = [26, 28, 29, 36])
+    fun readFailureAfterCommitNeverRollsBackVocabulary() {
+        val file = File(tmp.root, "v.json")
+        Vocabulary(file).add(word("银行"))
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            var committed = false
+            var failWrites = 0
+
+            override fun finishWrite(str: FileOutputStream?) {
+                super.finishWrite(str)
+                committed = true
+            }
+
+            override fun readFully(): ByteArray {
+                if (committed) {
+                    committed = false
+                    throw IOException("injected readFully after finishWrite")
+                }
+                return super.readFully()
+            }
+
+            override fun failWrite(str: FileOutputStream?) {
+                failWrites++
+                super.failWrite(str)
+            }
+        }
+
+        val error = runCatching { Vocabulary(file, injected).add(word("门口")) }.exceptionOrNull()
+
+        assertTrue(error is IOException && error.message == "injected readFully after finishWrite")
+        assertEquals(0, injected.failWrites)
+        assertTrue(file.isFile)
+        assertFalse(original.contentEquals(file.readBytes()))
+        assertEquals(listOf("门口", "银行"), Vocabulary(file).list().map { it.word })
     }
 }

@@ -201,7 +201,7 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
             }
         } else {
             CompositionLocalProvider(LocalAmbientLight provides ambient) {
-                Reader(vm, screen, loaded.entry, loaded.content, settings, palette)
+                Reader(vm, screen, loaded.entry, loaded.content, loaded.sourceContent, settings, palette)
             }
         }
     }
@@ -220,16 +220,16 @@ private data class Position(
 }
 
 /** 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。 */
-private fun startOf(screen: Screen.Reader, entry: BookEntry, content: BookContent): Position {
+private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: BookContent): Position {
     screen.chapterIndex?.let { index ->
-        val c = index.coerceIn(content.chapters.indices)
+        val c = index.coerceIn(sourceContent.chapters.indices)
         return Position(c, screen.blockIndex?.let { it + HEADER_ITEMS } ?: 0, screen.offset, screen.char)
     }
     val p = entry.progress ?: return Position(0, 0, 0, 0)
-    val byIndex = content.chapters.getOrNull(p.chapterIndex)?.takeIf { it.title == p.chapterTitle }
-    val index = if (byIndex != null) p.chapterIndex else content.chapters.indexOfFirst { it.title == p.chapterTitle }
-    if (index < 0) return Position(p.chapterIndex.coerceIn(content.chapters.indices), 0, 0, 0)
-    val chapter = content.chapters[index]
+    val byIndex = sourceContent.chapters.getOrNull(p.chapterIndex)?.takeIf { it.title == p.chapterTitle }
+    val index = if (byIndex != null) p.chapterIndex else sourceContent.chapters.indexOfFirst { it.title == p.chapterTitle }
+    if (index < 0) return Position(p.chapterIndex.coerceIn(sourceContent.chapters.indices), 0, 0, 0)
+    val chapter = sourceContent.chapters[index]
     val found = TextAnchors.resolve(chapter, p.itemIndex - HEADER_ITEMS, p.charOffset, p.anchor)
     val block = (found?.block ?: p.itemIndex - HEADER_ITEMS).coerceIn(-1, chapter.blocks.lastIndex)
     val char = found?.char ?: p.charOffset.coerceIn(0, chapter.blocks.getOrNull(block)?.displayText?.length ?: 0)
@@ -266,6 +266,7 @@ private fun Reader(
     screen: Screen.Reader,
     entry: BookEntry,
     content: BookContent,
+    sourceContent: BookContent,
     settings: ReaderSettings,
     palette: ReaderPalette,
 ) {
@@ -277,7 +278,7 @@ private fun Reader(
         value = if (settings.pinyin) vm.pinyinAnnotator() else null
     }
     val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
-    val initial = remember(screen, content) { startOf(screen, entry, content) }
+    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
     val chapter = content.chapters[chapterIndex]

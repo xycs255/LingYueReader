@@ -57,7 +57,10 @@ class LibraryTest {
         return library.add(library.describe(listOf(Uri.fromFile(file))), null)
     }
 
-    private fun replacementBackup(replacements: Map<String, ByteArray>): ByteArray {
+    private fun replacementBackup(
+        replacements: Map<String, ByteArray>,
+        backedUpMarks: Map<String, ByteArray> = emptyMap(),
+    ): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             fun put(name: String, bytes: ByteArray) {
@@ -69,6 +72,7 @@ class LibraryTest {
                 entry.sources.forEach { source ->
                     put("books/${entry.id}/${source.file}", replacements[entry.id] ?: library.bookFile(entry.id, source.file).readBytes())
                 }
+                backedUpMarks[entry.id]?.let { put("books/${entry.id}/marks.json", it) }
             }
         }
         return out.toByteArray()
@@ -420,6 +424,42 @@ class LibraryTest {
     }
 
     @Test
+    fun restoreRejectsDuplicateBookIdsBeforeReplacingTheLocalBook() {
+        val entry = import("重复索引.txt", "第一章 起\n　　旧正文。\n".toByteArray())
+        val marks = Marks(bookmarks = listOf(Bookmark("keep", 0, "第一章 起", 1, 0, "旧正文", 1)))
+        library.saveMarks(entry.id, marks)
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val oldSource = source.readBytes()
+        val marksFile = library.bookFile(entry.id, "marks.json")
+        val oldMarks = marksFile.readBytes()
+        val duplicateIndex = org.json.JSONArray(index.readText()).apply { put(getJSONObject(0)) }
+        val archive = ByteArrayOutputStream().also { out ->
+            ZipOutputStream(out).use { zip ->
+                fun put(name: String, bytes: ByteArray) {
+                    zip.putNextEntry(ZipEntry(name))
+                    zip.write(bytes)
+                    zip.closeEntry()
+                }
+                put("lingyue-backup.json", """{"format":1}""".toByteArray())
+                put("books/index.json", duplicateIndex.toString().toByteArray())
+                put("books/${entry.id}/${entry.sources.single().file}", "第一章 起\n　　替换正文。\n".toByteArray())
+                put("books/${entry.id}/marks.json", Marks().toJson().toString().toByteArray())
+            }
+        }.toByteArray()
+
+        val error = runCatching { library.restore(archive.inputStream()) }.exceptionOrNull()
+
+        assertTrue(error?.message.orEmpty().contains("重复书籍 ID"))
+        assertArrayEquals(oldIndex, index.readBytes())
+        assertArrayEquals(oldSource, source.readBytes())
+        assertArrayEquals(oldMarks, marksFile.readBytes())
+        assertEquals(marks, library.marks(entry.id))
+        assertEquals(listOf(Block.Para("旧正文。")), library.content(library.list().single()).chapters.single().blocks)
+    }
+
+    @Test
     fun restoreSkipsUnreadableReplacementsAndKeepsRestoringValidBooks() {
         val empty = import("空来源.txt", "第一章 起\n　　仍能读。\n".toByteArray())
         val epubBytes = epub()
@@ -451,6 +491,72 @@ class LibraryTest {
         assertEquals(listOf(Block.Para("仍能读。")), library.content(empty).chapters.single().blocks)
         assertEquals("正文", library.content(invalidEpub).chapters.single().blocks.filterIsInstance<Block.Para>().single().text)
         assertEquals(listOf(Block.Para("恢复成功。")), library.content(after.getValue(valid.id)).chapters.single().blocks)
+    }
+
+    @Test
+    fun restoreSkipsCorruptMarksAndPreservesExistingBookmarksWhileRestoringOtherBooks() {
+        val unsafe = import("旧书签.txt", "第一章 起\n　　旧正文。\n".toByteArray())
+        val safe = import("有效书.txt", "第一章 起\n　　原正文。\n".toByteArray())
+        val oldMarks = Marks(bookmarks = listOf(Bookmark("old", 0, "第一章 起", 1, 0, "旧正文", 1)))
+        library.saveMarks(unsafe.id, oldMarks)
+        val oldSource = library.bookFile(unsafe.id, unsafe.sources.single().file).readBytes()
+        val oldEntry = library.list().first { it.id == unsafe.id }
+        val newMarks = Marks(bookmarks = listOf(Bookmark("new", 0, "第一章 起", 1, 0, "新正文", 2)))
+        val archive = replacementBackup(
+            replacements = mapOf(
+                unsafe.id to "第一章 起\n　　替换正文。\n".toByteArray(),
+                safe.id to "第一章 起\n　　新正文。\n".toByteArray(),
+            ),
+            backedUpMarks = mapOf(
+                unsafe.id to """{"bookmarks":"已损坏","notes":[]}""".toByteArray(),
+                safe.id to newMarks.toJson().toString().toByteArray(),
+            ),
+        )
+
+        val result = library.restore(archive.inputStream())
+
+        assertEquals(1, result.books)
+        assertEquals(1, result.skippedBooks)
+        assertEquals(oldEntry, library.list().first { it.id == unsafe.id })
+        assertArrayEquals(oldSource, library.bookFile(unsafe.id, unsafe.sources.single().file).readBytes())
+        assertEquals(oldMarks, library.marks(unsafe.id))
+        assertEquals(newMarks, library.marks(safe.id))
+        assertEquals(listOf(Block.Para("新正文。")), library.content(library.list().first { it.id == safe.id }).chapters.single().blocks)
+    }
+
+    @Test
+    fun restoreRejectsAllCorruptMarksWithoutChangingTheLocalBook() {
+        val entry = import("本机书签.txt", "第一章 起\n　　仍能阅读。\n".toByteArray())
+        val marks = Marks(bookmarks = listOf(Bookmark("keep", 0, "第一章 起", 1, 0, "仍能阅读", 1)))
+        library.saveMarks(entry.id, marks)
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val oldSource = source.readBytes()
+        val marksFile = library.bookFile(entry.id, "marks.json")
+        val oldMarks = marksFile.readBytes()
+
+        for (broken in listOf(
+            "{broken".toByteArray(),
+            """{"bookmarks":[],"notes":"已损坏"}""".toByteArray(),
+            """{"bookmarks":[{"id":"缺少位置"}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[{"id":"b","chapter":-1,"title":"第一章 起","item":1,"char":0}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[],"notes":[{"id":"n","chapter":0,"title":"第一章 起","block":0,"start":5,"end":2,"quote":"正文","color":"YELLOW"}]}""".toByteArray(),
+            """{"bookmarks":[],"notes":[{"id":"n","chapter":0,"title":"第一章 起","block":0,"start":0,"end":0,"quote":"","color":"YELLOW"}]}""".toByteArray(),
+        )) {
+            val archive = replacementBackup(
+                mapOf(entry.id to "第一章 起\n　　替换正文。\n".toByteArray()),
+                mapOf(entry.id to broken),
+            )
+            val error = runCatching { library.restore(archive.inputStream()) }.exceptionOrNull()
+
+            assertTrue(error?.message.orEmpty().contains("书签损坏"))
+            assertArrayEquals(oldIndex, index.readBytes())
+            assertArrayEquals(oldSource, source.readBytes())
+            assertArrayEquals(oldMarks, marksFile.readBytes())
+            assertEquals(marks, library.marks(entry.id))
+            assertEquals(listOf(Block.Para("仍能阅读。")), library.content(entry).chapters.single().blocks)
+        }
     }
 
     @Test

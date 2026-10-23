@@ -32,8 +32,8 @@ data class VocabWord(
 }
 
 /** 生词本，存在 files/vocabulary.json。按词去重，后收的覆盖原句与释义。 */
-class Vocabulary(private val file: File) {
-    private val atomicFile = AtomicFile(file)
+class Vocabulary internal constructor(private val file: File, private val atomicFile: AtomicFile) {
+    constructor(file: File) : this(file, AtomicFile(file))
 
     @Synchronized
     fun list(): List<VocabWord> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyList())
@@ -110,16 +110,16 @@ class Vocabulary(private val file: File) {
         }
         file.parentFile?.mkdirs()
         val bytes = array.toString().toByteArray(Charsets.UTF_8)
-        var output: FileOutputStream? = null
+        val output: FileOutputStream = atomicFile.startWrite()
         try {
-            output = atomicFile.startWrite()
             output.write(bytes)
-            atomicFile.finishWrite(output)
-            check(atomicFile.readFully().contentEquals(bytes)) { "无法保存生词本" }
         } catch (error: Exception) {
+            // 仅写入阶段可以回滚；旧版 Android 的 finishWrite 已删除 .bak。
             atomicFile.failWrite(output)
             throw error
         }
+        atomicFile.finishWrite(output)
+        check(atomicFile.readFully().contentEquals(bytes)) { "无法保存生词本" }
     }
 
     private fun parse(json: String): List<VocabWord> {
