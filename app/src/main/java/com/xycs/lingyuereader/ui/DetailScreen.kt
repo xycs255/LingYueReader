@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,9 +51,11 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
     val entry = shelf.firstOrNull { it.id == bookId }
     val dialogs = remember { BookDialogState() }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "书籍详情",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
@@ -59,7 +65,7 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
             )
         },
     ) { padding ->
-        if (entry == null) return@Scaffold
+        if (entry == null) return@GlassScaffold
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
             contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
@@ -69,14 +75,14 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
             entry.description?.let { text ->
                 item {
                     SmallTitle("简介")
-                    Card(Modifier.padding(horizontal = 12.dp)) {
+                    GlassCard(Modifier.padding(horizontal = 12.dp)) {
                         Text(text, style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(4.dp))
                     }
                 }
             }
             item {
                 SmallTitle("信息")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     InfoRow("篇幅", "${entry.chapterCount} 章 · 约 ${wordCount(entry.charCount)}")
                     InfoRow("累计阅读", durationLabel(entry.readMillis))
                     InfoRow("添加于", dateLabel(entry.addedAt))
@@ -86,7 +92,7 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
             }
             item {
                 SmallTitle("操作")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     if (entry.sources.any { it.uri != null }) {
                         ArrowPreference(title = "从原文件刷新", summary = "原文件改过后重新读取", onClick = { vm.refresh(entry) })
                     }

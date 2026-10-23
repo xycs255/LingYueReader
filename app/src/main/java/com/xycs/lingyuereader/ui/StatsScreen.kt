@@ -1,5 +1,8 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -59,9 +62,11 @@ fun StatsScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) { vm.reloadStats() }
     val today = LocalDate.now()
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "阅读统计",
             )
         },
@@ -75,7 +80,7 @@ fun StatsScreen(vm: AppViewModel) {
                 val week = ReadingStats.total(days, today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), today)
                 val month = ReadingStats.total(days, today.withDayOfMonth(1), today)
                 val year = ReadingStats.total(days, today.withDayOfYear(1), today)
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), insideMargin = PaddingValues(16.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), insideMargin = PaddingValues(16.dp)) {
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Figure("今天", minutes(days[today]?.millis ?: 0))
                         Figure("本周", minutes(week))
@@ -91,7 +96,7 @@ fun StatsScreen(vm: AppViewModel) {
                     }
                 }
                 SmallTitle("近 20 周")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
                     Heatmap(days, today, weeks = 20)
                     Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("少", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)

@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassDialog
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -57,9 +62,11 @@ fun MeScreen(vm: AppViewModel) {
         }
     }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "我的",
             )
         },
@@ -73,7 +80,7 @@ fun MeScreen(vm: AppViewModel) {
             item {
                 if (busy) LinearProgressIndicator(Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
                 SmallTitle("阅读")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     ArrowPreference(
                         title = "词典",
                         summary = buildString {
@@ -84,7 +91,7 @@ fun MeScreen(vm: AppViewModel) {
                     )
                 }
                 SmallTitle("数据")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
                     ArrowPreference(
                         title = "备份书架",
@@ -100,7 +107,7 @@ fun MeScreen(vm: AppViewModel) {
                     )
                 }
                 SmallTitle("关于")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     val version = remember {
                         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
                     }
@@ -119,7 +126,7 @@ fun MeScreen(vm: AppViewModel) {
             }
         }
         confirmRestore?.let { uri ->
-            OverlayDialog(
+            GlassDialog(
                 show = true,
                 title = "从备份恢复",
                 summary = "备份里的书会加回书架；同一本书会用备份里的版本（含进度、书签批注）覆盖。阅读设置、生词本和阅读统计也会恢复。",

@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
@@ -67,9 +71,11 @@ fun VocabularyScreen(vm: AppViewModel) {
     val learning = words.filterNot { it.mastered }
     val shown = words.filter { it.mastered == mastered }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = if (reviewing) "复习生词" else "生词本",
                 navigationIcon = {
                     if (reviewing) {
@@ -93,7 +99,7 @@ fun VocabularyScreen(vm: AppViewModel) {
     ) { padding ->
         if (reviewing) {
             Review(learning, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.setMastered(w.word, known) }, onDone = { reviewing = false })
-            return@Scaffold
+            return@GlassScaffold
         }
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
@@ -150,7 +156,7 @@ private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
 
 @Composable
 private fun WordCard(w: VocabWord, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
+    GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(w.word, fontSize = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (w.reading.isNotBlank()) {

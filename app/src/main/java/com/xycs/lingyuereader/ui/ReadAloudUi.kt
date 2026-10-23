@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
+import com.xycs.lingyuereader.ui.glass.readerGlass
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,9 +52,7 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(start = 16.dp, end = 16.dp, bottom = 36.dp)
             .fillMaxWidth()
-            .shadow(6.dp, RoundedCornerShape(20.dp))
-            .clip(RoundedCornerShape(20.dp))
-            .background(palette.bar)
+            .readerGlass(RoundedCornerShape(20.dp), palette, LocalGlassBackdrop.current)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -53,8 +53,11 @@
   长按分组标签改名或删除。
 - **书架**：网格或列表显示，按最近阅读、书名、添加时间排序，可搜索书名和作者；书籍详情页显示简介、篇幅、
   累计阅读时长、来源文件等。阅读页底部显示时间和电量。
-- **底部导航**：书架、生词本、统计、我的四页，悬浮的液态玻璃导航栏（Android 13 起有折射、模糊和随手机倾斜变化的高光；
-  更早的系统是同款纯色导航栏）；点标签切换，也可以按住导航栏左右拖动选择；不在书架页时返回键先回书架。
+- **底部导航**：书架、生词本、统计、我的四页，悬浮的液态玻璃导航栏；点标签切换，也可以按住导航栏左右拖动选择；
+  不在书架页时返回键先回书架。
+- **透明液态玻璃界面**：顶栏、底部导航、对话框、底部面板、下拉菜单、卡片，以及阅读页的菜单栏、听书和自动滚动控制条、
+  选字操作条，都是透明的液态玻璃：透出后面的内容，模糊、边缘折射，带高光描边；阅读页的玻璃用书页配色。
+  Android 13 起才有（需要 RuntimeShader），更早的系统显示同样布局的纯色界面。
   “我的”里是词典、备份与恢复和关于；书架的排序按钮只管排序和网格/列表显示。
 - **备份与恢复**：书架、书籍文件、进度、书签批注、净化规则、设置、生词本和阅读统计打包成一个 zip，换手机时恢复。
 - **用灵阅打开**：在文件管理器、聊天软件里打开或分享 TXT / EPUB / Markdown 文件，直接导入并开始阅读；
@@ -128,7 +131,7 @@
 - `app/src/main/assets/dict/s2t.tsv.gz`、`t2s.tsv.gz`：由 [OpenCC](https://github.com/BYVoid/OpenCC) 的词典
   用 `tools/build_opencc.py` 生成，© Carbo Kuo 等，[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)。
 
-`app/src/main/java/com/xycs/lingyuereader/ui/glass/` 下的液态玻璃导航栏取自
+`app/src/main/java/com/xycs/lingyuereader/ui/glass/` 下的液态玻璃导航栏（`Glass.kt` 以外的文件）取自
 [miuix](https://github.com/compose-miuix-ui/miuix) 0.9.4 的示例应用（© compose-miuix-ui contributors），其中部分改编自
 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)，均为 Apache License 2.0，文件头保留了原版权声明。
 

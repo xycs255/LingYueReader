@@ -1,5 +1,11 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassSheet
+import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
+import com.xycs.lingyuereader.ui.glass.glassHighlight
+import com.xycs.lingyuereader.ui.glass.readerGlass
+import com.xycs.lingyuereader.ui.glass.recordGlass
+import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
 import top.yukonga.miuix.kmp.icon.extended.VolumeUp
 import com.xycs.lingyuereader.tts.ReadAloud
 import androidx.core.content.ContextCompat
@@ -113,7 +119,6 @@ import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
 import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.icon.extended.Tune
-import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 
 @Composable
 fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
@@ -406,6 +411,8 @@ private fun Reader(
     val images = remember(entry.id) { BookImages { name -> vm.bookFile(entry.id, name) } }
     val screenHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
 
+    val glassBackdrop = rememberGlassBackdrop(palette.background)
+    CompositionLocalProvider(LocalGlassBackdrop provides glassBackdrop) {
     Box(
         Modifier
             .fillMaxSize()
@@ -424,6 +431,8 @@ private fun Reader(
                 }
             },
     ) {
+        // 书页（正文和状态行）记录成玻璃的取样源，菜单栏、控制条、操作条和底部面板都透出它。
+        Box(Modifier.fillMaxSize().recordGlass(glassBackdrop)) {
         CompositionLocalProvider(LocalBookImages provides images, LocalImageMaxHeight provides screenHeight * 0.8f) {
             if (settings.pageMode == PageMode.SCROLL) {
                 key(screen, content) {
@@ -481,6 +490,7 @@ private fun Reader(
         }
 
         StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label} · $chapterLeft", palette, Modifier.align(Alignment.BottomCenter))
+        }
 
 
         AnimatedVisibility(
@@ -518,9 +528,10 @@ private fun Reader(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .background(palette.bar)
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = { vm.back() }) {
@@ -559,8 +570,9 @@ private fun Reader(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(palette.bar)
                     .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
                     .padding(top = 8.dp, bottom = 6.dp),
             ) {
                 BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> goTo(ch, block) }
@@ -634,11 +646,13 @@ private fun Reader(
         }
         BreakReminder(enabled = settings.breakReminder, paused = listening != null, palette = palette)
     }
+    }
 
-    OverlayBottomSheet(
+    GlassSheet(
         show = sheet == ReaderSheet.Catalog,
         title = "目录",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         CatalogSheet(
@@ -659,29 +673,32 @@ private fun Reader(
             onExportNotes = { vm.notesMarkdown()?.let { shareText(context, "《${entry.title}》批注", it) } },
         )
     }
-    OverlayBottomSheet(
+    GlassSheet(
         show = sheet == ReaderSheet.Settings,
         title = "阅读设置",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         val fonts by vm.fonts.collectAsStateWithLifecycle()
         SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont)
     }
-    OverlayBottomSheet(
+    GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
         title = "听书",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice) }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }
-    OverlayBottomSheet(
+    GlassSheet(
         show = paragraph != null && paragraphText != null,
         title = "段落",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         if (paragraph != null && paragraphText != null) {
@@ -706,10 +723,11 @@ private fun Reader(
             )
         }
     }
-    OverlayBottomSheet(
+    GlassSheet(
         show = sheet == ReaderSheet.MultiNote,
         title = "划线",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         MultiNoteSheet(vm.selectionText().orEmpty(), palette) { color, note ->
@@ -720,10 +738,11 @@ private fun Reader(
     // 书摘卡片：收起动画期间还显示原来的内容。
     var lastCard by remember { mutableStateOf<QuoteCardContent?>(null) }
     (sheet as? ReaderSheet.Card)?.let { lastCard = it.content }
-    OverlayBottomSheet(
+    GlassSheet(
         show = sheet is ReaderSheet.Card,
         title = "书摘卡片",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         lastCard?.let { c ->
@@ -734,10 +753,11 @@ private fun Reader(
     // 注释面板：收起动画期间还显示原来的内容。
     var lastFootnote by remember { mutableStateOf<String?>(null) }
     footnote?.let { lastFootnote = it }
-    OverlayBottomSheet(
+    GlassSheet(
         show = footnote != null,
         title = "注释",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { footnote = null },
     ) {
         Text(
@@ -782,9 +802,7 @@ private fun SelectionBarRow(
 ) {
     Row(
         Modifier
-            .shadow(8.dp, RoundedCornerShape(50))
-            .clip(RoundedCornerShape(50))
-            .background(palette.bar)
+            .readerGlass(RoundedCornerShape(50), palette, LocalGlassBackdrop.current)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -806,10 +824,11 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: 
     // 面板收起的动画期间还要显示内容，记住最后一次查的词。
     var last by remember { mutableStateOf<Lookup?>(null) }
     lookup?.let { last = it }
-    OverlayBottomSheet(
+    GlassSheet(
         show = lookup != null,
         title = "查词",
-        backgroundColor = palette.background,
+        background = palette.background,
+        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = vm::closeLookup,
     ) {
         last?.let { l ->

@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,9 +56,11 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
 
     LaunchedEffect(Unit) { focus.requestFocus() }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "书内搜索",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
@@ -101,7 +107,7 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
                 }
             }
             items(hits) { hit ->
-                Card(
+                GlassCard(
                     modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 10.dp),
                     pressFeedbackType = PressFeedbackType.Sink,
                     onClick = { vm.jumpFromSearch(bookId, hit.chapterIndex, hit.blockIndex) },

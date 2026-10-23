@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassDialog
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
@@ -58,9 +63,11 @@ fun DictionariesScreen(vm: AppViewModel) {
         }
     }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "词典",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
@@ -83,7 +90,7 @@ fun DictionariesScreen(vm: AppViewModel) {
         ) {
             item {
                 SmallTitle("内置")
-                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     SwitchPreference(
                         checked = settings.builtinEnabled,
                         onCheckedChange = vm::setBuiltinDictEnabled,
@@ -103,7 +110,7 @@ fun DictionariesScreen(vm: AppViewModel) {
             }
             if (settings.dicts.isEmpty()) {
                 item {
-                    Card(Modifier.padding(horizontal = 12.dp)) {
+                    GlassCard(Modifier.padding(horizontal = 12.dp)) {
                         Text(
                             "点右上角 + 导入 MDict 词典（.mdx）。词典带的 .mdd（图片、发音）和 .css 样式请一起选上。",
                             style = MiuixTheme.textStyles.body2,
@@ -114,7 +121,7 @@ fun DictionariesScreen(vm: AppViewModel) {
                 }
             }
             itemsIndexed(settings.dicts, key = { _, d -> d.id }) { i, d ->
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), insideMargin = PaddingValues(0.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), insideMargin = PaddingValues(0.dp)) {
                     SwitchPreference(
                         checked = d.enabled,
                         onCheckedChange = { vm.setDictEnabled(d.id, it) },
@@ -143,7 +150,7 @@ fun DictionariesScreen(vm: AppViewModel) {
         }
         // 弹窗要放在 Scaffold 里面才显示得出来。
         removing?.let { d ->
-            OverlayDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
+            GlassDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
                 DialogButtons(confirm = "删除", onDismiss = { removing = null }) {
                     vm.removeDict(d.id)
                     removing = null

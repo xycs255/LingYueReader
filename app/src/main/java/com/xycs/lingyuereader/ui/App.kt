@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassDialog
+import com.xycs.lingyuereader.ui.glass.GlassMenu
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
 import top.yukonga.miuix.kmp.basic.Checkbox
 import com.xycs.lingyuereader.data.ShelfPrefs
 import androidx.compose.ui.state.ToggleableState
@@ -145,9 +150,11 @@ internal fun ShelfScreen(vm: AppViewModel) {
         }
     }
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             TopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "灵阅",
                 scrollBehavior = scrollBehavior,
                 actions = {
@@ -171,22 +178,24 @@ internal fun ShelfScreen(vm: AppViewModel) {
                             alignment = PopupPositionProvider.Align.End,
                             onDismissRequest = { moreMenu = false },
                         ) {
-                            ListPopupColumn {
-                                options.forEachIndexed { index, label ->
-                                    DropdownImpl(
-                                        text = label,
-                                        optionSize = options.size,
-                                        isSelected = index == shelfPrefs.sort.ordinal,
-                                        index = index,
-                                        onSelectedIndexChange = { i ->
-                                            moreMenu = false
-                                            if (i < ShelfSort.entries.size) {
-                                                vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
-                                            } else {
-                                                vm.updateShelfPrefs { it.copy(list = !it.list) }
-                                            }
-                                        },
-                                    )
+                            GlassMenu {
+                                ListPopupColumn {
+                                    options.forEachIndexed { index, label ->
+                                        DropdownImpl(
+                                            text = label,
+                                            optionSize = options.size,
+                                            isSelected = index == shelfPrefs.sort.ordinal,
+                                            index = index,
+                                            onSelectedIndexChange = { i ->
+                                                moreMenu = false
+                                                if (i < ShelfSort.entries.size) {
+                                                    vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
+                                                } else {
+                                                    vm.updateShelfPrefs { it.copy(list = !it.list) }
+                                                }
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -286,7 +295,7 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
     }
     editing?.let { g ->
         var name by remember(g) { mutableStateOf(g) }
-        OverlayDialog(show = true, title = "分组“$g”", summary = "改名，或删除这个分组（书不会被删除）。", onDismissRequest = { editing = null }) {
+        GlassDialog(show = true, title = "分组“$g”", summary = "改名，或删除这个分组（书不会被删除）。", onDismissRequest = { editing = null }) {
             TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(
@@ -319,7 +328,7 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Card(Modifier.fillMaxWidth()) {
+        GlassCard(Modifier.fillMaxWidth()) {
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     MiuixIcons.Notes,
@@ -377,7 +386,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel) {
 private fun ShelfRow(entry: BookEntry, vm: AppViewModel) {
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
-    Card(
+    GlassCard(
         pressFeedbackType = PressFeedbackType.Sink,
         onClick = { vm.open(Screen.Reader(entry.id)) },
         onLongPress = { menu = true },
@@ -432,18 +441,20 @@ private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs:
         add("移除" to { dialogs.removing = true })
     }
     OverlayListPopup(show = show, onDismissRequest = onDismiss) {
-        ListPopupColumn {
-            actions.forEachIndexed { index, (label, action) ->
-                DropdownImpl(
-                    text = label,
-                    optionSize = actions.size,
-                    isSelected = false,
-                    index = index,
-                    onSelectedIndexChange = {
-                        onDismiss()
-                        action()
-                    },
-                )
+        GlassMenu {
+            ListPopupColumn {
+                actions.forEachIndexed { index, (label, action) ->
+                    DropdownImpl(
+                        text = label,
+                        optionSize = actions.size,
+                        isSelected = false,
+                        index = index,
+                        onSelectedIndexChange = {
+                            onDismiss()
+                            action()
+                        },
+                    )
+                }
             }
         }
     }
@@ -456,7 +467,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
         var chosen by remember { mutableStateOf(entry.groups.toSet()) }
         var extra by remember { mutableStateOf(listOf<String>()) }
         var newName by remember { mutableStateOf("") }
-        OverlayDialog(show = true, title = "《${entry.title}》的分组", onDismissRequest = { dialogs.grouping = false }) {
+        GlassDialog(show = true, title = "《${entry.title}》的分组", onDismissRequest = { dialogs.grouping = false }) {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                 (all + extra).distinct().forEach { g ->
                     Row(
@@ -500,7 +511,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
     }
     if (dialogs.renaming) {
         var title by remember { mutableStateOf(entry.title) }
-        OverlayDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
+        GlassDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
             TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             DialogButtons(confirm = "确定", onDismiss = { dialogs.renaming = false }) {
                 vm.rename(entry, title)
@@ -509,7 +520,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
         }
     }
     if (dialogs.removing) {
-        OverlayDialog(
+        GlassDialog(
             show = true,
             title = "移除《${entry.title}》",
             summary = "会删除本机副本、阅读进度和书签批注，原文件不受影响。",
@@ -608,7 +619,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
     var title by remember { mutableStateOf(suggestTitle(files.map { it.name })) }
     val sorted = remember(files) { files.map { it.name }.sortedWith(BookParser.NaturalOrder) }
 
-    OverlayDialog(
+    GlassDialog(
         show = true,
         title = "导入 ${files.size} 个文件",
         summary = sorted.take(5).joinToString("\n") + if (sorted.size > 5) "\n……" else "",

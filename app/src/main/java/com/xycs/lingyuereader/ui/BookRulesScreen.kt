@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.ui.glass.GlassCard
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -98,9 +102,11 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     }
     val tocError = toc.takeIf { it.isNotBlank() }?.let(TextRules::error)
 
-    Scaffold(
+    GlassScaffold(
         topBar = {
             SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
                 title = "净化与分章",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
@@ -112,7 +118,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     ) { padding ->
         if (entry == null || !loaded) {
             InfiniteProgressIndicator(Modifier.padding(top = padding.calculateTopPadding() + 48.dp).fillMaxWidth())
-            return@Scaffold
+            return@GlassScaffold
         }
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
@@ -121,7 +127,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
         ) {
             item {
                 SmallTitle("分章规则")
-                Card(Modifier.padding(horizontal = 12.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp)) {
                     Text("留空时自动识别“第X章”“序章”“番外”等。分不对时选一个格式，或自己写正则（匹配到的整行当作章名）。", style = MiuixTheme.textStyles.footnote1)
                     FlowRow(
                         Modifier.padding(vertical = 10.dp),
@@ -171,7 +177,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
             }
             itemsIndexed(rules) { i, r ->
                 val preview = rememberPreview(r, source)
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(
@@ -193,7 +199,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                 }
             }
             item {
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     Text("添加规则", fontWeight = FontWeight.Medium)
                     FlowRow(
                         Modifier.padding(vertical = 8.dp),
