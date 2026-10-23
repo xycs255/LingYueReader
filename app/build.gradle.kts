@@ -30,6 +30,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     buildFeatures {
         compose = true
     }
@@ -53,4 +56,22 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.junit)
+    testImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
+}
+
+tasks.withType<Test>().configureEach {
+    // Robolectric 在 JDK 17+ 上需要访问这些内部包。
+    jvmArgs(
+        "--add-exports=java.base/jdk.internal.access=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+    )
+    maxHeapSize = "2g"
+    // 访问不了 Maven Central 时，可在 ~/.gradle/gradle.properties 里指定镜像。
+    providers.gradleProperty("robolectricRepoUrl").orNull?.let {
+        systemProperty("robolectric.dependency.repo.url", it)
+    }
 }
