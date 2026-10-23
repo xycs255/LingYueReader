@@ -57,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlin.math.roundToInt
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.positionInRoot
@@ -199,6 +201,8 @@ private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
     data object Settings : ReaderSheet
     data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
+    /** 跨段落划线。 */
+    data object MultiNote : ReaderSheet
     data object ReadAloud : ReaderSheet
 }
 
@@ -311,34 +315,40 @@ private fun Reader(
             else -> menuVisible = true
         }
     }
-    // 长按正文选出按住的词，松手就查；不松手拖动是自由划选，松手后可拖两端把手微调。
-    var selectionBounds by remember { mutableStateOf<Rect?>(null) }
+    // 长按正文选出按住的词，松手就查；不松手拖动是自由划选（可跨段落，拖到上下边缘自动滚动），
+    // 松手后可拖两端把手微调。
     // 点开的注释（键）。
     var footnote by remember { mutableStateOf<String?>(null) }
-    var readerBox by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    val selector = remember(vm, chapterIndex) {
-        object : TextSelector {
-            override fun press(block: Int, char: Int) {
+    val density = LocalDensity.current
+    val edgePx = with(density) { 56.dp.toPx() }
+    // 拖把手时手指在把手上，对应的字在手指上方约这么高。
+    val liftPx = with(density) { 30.dp.toPx() }
+    val tracker = remember(vm, chapterIndex) {
+        SelectionTracker(
+            onPress = { block, char ->
                 // 开始选字就收起菜单，免得挡住操作条。
                 menuVisible = false
-                selectionBounds = null
                 vm.pressText(chapterIndex, block, char)
-            }
-            override fun dragTo(block: Int, char: Int) = vm.dragText(block, char)
-            override fun release() = vm.releaseText()
-            override fun moveHandle(block: Int, start: Boolean, cursor: Int) = vm.moveSelectionHandle(block, start, cursor)
-            override fun bounds(block: Int, rect: Rect) {
-                // 翻页模式会预先排好左右两页，不在屏幕里的那份不算。
-                val w = readerBox?.size?.width ?: return
-                val origin = readerBox?.takeIf { it.isAttached }?.positionInRoot() ?: return
-                if (rect.right <= origin.x || rect.left >= origin.x + w) return
-                selectionBounds = rect.translate(-origin.x, -origin.y)
-            }
+            },
+            onDrag = vm::dragText,
+            onRelease = vm::releaseText,
+            onHandle = vm::moveSelectionHandle,
+        )
+    }
+    // 拖到上下边缘：滚动模式下一直滚，滚的同时按手指位置更新选区。
+    LaunchedEffect(tracker, tracker.edge) {
+        val dir = tracker.edge
+        while (dir != 0 && tracker.mode != null) {
+            val scroll = tracker.scroller ?: break
+            scroll(dir * edgePx * 0.2f)
+            tracker.retrack(edgePx, liftPx)
+            delay(16)
         }
     }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
-    val selected = textSelection?.takeIf { it.chapterIndex == chapterIndex }?.let { Highlight(it.block, it.range, handles = !it.dragging) }
-        ?: lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { Highlight(l.block, it, handles = false) } }
+    val selected = textSelection?.takeIf { it.chapterIndex == chapterIndex }
+        ?.let { Highlight(it.start.block, it.start.char, it.end.block, it.end.char, handles = !it.dragging) }
+        ?: lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { Highlight(l.block, it.first, l.block, it.last, handles = false) } }
 
     // 内容区的上下边距不随状态栏显隐变化，否则一开菜单翻页模式就要重新分页。
     val bars = WindowInsets.statusBarsIgnoringVisibility.asPaddingValues()
@@ -349,7 +359,24 @@ private fun Reader(
     val images = remember(entry.id) { BookImages { name -> vm.bookFile(entry.id, name) } }
     val screenHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
 
-    Box(Modifier.fillMaxSize().background(palette.background).onGloballyPositioned { readerBox = it }) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(palette.background)
+            .onGloballyPositioned { tracker.root = it }
+            // 选字开始后，手指的移动和松手都在这里统一处理（抢在列表滚动、翻页之前）。
+            .pointerInput(tracker) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (tracker.mode == null) continue
+                        val change = event.changes.firstOrNull() ?: continue
+                        change.consume()
+                        if (change.pressed) tracker.track(change.position, edgePx, liftPx) else tracker.finish()
+                    }
+                }
+            },
+    ) {
         CompositionLocalProvider(LocalBookImages provides images, LocalImageMaxHeight provides screenHeight * 0.8f) {
             if (settings.pageMode == PageMode.SCROLL) {
                 key(screen, content) {
@@ -365,7 +392,7 @@ private fun Reader(
                         topInset = topInset,
                         bottomInset = bottomInset,
                         onTap = onTap,
-                        selector = selector,
+                        selector = tracker,
                         onFootnote = { footnote = it },
                         selected = selected,
                         onPosition = { item, offset, fraction ->
@@ -373,6 +400,7 @@ private fun Reader(
                         },
                         onNext = { goTo(chapterIndex + 1, null) },
                         registerTurner = { turner.turn = it },
+                        registerScroller = { tracker.scroller = it },
                         speaking = speaking,
                     )
                 }
@@ -391,7 +419,7 @@ private fun Reader(
                         topInset = topInset,
                         bottomInset = bottomInset,
                         onTap = onTap,
-                        selector = selector,
+                        selector = tracker,
                         onFootnote = { footnote = it },
                         selected = selected,
                         onPosition = { block, char, fraction, label ->
@@ -487,16 +515,20 @@ private fun Reader(
             }
         }
         // 操作条贴着选区：优先放在首行上方，放不下就放在末行（和把手）下方。放在最后，盖在其他浮层之上。
-        val bounds = selectionBounds
-        if (textSelection?.dragging == false && bounds != null) {
-            val density = LocalDensity.current
+        val bounds = selected?.takeIf { textSelection?.dragging == false }?.let(tracker::bounds)
+        if (bounds != null) {
             SelectionBar(
                 palette,
-                onLookup = vm::lookupSelection,
+                onLookup = vm::lookupSelection.takeIf { textSelection?.singleBlock == true },
                 onAnnotate = {
                     textSelection?.let { sel ->
-                        vm.clearSelection()
-                        if (sel.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(sel.block, sel.range)
+                        if (sel.chapterIndex != chapterIndex) return@let
+                        if (sel.singleBlock) {
+                            vm.clearSelection()
+                            sheet = ReaderSheet.Paragraph(sel.start.block, sel.start.char..sel.end.char)
+                        } else {
+                            sheet = ReaderSheet.MultiNote
+                        }
                     }
                 },
                 onCopy = {
@@ -598,6 +630,17 @@ private fun Reader(
             )
         }
     }
+    OverlayBottomSheet(
+        show = sheet == ReaderSheet.MultiNote,
+        title = "划线",
+        backgroundColor = palette.background,
+        onDismissRequest = { sheet = null },
+    ) {
+        MultiNoteSheet(vm.selectionText().orEmpty(), palette) { color, note ->
+            vm.annotateSelection(color, note)
+            sheet = null
+        }
+    }
     // 注释面板：收起动画期间还显示原来的内容。
     var lastFootnote by remember { mutableStateOf<String?>(null) }
     footnote?.let { lastFootnote = it }
@@ -626,7 +669,7 @@ private fun Reader(
 @Composable
 private fun SelectionBar(
     palette: ReaderPalette,
-    onLookup: () -> Unit,
+    onLookup: (() -> Unit)?,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
     onCancel: () -> Unit,
@@ -638,7 +681,7 @@ private fun SelectionBar(
 }
 
 @Composable
-private fun SelectionBarRow(palette: ReaderPalette, onLookup: () -> Unit, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
+private fun SelectionBarRow(palette: ReaderPalette, onLookup: (() -> Unit)?, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
     Row(
         Modifier
             .shadow(8.dp, RoundedCornerShape(50))
@@ -647,7 +690,8 @@ private fun SelectionBarRow(palette: ReaderPalette, onLookup: () -> Unit, onAnno
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        listOf("查词" to onLookup, "划线·批注" to onAnnotate, "复制" to onCopy, "取消" to onCancel).forEach { (label, action) ->
+        // 跨段落的选区不查词。
+        listOfNotNull(onLookup?.let { "查词" to it }, "划线·批注" to onAnnotate, "复制" to onCopy, "取消" to onCancel).forEach { (label, action) ->
             Text(
                 label,
                 color = if (label == "取消") palette.secondary else palette.text,

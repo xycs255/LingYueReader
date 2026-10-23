@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.data.displayText
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -13,9 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -27,7 +27,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.platform.LocalDensity
@@ -229,8 +228,8 @@ internal fun indentOf(block: Block, enabled: Boolean = true): Int = if (enabled 
  * 渲染一个块。[range] 不为空时只渲染其中一段文字（翻页模式下一段跨页的情形），
  * [isEnd] 表示这一段是否到块尾，决定要不要留段距。
  *
- * 文字块自己处理手势：轻点把横向位置交给 [onTap]（翻页/菜单）；长按交给 [selector] 选字——
- * 不松手接着拖就是自由划选。[handles] 为真时在选区两端显示可拖动的把手。
+ * 文字块自己处理手势：轻点把横向位置交给 [onTap]（翻页/菜单）；长按交给 [selector] 选字，
+ * 之后的拖动由阅读区统一跟踪（可以跨段落）。[highlight] 是正文里高亮的选区，带把手时在选区两端显示把手。
  */
 @Composable
 internal fun BlockView(
@@ -241,8 +240,7 @@ internal fun BlockView(
     range: IntRange? = null,
     isEnd: Boolean = true,
     speaking: IntRange? = null,
-    selected: IntRange? = null,
-    handles: Boolean = false,
+    highlight: Highlight? = null,
     onTap: ((Float) -> Unit)? = null,
     blockIndex: Int = 0,
     selector: TextSelector? = null,
@@ -250,6 +248,7 @@ internal fun BlockView(
 ) {
     val palette = styles.palette
     val gap = styles.gap
+    val selected = highlight?.rangeIn(blockIndex, block.displayText?.length ?: 0)
     val text = remember(block, notes, speaking, selected) {
         blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent)
     }
@@ -267,22 +266,14 @@ internal fun BlockView(
     fun SelectableText(style: TextStyle, boxModifier: Modifier, justify: Boolean = false) {
         var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
         var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-        // 把带把手的选区在屏幕上的位置报上去，操作条好贴着它摆。滚动时位置变了也会再报。
-        fun reportBounds() {
+        // 登记到选字总调度，手指在别处时也能换算到这里的字。
+        val key = remember { Any() }
+        fun register() {
             val l = layout ?: return
             val c = coords?.takeIf { it.isAttached } ?: return
-            if (!handles || selected == null) return
-            val len = l.layoutInput.text.length
-            if (len == 0) return
-            val start = toLayout(selected.first).coerceIn(0, len - 1)
-            val end = toLayout(selected.last).coerceIn(0, len - 1)
-            if (toLayout(selected.last) < 0 || toLayout(selected.first) >= len) return
-            val top = l.getLineTop(l.getLineForOffset(start))
-            val bottom = l.getLineBottom(l.getLineForOffset(end))
-            val origin = c.positionInRoot()
-            select?.bounds(blockIndex, Rect(origin.x, origin.y + top, origin.x + c.size.width, origin.y + bottom))
+            select?.register(key, blockIndex, c, l, toChar, toLayout)
         }
-        LaunchedEffect(selected, handles, layout) { reportBounds() }
+        DisposableEffect(key) { onDispose { select?.unregister(key) } }
         BoxWithConstraints(boxModifier) {
             val measurer = rememberTextMeasurer(cacheSize = 0)
             val density = LocalDensity.current
@@ -294,10 +285,13 @@ internal fun BlockView(
             Text(
                 display,
                 style = style,
-                onTextLayout = { layout = it },
+                onTextLayout = {
+                    layout = it
+                    register()
+                },
                 modifier = Modifier.onGloballyPositioned {
                     coords = it
-                    reportBounds()
+                    register()
                 }.pointerInput(block, base) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
@@ -311,9 +305,9 @@ internal fun BlockView(
                         if (!longPressed) {
                             up?.let {
                                 it.consume()
-                                val key = layout?.let { l -> footnoteAt(l, it.position) }
+                                val note = layout?.let { l -> footnoteAt(l, it.position) }
                                 val open = footnote
-                                if (key != null && open != null) open(key) else tap?.invoke(it.position.x / size.width)
+                                if (note != null && open != null) open(note) else tap?.invoke(it.position.x / size.width)
                             }
                             return@awaitEachGesture
                         }
@@ -323,27 +317,21 @@ internal fun BlockView(
                         if (l == null || s == null || down.position.x > l.getLineRight(l.getLineForVerticalPosition(down.position.y))) {
                             return@awaitEachGesture
                         }
+                        // 之后的拖动和松手由阅读区跟踪。
                         s.press(blockIndex, toChar(l.getOffsetForPosition(down.position)))
-                        drag(down.id) { change ->
-                            change.consume()
-                            s.dragTo(blockIndex, toChar(l.getOffsetForPosition(change.position)))
-                        }
-                        // 松手这一下也吃掉，免得外层再当成轻点（取消划选、开菜单）。
-                        currentEvent.changes.forEach { it.consume() }
-                        s.release()
                     }
                 },
             )
             val l = layout
-            if (handles && selected != null && l != null && select != null) {
+            if (highlight != null && highlight.handles && selected != null && l != null && select != null) {
+                val len = l.layoutInput.text.length
                 val start = toLayout(selected.first)
                 val end = toLayout(selected.last + 1)
-                val len = l.layoutInput.text.length
-                if (start in 0..len) SelectionHandle(l, start, isStart = true, palette.accent) { cursor ->
-                    select?.moveHandle(blockIndex, true, toChar(cursor))
+                if (blockIndex == highlight.startBlock && start in 0..len) {
+                    SelectionHandle(l, start, isStart = true, palette.accent) { select?.beginHandle(true) }
                 }
-                if (end in 0..len && end > 0) SelectionHandle(l, end, isStart = false, palette.accent) { cursor ->
-                    select?.moveHandle(blockIndex, false, toChar(cursor))
+                if (blockIndex == highlight.endBlock && end in 1..len) {
+                    SelectionHandle(l, end, isStart = false, palette.accent) { select?.beginHandle(false) }
                 }
             }
         }
@@ -403,54 +391,53 @@ internal fun BlockView(
     }
 }
 
-/** 正文里高亮的选区；[handles] 为真时两端显示把手。 */
-internal data class Highlight(val block: Int, val range: IntRange, val handles: Boolean)
+/**
+ * 正文里高亮的选区，可以跨段落：从第 [startBlock] 块第 [startChar] 字到第 [endBlock] 块第 [endChar] 字（含）。
+ * [handles] 为真时两端显示把手。
+ */
+internal data class Highlight(val startBlock: Int, val startChar: Int, val endBlock: Int, val endChar: Int, val handles: Boolean) {
+    /** 这一块里被选中的范围（块文字长 [length]）；不在选区里返回空。 */
+    fun rangeIn(block: Int, length: Int): IntRange? {
+        if (block < startBlock || block > endBlock || length <= 0) return null
+        val s = if (block == startBlock) startChar else 0
+        val e = if (block == endBlock) endChar else length - 1
+        return s.coerceIn(0, length - 1)..e.coerceIn(0, length - 1)
+    }
+}
 
 /** 正文选字的回调。位置都是块文字（不含段首缩进）里的下标。 */
 internal interface TextSelector {
-    /** 长按某个字。 */
+    /** 长按某个字，开始选字；之后的移动由阅读区跟踪。 */
     fun press(block: Int, char: Int)
 
-    /** 长按后不松手，拖到某个字。 */
-    fun dragTo(block: Int, char: Int)
+    /** 按住了选区起点或终点的把手；之后的移动由阅读区跟踪。 */
+    fun beginHandle(start: Boolean)
 
-    /** 松手。 */
-    fun release()
+    /** 文字块登记自己的位置和排版；[toChar]、[toLayout] 在排版位置与块文字位置之间换算。 */
+    fun register(key: Any, block: Int, coords: LayoutCoordinates, layout: TextLayoutResult, toChar: (Int) -> Int, toLayout: (Int) -> Int)
 
-    /** 拖动选区一端的把手；[cursor] 是字与字之间的光标位置。 */
-    fun moveHandle(block: Int, start: Boolean, cursor: Int)
-
-    /** 带把手的选区在根布局里的范围（从首行顶到末行底）。 */
-    fun bounds(block: Int, rect: Rect)
+    fun unregister(key: Any)
 }
 
-/** 选区一端的把手：挂在字的下方，拖动时按手指所在的位置换算成光标。 */
+/** 选区一端的把手：挂在字的下方。按住后由阅读区跟踪手指（可以拖到别的段落）。 */
 @Composable
-private fun SelectionHandle(layout: TextLayoutResult, offset: Int, isStart: Boolean, color: Color, onMove: (Int) -> Unit) {
+private fun SelectionHandle(layout: TextLayoutResult, offset: Int, isStart: Boolean, color: Color, onBegin: () -> Unit) {
     val density = LocalDensity.current
     val size = 22.dp
     val sizePx = with(density) { size.toPx() }
     val rect = layout.getCursorRect(offset)
     // 起点把手挂在光标左下，终点把手挂在右下，像系统的选择把手。
     val anchor = Offset(if (isStart) rect.left - sizePx else rect.left, rect.bottom)
-    val move by rememberUpdatedState(onMove)
-    val currentLayout by rememberUpdatedState(layout)
-    val currentOffset by rememberUpdatedState(offset)
+    val begin by rememberUpdatedState(onBegin)
     Box(
         Modifier
             .offset { IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt()) }
             .size(size)
             .pointerInput(isStart) {
-                // 从光标所在行的中线出发，跟着手指的位移找字。
-                var target = Offset.Zero
-                detectDragGestures(
-                    onDragStart = { target = currentLayout.getCursorRect(currentOffset).center },
-                    onDrag = { change, amount ->
-                        change.consume()
-                        target += amount
-                        move(currentLayout.getOffsetForPosition(target))
-                    },
-                )
+                awaitEachGesture {
+                    awaitFirstDown().consume()
+                    begin()
+                }
             }
             .semantics { contentDescription = if (isStart) "选区起点" else "选区终点" },
     ) {

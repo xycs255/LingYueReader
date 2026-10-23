@@ -292,6 +292,50 @@ internal fun ParagraphSheet(
     }
 }
 
+/** 跨段落划线：选颜色、写批注（记在最后一段上），每段各存一条划线。 */
+@Composable
+internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, onSave: (MarkColor, String) -> Unit) {
+    var note by remember { mutableStateOf("") }
+    var color by remember { mutableStateOf(MarkColor.YELLOW) }
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+        Text(
+            quote,
+            color = palette.text,
+            fontSize = 15.sp,
+            maxLines = 8,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(palette.text.copy(alpha = 0.06f)).padding(12.dp),
+        )
+        Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("颜色", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp))
+            MarkColor.entries.forEach { c ->
+                Box(
+                    Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(Color(c.argb).copy(alpha = 0.9f))
+                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier)
+                        .clickable { color = c },
+                )
+            }
+        }
+        TextField(
+            value = note,
+            onValueChange = { note = it },
+            label = "写点批注（可选）",
+            colors = TextFieldDefaults.textFieldColors(backgroundColor = palette.text.copy(alpha = 0.06f), labelColor = palette.secondary, borderColor = palette.accent),
+            textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 15.sp),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            text = "划线",
+            onClick = { onSave(color, note) },
+            colors = ButtonDefaults.textButtonColors(color = palette.accent, textColor = palette.background),
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        )
+    }
+}
+
 // ---------- 阅读设置 ----------
 
 @Composable

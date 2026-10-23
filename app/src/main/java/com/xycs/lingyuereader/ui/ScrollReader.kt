@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -49,6 +50,8 @@ internal fun ScrollReader(
     onTap: (xFraction: Float) -> Unit,
     selector: TextSelector,
     onFootnote: (String) -> Unit = {},
+    /** 登记一个滚动函数，划选拖到屏幕边缘时用来自动滚动。 */
+    registerScroller: ((suspend (Float) -> Unit)?) -> Unit = {},
     onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
@@ -68,7 +71,8 @@ internal fun ScrollReader(
             val distance = (viewport - lineHeightPx * 2).coerceAtLeast(lineHeightPx)
             scope.launch { listState.animateScrollBy(if (forward) distance else -distance) }
         }
-        onDispose { }
+        registerScroller { dy -> listState.scrollBy(dy) }
+        onDispose { registerScroller(null) }
     }
 
     // 听书：正在读的段落不在屏幕上时滚过去。
@@ -115,8 +119,7 @@ internal fun ScrollReader(
                 styles,
                 marks.notesIn(chapterIndex, index),
                 speaking = speaking?.takeIf { it.block == index }?.let { it.start until it.end },
-                selected = selected?.takeIf { it.block == index }?.range,
-                handles = selected?.takeIf { it.block == index }?.handles == true,
+                highlight = selected,
                 onTap = onTap,
                 blockIndex = index,
                 selector = selector,
