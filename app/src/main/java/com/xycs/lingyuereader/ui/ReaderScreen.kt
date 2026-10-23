@@ -113,7 +113,8 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val book by vm.openBook.collectAsStateWithLifecycle()
     // 护眼：有光线传感器时按环境光定背景（很暗换夜间、昏暗压暗背景），否则按系统深色；日落后偏暖。
-    val lightLevel by rememberLightLevel(settings.ambientLight)
+    val ambient = rememberAmbientLight(settings.ambientLight)
+    val lightLevel = ambient.level
     val warmth = rememberEveningWarmth(settings.eveningWarmth)
     val systemDark = isSystemInDarkTheme()
     val theme = when {
@@ -160,7 +161,9 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
                 InfiniteProgressIndicator(Modifier.align(Alignment.Center), color = palette.secondary)
             }
         } else {
-            Reader(vm, screen, loaded.entry, loaded.content, settings, palette)
+            CompositionLocalProvider(LocalAmbientLight provides ambient) {
+                Reader(vm, screen, loaded.entry, loaded.content, settings, palette)
+            }
         }
     }
 }

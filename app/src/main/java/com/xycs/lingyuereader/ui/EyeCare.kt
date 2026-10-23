@@ -30,9 +30,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -63,6 +64,8 @@ import top.yukonga.miuix.kmp.basic.Text
 import java.util.Calendar
 import kotlin.math.PI
 import kotlin.math.ceil
+import kotlin.math.exp
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /*
@@ -74,33 +77,151 @@ import kotlin.math.sin
  * 背景本身不做持续的动画：余光里的运动只会分散注意力。
  */
 
-/** 环境亮度档位。 */
-enum class LightLevel { DARK, DIM, NORMAL }
+/** 环境亮度档位，从暗到亮排列。 */
+enum class LightLevel(val label: String) { DARK("很暗"), DIM("昏暗"), NORMAL("正常") }
 
 /**
- * 由照度（lx）定档，带回差：进出同一档的门槛不同，光线在门槛附近抖动时不会来回切换。
- * 很暗：< 5 lx（升到 12 lx 以上才离开）；昏暗：< 40 lx（升到 60 lx 以上才离开）。
+ * 由照度（lx）定档，带宽回差：进出同一档的门槛相差好几倍，读数在门槛附近抖动时不会来回切换。
+ * 很暗：< 3 lx（升到 15 lx 以上才离开）；昏暗：< 25 lx（升到 80 lx 以上才离开）。
  */
 fun nextLightLevel(current: LightLevel?, lux: Float): LightLevel {
     fun fresh() = when {
-        lux < 5f -> LightLevel.DARK
-        lux < 40f -> LightLevel.DIM
+        lux < 3f -> LightLevel.DARK
+        lux < 25f -> LightLevel.DIM
         else -> LightLevel.NORMAL
     }
     return when (current) {
         null -> fresh()
-        LightLevel.DARK -> if (lux > 12f) fresh() else LightLevel.DARK
+        LightLevel.DARK -> if (lux > 15f) (if (lux > 80f) LightLevel.NORMAL else LightLevel.DIM) else LightLevel.DARK
         LightLevel.DIM -> when {
-            lux < 4f -> LightLevel.DARK
-            lux > 60f -> LightLevel.NORMAL
+            lux < 3f -> LightLevel.DARK
+            lux > 80f -> LightLevel.NORMAL
             else -> LightLevel.DIM
         }
         LightLevel.NORMAL -> when {
-            lux < 4f -> LightLevel.DARK
-            lux < 30f -> LightLevel.DIM
+            lux < 3f -> LightLevel.DARK
+            lux < 25f -> LightLevel.DIM
             else -> LightLevel.NORMAL
         }
     }
+}
+
+/**
+ * 把光线传感器的原始读数变成稳定的档位。
+ *
+ * 传感器只在读数变化时上报，而且很跳：手指挡一下、手机一歪、灯管闪烁都会让读数骤变；
+ * 屏下传感器还会读到屏幕自己的光，背景一变读数跟着变。所以：
+ * - 按时间做指数平滑（时间常数 [tauMs]），不按事件个数，需要定时用最近一次读数 [update]；
+ * - 新档位要持续一段时间才生效：变暗要 [darkerDwellMs]，变亮快一些（[brighterDwellMs]），开灯后尽快恢复；
+ * - 每次换档后至少保持 [minHoldMs]，杜绝来回切换。
+ */
+class AmbientLightFilter(
+    private val tauMs: Long = 5_000,
+    private val darkerDwellMs: Long = 10_000,
+    private val brighterDwellMs: Long = 3_000,
+    private val minHoldMs: Long = 30_000,
+) {
+    /** 平滑后的照度；还没有读数时为负。 */
+    var lux = -1f
+        private set
+    var level: LightLevel? = null
+        private set
+    private var lastTime = 0L
+    private var candidate: LightLevel? = null
+    private var candidateSince = 0L
+    private var changedAt = 0L
+
+    fun update(rawLux: Float, now: Long): LightLevel {
+        val raw = rawLux.coerceAtLeast(0f)
+        if (lux < 0) {
+            lux = raw
+        } else {
+            val dt = (now - lastTime).coerceAtLeast(0)
+            lux += (raw - lux) * (1f - exp(-dt.toDouble() / tauMs).toFloat())
+        }
+        lastTime = now
+        val current = level
+        val target = nextLightLevel(current, lux)
+        if (current == null) {
+            level = target
+            changedAt = now
+            return target
+        }
+        if (target == current) {
+            candidate = null
+            return current
+        }
+        if (target != candidate) {
+            candidate = target
+            candidateSince = now
+        }
+        val dwell = if (target.ordinal < current.ordinal) darkerDwellMs else brighterDwellMs
+        if (now - candidateSince >= dwell && now - changedAt >= minHoldMs) {
+            level = target
+            changedAt = now
+            candidate = null
+        }
+        return level!!
+    }
+}
+
+/** 环境光的当前状态：给阅读页定配色，也在设置里显示读数，方便核对。 */
+class AmbientLight {
+    /** 有没有光线传感器（且功能开着）。 */
+    var available by mutableStateOf(false)
+        internal set
+    var level by mutableStateOf<LightLevel?>(null)
+        internal set
+    /** 平滑后的照度，取整，只在变化时更新。 */
+    var lux by mutableIntStateOf(-1)
+        internal set
+}
+
+val LocalAmbientLight = staticCompositionLocalOf<AmbientLight?> { null }
+
+/** 读光线传感器，经 [AmbientLightFilter] 得到稳定的档位。关闭或没有传感器时 level 为 null。 */
+@Composable
+fun rememberAmbientLight(enabled: Boolean): AmbientLight {
+    val context = LocalContext.current
+    val state = remember { AmbientLight() }
+    val manager = remember { context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager }
+    val sensor = remember(manager) { manager?.getDefaultSensor(Sensor.TYPE_LIGHT) }
+    var raw by remember { mutableFloatStateOf(-1f) }
+    DisposableEffect(enabled, sensor) {
+        if (!enabled || manager == null || sensor == null) {
+            state.available = false
+            state.level = null
+            state.lux = -1
+            return@DisposableEffect onDispose { }
+        }
+        state.available = true
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                event.values.firstOrNull()?.let { raw = it }
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        manager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+        onDispose {
+            manager.unregisterListener(listener)
+            raw = -1f
+        }
+    }
+    // 传感器只在变化时上报，平滑按时间算，所以每半秒用最近一次读数推进一次。
+    LaunchedEffect(enabled, sensor) {
+        if (!enabled || sensor == null) return@LaunchedEffect
+        val filter = AmbientLightFilter()
+        while (true) {
+            if (raw >= 0) {
+                state.level = filter.update(raw, SystemClock.elapsedRealtime())
+                val rounded = filter.lux.roundToInt()
+                if (rounded != state.lux) state.lux = rounded
+            }
+            delay(500)
+        }
+    }
+    return state
 }
 
 /** 一天中 [minuteOfDay] 时的偏暖程度：18:30 起渐暖，21:00 到顶，清晨 5:00–6:30 退回。 */
@@ -113,52 +234,6 @@ fun eveningWarmth(minuteOfDay: Int): Float {
         m < 21 * 60 -> (m - (18 * 60 + 30)) / 150f
         else -> 1f
     }
-}
-
-/**
- * 读光线传感器，返回平滑后的环境亮度档位。关闭或没有传感器时为 null。
- * 新档位要持续 [dwellMs] 才生效，手遮一下、走过灯下都不会触发。
- */
-@Composable
-fun rememberLightLevel(enabled: Boolean, dwellMs: Long = 4_000): State<LightLevel?> {
-    val context = LocalContext.current
-    val level = remember { mutableStateOf<LightLevel?>(null) }
-    DisposableEffect(enabled) {
-        val manager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-        val sensor = manager?.getDefaultSensor(Sensor.TYPE_LIGHT)
-        if (!enabled || manager == null || sensor == null) {
-            level.value = null
-            return@DisposableEffect onDispose { }
-        }
-        var smoothed = -1f
-        var candidate: LightLevel? = null
-        var candidateSince = 0L
-        val listener = object : SensorEventListener {
-            override fun onSensorChanged(event: SensorEvent) {
-                val lux = event.values.firstOrNull() ?: return
-                smoothed = if (smoothed < 0) lux else smoothed + (lux - smoothed) * 0.25f
-                val next = nextLightLevel(level.value, smoothed)
-                val now = SystemClock.elapsedRealtime()
-                when {
-                    level.value == null -> level.value = next
-                    next == level.value -> candidate = null
-                    next != candidate -> {
-                        candidate = next
-                        candidateSince = now
-                    }
-                    now - candidateSince >= dwellMs -> {
-                        level.value = next
-                        candidate = null
-                    }
-                }
-            }
-
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-        }
-        manager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        onDispose { manager.unregisterListener(listener) }
-    }
-    return level
 }
 
 /** 当前时刻的偏暖程度，每分钟更新一次；关闭时为 0。 */
@@ -176,10 +251,10 @@ fun rememberEveningWarmth(enabled: Boolean): Float {
     return if (enabled) warmth else 0f
 }
 
-/** 配色变化时渐变过去（约 1.5 秒），不突然一闪。 */
+/** 配色变化时渐变过去（约 3 秒），不突然一闪。 */
 @Composable
 fun animatePalette(target: ReaderPalette): ReaderPalette {
-    val spec = tween<Color>(1500)
+    val spec = tween<Color>(3000)
     val background by animateColorAsState(target.background, spec, label = "background")
     val text by animateColorAsState(target.text, spec, label = "text")
     val secondary by animateColorAsState(target.secondary, spec, label = "secondary")
