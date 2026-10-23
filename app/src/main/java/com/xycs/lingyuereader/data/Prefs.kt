@@ -43,6 +43,8 @@ data class ReaderSettings(
     val indent: Boolean = true,
     /** 正文两端对齐。 */
     val justify: Boolean = true,
+    /** 阅读时繁简转换。 */
+    val chineseConvert: ChineseConvert = ChineseConvert.NONE,
 )
 
 enum class ShelfSort(val label: String) {
@@ -77,6 +79,7 @@ class Prefs(context: Context) {
             breakReminder = sp.getBoolean("breakReminder", d.breakReminder),
             indent = sp.getBoolean("indent", d.indent),
             justify = sp.getBoolean("justify", d.justify),
+            chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
 
@@ -99,6 +102,7 @@ class Prefs(context: Context) {
             putBoolean("breakReminder", s.breakReminder)
             putBoolean("indent", s.indent)
             putBoolean("justify", s.justify)
+            putString("chineseConvert", s.chineseConvert.name)
             putFloat("ttsRate", s.ttsRate)
         }
     }

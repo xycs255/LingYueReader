@@ -38,7 +38,7 @@ class Chapter private constructor(
     val part: Int,
     private val strong: List<Block>?,
     private val loader: (() -> List<Block>)?,
-    knownCharCount: Int?,
+    private val knownCharCount: Int?,
 ) {
     constructor(title: String, blocks: List<Block>, number: Int? = null, part: Int = 0) :
         this(title, number, part, blocks, null, null)
@@ -67,6 +67,12 @@ class Chapter private constructor(
     val charCount: Int by lazy { knownCharCount ?: blocks.sumOf { it.plainText.length } }
 
     fun withBlocks(blocks: List<Block>): Chapter = Chapter(title, blocks, number, part)
+
+    /** 换个标题、对正文做一次变换（如繁简转换），仍然按需加载；字数不变。 */
+    fun mapped(newTitle: String, transform: (List<Block>) -> List<Block>): Chapter {
+        val known = knownCharCount ?: return Chapter(newTitle, transform(blocks), number, part)
+        return Chapter(newTitle, number, part, known) { transform(blocks) }
+    }
 }
 
 data class BookContent(

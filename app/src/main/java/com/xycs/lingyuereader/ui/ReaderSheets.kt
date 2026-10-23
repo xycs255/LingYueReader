@@ -45,6 +45,7 @@ import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Note
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
+import com.xycs.lingyuereader.data.ChineseConvert
 import com.xycs.lingyuereader.data.ReaderTheme
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -374,6 +375,7 @@ internal fun SettingsSheet(
         SwitchRow("日落后逐渐变暖", settings.eveningWarmth, textColor, accent) { v -> update { it.copy(eveningWarmth = v) } }
         SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
         ChoiceRow("字体", listOf(true to "宋体", false to "黑体"), settings.serif, palette) { v -> update { it.copy(serif = v) } }
+        ChoiceRow("繁简", ChineseConvert.entries.map { it to it.label }, settings.chineseConvert, palette) { v -> update { it.copy(chineseConvert = v) } }
         SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }

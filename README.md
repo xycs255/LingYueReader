@@ -13,6 +13,8 @@
   自动分章不对时选一个常见格式（【章名】、数字序号、Chapter N 等）或自己写正则；改动实时预览分出几章、每条规则
   匹配几处，保存后重新整理。规则只影响显示，不改原文件，备份时一起打包。
 - **从原文件刷新**：记住每份文件的来源（手机存储、Google 云盘等），原文件改过后长按书籍即可刷新。
+- **繁简转换**：阅读设置里选“繁转简”或“简转繁”，按 OpenCC 词组优先转换（“头发”→“頭髮”，“皇后”不会变成“皇後”），
+  转换不改变字数，书签批注位置不受影响；读到哪章才转换哪章。
 - **中文排版**：严格避头尾（句号、逗号、后引号不出现在行首），相邻全角标点挤压（字体支持时），中文书的弯引号、省略号
   按中文字体排成全角（不受系统语言影响）；段首空两格、两端对齐都可开关，翻页模式分页随之一致。
 - **阅读体验**：上下滚动或左右翻页（平移 / 覆盖），点两侧或按音量键翻页，跨章节连续翻；
@@ -76,6 +78,7 @@
 | `dict/Mdict.kt`、`MdictDictionary.kt` | MDict（.mdx/.mdd）读取，含 LZO、zlib 与加密索引 |
 | `dict/Dictionaries.kt` | 词典导入、设置与汇总查询 |
 | `tools/build_dict.py` | 由 Unihan 与 CC-CEDICT 原始数据生成内置词库 |
+| `tools/build_opencc.py` | 由 OpenCC 词典生成繁简转换表 |
 | `ui/Paginator.kt`、`ui/PagedReader.kt` | 按实际排版分页、左右翻页 |
 | `ui/` | Jetpack Compose + miuix 界面 |
 
@@ -83,7 +86,7 @@
 
 - 仿真翻页动画
 - 书架分组、WebDAV 同步
-- 繁简转换、自定义字体
+- 自定义字体
 - PDF 等更多格式
 
 欢迎提 Issue 和 PR。
@@ -108,5 +111,8 @@
   与 CJKRadicals.txt 生成，© Unicode, Inc.，[Unicode License v3](https://www.unicode.org/license.txt)。
 - `app/src/main/assets/dict/cedict.tsv.gz`：由 [CC-CEDICT](https://cc-cedict.org/wiki/) 生成，
   © MDBG，[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)；这份派生数据同样以 CC BY-SA 4.0 提供。
+
+- `app/src/main/assets/dict/s2t.tsv.gz`、`t2s.tsv.gz`：由 [OpenCC](https://github.com/BYVoid/OpenCC) 的词典
+  用 `tools/build_opencc.py` 生成，© Carbo Kuo 等，[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)。
 
 导入的 MDict 词典归其原作者所有，灵阅只在本机读取，不做分发。

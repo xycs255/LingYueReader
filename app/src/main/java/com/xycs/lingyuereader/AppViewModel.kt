@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.ChineseConvert
+import com.xycs.lingyuereader.data.ChineseConverter
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.BookParser
 import com.xycs.lingyuereader.data.Block
@@ -357,7 +359,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val entry = _shelf.value.firstOrNull { it.id == bookId } ?: return
         _openBook.value = null
         viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) { runCatching { library.content(entry) } }
+            val content = withContext(Dispatchers.IO) { runCatching { converted(library.content(entry), _settings.value.chineseConvert) } }
             content.onSuccess {
                 _marks.value = withContext(Dispatchers.IO) { library.marks(entry.id).resolve(it) }
                 _openBook.value = OpenBook(entry, it)
@@ -721,8 +723,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun updateSettings(transform: (ReaderSettings) -> ReaderSettings) {
+        val before = _settings.value.chineseConvert
         _settings.update(transform)
         prefs.saveSettings(_settings.value)
+        // 换了繁简转换方向：重新打开当前这本书。
+        if (_settings.value.chineseConvert != before) {
+            _openBook.value?.entry?.id?.let { id ->
+                _openBook.value = null
+                ensureLoaded(id)
+            }
+        }
+    }
+
+    private val converters = HashMap<ChineseConvert, ChineseConverter>()
+
+    /** 按设置做繁简转换；转换表第一次用到时才从安装包读出。 */
+    private fun converted(content: BookContent, mode: ChineseConvert): BookContent {
+        if (mode == ChineseConvert.NONE) return content
+        val converter = synchronized(converters) {
+            converters.getOrPut(mode) {
+                // 仓库里是 .tsv.gz，打包时 Android Gradle 插件会解压并去掉 .gz。
+                val name = if (mode == ChineseConvert.TO_TRADITIONAL) "dict/s2t.tsv" else "dict/t2s.tsv"
+                getApplication<Application>().assets.open(name).use { ChineseConverter(it) }
+            }
+        }
+        return converter.convert(content)
     }
 
     fun search(query: String) {
