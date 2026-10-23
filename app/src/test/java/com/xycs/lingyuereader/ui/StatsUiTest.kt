@@ -6,7 +6,6 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -58,9 +57,9 @@ class StatsUiTest {
     @Test
     fun statsScreenShowsTotalsStreakAndSpeed() {
         waitForText("测试书")
-        compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("阅读统计…")
-        compose.onNodeWithText("阅读统计…").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("我的").performClick()
+        waitForText("连续 2 天")
+        compose.onNodeWithText("阅读统计").performClick()
         waitForText("25 分")
         waitForText("连续阅读 2 天")
         waitForText("每分钟 200 字")

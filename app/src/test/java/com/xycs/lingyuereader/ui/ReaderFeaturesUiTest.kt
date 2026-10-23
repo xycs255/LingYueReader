@@ -222,7 +222,7 @@ class ShelfUiTest {
     @Test
     fun listViewAndDetailPage() {
         waitForText("测试书")
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithContentDescription("排序与显示").performClick()
         waitForText("列表显示")
         compose.onNodeWithText("列表显示").performClick()
         // 列表里有作者一栏

@@ -80,7 +80,9 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.icon.extended.More
+import top.yukonga.miuix.kmp.icon.extended.ContactsCircle
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import com.xycs.lingyuereader.data.ShelfSort
@@ -104,6 +106,7 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.Dictionaries -> DictionariesScreen(vm)
             Screen.Vocabulary -> VocabularyScreen(vm)
             Screen.Stats -> StatsScreen(vm)
+            Screen.Me -> MeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
     }
@@ -123,17 +126,10 @@ private fun ShelfScreen(vm: AppViewModel) {
     val scrollBehavior = MiuixScrollBehavior()
     var searching by rememberSaveable { mutableStateOf(query.isNotEmpty()) }
     var moreMenu by remember { mutableStateOf(false) }
-    var confirmRestore by remember { mutableStateOf<android.net.Uri?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.pick(it) }
     // 各家文件管理器给 .md/.epub 报的类型不一，干脆不按类型过滤，选完再按扩展名判断。
     val pickFiles = { picker.launch(arrayOf("*/*")) }
-    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        uri?.let(vm::backup)
-    }
-    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        confirmRestore = uri
-    }
 
     LaunchedEffect(message) {
         message?.let {
@@ -157,13 +153,12 @@ private fun ShelfScreen(vm: AppViewModel) {
                     IconButton(onClick = pickFiles, enabled = !busy) {
                         Icon(MiuixIcons.Add, contentDescription = "导入")
                     }
-                    Box(Modifier.padding(end = 12.dp)) {
+                    Box {
                         IconButton(onClick = { moreMenu = true }) {
-                            Icon(MiuixIcons.More, contentDescription = "更多")
+                            Icon(MiuixIcons.Sort, contentDescription = "排序与显示")
                         }
-                        val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
-                        val options = ShelfSort.entries.map { "排序：${it.label}" } +
-                            listOf(if (shelfPrefs.list) "网格显示" else "列表显示", "备份书架…", "从备份恢复…", "词典…", "生词本…", "阅读统计…")
+                        // 只放排序和显示方式；其他功能在“我的”里。
+                        val options = ShelfSort.entries.map { "按${it.label}" } + (if (shelfPrefs.list) "网格显示" else "列表显示")
                         OverlayListPopup(
                             show = moreMenu,
                             alignment = PopupPositionProvider.Align.End,
@@ -178,20 +173,19 @@ private fun ShelfScreen(vm: AppViewModel) {
                                         index = index,
                                         onSelectedIndexChange = { i ->
                                             moreMenu = false
-                                            when {
-                                                i < ShelfSort.entries.size -> vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
-                                                i == ShelfSort.entries.size -> vm.updateShelfPrefs { it.copy(list = !it.list) }
-                                                i == ShelfSort.entries.size + 1 -> backupLauncher.launch("灵阅备份-${stamp.format(java.util.Date())}.zip")
-                                                i == ShelfSort.entries.size + 2 -> restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
-                                                i == ShelfSort.entries.size + 3 -> vm.open(Screen.Dictionaries)
-                                                i == ShelfSort.entries.size + 4 -> vm.open(Screen.Vocabulary)
-                                                else -> vm.open(Screen.Stats)
+                                            if (i < ShelfSort.entries.size) {
+                                                vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
+                                            } else {
+                                                vm.updateShelfPrefs { it.copy(list = !it.list) }
                                             }
                                         },
                                     )
                                 }
                             }
                         }
+                    }
+                    IconButton(onClick = { vm.open(Screen.Me) }, modifier = Modifier.padding(end = 12.dp)) {
+                        Icon(MiuixIcons.ContactsCircle, contentDescription = "我的")
                     }
                 },
                 bottomContent = {
@@ -255,19 +249,6 @@ private fun ShelfScreen(vm: AppViewModel) {
     }
 
     pending?.let { files -> ImportDialog(files, vm) }
-    confirmRestore?.let { uri ->
-        OverlayDialog(
-            show = true,
-            title = "从备份恢复",
-            summary = "备份里的书会加回书架；同一本书会用备份里的版本（含进度、书签批注）覆盖。阅读设置也会恢复。",
-            onDismissRequest = { confirmRestore = null },
-        ) {
-            DialogButtons(confirm = "恢复", onDismiss = { confirmRestore = null }) {
-                vm.restore(uri)
-                confirmRestore = null
-            }
-        }
-    }
 }
 
 @Composable

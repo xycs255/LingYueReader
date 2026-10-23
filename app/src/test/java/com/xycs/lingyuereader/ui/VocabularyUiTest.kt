@@ -45,9 +45,9 @@ class VocabularyUiTest {
     @Test
     fun reviewMarksWordsAsMastered() {
         waitForText("书架还是空的")
-        compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("生词本…")
-        compose.onNodeWithText("生词本…").performClick()
+        compose.onNodeWithContentDescription("我的").performClick()
+        waitForText("学习中 2 个，共 2 个")
+        compose.onNodeWithText("生词本").performClick()
         waitForText("学习中 2")
         waitForText("yín háng")
         compose.onNodeWithText("复习").performClick()

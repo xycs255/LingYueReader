@@ -61,6 +61,7 @@ sealed interface Screen {
     data object Dictionaries : Screen
     data object Vocabulary : Screen
     data object Stats : Screen
+    data object Me : Screen
     data class BookRules(val bookId: String) : Screen
 }
 
