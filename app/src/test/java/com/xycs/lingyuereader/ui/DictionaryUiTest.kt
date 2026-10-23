@@ -13,6 +13,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.click
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -124,6 +126,18 @@ class DictionaryUiTest {
         compose.onNodeWithText("复制").performClick()
         val shorter = clipboard()
         assertTrue(shorter, shorter.startsWith("银行") && shorter.length in 2..7)
+    }
+
+    @Test
+    fun selectingTextHidesTheMenuSoTheToolbarIsVisible() {
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("银行门口")
+        compose.onRoot().performTouchInput { click(Offset(centerX, bottom * 0.6f)) }
+        waitForText("目录")
+        dragSelect(compose.onAllNodesWithText("银行门口", substring = true)[0])
+        waitForText("划线·批注")
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("目录").fetchSemanticsNodes().isEmpty() }
     }
 
     /** 按住开头的字，等过长按时间，再拖到这一段末尾松手。 */

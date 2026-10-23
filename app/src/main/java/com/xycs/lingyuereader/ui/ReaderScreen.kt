@@ -255,7 +255,11 @@ private fun Reader(
     // 长按正文选出按住的词，松手就查；不松手拖动是自由划选，松手后可拖两端把手微调。
     val selector = remember(vm, chapterIndex) {
         object : TextSelector {
-            override fun press(block: Int, char: Int) = vm.pressText(chapterIndex, block, char)
+            override fun press(block: Int, char: Int) {
+                // 开始选字就收起菜单，不然底部的操作条会被菜单挡住。
+                menuVisible = false
+                vm.pressText(chapterIndex, block, char)
+            }
             override fun dragTo(block: Int, char: Int) = vm.dragText(block, char)
             override fun release() = vm.releaseText()
             override fun moveHandle(block: Int, start: Boolean, cursor: Int) = vm.moveSelectionHandle(block, start, cursor)
@@ -329,28 +333,6 @@ private fun Reader(
 
         StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label}", palette, Modifier.align(Alignment.BottomCenter))
 
-        AnimatedVisibility(
-            visible = textSelection?.dragging == false,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 16.dp),
-        ) {
-            SelectionBar(
-                palette,
-                onLookup = vm::lookupSelection,
-                onAnnotate = {
-                    textSelection?.let { sel ->
-                        vm.clearSelection()
-                        if (sel.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(sel.block, sel.range)
-                    }
-                },
-                onCopy = {
-                    vm.selectionText()?.let { copyText(context, it) }
-                    vm.clearSelection()
-                },
-                onCancel = vm::clearSelection,
-            )
-        }
 
         AnimatedVisibility(
             visible = listening != null && !menuVisible,
@@ -429,6 +411,29 @@ private fun Reader(
                     }
                 }
             }
+        }
+        // 放在最后，盖在菜单、听书条之上。
+        AnimatedVisibility(
+            visible = textSelection?.dragging == false,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + if (listening != null) 88.dp else 16.dp),
+        ) {
+            SelectionBar(
+                palette,
+                onLookup = vm::lookupSelection,
+                onAnnotate = {
+                    textSelection?.let { sel ->
+                        vm.clearSelection()
+                        if (sel.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(sel.block, sel.range)
+                    }
+                },
+                onCopy = {
+                    vm.selectionText()?.let { copyText(context, it) }
+                    vm.clearSelection()
+                },
+                onCancel = vm::clearSelection,
+            )
         }
     }
 
