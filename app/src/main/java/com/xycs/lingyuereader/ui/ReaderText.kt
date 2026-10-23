@@ -387,7 +387,13 @@ internal fun BlockView(
             style = styles.sceneBreak,
             modifier = modifier.then(tapOnly).fillMaxWidth().padding(vertical = (styles.settings.fontSize * 0.8f).dp),
         )
-        is Block.Image -> BookImage(block.src, palette.bar, modifier.then(tapOnly).padding(bottom = gap))
+        is Block.Image -> {
+            val zoom = LocalImageZoom.current
+            val gestures = Modifier.pointerInput(block) {
+                detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }, onLongPress = { zoom?.invoke(block.src) })
+            }
+            BookImage(block.src, palette.bar, modifier.then(gestures).padding(bottom = gap))
+        }
     }
 }
 

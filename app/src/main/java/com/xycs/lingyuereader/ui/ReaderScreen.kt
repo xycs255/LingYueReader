@@ -299,6 +299,7 @@ private fun Reader(
     val chapterLeft = remember(pos.fraction, chapter, speed) {
         val minutes = (1f - pos.fraction.coerceIn(0f, 1f)) * chapter.charCount / speed
         when {
+            chapter.charCount == 0 -> null // 漫画、PDF 没有文字，估不出时间
             minutes < 1f -> "本章不到 1 分钟"
             else -> "本章约剩 ${kotlin.math.ceil(minutes).toInt()} 分钟"
         }
@@ -331,6 +332,8 @@ private fun Reader(
     // 松手后可拖两端把手微调。
     // 点开的注释（键）。
     var footnote by remember { mutableStateOf<String?>(null) }
+    // 长按插图（漫画、PDF 的页）打开的大图。
+    var zoomed by remember { mutableStateOf<String?>(null) }
     val density = LocalDensity.current
     val edgePx = with(density) { 56.dp.toPx() }
     // 拖把手时手指在把手上，对应的字在手指上方约这么高。
@@ -409,6 +412,7 @@ private fun Reader(
     val bottomInset = navBars.calculateBottomPadding() + 28.dp
 
     val images = remember(entry.id) { BookImages { name -> vm.bookFile(entry.id, name) } }
+    DisposableEffect(images) { onDispose { images.close() } }
     val screenHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
 
     val glassBackdrop = rememberGlassBackdrop(palette.background)
@@ -433,7 +437,11 @@ private fun Reader(
     ) {
         // 书页（正文和状态行）记录成玻璃的取样源，菜单栏、控制条、操作条和底部面板都透出它。
         Box(Modifier.fillMaxSize().recordGlass(glassBackdrop)) {
-        CompositionLocalProvider(LocalBookImages provides images, LocalImageMaxHeight provides screenHeight * 0.8f) {
+        CompositionLocalProvider(
+            LocalBookImages provides images,
+            LocalImageMaxHeight provides screenHeight * 0.8f,
+            LocalImageZoom provides { zoomed = it },
+        ) {
             if (settings.pageMode == PageMode.SCROLL) {
                 key(screen, content) {
                     val start = remember { pos }
@@ -489,7 +497,12 @@ private fun Reader(
             }
         }
 
-        StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label} · $chapterLeft", palette, Modifier.align(Alignment.BottomCenter))
+        StatusLine(
+            chapter.title,
+            listOfNotNull("${chapterIndex + 1}/${content.chapters.size}", pos.label, chapterLeft).joinToString(" · "),
+            palette,
+            Modifier.align(Alignment.BottomCenter),
+        )
         }
 
 
@@ -582,7 +595,13 @@ private fun Reader(
                     }
                     BarButton("目录", MiuixIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
                     BarButton("设置", MiuixIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
-                BarButton(if (listening != null) "听书中" else "听书", MiuixIcons.VolumeUp, if (listening != null) palette.accent else palette.text) {
+                BarButton(
+                    if (listening != null) "听书中" else "听书",
+                    MiuixIcons.VolumeUp,
+                    if (listening != null) palette.accent else palette.text,
+                    // 漫画、PDF 没有文字可读。
+                    enabled = !entry.format.imageOnly,
+                ) {
                     if (listening != null) {
                         menuVisible = false
                         sheet = ReaderSheet.ReadAloud
@@ -645,6 +664,7 @@ private fun Reader(
             )
         }
         BreakReminder(enabled = settings.breakReminder, paused = listening != null, palette = palette)
+        zoomed?.let { src -> ZoomedImage(src, images) { zoomed = null } }
     }
     }
 

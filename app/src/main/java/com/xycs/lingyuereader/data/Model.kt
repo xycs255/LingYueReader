@@ -88,7 +88,12 @@ data class BookContent(
     val charCount: Int get() = chapters.sumOf { it.charCount }
 }
 
-enum class BookFormat(val label: String) { TXT("TXT"), EPUB("EPUB"), MARKDOWN("MD"), MIXED("合集") }
+enum class BookFormat(val label: String) {
+    TXT("TXT"), EPUB("EPUB"), MARKDOWN("MD"), MOBI("MOBI"), AZW3("AZW3"), FB2("FB2"), PDF("PDF"), CBZ("CBZ"), MIXED("合集");
+
+    /** 只有图片、没有文字的书（漫画、PDF）：不能选字、查词、听书。 */
+    val imageOnly: Boolean get() = this == PDF || this == CBZ
+}
 
 data class SourceRef(
     /** 原文件名，用来识别格式和排序。 */

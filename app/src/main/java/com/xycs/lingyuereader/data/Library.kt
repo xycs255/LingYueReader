@@ -17,6 +17,10 @@ import java.util.UUID
 class Library(private val context: Context) {
 
     private val root = File(context.filesDir, "books").apply { mkdirs() }
+
+    init {
+        BookParser.pdfAspects = PdfPages::aspects
+    }
     private val indexFile = File(root, "index.json")
 
     private companion object {
@@ -139,38 +143,72 @@ class Library(private val context: Context) {
         return content
     }
 
-    /** 把书内路径（“来源序号|路径”）的图片解出到 img/ 目录，块里的路径改成文件名；找不到或不支持的图片去掉。 */
+    /**
+     * 把书内路径（“来源序号|路径”）的图片解出到 img/ 目录，块里的路径改成文件名；找不到或不支持的图片去掉。
+     * 漫画和 PDF 的页不解出（太大），改成“zip:来源文件:包内路径”“pdf:来源文件:页号:高宽比”，阅读时从原文件里取；
+     * 只有它们的封面另存一张小图。
+     */
     private fun extractImages(dir: File, sources: List<SourceRef>, content: BookContent): BookContent {
-        val wanted = buildSet {
+        val imgDir = File(dir, "img")
+        imgDir.deleteRecursively()
+        val refs = buildSet {
             content.cover?.let(::add)
             content.chapters.forEach { c -> c.blocks.forEach { if (it is Block.Image) add(it.src) } }
         }
-        val imgDir = File(dir, "img")
-        imgDir.deleteRecursively()
-        if (wanted.isEmpty()) return content
+        if (refs.isEmpty()) return content
         imgDir.mkdirs()
-        val saved = mutableMapOf<String, String>()
-        wanted.groupBy { it.substringBefore('|').toIntOrNull() }.forEach { (index, refs) ->
-            val source = index?.let(sources::getOrNull) ?: return@forEach
-            runCatching {
-                java.util.zip.ZipFile(File(dir, source.file)).use { zip ->
-                    refs.forEach { ref ->
-                        val path = ref.substringAfter('|')
-                        val ext = path.substringAfterLast('.', "").lowercase()
-                        if (ext !in IMAGE_EXTENSIONS) return@forEach
-                        val entry = zip.getEntry(path) ?: return@forEach
-                        val name = "img/${saved.size}.$ext"
-                        zip.getInputStream(entry).use { input -> File(dir, name).outputStream().use { input.copyTo(it) } }
-                        saved[ref] = name
+        var count = 0
+        fun newFile(ext: String) = "img/${count++}.$ext"
+
+        /** 漫画、PDF 的页：不解出，记成从原文件读取的形式。 */
+        fun lazyRef(source: SourceRef, path: String): String? = when {
+            path.startsWith("@zip/") -> "zip:${source.file}:${path.removePrefix("@zip/")}"
+            path.startsWith("@pdf/") -> path.removePrefix("@pdf/").split('/').takeIf { it.size == 2 }?.let { "pdf:${source.file}:${it[0]}:${it[1]}" }
+            else -> null
+        }
+
+        /** 解出一张图到 img/，返回文件名。 */
+        fun extract(source: SourceRef, path: String): String? = runCatching {
+            val file = File(dir, source.file)
+            when {
+                path.startsWith("@res/") -> {
+                    val data = BookParser.resource(BookParser.SourceBytes(source.name, file), path.removePrefix("@res/")) ?: return@runCatching null
+                    val ext = PageBooks.imageExtension(data) ?: return@runCatching null
+                    newFile(ext).also { File(dir, it).writeBytes(data) }
+                }
+                path.startsWith("@pdf/") -> {
+                    val page = path.removePrefix("@pdf/").substringBefore('/').toInt()
+                    newFile("jpg").takeIf { PdfPages.saveJpeg(file, page, 360, File(dir, it)) }
+                }
+                else -> {
+                    val inner = path.removePrefix("@zip/")
+                    val ext = inner.substringAfterLast('.', "").lowercase()
+                    if (ext !in IMAGE_EXTENSIONS) return@runCatching null
+                    java.util.zip.ZipFile(file).use { zip ->
+                        val entry = zip.getEntry(inner) ?: return@runCatching null
+                        newFile(ext).also { name -> zip.getInputStream(entry).use { input -> File(dir, name).outputStream().use { input.copyTo(it) } } }
                     }
                 }
             }
+        }.getOrNull()
+
+        val resolved = HashMap<String, String?>()
+        fun pageSrc(ref: String): String? = resolved.getOrPut(ref) {
+            val source = ref.substringBefore('|').toIntOrNull()?.let(sources::getOrNull) ?: return@getOrPut null
+            val path = ref.substringAfter('|')
+            lazyRef(source, path) ?: extract(source, path)
         }
         val chapters = content.chapters.map { c ->
             if (c.blocks.none { it is Block.Image }) c
-            else c.withBlocks(c.blocks.mapNotNull { b -> if (b is Block.Image) saved[b.src]?.let { b.copy(src = it) } else b })
+            else c.withBlocks(c.blocks.mapNotNull { b -> if (b is Block.Image) pageSrc(b.src)?.let { b.copy(src = it) } else b })
         }
-        return content.copy(chapters = chapters, cover = content.cover?.let(saved::get))
+        // 封面要能当普通图片文件读：漫画、PDF 的封面另存一张。
+        val cover = content.cover?.let { ref ->
+            val source = ref.substringBefore('|').toIntOrNull()?.let(sources::getOrNull) ?: return@let null
+            val path = ref.substringAfter('|')
+            if (lazyRef(source, path) != null) extract(source, path) else pageSrc(ref)
+        }
+        return content.copy(chapters = chapters, cover = cover)
     }
 
     /** 从原位置重读每份文件。返回是否有变化；读不到的保留旧副本。 */
@@ -350,7 +388,7 @@ class Library(private val context: Context) {
     }
 
     private fun load(dir: File, sources: List<SourceRef>) =
-        sources.map { BookParser.SourceBytes(it.name, File(dir, it.file).readBytes()) }
+        sources.map { BookParser.SourceBytes(it.name, File(dir, it.file)) }
 
     private fun readUri(uri: Uri): ByteArray =
         requireNotNull(context.contentResolver.openInputStream(uri)) { "无法打开文件" }.use { it.readBytes() }

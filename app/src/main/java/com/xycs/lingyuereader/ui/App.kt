@@ -340,7 +340,7 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
                 Text("书架还是空的", style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "支持 TXT（自动识别 GBK/UTF-8 与章节）、EPUB 和 Markdown。" +
+                    "支持 TXT（自动识别 GBK/UTF-8 与章节）、EPUB、Markdown、MOBI / AZW3、FB2，以及 PDF 和漫画 CBZ。" +
                         "可以从手机存储或 Google 云盘等处选择文件；一次选多个文件时，可以合成一本书，适合分卷或分章的文稿。",
                     style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,

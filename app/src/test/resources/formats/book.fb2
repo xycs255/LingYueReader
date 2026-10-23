@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description>
+    <title-info>
+        <genre>antique</genre>
+        <author><first-name></first-name><last-name>某作者</last-name></author>
+        <book-title>测试之书</book-title>
+        <lang>und</lang>
+    </title-info>
+    <document-info>
+        <author><first-name></first-name><last-name>某作者</last-name></author>
+        <program-used>calibre 7.6.0</program-used>
+        <date>23.10.2026</date>
+        <id>bde52a76-84d7-43a3-8f2d-bc9524dd57d8</id>
+        <version>1.0</version>
+    </document-info>
+    <publish-info>
+    </publish-info>
+</description>
+<body>
+<section>
+<p><strong>第一章 起</strong></p>
+<p>甲一段落，春天来了。</p>
+<p>甲二段落，<strong>花开了</strong>。</p>
+<empty-line/>
+</section>
+<section>
+<p><strong>第二章 承</strong></p>
+<p>乙段落，下面有一张图。</p>
+<p><image l:href="#img_0"/></p>
+<empty-line/>
+</section>
+<section>
+<p><strong>第三章 转</strong></p>
+<p>丙段落，最后一章。</p>
+</section>
+</body>
+<binary id="img_0" content-type="image/png">iVBORw0KGgoAAAANSUhEUgAAACgAAAAUCAIAAABwJOjsAAAAJElEQVR4nGM4ISc3IIhh1OJR
+i0ctHrV41OJRi0ctHrV45FgMAFLhLK5mrmiuAAAAAElFTkSuQmCC</binary>
+</FictionBook>

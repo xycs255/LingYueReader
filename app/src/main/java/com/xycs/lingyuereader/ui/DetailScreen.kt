@@ -96,7 +96,7 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                     if (entry.sources.any { it.uri != null }) {
                         ArrowPreference(title = "从原文件刷新", summary = "原文件改过后重新读取", onClick = { vm.refresh(entry) })
                     }
-                    if (entry.format != BookFormat.EPUB) {
+                    if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
                         ArrowPreference(
                             title = "净化与分章规则",
                             summary = "删掉广告、水印等杂质文字，或自定义分章",

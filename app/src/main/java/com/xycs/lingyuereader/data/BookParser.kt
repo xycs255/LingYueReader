@@ -2,16 +2,58 @@ package com.xycs.lingyuereader.data
 
 object BookParser {
 
-    class SourceBytes(val name: String, val bytes: ByteArray)
+    /** 一份来源文件。给了 [file] 时内容按需读取：漫画、PDF 不必整个读进内存。 */
+    class SourceBytes private constructor(val name: String, val file: java.io.File?, private val data: ByteArray?) {
+        constructor(name: String, bytes: ByteArray) : this(name, null, bytes)
+        constructor(name: String, file: java.io.File) : this(name, file, null)
 
-    fun formatOf(name: String): BookFormat = when (name.substringAfterLast('.', "").lowercase()) {
-        "epub" -> BookFormat.EPUB
-        "md", "markdown" -> BookFormat.MARKDOWN
-        else -> BookFormat.TXT
+        val bytes: ByteArray by lazy { data ?: file!!.readBytes() }
+    }
+
+    fun formatOf(name: String): BookFormat {
+        val lower = name.lowercase()
+        if (lower.endsWith(".fb2.zip")) return BookFormat.FB2
+        return when (lower.substringAfterLast('.', "")) {
+            "epub" -> BookFormat.EPUB
+            "md", "markdown" -> BookFormat.MARKDOWN
+            "mobi", "prc", "azw" -> BookFormat.MOBI
+            "azw3", "kf8" -> BookFormat.AZW3
+            "fb2", "fbz" -> BookFormat.FB2
+            "pdf" -> BookFormat.PDF
+            "cbz" -> BookFormat.CBZ
+            else -> BookFormat.TXT
+        }
     }
 
     fun isSupported(name: String): Boolean =
-        name.substringAfterLast('.', "").lowercase() in setOf("txt", "text", "epub", "md", "markdown")
+        name.lowercase().endsWith(".fb2.zip") || name.substringAfterLast('.', "").lowercase() in setOf(
+            "txt", "text", "epub", "md", "markdown", "mobi", "prc", "azw", "azw3", "kf8", "fb2", "fbz", "pdf", "cbz",
+        )
+
+    /** 量出 PDF 每页的高宽比；由 Android 端提供（见 PdfPages），测试里可以换掉。 */
+    @Volatile
+    var pdfAspects: (java.io.File) -> List<Float> = { error("PDF 需要在 Android 上打开") }
+
+    /** FB2 可能是压缩过的（.fb2.zip、.fbz）：取出里面的 .fb2。 */
+    private fun fb2Bytes(bytes: ByteArray): ByteArray {
+        if (bytes.size < 4 || bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte()) return bytes
+        java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
+            while (true) {
+                val e = zip.nextEntry ?: break
+                if (e.name.endsWith(".fb2", ignoreCase = true)) return zip.readBytes()
+            }
+        }
+        error("压缩包里没有 .fb2 文件")
+    }
+
+    /**
+     * 书里的资源（插图、封面），[key] 是解析时记下的“@res/…”后半段：MOBI 的“rec/记录号”、FB2 的“bin/图片id”。
+     */
+    fun resource(source: SourceBytes, key: String): ByteArray? = when {
+        key.startsWith("rec/") -> key.removePrefix("rec/").toIntOrNull()?.let { MobiParser.record(source.bytes, it) }
+        key.startsWith("bin/") -> Fb2Parser.binary(fb2Bytes(source.bytes), key.removePrefix("bin/"))
+        else -> null
+    }
 
     fun titleOf(name: String): String = name.substringBeforeLast('.').trim().ifEmpty { name }
 
@@ -19,6 +61,10 @@ object BookParser {
         val fallback = titleOf(source.name)
         return when (formatOf(source.name)) {
             BookFormat.EPUB -> EpubParser.parse(source.bytes, fallback)
+            BookFormat.MOBI, BookFormat.AZW3 -> MobiParser.parse(source.bytes, fallback)
+            BookFormat.FB2 -> Fb2Parser.parse(fb2Bytes(source.bytes), fallback)
+            BookFormat.CBZ -> PageBooks.comic(source)
+            BookFormat.PDF -> PageBooks.pdf(source, pdfAspects(requireNotNull(source.file) { "PDF 需要先存成文件" }))
             BookFormat.MARKDOWN -> BookContent(null, null, MarkdownParser.parse(rules.clean(TextDecoder.decode(source.bytes)), fallback))
             else -> BookContent(null, null, TxtParser.parse(rules.clean(TextDecoder.decode(source.bytes)), rules.titleMatcher()))
         }
