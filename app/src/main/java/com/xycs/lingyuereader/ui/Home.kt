@@ -25,7 +25,12 @@ import com.xycs.lingyuereader.ui.glass.LiquidGlassNavigationBar
 import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
 import com.xycs.lingyuereader.ui.glass.recordGlass
 import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
+import top.yukonga.miuix.kmp.basic.NavigationBar
+import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.NavigationItem
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import com.xycs.lingyuereader.ui.glass.glass
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ContactsCircle
@@ -47,8 +52,10 @@ private val HomeTab.icon
 
 /** 导航栏离屏幕底边的距离，与 [LiquidGlassNavigationBar] 里的算法一致。 */
 @Composable
-private fun tabBarInset(): Dp {
+private fun tabBarInset(floating: Boolean): Dp {
     val nav = WindowInsets.navigationBars.only(WindowInsetsSides.Bottom).asPaddingValues().calculateBottomPadding()
+    // 贴底的导航栏：栏高加系统导航条。
+    if (!floating) return 64.dp + nav
     return 64.dp + if (nav != 0.dp) 8.dp + nav else 36.dp
 }
 
@@ -56,6 +63,7 @@ private fun tabBarInset(): Dp {
 @Composable
 fun HomeScreen(vm: AppViewModel) {
     val tab by vm.homeTab.collectAsStateWithLifecycle()
+    val appearance by vm.appearance.collectAsStateWithLifecycle()
     // 不在书架页时，返回键先回书架。
     BackHandler(enabled = tab != HomeTab.Shelf) { vm.selectTab(HomeTab.Shelf) }
 
@@ -73,19 +81,36 @@ fun HomeScreen(vm: AppViewModel) {
     CompositionLocalProvider(LocalGlassBackdrop provides backdrop) {
     Scaffold(
         bottomBar = {
-            LiquidGlassNavigationBar(
-                items = HomeTab.entries.map { NavigationItem(it.label, it.icon) },
-                selectedIndex = tab.ordinal,
-                onItemClick = { vm.selectTab(HomeTab.entries[it]) },
-                backdrop = backdrop,
-                isBlurActive = backdrop != null,
-            )
+            if (appearance.floatingBar) {
+                LiquidGlassNavigationBar(
+                    items = HomeTab.entries.map { NavigationItem(it.label, it.icon) },
+                    selectedIndex = tab.ordinal,
+                    onItemClick = { vm.selectTab(HomeTab.entries[it]) },
+                    backdrop = backdrop,
+                    isBlurActive = backdrop != null,
+                )
+            } else {
+                // 贴底的导航栏：毛玻璃底，从四页的记录里取样。
+                NavigationBar(
+                    Modifier.glass(
+                        backdrop = backdrop,
+                        shape = RectangleShape,
+                        tint = MiuixTheme.colorScheme.surface.copy(alpha = 0.6f),
+                        blur = 24.dp,
+                    ),
+                    Color.Transparent,
+                ) {
+                    HomeTab.entries.forEach { t ->
+                        NavigationBarItem(t == tab, { vm.selectTab(t) }, t.icon, t.label)
+                    }
+                }
+            }
         },
         // 各页自己处理状态栏等边距；导航栏让出的高度由 LocalTabBarInset 告诉各页。
         contentWindowInsets = WindowInsets(0),
         popupHost = { GlassPopupHost() },
     ) { _ ->
-        CompositionLocalProvider(LocalTabBarInset provides tabBarInset()) {
+        CompositionLocalProvider(LocalTabBarInset provides tabBarInset(appearance.floatingBar)) {
             HorizontalPager(
                 state = pager,
                 // 左右滑动留给书架分组标签和统计图；换页只靠导航栏。

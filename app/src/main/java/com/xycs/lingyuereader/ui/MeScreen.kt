@@ -95,11 +95,16 @@ fun MeScreen(vm: AppViewModel) {
                 SmallTitle("显示")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     val settings by vm.settings.collectAsStateWithLifecycle()
-                    SwitchPreference(
-                        title = "墨水屏 / 省电模式",
-                        summary = "关掉玻璃、动画和环境光变色，书页纯黑白，翻页不带动画；墨水屏阅读器和旧手机用",
-                        checked = settings.eInk,
-                        onCheckedChange = { v -> vm.updateSettings { it.copy(eInk = v) } },
+                    val appearance by vm.appearance.collectAsStateWithLifecycle()
+                    ArrowPreference(
+                        title = "主题设置",
+                        summary = buildString {
+                            append(appearance.mode.label)
+                            if (appearance.dynamicColors) append(" · Monet 配色")
+                            if (settings.eInk) append(" · 墨水屏模式") else if (!appearance.blur && !appearance.liquidGlass) append(" · 不用玻璃")
+                            if (appearance.scale != 1f) append(" · 缩放 ${(appearance.scale * 100).toInt()}%")
+                        },
+                        onClick = { vm.open(Screen.Theme) },
                     )
                 }
                 SmallTitle("数据")

@@ -112,6 +112,61 @@ data class ReaderSettings(
     val orientation: ReadingOrientation = ReadingOrientation.SYSTEM,
 )
 
+/** 界面的深浅色。 */
+enum class ThemeMode(val label: String) {
+    SYSTEM("跟随系统"),
+    LIGHT("浅色"),
+    DARK("深色"),
+}
+
+/** 换页面时的动画。 */
+enum class PageTransition(val label: String) {
+    FADE("淡入淡出"),
+    SLIDE("左右滑动"),
+    NONE("无"),
+}
+
+/** 由强调色生成配色时的风格（对应 miuix 的 ThemePaletteStyle）。 */
+enum class PaletteStyle(val label: String) {
+    TONAL_SPOT("柔和"),
+    VIBRANT("鲜艳"),
+    EXPRESSIVE("活泼"),
+    NEUTRAL("素雅"),
+    MONOCHROME("黑白"),
+}
+
+/** 界面外观（阅读页的书页配色另在 [ReaderSettings] 里）。 */
+data class Appearance(
+    val mode: ThemeMode = ThemeMode.SYSTEM,
+    /** Monet 取色：Android 12 起从壁纸取色。 */
+    val monet: Boolean = false,
+    /** 强调色（ARGB）；0 为默认（开着 Monet 时取壁纸色，否则用 miuix 的蓝）。 */
+    val accent: Int = 0,
+    val paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
+    /** 顶栏、面板、导航栏的毛玻璃模糊。 */
+    val blur: Boolean = true,
+    /** 液态玻璃：边缘折射和高光。 */
+    val liquidGlass: Boolean = true,
+    /** 底部导航栏悬浮在内容上（关掉则贴底）。 */
+    val floatingBar: Boolean = true,
+    val transition: PageTransition = PageTransition.FADE,
+    /** 界面缩放，1 为原大小。 */
+    val scale: Float = 1f,
+) {
+    /** 用 Monet 生成配色：开了 Monet，或选了强调色。 */
+    val dynamicColors: Boolean get() = monet || accent != 0
+
+    companion object {
+        /** 界面缩放的几档。 */
+        val SCALES = listOf(0.85f, 0.9f, 0.95f, 1f, 1.05f, 1.1f, 1.15f)
+
+        /** 可选的强调色：朱砂、琥珀、竹青、黛蓝、藕荷、桃红、松石、墨。 */
+        val ACCENTS = listOf(
+            0xFFA23B2A, 0xFFD49A57, 0xFF3E6B2E, 0xFF2F5D8A, 0xFF8E6C8A, 0xFFD9667A, 0xFF2A8C82, 0xFF4A4A4A,
+        ).map { it.toInt() }
+    }
+}
+
 enum class ShelfSort(val label: String) {
     RECENT("最近阅读"),
     TITLE("书名"),
@@ -208,6 +263,35 @@ class Prefs(context: Context) {
             putString("tapZones", TapZones.encode(s.tapZones))
             putString("orientation", s.orientation.name)
             putFloat("ttsRate", s.ttsRate)
+        }
+    }
+
+    fun appearance(): Appearance {
+        val d = Appearance()
+        return Appearance(
+            mode = runCatching { ThemeMode.valueOf(sp.getString("ui.mode", null)!!) }.getOrDefault(d.mode),
+            monet = sp.getBoolean("ui.monet", d.monet),
+            accent = sp.getInt("ui.accent", d.accent),
+            paletteStyle = runCatching { PaletteStyle.valueOf(sp.getString("ui.paletteStyle", null)!!) }.getOrDefault(d.paletteStyle),
+            blur = sp.getBoolean("ui.blur", d.blur),
+            liquidGlass = sp.getBoolean("ui.liquidGlass", d.liquidGlass),
+            floatingBar = sp.getBoolean("ui.floatingBar", d.floatingBar),
+            transition = runCatching { PageTransition.valueOf(sp.getString("ui.transition", null)!!) }.getOrDefault(d.transition),
+            scale = sp.getFloat("ui.scale", d.scale).coerceIn(Appearance.SCALES.first(), Appearance.SCALES.last()),
+        )
+    }
+
+    fun saveAppearance(a: Appearance) {
+        sp.edit {
+            putString("ui.mode", a.mode.name)
+            putBoolean("ui.monet", a.monet)
+            putInt("ui.accent", a.accent)
+            putString("ui.paletteStyle", a.paletteStyle.name)
+            putBoolean("ui.blur", a.blur)
+            putBoolean("ui.liquidGlass", a.liquidGlass)
+            putBoolean("ui.floatingBar", a.floatingBar)
+            putString("ui.transition", a.transition.name)
+            putFloat("ui.scale", a.scale)
         }
     }
 

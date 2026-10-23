@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -60,10 +61,15 @@ class EInkUiTest {
     fun eInkModeTurnsTheBookPagePureWhiteAndTurnsEffectsOff() {
         waitForText("测试书")
         compose.onNodeWithText("我的").performClick()
+        // 墨水屏开关在“主题设置”里。
+        waitForText("主题设置")
+        compose.onNodeWithText("主题设置").performClick()
         waitForText("墨水屏 / 省电模式")
-        compose.onNodeWithText("墨水屏 / 省电模式").performClick()
+        compose.onNodeWithText("墨水屏 / 省电模式").performScrollTo().performClick()
         compose.waitUntil(5_000) { Effects.reduced }
         assertTrue(context.getSharedPreferences("reader", Context.MODE_PRIVATE).getBoolean("eInk", false))
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        waitForText("墨水屏模式")
 
         compose.onNodeWithText("书架").performClick()
         waitForText("测试书")

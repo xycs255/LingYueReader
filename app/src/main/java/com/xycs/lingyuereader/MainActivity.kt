@@ -13,6 +13,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xycs.lingyuereader.ui.App
 import com.xycs.lingyuereader.ui.LingYueTheme
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
 
@@ -26,7 +28,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            LingYueTheme { App(vm) }
+            val appearance by vm.appearance.collectAsStateWithLifecycle()
+            LingYueTheme(appearance) { App(vm) }
         }
         // 只在首次启动时处理外部文件，旋转屏幕等重建时不再重复导入。
         if (savedInstanceState == null) handleIncoming(intent)

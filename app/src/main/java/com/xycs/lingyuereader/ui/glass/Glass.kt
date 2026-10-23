@@ -15,6 +15,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -68,8 +71,15 @@ val LocalGlassBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 /** 当前 Scaffold 内容区的背景记录：顶栏从这里取样。 */
 val LocalBarBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 
+/** 主题设置里的玻璃开关：模糊、液态玻璃（折射和高光）。两样都关就退回纯色。 */
+object GlassStyle {
+    var blur by mutableStateOf(true)
+    var lens by mutableStateOf(true)
+}
+
 /** 液态玻璃（折射、模糊、高光）要用 RuntimeShader，Android 13 起才有；墨水屏 / 省电模式下关掉。 */
-fun liquidGlassSupported(): Boolean = Build.VERSION.SDK_INT >= 33 && isRuntimeShaderSupported() && !Effects.reduced
+fun liquidGlassSupported(): Boolean =
+    Build.VERSION.SDK_INT >= 33 && isRuntimeShaderSupported() && !Effects.reduced && (GlassStyle.blur || GlassStyle.lens)
 
 /** 把一块区域记录成玻璃的取样源；不支持时为 null。[background] 是这块区域的底色。 */
 @Composable
@@ -106,25 +116,34 @@ fun Modifier.glass(
     if (backdrop == null || !liquidGlassSupported()) {
         return background(tint.copy(alpha = if (Effects.reduced) 1f else maxOf(tint.alpha, fallbackAlpha)), shape)
     }
+    val blurOn = GlassStyle.blur
+    val lensOn = GlassStyle.lens
+    // 不模糊时背后的字会透出来，底色加厚些。
+    val surface = if (blurOn) tint else tint.copy(alpha = maxOf(tint.alpha, 0.82f))
     return drawBackdrop(
         backdrop = backdrop,
         shape = { shape },
         effects = {
             vibrancy()
-            if (blur > 0.dp) blur(blur.toPx(), blur.toPx())
-            if (refraction > 0.dp && shape is CornerBasedShape) {
+            if (blurOn && blur > 0.dp) blur(blur.toPx(), blur.toPx())
+            if (lensOn && refraction > 0.dp && shape is CornerBasedShape) {
                 lens(refractionHeight = refraction.toPx(), refractionAmount = refraction.toPx())
             }
         },
-        highlight = highlight?.let { h -> { h } },
+        highlight = highlight?.takeIf { lensOn }?.let { h -> { h } },
         layerBlock = layerBlock,
-        onDrawSurface = { drawRect(tint) },
+        onDrawSurface = { drawRect(surface) },
     )
 }
 
-/** 只画一种颜色的取样源：给卡片这类在内容里面、不能取样自己的玻璃用。 */
+/**
+ * 只画一种颜色的取样源：给卡片这类在内容里面、不能取样自己的玻璃用。
+ * 颜色是可观察的状态：换深浅色时同一个对象改色、卡片跟着重画（玻璃的绘制节点不会换掉已经拿到的取样源）。
+ */
 @Stable
-private class SolidBackdrop(val color: Color) : Backdrop {
+private class SolidBackdrop(initial: Color) : Backdrop {
+    var color by mutableStateOf(initial)
+
     override val isCoordinatesDependent: Boolean = false
 
     override fun DrawScope.drawBackdrop(
@@ -306,7 +325,8 @@ fun GlassSheet(
 private fun Modifier.glassCard(cornerRadius: Dp): Modifier {
     val surface = MiuixTheme.colorScheme.surface
     val container = MiuixTheme.colorScheme.surfaceContainer
-    val backdrop = remember(surface) { SolidBackdrop(surface) }
+    val backdrop = remember { SolidBackdrop(surface) }
+    backdrop.color = surface
     return glass(
         backdrop = backdrop,
         shape = RoundedCornerShape(cornerRadius),

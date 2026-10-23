@@ -21,6 +21,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import com.xycs.lingyuereader.data.PageTransition
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -108,10 +113,31 @@ fun App(vm: AppViewModel = viewModel()) {
 
     val settings by vm.settings.collectAsStateWithLifecycle()
     LaunchedEffect(settings.eInk) { Effects.reduced = settings.eInk }
+    val appearance by vm.appearance.collectAsStateWithLifecycle()
+    LaunchedEffect(appearance.blur, appearance.liquidGlass) {
+        com.xycs.lingyuereader.ui.glass.GlassStyle.blur = appearance.blur
+        com.xycs.lingyuereader.ui.glass.GlassStyle.lens = appearance.liquidGlass
+    }
+    // 左右滑动的方向：进到下一层从右边进来，返回从左边进来。
+    val depth = remember { object { var last = 1; var forward = true } }
+    if (stack.size != depth.last) {
+        depth.forward = stack.size > depth.last
+        depth.last = stack.size
+    }
 
     AnimatedContent(
         targetState = stack.last(),
-        transitionSpec = { Effects.enter(fadeIn()) togetherWith Effects.exit(fadeOut()) },
+        transitionSpec = {
+            when (appearance.transition) {
+                PageTransition.FADE -> Effects.enter(fadeIn()) togetherWith Effects.exit(fadeOut())
+                PageTransition.SLIDE -> {
+                    val sign = if (depth.forward) 1 else -1
+                    Effects.enter(slideInHorizontally { it * sign } + fadeIn()) togetherWith
+                        Effects.exit(slideOutHorizontally { -it * sign / 3 } + fadeOut())
+                }
+                PageTransition.NONE -> EnterTransition.None togetherWith ExitTransition.None
+            }
+        },
         contentKey = { it::class },
         label = "screen",
     ) { screen ->
@@ -122,6 +148,7 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.LibrarySearch -> LibrarySearchScreen(vm)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
+            Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
     }

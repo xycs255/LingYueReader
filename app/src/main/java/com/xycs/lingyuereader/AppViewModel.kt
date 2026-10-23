@@ -72,6 +72,8 @@ sealed interface Screen {
     data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
+    /** 主题设置（界面的深浅色、配色、玻璃效果等）。 */
+    data object Theme : Screen
     data class BookRules(val bookId: String) : Screen
 }
 
@@ -196,6 +198,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _settings = MutableStateFlow(prefs.settings())
     val settings: StateFlow<ReaderSettings> = _settings.asStateFlow()
+
+    private val _appearance = MutableStateFlow(prefs.appearance())
+    val appearance: StateFlow<com.xycs.lingyuereader.data.Appearance> = _appearance.asStateFlow()
+
+    fun updateAppearance(transform: (com.xycs.lingyuereader.data.Appearance) -> com.xycs.lingyuereader.data.Appearance) {
+        val next = transform(_appearance.value)
+        if (next == _appearance.value) return
+        _appearance.value = next
+        prefs.saveAppearance(next)
+    }
 
     private val _stack = MutableStateFlow<List<Screen>>(listOf(Screen.Shelf))
     val stack: StateFlow<List<Screen>> = _stack.asStateFlow()
@@ -926,6 +938,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             result.getOrNull()?.settings?.let { s ->
                 prefs.importJson(s)
                 _settings.value = prefs.settings()
+                _appearance.value = prefs.appearance()
                 _shelfPrefs.value = prefs.shelf()
             }
             _openBook.value = null
