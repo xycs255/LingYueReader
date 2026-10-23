@@ -184,7 +184,7 @@ class DictionaryUiTest {
     fun dictionariesScreenListsAndRemovesImported() {
         waitForText("测试书")
         importFixture("v2_zlib_utf8.mdx")
-        compose.onNodeWithContentDescription("我的").performClick()
+        compose.onNodeWithText("我的").performClick()
         waitForText("导入 1 本")
         compose.onNodeWithText("词典").performClick()
         waitForText("3004 个词条")

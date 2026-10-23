@@ -220,6 +220,27 @@ class ShelfUiTest {
     }
 
     @Test
+    fun bottomTabsTapDragAndBackToShelf() {
+        waitForText("测试书")
+        // 点标签换页。
+        compose.onNodeWithText("我的").performClick()
+        waitForText("备份书架")
+        // 返回键先回书架，而不是退出。
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("备份书架").fetchSemanticsNodes().isEmpty() }
+        waitForText("测试书")
+        // 按住导航栏从“书架”拖到“统计”，松手就换到统计页。
+        val from = compose.onNodeWithText("书架").fetchSemanticsNode().boundsInRoot.center
+        val to = compose.onNodeWithText("统计").fetchSemanticsNode().boundsInRoot.center
+        compose.onRoot().performTouchInput {
+            down(from)
+            for (i in 1..10) moveTo(from + (to - from) * (i / 10f))
+            up()
+        }
+        waitForText("阅读统计")
+    }
+
+    @Test
     fun listViewAndDetailPage() {
         waitForText("测试书")
         compose.onNodeWithContentDescription("排序与显示").performClick()

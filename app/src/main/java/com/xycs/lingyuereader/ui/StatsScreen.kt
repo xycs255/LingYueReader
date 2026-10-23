@@ -63,24 +63,19 @@ fun StatsScreen(vm: AppViewModel) {
         topBar = {
             SmallTopAppBar(
                 title = "阅读统计",
-                navigationIcon = {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
-                    }
-                },
             )
         },
     ) { padding ->
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
             overscrollEffect = null,
         ) {
             item {
                 val week = ReadingStats.total(days, today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), today)
                 val month = ReadingStats.total(days, today.withDayOfMonth(1), today)
                 val year = ReadingStats.total(days, today.withDayOfYear(1), today)
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), insideMargin = PaddingValues(16.dp)) {
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Figure("今天", minutes(days[today]?.millis ?: 0))
                         Figure("本周", minutes(week))
@@ -96,7 +91,7 @@ fun StatsScreen(vm: AppViewModel) {
                     }
                 }
                 SmallTitle("近 20 周")
-                Card(Modifier.padding(horizontal = 12.dp)) {
+                Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
                     Heatmap(days, today, weeks = 20)
                     Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("少", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)

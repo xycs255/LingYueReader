@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 液态玻璃导航栏的模糊库标注 API 33 起；更老的系统运行时不启用它，改用纯色底。 -->
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
 
     <!-- 听书：前台服务保持朗读，通知栏显示控制按钮。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

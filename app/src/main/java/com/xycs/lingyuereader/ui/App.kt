@@ -92,7 +92,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import top.yukonga.miuix.kmp.icon.extended.Sort
 import top.yukonga.miuix.kmp.icon.extended.More
-import top.yukonga.miuix.kmp.icon.extended.ContactsCircle
 import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import com.xycs.lingyuereader.data.ShelfSort
@@ -109,21 +108,18 @@ fun App(vm: AppViewModel = viewModel()) {
         label = "screen",
     ) { screen ->
         when (screen) {
-            Screen.Shelf -> ShelfScreen(vm)
+            Screen.Shelf -> HomeScreen(vm)
             is Screen.Reader -> ReaderScreen(vm, screen)
             is Screen.Search -> SearchScreen(vm, screen.bookId)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
-            Screen.Vocabulary -> VocabularyScreen(vm)
-            Screen.Stats -> StatsScreen(vm)
-            Screen.Me -> MeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
     }
 }
 
 @Composable
-private fun ShelfScreen(vm: AppViewModel) {
+internal fun ShelfScreen(vm: AppViewModel) {
     val all by vm.shelf.collectAsStateWithLifecycle()
     val shelf by vm.visibleShelf.collectAsStateWithLifecycle()
     val shelfPrefs by vm.shelfPrefs.collectAsStateWithLifecycle()
@@ -164,11 +160,11 @@ private fun ShelfScreen(vm: AppViewModel) {
                     IconButton(onClick = pickFiles, enabled = !busy) {
                         Icon(MiuixIcons.Add, contentDescription = "导入")
                     }
-                    Box {
+                    Box(Modifier.padding(end = 12.dp)) {
                         IconButton(onClick = { moreMenu = true }) {
                             Icon(MiuixIcons.Sort, contentDescription = "排序与显示")
                         }
-                        // 只放排序和显示方式；其他功能在“我的”里。
+                        // 只放排序和显示方式；其他功能在底部的“我的”里。
                         val options = ShelfSort.entries.map { "按${it.label}" } + (if (shelfPrefs.list) "网格显示" else "列表显示")
                         OverlayListPopup(
                             show = moreMenu,
@@ -195,9 +191,6 @@ private fun ShelfScreen(vm: AppViewModel) {
                             }
                         }
                     }
-                    IconButton(onClick = { vm.open(Screen.Me) }, modifier = Modifier.padding(end = 12.dp)) {
-                        Icon(MiuixIcons.ContactsCircle, contentDescription = "我的")
-                    }
                 },
                 bottomContent = {
                     Column {
@@ -217,7 +210,7 @@ private fun ShelfScreen(vm: AppViewModel) {
                 },
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.padding(bottom = LocalTabBarInset.current)) },
     ) { padding ->
         val listModifier = Modifier
             .fillMaxSize()
@@ -228,7 +221,7 @@ private fun ShelfScreen(vm: AppViewModel) {
             start = 20.dp,
             end = 20.dp,
             top = padding.calculateTopPadding() + 8.dp,
-            bottom = padding.calculateBottomPadding() + 20.dp,
+            bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 20.dp,
         )
         when {
             !loaded -> Unit

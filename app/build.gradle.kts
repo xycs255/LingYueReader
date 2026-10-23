@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
+    implementation(libs.miuix.blur)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     testImplementation(libs.robolectric)

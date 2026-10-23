@@ -21,7 +21,8 @@ import java.io.File
 import java.time.LocalDate
 
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [36])
+// 手机大小的屏幕：默认的 320×470dp 太矮，统计页下方的书单会落在悬浮导航栏下面、不在屏幕内。
+@Config(sdk = [36], qualifiers = "w411dp-h891dp")
 class StatsUiTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val seed = object : ExternalResource() {
@@ -57,9 +58,7 @@ class StatsUiTest {
     @Test
     fun statsScreenShowsTotalsStreakAndSpeed() {
         waitForText("测试书")
-        compose.onNodeWithContentDescription("我的").performClick()
-        waitForText("连续 2 天")
-        compose.onNodeWithText("阅读统计").performClick()
+        compose.onNodeWithText("统计").performClick()
         waitForText("25 分")
         waitForText("连续阅读 2 天")
         waitForText("每分钟 200 字")

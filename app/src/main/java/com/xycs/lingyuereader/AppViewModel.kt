@@ -47,7 +47,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+/** 首页底部导航的四个标签。 */
+enum class HomeTab(val label: String) { Shelf("书架"), Vocabulary("生词本"), Stats("统计"), Me("我的") }
+
 sealed interface Screen {
+    /** 首页：书架、生词本、统计、我的，由底部导航切换。 */
     data object Shelf : Screen
     /** [chapterIndex] 为空时从上次读到的位置开始。 */
     data class Reader(
@@ -60,9 +64,6 @@ sealed interface Screen {
     data class Search(val bookId: String) : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
-    data object Vocabulary : Screen
-    data object Stats : Screen
-    data object Me : Screen
     data class BookRules(val bookId: String) : Screen
 }
 
@@ -175,6 +176,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _stack = MutableStateFlow<List<Screen>>(listOf(Screen.Shelf))
     val stack: StateFlow<List<Screen>> = _stack.asStateFlow()
+
+    private val _homeTab = MutableStateFlow(HomeTab.Shelf)
+    val homeTab: StateFlow<HomeTab> = _homeTab.asStateFlow()
+
+    fun selectTab(tab: HomeTab) {
+        _homeTab.value = tab
+    }
 
     private val _messages = MutableStateFlow<String?>(null)
     val messages: StateFlow<String?> = _messages.asStateFlow()

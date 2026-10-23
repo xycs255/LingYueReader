@@ -20,28 +20,20 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
-import com.xycs.lingyuereader.data.ReadingStats
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.utils.overScrollVertical
-import java.time.LocalDate
 
-/** “我的”：阅读统计、生词本、词典、备份恢复、关于。书架右上角的入口。 */
+/** “我的”：词典、备份恢复、关于。首页底部导航的最后一页。 */
 @Composable
 fun MeScreen(vm: AppViewModel) {
-    val stats by vm.readingStats.collectAsStateWithLifecycle()
-    val vocab by vm.vocab.collectAsStateWithLifecycle()
     val dicts by vm.dictSettings.collectAsStateWithLifecycle()
     val shelf by vm.shelf.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -56,8 +48,6 @@ fun MeScreen(vm: AppViewModel) {
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> confirmRestore = uri }
 
     LaunchedEffect(Unit) {
-        vm.reloadStats()
-        vm.reloadVocabulary()
         vm.reloadDicts()
     }
     LaunchedEffect(message) {
@@ -71,37 +61,19 @@ fun MeScreen(vm: AppViewModel) {
         topBar = {
             SmallTopAppBar(
                 title = "我的",
-                navigationIcon = {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
-                    }
-                },
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.padding(bottom = LocalTabBarInset.current)) },
     ) { padding ->
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
             overscrollEffect = null,
         ) {
             item {
                 if (busy) LinearProgressIndicator(Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
                 SmallTitle("阅读")
                 Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
-                    val today = LocalDate.now()
-                    val minutes = (stats[today]?.millis ?: 0) / 60_000
-                    ArrowPreference(
-                        title = "阅读统计",
-                        summary = "今天 $minutes 分钟 · 连续 ${ReadingStats.streak(stats, today)} 天",
-                        onClick = { vm.open(Screen.Stats) },
-                    )
-                    val learning = vocab.count { !it.mastered }
-                    ArrowPreference(
-                        title = "生词本",
-                        summary = if (vocab.isEmpty()) "查词时收进来的词" else "学习中 $learning 个，共 ${vocab.size} 个",
-                        onClick = { vm.open(Screen.Vocabulary) },
-                    )
                     ArrowPreference(
                         title = "词典",
                         summary = buildString {

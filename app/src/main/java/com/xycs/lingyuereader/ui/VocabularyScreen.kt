@@ -72,11 +72,10 @@ fun VocabularyScreen(vm: AppViewModel) {
             SmallTopAppBar(
                 title = if (reviewing) "复习生词" else "生词本",
                 navigationIcon = {
-                    IconButton(
-                        onClick = { if (reviewing) reviewing = false else vm.back() },
-                        modifier = Modifier.padding(start = 12.dp),
-                    ) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                    if (reviewing) {
+                        IconButton(onClick = { reviewing = false }, modifier = Modifier.padding(start = 12.dp)) {
+                            Icon(MiuixIcons.Back, contentDescription = "返回")
+                        }
                     }
                 },
                 actions = {
@@ -93,12 +92,12 @@ fun VocabularyScreen(vm: AppViewModel) {
         },
     ) { padding ->
         if (reviewing) {
-            Review(learning, Modifier.padding(padding), onAnswer = { w, known -> vm.setMastered(w.word, known) }, onDone = { reviewing = false })
+            Review(learning, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.setMastered(w.word, known) }, onDone = { reviewing = false })
             return@Scaffold
         }
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
             overscrollEffect = null,
         ) {
             item {
