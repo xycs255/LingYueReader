@@ -51,8 +51,6 @@ import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -110,7 +108,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                 title = "净化与分章",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
             )

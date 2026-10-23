@@ -36,9 +36,6 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.text.SimpleDateFormat
@@ -59,7 +56,7 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                 title = "书籍详情",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
             )
@@ -94,17 +91,17 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                 SmallTitle("操作")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     if (entry.sources.any { it.uri != null }) {
-                        ArrowPreference(title = "从原文件刷新", summary = "原文件改过后重新读取", onClick = { vm.refresh(entry) })
+                        LingYueArrowPreference(title = "从原文件刷新", summary = "原文件改过后重新读取", onClick = { vm.refresh(entry) })
                     }
                     if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
-                        ArrowPreference(
+                        LingYueArrowPreference(
                             title = "净化与分章规则",
                             summary = "删掉广告、水印等杂质文字，或自定义分章",
                             onClick = { vm.open(Screen.BookRules(entry.id)) },
                         )
                     }
-                    ArrowPreference(title = "重命名", onClick = { dialogs.renaming = true })
-                    ArrowPreference(
+                    LingYueArrowPreference(title = "重命名", onClick = { dialogs.renaming = true })
+                    LingYueArrowPreference(
                         title = "移除",
                         summary = "删除本机副本与进度、书签批注",
                         onClick = { dialogs.removing = true },

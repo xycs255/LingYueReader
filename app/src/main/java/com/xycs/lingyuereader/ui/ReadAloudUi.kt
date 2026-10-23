@@ -36,13 +36,6 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.ChevronForward
-import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
-import top.yukonga.miuix.kmp.icon.extended.Close
-import top.yukonga.miuix.kmp.icon.extended.Pause
-import top.yukonga.miuix.kmp.icon.extended.Play
-import top.yukonga.miuix.kmp.icon.extended.Timer
 
 /** 听书时浮在底部的控制条：播放/暂停、设置、停止。 */
 @Composable
@@ -58,7 +51,7 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
     ) {
         IconButton(onClick = ReadAloud::toggle) {
             Icon(
-                if (state.playing) MiuixIcons.Pause else MiuixIcons.Play,
+                if (state.playing) LingYueIcons.Pause else LingYueIcons.Play,
                 contentDescription = if (state.playing) "暂停听书" else "继续听书",
                 tint = palette.accent,
             )
@@ -80,10 +73,10 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
             )
         }
         IconButton(onClick = onSettings) {
-            Icon(MiuixIcons.Timer, contentDescription = "语速与定时", tint = palette.text)
+            Icon(LingYueIcons.Timer, contentDescription = "语速与定时", tint = palette.text)
         }
         IconButton(onClick = ReadAloud::stop) {
-            Icon(MiuixIcons.Close, contentDescription = "停止听书", tint = palette.text)
+            Icon(LingYueIcons.Close, contentDescription = "停止听书", tint = palette.text)
         }
     }
 }
@@ -108,13 +101,13 @@ internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRat
     Column(Modifier.padding(bottom = 24.dp)) {
         Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = ReadAloud::previousSentence) {
-                Icon(MiuixIcons.ChevronBackward, contentDescription = "上一句", tint = palette.text)
+                Icon(LingYueIcons.ChevronBackward, contentDescription = "上一句", tint = palette.text)
             }
             IconButton(onClick = ReadAloud::toggle) {
-                Icon(if (state.playing) MiuixIcons.Pause else MiuixIcons.Play, contentDescription = if (state.playing) "暂停听书" else "继续听书", tint = palette.accent)
+                Icon(if (state.playing) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = if (state.playing) "暂停听书" else "继续听书", tint = palette.accent)
             }
             IconButton(onClick = ReadAloud::nextSentence) {
-                Icon(MiuixIcons.ChevronForward, contentDescription = "下一句", tint = palette.text)
+                Icon(LingYueIcons.ChevronForward, contentDescription = "下一句", tint = palette.text)
             }
             Text(
                 if (state.sentences > 0) "第 ${state.sentence + 1} / ${state.sentences} 句 · ${progressLabel(state)}" else state.chapterTitle,

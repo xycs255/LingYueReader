@@ -52,9 +52,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -77,7 +74,7 @@ fun ThemeScreen(vm: AppViewModel) {
                 title = "主题设置",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
             )
@@ -103,7 +100,7 @@ fun ThemeScreen(vm: AppViewModel) {
                     )
                     AccentRow(a.accent) { c -> if (c != a.accent) recolor { it.copy(accent = c) } }
                     if (a.dynamicColors) {
-                        OverlayDropdownPreference(
+                        LingYueDropdownPreference(
                             items = PaletteStyle.entries.map { it.label },
                             selectedIndex = a.paletteStyle.ordinal,
                             title = "配色风格",
@@ -144,7 +141,7 @@ fun ThemeScreen(vm: AppViewModel) {
 
                 SmallTitle("动画与缩放")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
-                    OverlayDropdownPreference(
+                    LingYueDropdownPreference(
                         items = PageTransition.entries.map { it.label },
                         selectedIndex = a.transition.ordinal,
                         title = "页面切换动画",

@@ -6,7 +6,6 @@ import com.xycs.lingyuereader.ui.glass.glassHighlight
 import com.xycs.lingyuereader.ui.glass.readerGlass
 import com.xycs.lingyuereader.ui.glass.recordGlass
 import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
-import top.yukonga.miuix.kmp.icon.extended.VolumeUp
 import com.xycs.lingyuereader.tts.ReadAloud
 import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
@@ -97,7 +96,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import top.yukonga.miuix.kmp.icon.extended.Play
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -144,15 +142,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
-import top.yukonga.miuix.kmp.icon.extended.ChevronForward
-import top.yukonga.miuix.kmp.icon.extended.Favorites
-import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
-import top.yukonga.miuix.kmp.icon.extended.ListView
-import top.yukonga.miuix.kmp.icon.extended.Search
-import top.yukonga.miuix.kmp.icon.extended.Tune
 
 @Composable
 fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
@@ -780,7 +769,7 @@ private fun Reader(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = { vm.back() }) {
-                    Icon(MiuixIcons.Back, contentDescription = "返回书架", tint = palette.text)
+                    Icon(LingYueIcons.Back, contentDescription = "返回书架", tint = palette.text)
                 }
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(entry.title, color = palette.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
@@ -788,7 +777,7 @@ private fun Reader(
                 }
                 IconButton(onClick = { vm.toggleBookmark(chapterIndex, pos.block.coerceAtLeast(0), pos.char) }) {
                     Icon(
-                        if (bookmarked) MiuixIcons.FavoritesFill else MiuixIcons.Favorites,
+                        if (bookmarked) LingYueIcons.FavoritesFill else LingYueIcons.Favorites,
                         contentDescription = if (bookmarked) "删除书签" else "加书签",
                         tint = if (bookmarked) palette.accent else palette.text,
                     )
@@ -798,10 +787,10 @@ private fun Reader(
                     autoPaused = false
                     menuVisible = false
                 }) {
-                    Icon(MiuixIcons.Play, contentDescription = "自动滚动", tint = if (autoScroll) palette.accent else palette.text)
+                    Icon(LingYueIcons.Play, contentDescription = "自动滚动", tint = if (autoScroll) palette.accent else palette.text)
                 }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
-                    Icon(MiuixIcons.Search, contentDescription = "书内搜索", tint = palette.text)
+                    Icon(LingYueIcons.Search, contentDescription = "书内搜索", tint = palette.text)
                 }
             }
         }
@@ -822,14 +811,14 @@ private fun Reader(
             ) {
                 BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block, false) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    BarButton("上一章", MiuixIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
+                    BarButton("上一章", LingYueIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
                         goTo(chapterIndex - 1, null, false)
                     }
-                    BarButton("目录", MiuixIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
-                    BarButton("设置", MiuixIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
+                    BarButton("目录", LingYueIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
+                    BarButton("设置", LingYueIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
                 BarButton(
                     if (listening != null) "听书中" else "听书",
-                    MiuixIcons.VolumeUp,
+                    LingYueIcons.VolumeUp,
                     if (listening != null) palette.accent else palette.text,
                     // 漫画、PDF 没有文字可读。
                     enabled = !entry.format.imageOnly,
@@ -841,7 +830,7 @@ private fun Reader(
                         startListening()
                     }
                 }
-                    BarButton("下一章", MiuixIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
+                    BarButton("下一章", LingYueIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
                         goTo(chapterIndex + 1, null, false)
                     }
                 }
@@ -1254,27 +1243,27 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
             .padding(start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            "↩ 回到刚才 · $title",
-            color = palette.accent,
-            fontSize = 14.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Row(
             modifier = Modifier
                 .widthIn(max = 240.dp)
                 .clip(RoundedCornerShape(50))
                 .clickable(onClick = onReturn)
                 .padding(start = 12.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
-        )
-        Text(
-            "✕",
-            color = palette.secondary,
-            fontSize = 13.sp,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(LingYueIcons.Back, contentDescription = null, tint = palette.accent, modifier = Modifier.size(16.dp))
+            Text("回到刚才 · $title", color = palette.accent, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(
+            LingYueIcons.Close,
+            contentDescription = "不用回去",
+            tint = palette.secondary,
             modifier = Modifier
+                .size(48.dp)
                 .clip(RoundedCornerShape(50))
                 .clickable(onClick = onDismiss)
-                .semantics { contentDescription = "不用回去" }
-                .padding(horizontal = 10.dp, vertical = 9.dp),
+                .padding(15.dp),
         )
     }
 }

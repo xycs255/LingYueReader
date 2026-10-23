@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 单色书页与新月，供系统通知栏按主题着色。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,11.3C9.7,9.9 6.6,9.7 3,10.8v8.1c3.6,-1.1 6.7,-0.9 9,0.8V11.3z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,11.3c2.3,-1.4 5.4,-1.6 9,-0.5v8.1c-3.6,-1.1 -6.7,-0.9 -9,0.8v-8.4z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M15.1,2.6a4,4 0,1 0,4.7 5.5a3.7,3.7 0,1 1,-4.7 -5.5z" />
+</vector>

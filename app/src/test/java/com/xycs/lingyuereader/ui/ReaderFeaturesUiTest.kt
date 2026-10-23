@@ -234,7 +234,7 @@ class ShelfUiTest {
         waitForText("接着读")
         waitForText("读到第 1/2 章")
         waitForText("第一章 开端")
-        compose.onNodeWithText("继续阅读 ›").performClick()
+        compose.onNodeWithText("继续阅读").performClick()
         waitForText("第1段")
     }
 

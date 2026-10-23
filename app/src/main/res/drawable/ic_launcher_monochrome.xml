@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android themed icons only use this drawable's alpha mask. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M62,25 C53,26 47,33 47,41 C47,50 54,57 63,57 C70,57 76,53 79,47 C76,49 73,49 70,49 C62,49 56,43 56,35 C56,31 58,27 62,25 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M26,56 C35,52 45,54 52,60 L52,79 C45,74 35,73 26,76 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M82,56 C73,52 63,54 56,60 L56,79 C63,74 73,73 82,76 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M53,61 L54,82 L55,61 L55,79 Z" />
+</vector>

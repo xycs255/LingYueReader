@@ -128,7 +128,7 @@ class ReadAloudService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(state?.bookTitle ?: "听书")
             .setContentText(state?.chapterTitle.orEmpty())
             .setContentIntent(open)

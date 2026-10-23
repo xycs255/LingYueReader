@@ -33,7 +33,6 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -83,7 +82,7 @@ fun MeScreen(vm: AppViewModel) {
                 if (busy) LinearProgressIndicator(Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
                 SmallTitle("阅读")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
-                    ArrowPreference(
+                    LingYueArrowPreference(
                         title = "词典",
                         summary = buildString {
                             append(if (dicts.builtinEnabled) "内置字典词典" else "内置词典已关闭")
@@ -96,7 +95,7 @@ fun MeScreen(vm: AppViewModel) {
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     val settings by vm.settings.collectAsStateWithLifecycle()
                     val appearance by vm.appearance.collectAsStateWithLifecycle()
-                    ArrowPreference(
+                    LingYueArrowPreference(
                         title = "主题设置",
                         summary = buildString {
                             append(appearance.mode.label)
@@ -129,17 +128,17 @@ fun MeScreen(vm: AppViewModel) {
                         onCheckedChange = { on -> if (on) folderLauncher.launch(null) else vm.disableAutoBackup() },
                     )
                     if (auto.enabled) {
-                        ArrowPreference(title = "现在备份一次", enabled = !busy, onClick = vm::backupNow)
-                        ArrowPreference(title = "换个文件夹", summary = auto.label, onClick = { folderLauncher.launch(null) })
+                        LingYueArrowPreference(title = "现在备份一次", enabled = !busy, onClick = vm::backupNow)
+                        LingYueArrowPreference(title = "换个文件夹", summary = auto.label, onClick = { folderLauncher.launch(null) })
                     }
                     val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
-                    ArrowPreference(
+                    LingYueArrowPreference(
                         title = "备份书架",
                         summary = "${shelf.size} 本书，连同进度、书签批注、生词本、阅读统计和设置，存成一个 zip",
                         enabled = !busy,
                         onClick = { backupLauncher.launch("灵阅备份-${stamp.format(java.util.Date())}.zip") },
                     )
-                    ArrowPreference(
+                    LingYueArrowPreference(
                         title = "从备份恢复",
                         summary = "换手机时用",
                         enabled = !busy,
@@ -151,7 +150,7 @@ fun MeScreen(vm: AppViewModel) {
                     val version = remember {
                         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
                     }
-                    ArrowPreference(
+                    LingYueArrowPreference(
                         title = "灵阅 $version",
                         summary = "开源、离线、无广告的阅读器 · Apache-2.0 · 在浏览器中打开项目主页",
                         onClick = {

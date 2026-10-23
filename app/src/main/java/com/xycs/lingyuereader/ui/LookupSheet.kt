@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -53,6 +55,7 @@ import com.xycs.lingyuereader.dict.DictInfo
 import com.xycs.lingyuereader.dict.MdictEntry
 import com.xycs.lingyuereader.dict.WordEntry
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.Icon
 import java.io.ByteArrayInputStream
 import java.net.URLEncoder
 
@@ -71,8 +74,8 @@ internal fun LookupSheet(
     Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (lookup.range != null) {
-                Chip("‹", "选区向前多一个字", palette) { vm.adjustSelection(-1, 0) }
-                Chip("›", "选区开头少一个字", palette) { vm.adjustSelection(1, 0) }
+                IconChip(LingYueIcons.ChevronBackward, "选区向前多一个字", palette) { vm.adjustSelection(-1, 0) }
+                IconChip(LingYueIcons.ChevronForward, "选区开头少一个字", palette) { vm.adjustSelection(1, 0) }
             }
             Text(
                 lookup.word,
@@ -83,13 +86,18 @@ internal fun LookupSheet(
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             )
             if (lookup.range != null) {
-                Chip("‹", "选区结尾少一个字", palette) { vm.adjustSelection(0, -1) }
-                Chip("›", "选区向后多一个字", palette) { vm.adjustSelection(0, 1) }
+                IconChip(LingYueIcons.ChevronBackward, "选区结尾少一个字", palette) { vm.adjustSelection(0, -1) }
+                IconChip(LingYueIcons.ChevronForward, "选区向后多一个字", palette) { vm.adjustSelection(0, 1) }
             }
         }
         FlowRow(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val inVocab = vocab.any { it.word == lookup.word }
-            Chip(if (inVocab) "★ 已在生词本" else "☆ 收入生词本", null, palette) {
+            Chip(
+                if (inVocab) "已在生词本" else "收入生词本",
+                null,
+                palette,
+                if (inVocab) LingYueIcons.FavoritesFill else LingYueIcons.Favorites,
+            ) {
                 if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
             }
             Chip("复制", null, palette) { copyText(context, lookup.word) }
@@ -127,28 +135,47 @@ internal fun LookupSheet(
                 modifier = Modifier.padding(vertical = 12.dp),
             )
         }
-        Text(
-            "管理词典 ›",
-            color = palette.accent,
-            fontSize = 14.sp,
+        Row(
             modifier = Modifier.padding(top = 18.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onManage).padding(vertical = 6.dp),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text("管理词典", color = palette.accent, fontSize = 14.sp)
+            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = palette.accent, modifier = Modifier.size(16.dp))
+        }
     }
 }
 
 @Composable
-private fun Chip(label: String, description: String?, palette: ReaderPalette, onClick: () -> Unit) {
-    Text(
-        label,
-        color = palette.text,
-        fontSize = 14.sp,
+private fun IconChip(icon: ImageVector, description: String, palette: ReaderPalette, onClick: () -> Unit) {
+    Icon(
+        icon,
+        contentDescription = description,
+        tint = palette.text,
+        modifier = Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(50))
+            .background(palette.text.copy(alpha = 0.07f))
+            .clickable(onClickLabel = description, onClick = onClick)
+            .padding(14.dp),
+    )
+}
+
+@Composable
+private fun Chip(label: String, description: String?, palette: ReaderPalette, icon: ImageVector? = null, onClick: () -> Unit) {
+    Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .background(palette.text.copy(alpha = 0.07f))
             .clickable(onClickLabel = description, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 7.dp)
             .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier),
-    )
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (icon != null) Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(16.dp))
+        Text(label, color = palette.text, fontSize = 14.sp)
+    }
 }
 
 @Composable
