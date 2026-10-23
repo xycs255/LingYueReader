@@ -106,9 +106,12 @@ fun App(vm: AppViewModel = viewModel()) {
     val stack by vm.stack.collectAsStateWithLifecycle()
     BackHandler(enabled = stack.size > 1) { vm.back() }
 
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    LaunchedEffect(settings.eInk) { Effects.reduced = settings.eInk }
+
     AnimatedContent(
         targetState = stack.last(),
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        transitionSpec = { Effects.enter(fadeIn()) togetherWith Effects.exit(fadeOut()) },
         contentKey = { it::class },
         label = "screen",
     ) { screen ->

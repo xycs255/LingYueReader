@@ -125,9 +125,11 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val book by vm.openBook.collectAsStateWithLifecycle()
     // 护眼：有光线传感器时按环境光定背景（很暗换夜间、昏暗压暗背景），否则按系统深色；日落后偏暖。
-    val ambient = rememberAmbientLight(settings.ambientLight)
+    // 墨水屏 / 省电模式：不读光线传感器，不变暖，书页纯黑白，配色不渐变。
+    val eInk = settings.eInk
+    val ambient = rememberAmbientLight(settings.ambientLight && !eInk)
     val lightLevel = ambient.level
-    val warmth = rememberEveningWarmth(settings.eveningWarmth)
+    val warmth = rememberEveningWarmth(settings.eveningWarmth && !eInk)
     val systemDark = isSystemInDarkTheme()
     val theme = when {
         settings.theme == ReaderTheme.NIGHT -> ReaderTheme.NIGHT
@@ -136,7 +138,7 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
         else -> settings.theme
     }
     val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f
-    val palette = animatePalette(theme.palette().adjusted(dim, warmth))
+    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(theme.palette().adjusted(dim, warmth))
 
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -508,16 +510,16 @@ private fun Reader(
 
         AnimatedVisibility(
             visible = listening != null && !menuVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = Effects.enter(fadeIn()),
+            exit = Effects.exit(fadeOut()),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             listening?.let { l -> ReadAloudBar(l, palette, onSettings = { sheet = ReaderSheet.ReadAloud }) }
         }
         AnimatedVisibility(
             visible = autoScroll && listening == null && !menuVisible,
-            enter = fadeIn(),
-            exit = fadeOut(),
+            enter = Effects.enter(fadeIn()),
+            exit = Effects.exit(fadeOut()),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             AutoScrollBar(
@@ -533,8 +535,8 @@ private fun Reader(
 
         AnimatedVisibility(
             visible = menuVisible,
-            enter = slideInVertically { -it } + fadeIn(),
-            exit = slideOutVertically { -it } + fadeOut(),
+            enter = Effects.enter(slideInVertically { -it } + fadeIn()),
+            exit = Effects.exit(slideOutVertically { -it } + fadeOut()),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
             val bookmarked = marks.bookmarks.any { it.chapterIndex == chapterIndex && it.itemIndex == pos.item.coerceAtLeast(HEADER_ITEMS) }
@@ -576,8 +578,8 @@ private fun Reader(
 
         AnimatedVisibility(
             visible = menuVisible,
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = Effects.enter(slideInVertically { it } + fadeIn()),
+            exit = Effects.exit(slideOutVertically { it } + fadeOut()),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             Column(

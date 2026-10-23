@@ -61,7 +61,9 @@ fun HomeScreen(vm: AppViewModel) {
 
     val pager = rememberPagerState(initialPage = tab.ordinal) { HomeTab.entries.size }
     LaunchedEffect(tab) {
-        if (pager.currentPage != tab.ordinal) pager.animateScrollToPage(tab.ordinal)
+        if (pager.currentPage != tab.ordinal) {
+            if (Effects.reduced) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal)
+        }
     }
 
     // 四页一起记录成玻璃的取样源：导航栏，以及各页弹出的对话框、面板、菜单都从这里取样。

@@ -95,7 +95,11 @@ internal fun PagedReader(
 
         DisposableEffect(pager) {
             registerTurner { forward ->
-                scope.launch { pager.animateScrollToPage((pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)) }
+                scope.launch {
+                    val target = (pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)
+                    // 墨水屏上翻页不带动画，免得一页页地闪。
+                    if (Effects.reduced) pager.scrollToPage(target) else pager.animateScrollToPage(target)
+                }
             }
             onDispose { }
         }
@@ -105,7 +109,9 @@ internal fun PagedReader(
             val u = speaking ?: return@LaunchedEffect
             val indent = indentOf(chapter.blocks[u.block], styles.settings.indent)
             val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
-            if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) pager.animateScrollToPage(lead + target)
+            if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) {
+                if (Effects.reduced) pager.scrollToPage(lead + target) else pager.animateScrollToPage(lead + target)
+            }
         }
 
         LaunchedEffect(pager, pages) {

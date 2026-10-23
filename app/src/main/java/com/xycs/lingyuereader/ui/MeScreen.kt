@@ -34,6 +34,7 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** “我的”：词典、备份恢复、关于。首页底部导航的最后一页。 */
@@ -88,6 +89,16 @@ fun MeScreen(vm: AppViewModel) {
                             if (dicts.dicts.isNotEmpty()) append(" · 导入 ${dicts.dicts.size} 本")
                         },
                         onClick = { vm.open(Screen.Dictionaries) },
+                    )
+                }
+                SmallTitle("显示")
+                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                    val settings by vm.settings.collectAsStateWithLifecycle()
+                    SwitchPreference(
+                        title = "墨水屏 / 省电模式",
+                        summary = "关掉玻璃、动画和环境光变色，书页纯黑白，翻页不带动画；墨水屏阅读器和旧手机用",
+                        checked = settings.eInk,
+                        onCheckedChange = { v -> vm.updateSettings { it.copy(eInk = v) } },
                     )
                 }
                 SmallTitle("数据")

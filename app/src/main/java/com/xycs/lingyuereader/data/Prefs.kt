@@ -51,6 +51,8 @@ data class ReaderSettings(
     val autoScrollLines: Float = 0f,
     /** 听书选用的语音名；为空用引擎默认。 */
     val ttsVoice: String = "",
+    /** 墨水屏 / 省电模式：关掉玻璃、动画和环境光变色，书页纯黑白。 */
+    val eInk: Boolean = false,
 )
 
 enum class ShelfSort(val label: String) {
@@ -99,6 +101,7 @@ class Prefs(context: Context) {
             font = sp.getString("font", d.font) ?: d.font,
             autoScrollLines = sp.getFloat("autoScrollLines", d.autoScrollLines),
             ttsVoice = sp.getString("ttsVoice", d.ttsVoice) ?: d.ttsVoice,
+            eInk = sp.getBoolean("eInk", d.eInk),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -126,6 +129,7 @@ class Prefs(context: Context) {
             putString("font", s.font)
             putFloat("autoScrollLines", s.autoScrollLines)
             putString("ttsVoice", s.ttsVoice)
+            putBoolean("eInk", s.eInk)
             putFloat("ttsRate", s.ttsRate)
         }
     }

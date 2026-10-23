@@ -21,7 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
+import com.xycs.lingyuereader.ui.Effects
 import com.xycs.lingyuereader.ui.ReaderPalette
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.RectangleShape
@@ -66,8 +68,8 @@ val LocalGlassBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 /** 当前 Scaffold 内容区的背景记录：顶栏从这里取样。 */
 val LocalBarBackdrop = staticCompositionLocalOf<LayerBackdrop?> { null }
 
-/** 液态玻璃（折射、模糊、高光）要用 RuntimeShader，Android 13 起才有。 */
-fun liquidGlassSupported(): Boolean = Build.VERSION.SDK_INT >= 33 && isRuntimeShaderSupported()
+/** 液态玻璃（折射、模糊、高光）要用 RuntimeShader，Android 13 起才有；墨水屏 / 省电模式下关掉。 */
+fun liquidGlassSupported(): Boolean = Build.VERSION.SDK_INT >= 33 && isRuntimeShaderSupported() && !Effects.reduced
 
 /** 把一块区域记录成玻璃的取样源；不支持时为 null。[background] 是这块区域的底色。 */
 @Composable
@@ -102,7 +104,7 @@ fun Modifier.glass(
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
 ): Modifier {
     if (backdrop == null || !liquidGlassSupported()) {
-        return background(tint.copy(alpha = maxOf(tint.alpha, fallbackAlpha)), shape)
+        return background(tint.copy(alpha = if (Effects.reduced) 1f else maxOf(tint.alpha, fallbackAlpha)), shape)
     }
     return drawBackdrop(
         backdrop = backdrop,
@@ -152,8 +154,10 @@ fun glassHighlight(dark: Boolean, big: Boolean): Highlight = when {
 @Composable
 fun panelHighlight(big: Boolean = true): Highlight = glassHighlight(isDarkSurface(), big)
 
-/** 阅读页里浮着的控件（菜单栏、控制条、选字操作条）：取样书页，用书页配色。 */
-fun Modifier.readerGlass(shape: CornerBasedShape, palette: ReaderPalette, backdrop: Backdrop?): Modifier = this
+/** 阅读页里浮着的控件（菜单栏、控制条、选字操作条）：取样书页，用书页配色。墨水屏上换成描边的纯色块。 */
+fun Modifier.readerGlass(shape: CornerBasedShape, palette: ReaderPalette, backdrop: Backdrop?): Modifier = if (Effects.reduced) {
+    border(1.dp, palette.text, shape).background(palette.background, shape).clip(shape)
+} else this
     .dropShadow(shape, Shadow(radius = 12.dp, color = Color.Black, alpha = if (palette.isDark) 0.3f else 0.12f))
     .glass(
         backdrop = backdrop,
