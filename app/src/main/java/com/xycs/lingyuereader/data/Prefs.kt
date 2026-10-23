@@ -33,6 +33,12 @@ data class ReaderSettings(
     val autoNight: Boolean = true,
     /** 听书语速，1 为正常。 */
     val ttsRate: Float = 1f,
+    /** 按光线传感器测到的环境亮度调整背景：昏暗时压暗背景，很暗时换夜间。 */
+    val ambientLight: Boolean = true,
+    /** 日落后背景和文字逐渐偏暖。 */
+    val eveningWarmth: Boolean = true,
+    /** 每连续阅读 20 分钟，提醒看远处 20 秒（20-20-20）。 */
+    val breakReminder: Boolean = true,
 )
 
 enum class ShelfSort(val label: String) {
@@ -62,6 +68,9 @@ class Prefs(context: Context) {
             fullscreen = sp.getBoolean("fullscreen", d.fullscreen),
             autoNight = sp.getBoolean("autoNight", d.autoNight),
             ttsRate = sp.getFloat("ttsRate", d.ttsRate),
+            ambientLight = sp.getBoolean("ambientLight", d.ambientLight),
+            eveningWarmth = sp.getBoolean("eveningWarmth", d.eveningWarmth),
+            breakReminder = sp.getBoolean("breakReminder", d.breakReminder),
         )
     }
 
@@ -79,6 +88,9 @@ class Prefs(context: Context) {
             putFloat("brightness", s.brightness)
             putBoolean("fullscreen", s.fullscreen)
             putBoolean("autoNight", s.autoNight)
+            putBoolean("ambientLight", s.ambientLight)
+            putBoolean("eveningWarmth", s.eveningWarmth)
+            putBoolean("breakReminder", s.breakReminder)
             putFloat("ttsRate", s.ttsRate)
         }
     }

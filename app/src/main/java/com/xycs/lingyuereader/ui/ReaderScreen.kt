@@ -112,11 +112,30 @@ import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val book by vm.openBook.collectAsStateWithLifecycle()
-    val theme = if (settings.autoNight && isSystemInDarkTheme()) ReaderTheme.NIGHT else settings.theme
-    val palette = theme.palette()
+    // 护眼：有光线传感器时按环境光定背景（很暗换夜间、昏暗压暗背景），否则按系统深色；日落后偏暖。
+    val lightLevel by rememberLightLevel(settings.ambientLight)
+    val warmth = rememberEveningWarmth(settings.eveningWarmth)
+    val systemDark = isSystemInDarkTheme()
+    val theme = when {
+        settings.theme == ReaderTheme.NIGHT -> ReaderTheme.NIGHT
+        lightLevel == LightLevel.DARK -> ReaderTheme.NIGHT
+        lightLevel == null && settings.autoNight && systemDark -> ReaderTheme.NIGHT
+        else -> settings.theme
+    }
+    val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f
+    val palette = animatePalette(theme.palette().adjusted(dim, warmth))
 
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    // 关灯看屏最累（Fan 等 2024：10 lx 比 0 lx 疲劳低），持续很暗时提醒一次开灯。
+    var lampHinted by remember { mutableStateOf(false) }
+    LaunchedEffect(lightLevel) {
+        if (lightLevel == LightLevel.DARK && !lampHinted) {
+            delay(60_000)
+            lampHinted = true
+            snackbar.showSnackbar("周围很暗，开一盏灯读起来会更舒服")
+        }
+    }
 
     LaunchedEffect(screen.bookId) { vm.ensureLoaded(screen.bookId) }
     LaunchedEffect(message) {
@@ -322,7 +341,8 @@ private fun Reader(
                 }
             } else {
                 // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
-                key(screen, content, styles) {
+                // 只在排版设置变化时重新分页；配色随环境渐变时不必。
+                key(screen, content, settings) {
                     val start = remember { pos }
                     PagedReader(
                         content = content,
@@ -466,6 +486,7 @@ private fun Reader(
                 },
             )
         }
+        BreakReminder(enabled = settings.breakReminder, paused = listening != null, palette = palette)
     }
 
     OverlayBottomSheet(

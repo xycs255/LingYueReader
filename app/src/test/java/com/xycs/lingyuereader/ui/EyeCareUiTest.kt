@@ -1,0 +1,100 @@
+package com.xycs.lingyuereader.ui
+
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorManager
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.xycs.lingyuereader.MainActivity
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
+import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowSensor
+import org.robolectric.shadows.SensorEventBuilder
+import java.io.File
+
+private val context: Context get() = ApplicationProvider.getApplicationContext()
+
+private fun seedShortBook() {
+    val files = context.filesDir
+    File(files, "books").deleteRecursively()
+    val dir = File(files, "books/b1").apply { mkdirs() }
+    File(dir, "s0.txt").writeText("第一章 开端\n　　正文一段。\n")
+    val entry = JSONObject()
+        .put("id", "b1").put("title", "测试书").put("author", "").put("format", "TXT")
+        .put("addedAt", 1L).put("openedAt", 0L).put("chapterCount", 1).put("charCount", 5)
+        .put("sources", JSONArray().put(JSONObject().put("name", "测试书.txt").put("uri", "").put("file", "s0.txt")))
+    File(files, "books/index.json").writeText(JSONArray().put(entry).toString())
+    context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
+class EyeCareUiTest {
+    private val sensors get() = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    private val seed = object : ExternalResource() {
+        override fun before() {
+            seedShortBook()
+            shadowOf(sensors).addSensor(ShadowSensor.newInstance(Sensor.TYPE_LIGHT))
+        }
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    private fun waitForText(text: String, timeout: Long = 10_000) {
+        compose.waitUntil(timeout) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun openBook() {
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("正文一段")
+    }
+
+    @Test
+    fun breakReminderAppearsAfterTwentyMinutesAndEnds() {
+        openBook()
+        compose.mainClock.autoAdvance = false
+        // 19 分钟时还没有提醒。
+        compose.mainClock.advanceTimeBy(19 * 60_000L)
+        compose.onNodeWithText("看看远处").assertDoesNotExist()
+        compose.mainClock.advanceTimeBy(60_000L + 2_000)
+        compose.onNodeWithText("看看远处").assertExists()
+        // 倒计时走完 20 秒自动收起（时钟手动推进，倒计时动画不会自己跑完）。
+        compose.mainClock.advanceTimeBy(22_000L)
+        compose.onNodeWithText("看看远处").assertDoesNotExist()
+        // 再读 20 分钟又会提醒，这次点“跳过”。
+        compose.mainClock.advanceTimeBy(20 * 60_000L + 2_000)
+        compose.onNodeWithText("看看远处").assertExists()
+        compose.onNodeWithText("跳过").performClick()
+        compose.mainClock.advanceTimeBy(2_000L)
+        compose.onNodeWithText("看看远处").assertDoesNotExist()
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun darkRoomSuggestsTurningOnALamp() {
+        openBook()
+        val event = SensorEventBuilder.newBuilder()
+            .setSensor(sensors.getDefaultSensor(Sensor.TYPE_LIGHT)!!)
+            .setValues(floatArrayOf(1f))
+            .build()
+        shadowOf(sensors).sendSensorEventToListeners(event)
+        compose.mainClock.autoAdvance = false
+        compose.mainClock.advanceTimeBy(61_000)
+        compose.mainClock.autoAdvance = true
+        waitForText("开一盏灯")
+    }
+}

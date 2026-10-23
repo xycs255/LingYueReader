@@ -68,7 +68,7 @@ internal fun PagedReader(
         val heightPx = with(density) { (maxHeight - topInset - bottomInset).roundToPx() }
         val imageMaxHeight = maxHeight - topInset - bottomInset - styles.gap
         val images = LocalBookImages.current
-        val paginator = remember(styles, density, images) {
+        val paginator = remember(styles.settings, density, images) {
             Paginator(ComposeTextFitter(measurer), styles, density) { src -> images?.aspect(src) }
         }
 

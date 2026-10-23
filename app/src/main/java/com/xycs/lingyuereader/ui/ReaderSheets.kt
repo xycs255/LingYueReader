@@ -356,6 +356,15 @@ internal fun SettingsSheet(
             }
         }
         SwitchRow("系统深色时自动用夜间背景", settings.autoNight, textColor, accent) { v -> update { it.copy(autoNight = v) } }
+        Text("护眼", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
+        SwitchRow("跟随环境光调整背景", settings.ambientLight, textColor, accent) { v -> update { it.copy(ambientLight = v) } }
+        Text(
+            "昏暗时压暗背景，很暗时换夜间，减少屏幕与周围的亮度落差。手机没有光线传感器时按上面的系统深色设置。",
+            color = palette.secondary,
+            fontSize = 12.sp,
+        )
+        SwitchRow("日落后逐渐变暖", settings.eveningWarmth, textColor, accent) { v -> update { it.copy(eveningWarmth = v) } }
+        SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
         ChoiceRow("字体", listOf(true to "宋体", false to "黑体"), settings.serif, palette) { v -> update { it.copy(serif = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
         SwitchRow("点击左右两侧翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
