@@ -19,7 +19,7 @@ object BookCache {
     private const val MAGIC = 0x4C594331 // "LYC1"
 
     /** 解析规则或缓存格式改动时加一，让旧缓存全部重建。 */
-    const val VERSION = 2
+    const val VERSION = 3
 
     fun write(file: File, content: BookContent, fingerprint: String) {
         val tmp = File(file.parentFile, file.name + ".tmp")
@@ -53,6 +53,8 @@ object BookCache {
                     out.writeLong(offsets[i])
                     out.writeInt(lengths[i])
                 }
+                out.writeInt(content.notes.size)
+                content.notes.forEach { (k, v) -> out.writeStr(k); out.writeStr(v) }
             }
             raf.write(index.toByteArray())
             raf.seek(4)
@@ -91,7 +93,8 @@ object BookCache {
                     val length = input.readInt()
                     Chapter(t, number, part, chars) { readBlocks(file, offset, length) }
                 }
-                BookContent(title, author, chapters, description, cover)
+                val notes = (0 until input.readInt()).associate { input.readStr()!! to input.readStr()!! }
+                BookContent(title, author, chapters, description, cover, notes)
             }
         }.getOrNull()
     }

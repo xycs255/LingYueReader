@@ -18,6 +18,7 @@ class BookCacheTest {
         author = "作者",
         description = "简介",
         cover = "img/0.jpg",
+        notes = mapOf("a.xhtml#n1" to "注释一", "a.xhtml#n2" to "注释二"),
         chapters = listOf(
             Chapter("第一章 起", listOf(Block.Para("正文"), Block.Para(longParagraph, prose = false), Block.SceneBreak), number = 1),
             Chapter("第二章 承", listOf(
@@ -36,6 +37,7 @@ class BookCacheTest {
         assertEquals("作者", read.author)
         assertEquals("简介", read.description)
         assertEquals("img/0.jpg", read.cover)
+        assertEquals(content.notes, read.notes)
         assertEquals(listOf("第一章 起", "第二章 承"), read.chapters.map { it.title })
         assertEquals(listOf(1, 2), read.chapters.map { it.number })
         assertEquals(3, read.chapters[1].part)

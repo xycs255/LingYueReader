@@ -5,22 +5,63 @@ import org.json.JSONObject
 
 /** 行内格式只认 `**加粗**`。返回去掉标记后的文字和加粗区间，批注的位置都按去掉标记后的文字计。 */
 object InlineText {
-    data class Parsed(val text: String, val bold: List<IntRange>)
+    /**
+     * 解析后的行内文字：[bold] 是加粗的范围，[footnotes] 是注释角标（显示文字里的范围 → 注释的键）。
+     */
+    data class Parsed(val text: String, val bold: List<IntRange>, val footnotes: List<Pair<IntRange, String>> = emptyList())
+
+    /** 注释角标的标记：NOTE_START 角标文字 NOTE_KEY 注释键 NOTE_END。用私用区字符，正文里不会出现。 */
+    const val NOTE_START = '\uE000'
+    const val NOTE_KEY = '\uE001'
+    const val NOTE_END = '\uE002'
+
+    fun footnote(label: String, key: String): String = "$NOTE_START$label$NOTE_KEY$key$NOTE_END"
+
+    /** 去掉注释标记里的键，只留角标文字（统计字数、搜索用）。 */
+    fun stripNotes(raw: String): String {
+        if (NOTE_START !in raw) return raw
+        return Regex("$NOTE_START([^$NOTE_KEY]*)$NOTE_KEY[^$NOTE_END]*$NOTE_END").replace(raw) { it.groupValues[1] }
+    }
 
     fun parse(raw: String): Parsed {
-        if ("**" !in raw) return Parsed(raw, emptyList())
-        val parts = raw.split("**")
+        if ("**" !in raw && NOTE_START !in raw) return Parsed(raw, emptyList())
+        // 成对的 ** 才算加粗；落单的最后一个原样保留。
+        val pairs = Regex("""\*\*""").findAll(raw).count() / 2 * 2
         val sb = StringBuilder()
         val bold = mutableListOf<IntRange>()
-        parts.forEachIndexed { i, part ->
-            if (i % 2 == 1 && i < parts.lastIndex) {
-                if (part.isNotEmpty()) bold += sb.length until sb.length + part.length
-            } else if (i % 2 == 1) {
-                sb.append("**") // 落单的标记原样保留
+        val notes = mutableListOf<Pair<IntRange, String>>()
+        var boldStart = -1
+        var seen = 0
+        var i = 0
+        while (i < raw.length) {
+            val c = raw[i]
+            if (c == '*' && i + 1 < raw.length && raw[i + 1] == '*' && seen < pairs) {
+                seen++
+                if (boldStart < 0) {
+                    boldStart = sb.length
+                } else {
+                    if (sb.length > boldStart) bold += boldStart until sb.length
+                    boldStart = -1
+                }
+                i += 2
+                continue
             }
-            sb.append(part)
+            if (c == NOTE_START) {
+                val keyAt = raw.indexOf(NOTE_KEY, i + 1)
+                val end = if (keyAt > 0) raw.indexOf(NOTE_END, keyAt + 1) else -1
+                if (end > 0) {
+                    val label = raw.substring(i + 1, keyAt)
+                    val start = sb.length
+                    sb.append(label)
+                    if (label.isNotEmpty()) notes += (start until sb.length) to raw.substring(keyAt + 1, end)
+                    i = end + 1
+                    continue
+                }
+            }
+            sb.append(c)
+            i++
         }
-        return Parsed(sb.toString(), bold)
+        return Parsed(sb.toString(), bold, notes)
     }
 }
 

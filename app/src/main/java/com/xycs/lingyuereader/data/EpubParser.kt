@@ -49,10 +49,16 @@ object EpubParser {
             .ifEmpty { tocTitles(files, attr(spineTag, "toc")?.let(manifest::get)?.href) }
 
         val chapters = mutableListOf<Chapter>()
+        val noteKeys = linkedSetOf<String>()
         for (item in spine) {
             val html = files[item.href]?.let(TextDecoder::decode) ?: continue
             val htmlBase = item.href.substringBeforeLast('/', "")
-            var blocks = HtmlText.toBlocks(html) { src -> resolve(htmlBase, src) }
+            // 注释链接换算成“书内路径#锚点”；只写 #锚点 的指向本文件。
+            val link = { href: String ->
+                val path = href.substringBefore('#')
+                (if (path.isEmpty()) item.href else resolve(htmlBase, path)) + "#" + href.substringAfter('#')
+            }
+            var blocks = HtmlText.toBlocks(html, { src -> resolve(htmlBase, src) }, link, noteKeys)
             // 只有封面图的页面不单独成章（封面另有显示）；没文字也没图的页面略过。
             blocks = blocks.filterNot { it is Block.Image && it.src == cover }
             // 没声明封面时，开头只有一张图的页面就当作封面。
@@ -69,7 +75,13 @@ object EpubParser {
             }
             chapters += ChapterTitles.chapter(chapterTitle, blocks)
         }
-        return BookContent(title ?: fallbackTitle, author, chapters, description, cover)
+        val decoded = HashMap<String, String>()
+        val notes = noteKeys.mapNotNull { key ->
+            val path = key.substringBefore('#')
+            val html = decoded.getOrPut(path) { files[path]?.let(TextDecoder::decode).orEmpty() }
+            HtmlText.noteText(html, key.substringAfter('#'))?.let { key to it }
+        }.toMap()
+        return BookContent(title ?: fallbackTitle, author, chapters, description, cover, notes)
     }
 
     /** 目录：EPUB3 的 nav 或 EPUB2 的 NCX；同一文件取第一个标题。 */

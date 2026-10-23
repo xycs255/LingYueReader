@@ -188,6 +188,50 @@ class ParserTest {
         assertEquals(listOf(Block.Quote("引文"), Block.ListItem("•", "条目")), book.chapters[1].blocks)
     }
 
+    /** 两种常见注释：EPUB3 的 noteref + 正文里的 aside；以及指向尾注章节的 [1] 链接。 */
+    internal fun footnoteEpub(): ByteArray = zip(
+        "META-INF/container.xml" to """<container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>""",
+        "OPS/book.opf" to """
+            <package><metadata><dc:title>有注释的书</dc:title></metadata>
+            <manifest>
+              <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+              <item id="n" href="notes.xhtml" media-type="application/xhtml+xml"/>
+            </manifest>
+            <spine><itemref idref="c1"/><itemref idref="n"/></spine></package>
+        """.trimIndent(),
+        "OPS/c1.xhtml" to """<html><body><h1>第一章</h1>
+            <p>他读了《论语》<a epub:type="noteref" href="#fn1"><sup>1</sup></a>，又去了长安<a href="notes.xhtml#n2" id="r2">[2]</a>。<a href="notes.xhtml#n2">看注释</a></p>
+            <aside epub:type="footnote" id="fn1"><p><a href="#r1">1</a> 儒家经典，记孔子及其弟子言行。</p></aside>
+            </body></html>""",
+        "OPS/notes.xhtml" to """<html><body><h1>注释</h1>
+            <p><a id="n2" href="c1.xhtml#r2">[2]</a> 长安：今陕西西安。<a href="c1.xhtml#r2">↩</a></p></body></html>""",
+    )
+
+    @Test
+    fun epubFootnotesBecomeTappableMarkers() {
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("x.epub", footnoteEpub())))
+        val para = book.chapters[0].blocks.single() as Block.Para
+        val parsed = InlineText.parse(para.text)
+        // 角标留在正文里（显示为 1、[2]），普通链接文字照常；脚注正文不混进正文。
+        assertEquals("他读了《论语》1，又去了长安[2]。看注释", parsed.text)
+        assertEquals("他读了《论语》1，又去了长安[2]。看注释", para.plainText)
+        assertEquals(listOf("OPS/c1.xhtml#fn1", "OPS/notes.xhtml#n2"), parsed.footnotes.map { it.second })
+        assertEquals("1", parsed.text.substring(parsed.footnotes[0].first.first, parsed.footnotes[0].first.last + 1))
+        assertEquals("儒家经典，记孔子及其弟子言行。", book.notes["OPS/c1.xhtml#fn1"])
+        assertEquals("长安：今陕西西安。", book.notes["OPS/notes.xhtml#n2"])
+        // 尾注章节本身仍可阅读。
+        assertEquals(listOf("第一章", "注释"), book.chapters.map { it.title })
+    }
+
+    @Test
+    fun inlineTextKeepsBoldAndNotesAligned() {
+        val raw = "前**加粗**" + InlineText.footnote("[3]", "k") + "后**落单"
+        val p = InlineText.parse(raw)
+        assertEquals("前加粗[3]后**落单", p.text)
+        assertEquals(listOf(1..2), p.bold)
+        assertEquals(listOf((3..5) to "k"), p.footnotes)
+    }
+
     @Test
     fun epubImagesCoverAndDescription() {
         val epub = zip(

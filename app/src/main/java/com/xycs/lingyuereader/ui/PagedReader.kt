@@ -53,6 +53,7 @@ internal fun PagedReader(
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
     selector: TextSelector,
+    onFootnote: (String) -> Unit = {},
     onPosition: (block: Int, char: Int, fraction: Float, pageLabel: String) -> Unit,
     onChapterChange: (index: Int, fromEnd: Boolean) -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
@@ -164,6 +165,7 @@ internal fun PagedReader(
                         selector.takeIf { pageChapter == chapterIndex },
                         speaking.takeIf { pageChapter == chapterIndex },
                         selected.takeIf { pageChapter == chapterIndex },
+                        onFootnote,
                     )
                 }
             }
@@ -183,6 +185,7 @@ private fun PageContent(
     selector: TextSelector?,
     speaking: Utterance?,
     selected: Highlight?,
+    onFootnote: (String) -> Unit,
 ) {
     fun speakRange(block: Int) = speaking?.takeIf { it.block == block }?.let { it.start until it.end }
     Column(Modifier.fillMaxWidth().padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset)) {
@@ -205,6 +208,7 @@ private fun PageContent(
                     onTap = onTap,
                     blockIndex = item.block,
                     selector = selector,
+                    onFootnote = onFootnote,
                 )
                 is PageItem.Whole -> BlockView(
                     chapter.blocks[item.block],
@@ -216,6 +220,7 @@ private fun PageContent(
                     onTap = onTap,
                     blockIndex = item.block,
                     selector = selector,
+                    onFootnote = onFootnote,
                 )
             }
         }

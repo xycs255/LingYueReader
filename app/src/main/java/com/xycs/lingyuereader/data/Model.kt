@@ -16,10 +16,10 @@ sealed interface Block {
 
     val plainText: String
         get() = when (this) {
-            is Para -> text
-            is Heading -> text
-            is Quote -> text
-            is ListItem -> text
+            is Para -> InlineText.stripNotes(text)
+            is Heading -> InlineText.stripNotes(text)
+            is Quote -> InlineText.stripNotes(text)
+            is ListItem -> InlineText.stripNotes(text)
             is Table -> rows.joinToString("\n") { it.joinToString("  ") }
             is Image -> ""
             Rule, SceneBreak -> ""
@@ -76,6 +76,8 @@ data class BookContent(
     val description: String? = null,
     /** 封面图：解析时是书内路径，导入后改为书籍目录里的文件名。 */
     val cover: String? = null,
+    /** EPUB 注释：键（“文件路径#锚点”）→ 注释文字。正文里的角标用 [InlineText.footnote] 标记。 */
+    val notes: Map<String, String> = emptyMap(),
 ) {
     val charCount: Int get() = chapters.sumOf { it.charCount }
 }

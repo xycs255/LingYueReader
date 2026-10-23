@@ -52,6 +52,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -77,6 +78,9 @@ internal val CJK_LINE_BREAK = LineBreak(
     strictness = LineBreak.Strictness.Strict,
     wordBreak = LineBreak.WordBreak.Default,
 )
+
+/** 正文里注释角标的注解标签，值是注释的键。 */
+internal const val FOOTNOTE_TAG = "footnote"
 
 /** OpenType chws：相邻全角标点按上下文挤压成半宽。 */
 internal const val CJK_FEATURES = "\"chws\" 1"
@@ -159,6 +163,7 @@ internal fun blockText(
     selected: IntRange? = null,
     selectedColor: Color = Color.Unspecified,
     indent: Boolean = true,
+    footnoteColor: Color = Color.Unspecified,
 ): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
@@ -173,6 +178,13 @@ internal fun blockText(
         if (shift > 0) append(INDENT)
         append(parsed.text)
         parsed.bold.forEach { addStyle(SpanStyle(fontWeight = FontWeight.Bold), it.first + shift, it.last + 1 + shift) }
+        // 注释角标：小号上标、强调色；点它弹出注释。
+        parsed.footnotes.forEach { (r, key) ->
+            val start = r.first + shift
+            val end = r.last + 1 + shift
+            addStyle(SpanStyle(fontSize = 0.62.em, baselineShift = BaselineShift(0.45f), color = footnoteColor), start, end)
+            addStringAnnotation(FOOTNOTE_TAG, key, start, end)
+        }
         notes.forEach { n ->
             val start = (n.start + shift).coerceIn(0, length)
             val end = (n.end + shift).coerceIn(start, length)
@@ -223,15 +235,17 @@ internal fun BlockView(
     onTap: ((Float) -> Unit)? = null,
     blockIndex: Int = 0,
     selector: TextSelector? = null,
+    onFootnote: ((String) -> Unit)? = null,
 ) {
     val palette = styles.palette
     val gap = styles.gap
     val text = remember(block, notes, speaking, selected) {
-        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent)
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     val tap by rememberUpdatedState(onTap)
     val select by rememberUpdatedState(selector)
+    val footnote by rememberUpdatedState(onFootnote)
     val base = range?.first ?: 0
     val indent = indentOf(block, styles.settings.indent)
     // 排版里的位置 ↔ 块文字（不含缩进）里的位置。
@@ -279,7 +293,9 @@ internal fun BlockView(
                         if (!longPressed) {
                             up?.let {
                                 it.consume()
-                                tap?.invoke(it.position.x / size.width)
+                                val key = layout?.let { l -> footnoteAt(l, it.position) }
+                                val open = footnote
+                                if (key != null && open != null) open(key) else tap?.invoke(it.position.x / size.width)
                             }
                             return@awaitEachGesture
                         }
@@ -441,4 +457,14 @@ internal fun looksChinese(blocks: List<Block>): Boolean {
         if (total > 2_000) break
     }
     return total == 0 || han * 10 >= total * 3
+}
+
+/** 点在注释角标上（角标很小，前后各放宽一个字）时返回注释的键。 */
+internal fun footnoteAt(layout: TextLayoutResult, position: androidx.compose.ui.geometry.Offset): String? {
+    val text = layout.layoutInput.text
+    if (text.isEmpty()) return null
+    val offset = layout.getOffsetForPosition(position)
+    val from = (offset - 1).coerceAtLeast(0)
+    val to = (offset + 1).coerceAtMost(text.length)
+    return text.getStringAnnotations(FOOTNOTE_TAG, from, to).firstOrNull()?.item
 }

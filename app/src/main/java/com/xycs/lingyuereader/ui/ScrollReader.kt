@@ -48,6 +48,7 @@ internal fun ScrollReader(
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
     selector: TextSelector,
+    onFootnote: (String) -> Unit = {},
     onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
@@ -119,6 +120,7 @@ internal fun ScrollReader(
                 onTap = onTap,
                 blockIndex = index,
                 selector = selector,
+                onFootnote = onFootnote,
             )
         }
         item {

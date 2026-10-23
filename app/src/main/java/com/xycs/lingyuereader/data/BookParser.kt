@@ -49,6 +49,7 @@ object BookParser {
             chapters = chapters,
             description = parsed.firstNotNullOfOrNull { it.description },
             cover = parsed.firstNotNullOfOrNull { it.cover },
+            notes = parsed.fold(emptyMap()) { acc, c -> acc + c.notes },
         )
     }
 

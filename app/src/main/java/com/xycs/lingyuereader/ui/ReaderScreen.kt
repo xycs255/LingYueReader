@@ -23,6 +23,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -310,6 +312,8 @@ private fun Reader(
     }
     // 长按正文选出按住的词，松手就查；不松手拖动是自由划选，松手后可拖两端把手微调。
     var selectionBounds by remember { mutableStateOf<Rect?>(null) }
+    // 点开的注释（键）。
+    var footnote by remember { mutableStateOf<String?>(null) }
     var readerBox by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val selector = remember(vm, chapterIndex) {
         object : TextSelector {
@@ -361,6 +365,7 @@ private fun Reader(
                         bottomInset = bottomInset,
                         onTap = onTap,
                         selector = selector,
+                        onFootnote = { footnote = it },
                         selected = selected,
                         onPosition = { item, offset, fraction ->
                             pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
@@ -386,6 +391,7 @@ private fun Reader(
                         bottomInset = bottomInset,
                         onTap = onTap,
                         selector = selector,
+                        onFootnote = { footnote = it },
                         selected = selected,
                         onPosition = { block, char, fraction, label ->
                             pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
@@ -589,6 +595,24 @@ private fun Reader(
                 initialSelection = paragraph.selection,
             )
         }
+    }
+    // 注释面板：收起动画期间还显示原来的内容。
+    var lastFootnote by remember { mutableStateOf<String?>(null) }
+    footnote?.let { lastFootnote = it }
+    OverlayBottomSheet(
+        show = footnote != null,
+        title = "注释",
+        backgroundColor = palette.background,
+        onDismissRequest = { footnote = null },
+    ) {
+        Text(
+            lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。",
+            color = palette.text,
+            fontSize = 16.sp,
+            lineHeight = 26.sp,
+            fontFamily = styles.fontFamily,
+            modifier = Modifier.padding(bottom = 32.dp).verticalScroll(rememberScrollState()),
+        )
     }
     LookupOverlay(vm, palette) { l ->
         vm.closeLookup()
