@@ -1,0 +1,181 @@
+package com.xycs.lingyuereader.data
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import java.io.File
+import java.io.OutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/** 放备份的文件夹。正式用系统文件选择器选的文件夹（[SafFolder]），测试用普通目录（[FileFolder]）。 */
+interface BackupFolder {
+    fun list(): List<String>
+    fun write(name: String, block: (OutputStream) -> Unit)
+    fun rename(from: String, to: String)
+    fun delete(name: String)
+}
+
+/**
+ * 自动备份：每天把备份 zip 写进用户选的文件夹（可以是云盘、Syncthing 等同步目录），只留最近几份。
+ * 灵阅没有网络权限，换手机、多台设备之间靠这个文件夹带过去，在另一台上“从备份恢复”。
+ *
+ * 文件夹的地址只存在本机（单独的设置文件），不随备份走：换到别的手机上那个授权是无效的。
+ */
+class AutoBackup(
+    context: Context,
+    private val folderOf: (String) -> BackupFolder = { SafFolder(context, it.toUri()) },
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private val sp = context.getSharedPreferences("auto-backup", Context.MODE_PRIVATE)
+
+    data class State(
+        /** 文件夹地址；为空表示没开自动备份。 */
+        val folder: String? = null,
+        /** 文件夹的名字，显示用。 */
+        val label: String = "",
+        val lastAt: Long = 0,
+        val lastFile: String = "",
+        val lastError: String = "",
+    ) {
+        val enabled: Boolean get() = folder != null
+    }
+
+    fun state(): State = State(
+        folder = sp.getString("folder", null),
+        label = sp.getString("label", "").orEmpty(),
+        lastAt = sp.getLong("lastAt", 0),
+        lastFile = sp.getString("lastFile", "").orEmpty(),
+        lastError = sp.getString("lastError", "").orEmpty(),
+    )
+
+    /** 选了新文件夹（或传空关闭）。换文件夹后下次立刻备份。 */
+    fun setFolder(folder: String?, label: String) = sp.edit {
+        if (folder == null) remove("folder") else putString("folder", folder)
+        putString("label", label)
+        putLong("lastAt", 0)
+        remove("lastError")
+    }
+
+    /** 开着、且离上次成功备份满一天。 */
+    fun due(): Boolean {
+        val s = state()
+        return s.enabled && now() - s.lastAt >= DAY
+    }
+
+    /**
+     * 备份一次：先写成“.part”，写完再改名，中途被打断也不会留下半个备份；然后删掉多出来的旧备份。
+     * 返回写好的文件名。
+     */
+    fun run(write: (OutputStream) -> Unit): Result<String> {
+        val folderUri = state().folder ?: return Result.failure(IllegalStateException("没有选备份文件夹"))
+        return runCatching {
+            val folder = folderOf(folderUri)
+            val name = "灵阅备份-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.ROOT).format(Date(now())) + ".zip"
+            val part = "$name.part"
+            folder.list().filter { it.endsWith(".part") && it.startsWith("灵阅备份-") }.forEach { runCatching { folder.delete(it) } }
+            try {
+                folder.write(part, write)
+                if (name in folder.list()) folder.delete(name)
+                folder.rename(part, name)
+            } catch (e: Throwable) {
+                runCatching { folder.delete(part) }
+                throw e
+            }
+            folder.list().filter { BACKUP_NAME.matches(it) }.sortedDescending().drop(KEEP).forEach { runCatching { folder.delete(it) } }
+            name
+        }.onSuccess { name ->
+            sp.edit {
+                putLong("lastAt", now())
+                putString("lastFile", name)
+                remove("lastError")
+            }
+        }.onFailure { e ->
+            sp.edit { putString("lastError", e.message ?: "写不进去") }
+        }
+    }
+
+    companion object {
+        const val DAY = 24 * 60 * 60 * 1000L
+
+        /** 留最近几份。 */
+        const val KEEP = 7
+        val BACKUP_NAME = Regex("""灵阅备份-\d{8}-\d{4}\.zip""")
+    }
+}
+
+/** 系统文件选择器（OPEN_DOCUMENT_TREE）选的文件夹。 */
+class SafFolder(private val context: Context, private val tree: Uri) : BackupFolder {
+    private val resolver get() = context.contentResolver
+    private val rootId = DocumentsContract.getTreeDocumentId(tree)
+    private val root = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
+
+    private fun children(): Map<String, String> {
+        val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, rootId)
+        val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        val result = LinkedHashMap<String, String>()
+        resolver.query(uri, cols, null, null, null)?.use { c ->
+            while (c.moveToNext()) result[c.getString(1)] = c.getString(0)
+        }
+        return result
+    }
+
+    private fun docUri(name: String): Uri? = children()[name]?.let { DocumentsContract.buildDocumentUriUsingTree(tree, it) }
+
+    override fun list(): List<String> = children().keys.toList()
+
+    override fun write(name: String, block: (OutputStream) -> Unit) {
+        val uri = DocumentsContract.createDocument(resolver, root, "application/octet-stream", name) ?: error("文件夹里建不了新文件")
+        requireNotNull(resolver.openOutputStream(uri)) { "文件夹写不进去" }.use(block)
+    }
+
+    override fun rename(from: String, to: String) {
+        val uri = docUri(from) ?: error("找不到 $from")
+        DocumentsContract.renameDocument(resolver, uri, to) ?: error("改不了文件名")
+    }
+
+    override fun delete(name: String) {
+        docUri(name)?.let { DocumentsContract.deleteDocument(resolver, it) }
+    }
+
+    companion object {
+        /** 记住授权，重启后仍能写；返回文件夹的名字。 */
+        fun remember(context: Context, tree: Uri): String {
+            context.contentResolver.takePersistableUriPermission(
+                tree,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            val doc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+            return runCatching {
+                context.contentResolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+            }.getOrNull() ?: tree.lastPathSegment?.substringAfterLast(':').orEmpty()
+        }
+
+        fun forget(context: Context, tree: Uri) {
+            runCatching {
+                context.contentResolver.releasePersistableUriPermission(
+                    tree,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+        }
+    }
+}
+
+/** 普通目录，测试用。 */
+class FileFolder(private val dir: File) : BackupFolder {
+    override fun list(): List<String> = dir.list()?.toList().orEmpty()
+    override fun write(name: String, block: (OutputStream) -> Unit) = File(dir, name).outputStream().use(block)
+    override fun rename(from: String, to: String) {
+        check(File(dir, from).renameTo(File(dir, to))) { "改不了文件名" }
+    }
+    override fun delete(name: String) {
+        File(dir, name).delete()
+    }
+}

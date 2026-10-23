@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+*.whl
+# 签名密钥与密码，绝不提交。
+keystore.properties
+*.jks
+*.keystore
+*.p12

@@ -1,0 +1,52 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          # 默认还会装已下架的 'tools' 包，导致 sdkmanager 失败。
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      # 仓库设置了签名密钥（Settings → Secrets and variables → Actions）时用正式签名，
+      # 没设置（或来自 fork 的 PR 拿不到 secrets）时 Gradle 退回调试签名。
+      - name: Release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LINGYUE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lingyue-release.p12"
+            echo "LINGYUE_KEYSTORE_FILE=$RUNNER_TEMP/lingyue-release.p12" >> "$GITHUB_ENV"
+            echo "Signing with the release key."
+          else
+            echo "No release key configured; using the debug key."
+          fi
+      - name: Unit tests, lint and APKs
+        env:
+          LINGYUE_KEYSTORE_PASSWORD: ${{ secrets.LINGYUE_KEYSTORE_PASSWORD }}
+          LINGYUE_KEY_ALIAS: ${{ secrets.LINGYUE_KEY_ALIAS }}
+          LINGYUE_KEY_PASSWORD: ${{ secrets.LINGYUE_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LingYueReader-apk
+          path: app/build/outputs/apk/release/app-release.apk
