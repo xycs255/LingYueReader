@@ -13,6 +13,10 @@ import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Note
 import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.dict.DictSettings
+import com.xycs.lingyuereader.dict.Dictionaries
+import com.xycs.lingyuereader.dict.LookupResult
+import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
@@ -45,7 +49,17 @@ sealed interface Screen {
     ) : Screen
     data class Search(val bookId: String) : Screen
     data class Detail(val bookId: String) : Screen
+    data object Dictionaries : Screen
 }
+
+/** 阅读页里正在查的词：在哪一块的哪一段（[range] 为空表示从相关词语、链接跳来的，不在正文里）。 */
+data class Lookup(
+    val chapterIndex: Int,
+    val block: Int,
+    val range: IntRange?,
+    val word: String,
+    val result: LookupResult? = null,
+)
 
 /** 正在读的书：书架条目加上解析好的正文。 */
 data class OpenBook(val entry: BookEntry, val content: BookContent)
@@ -53,6 +67,13 @@ data class OpenBook(val entry: BookEntry, val content: BookContent)
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val library = Library(app)
+    private val dictionaries = Dictionaries(app)
+
+    private val _dictSettings = MutableStateFlow(DictSettings())
+    val dictSettings: StateFlow<DictSettings> = _dictSettings.asStateFlow()
+
+    private val _lookup = MutableStateFlow<Lookup?>(null)
+    val lookup: StateFlow<Lookup?> = _lookup.asStateFlow()
     private val prefs = Prefs(app)
 
     private val _shelf = MutableStateFlow<List<BookEntry>>(emptyList())
@@ -116,6 +137,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             loadShelf()
             _shelfLoaded.value = true
         }
+        viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         // 听书时跟着朗读位置记进度，锁屏听完再打开也能接着读。
         viewModelScope.launch {
             ReadAloud.state.collect { s ->
@@ -309,6 +331,107 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
 
     fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
+
+    // ---------- 查词 ----------
+
+    /** 长按正文某个字：选出它所在的词并查。 */
+    fun selectWordAt(chapterIndex: Int, block: Int, offset: Int) {
+        val book = _openBook.value ?: return
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                book.content.chapters.getOrNull(chapterIndex)?.blocks?.getOrNull(block)?.displayText
+            } ?: return@launch
+            if (text.isEmpty()) return@launch
+            val range = withContext(Dispatchers.IO) {
+                runCatching { WordFinder.wordAt(text, offset.coerceIn(0, text.lastIndex), dictionaries::isWord) }.getOrNull()
+            } ?: return@launch
+            showLookup(Lookup(chapterIndex, block, range, text.substring(range.first, range.last + 1)))
+        }
+    }
+
+    /** 手动调整选词范围：左右各伸缩一个字。 */
+    fun adjustSelection(startDelta: Int, endDelta: Int) {
+        val current = _lookup.value ?: return
+        val range = current.range ?: return
+        val book = _openBook.value ?: return
+        val text = book.content.chapters.getOrNull(current.chapterIndex)?.blocks?.getOrNull(current.block)?.displayText ?: return
+        val start = (range.first + startDelta).coerceIn(0, text.lastIndex)
+        val end = (range.last + endDelta).coerceIn(start, text.lastIndex)
+        if (start == range.first && end == range.last) return
+        showLookup(current.copy(range = start..end, word = text.substring(start, end + 1), result = null))
+    }
+
+    /** 查另一个词（相关词语、词典里的链接）：不再对应正文里的选区。 */
+    fun lookupWord(word: String) {
+        val current = _lookup.value ?: return
+        if (word.isBlank()) return
+        showLookup(current.copy(word = word, range = null, result = null))
+    }
+
+    private fun showLookup(l: Lookup) {
+        _lookup.value = l
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { dictionaries.lookup(l.word) }.getOrNull() }
+            _lookup.update { if (it?.word == l.word) it.copy(result = result ?: LookupResult(l.word, emptyList(), emptyList(), emptyList(), emptyList())) else it }
+        }
+    }
+
+    fun closeLookup() {
+        _lookup.value = null
+    }
+
+    fun dictResource(dictId: String, path: String): ByteArray? = dictionaries.resource(dictId, path)
+
+    fun dictStyles(dictId: String): List<String> = dictionaries.looseStyles(dictId)
+
+    // ---------- 词典管理 ----------
+
+    fun reloadDicts() {
+        viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
+    }
+
+    fun importDictionaries(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _busy.value = true
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val resolver = getApplication<Application>().contentResolver
+                    dictionaries.import(library.describe(uris)) { p -> resolver.openInputStream(p.uri)!! }
+                }
+            }
+            _busy.value = false
+            reloadDicts()
+            _messages.value = result.fold(
+                { r ->
+                    buildString {
+                        if (r.added.isNotEmpty()) append("已导入：${r.added.joinToString("、")}")
+                        if (r.failed.isNotEmpty()) {
+                            if (isNotEmpty()) append("；")
+                            append("导入失败：${r.failed.joinToString("、")}")
+                        }
+                    }
+                },
+                { "导入失败：${it.message}" },
+            )
+        }
+    }
+
+    fun setBuiltinDictEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) { dictionaries.setBuiltinEnabled(enabled); reloadDicts() }
+    }
+
+    fun setDictEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) { dictionaries.setEnabled(id, enabled); reloadDicts() }
+    }
+
+    fun moveDict(id: String, up: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) { dictionaries.move(id, up); reloadDicts() }
+    }
+
+    fun removeDict(id: String) {
+        viewModelScope.launch(Dispatchers.IO) { dictionaries.remove(id); reloadDicts() }
+    }
 
     fun backup(uri: Uri) {
         viewModelScope.launch {

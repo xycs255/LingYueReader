@@ -13,7 +13,12 @@
 - **阅读体验**：上下滚动或左右翻页（平移 / 覆盖），点两侧或按音量键翻页，跨章节连续翻；
   宋体/黑体、字号、行距、段距、亮度可调；纸白、宣黄、护眼、夜间四种背景，系统深色时可自动切夜间；
   可隐藏状态栏全屏阅读；菜单里有全书进度条，拖动即跳转；自动记住每本书读到哪里；书内全文搜索。
-- **书签与批注**：顶栏一键加书签；长按段落可选中一部分划线（四种颜色）、写批注、复制；
+- **字典与词典**：长按正文里的字，自动选出它所在的词（可左右调整选区）并查词：
+  - 内置离线的基础字典（Unihan：读音、部首、笔画、繁简）和词典（CC-CEDICT：拼音、英文释义、相关词语）；
+  - 导入 MDict 词典（`.mdx`，连同 `.mdd` 图片资源和 `.css` 样式一起选），查词时依次列出各本词典的释义，
+    可在“书架 ⋯ → 词典…”里启用、排序、删除；
+  - 一键到汉典、百度汉语在线查询（打开浏览器），或交给手机上已装的其他词典、翻译应用。
+- **书签与批注**：顶栏一键加书签；长按选词后点“划线·批注”，可选中一部分划线（四种颜色）、写批注、复制；
   目录面板里集中查看书签和批注，批注可导出为 Markdown。原文件改稿后，批注会按原文重新找回位置。
 - **听书**：用系统的文字转语音逐句朗读，正在读的句子高亮并自动翻页、换章；锁屏继续，通知栏可暂停；
   语速可调，可定时关闭（15 / 30 / 60 分钟或本章结束）。
@@ -22,7 +27,7 @@
 - **备份与恢复**：书架、书籍文件、进度、书签批注和设置打包成一个 zip，换手机时恢复。
 - **用灵阅打开**：在文件管理器、聊天软件里打开或分享 TXT / EPUB / Markdown 文件，直接导入并开始阅读；
   同一个文件重复打开不会重复入库。
-- **隐私**：不联网，不收集任何数据；书籍副本只存在本机应用目录。
+- **隐私**：应用本身不联网（没有网络权限），不收集任何数据；书籍副本只存在本机应用目录。
 
 ## 使用
 
@@ -50,12 +55,15 @@
 | `data/Marks.kt` | 书签、批注、改稿后重新定位与导出 |
 | `data/BookCache.kt` | 解析结果缓存、章节按需加载 |
 | `tts/` | 听书：按句朗读与前台服务 |
+| `dict/Builtin.kt` | 内置字典词典查询、长按选词的分词 |
+| `dict/Mdict.kt`、`MdictDictionary.kt` | MDict（.mdx/.mdd）读取，含 LZO、zlib 与加密索引 |
+| `dict/Dictionaries.kt` | 词典导入、设置与汇总查询 |
+| `tools/build_dict.py` | 由 Unihan 与 CC-CEDICT 原始数据生成内置词库 |
 | `ui/Paginator.kt`、`ui/PagedReader.kt` | 按实际排版分页、左右翻页 |
 | `ui/` | Jetpack Compose + miuix 界面 |
 
 ## 计划
 
-- EPUB 插图与封面
 - 仿真翻页动画
 - 书架分组、WebDAV 同步
 - 繁简转换、自定义字体
@@ -65,4 +73,13 @@
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)
+代码采用 [Apache License 2.0](LICENSE)。
+
+内置词库数据来自第三方，按各自许可证分发：
+
+- `app/src/main/assets/dict/unihan.tsv.gz`：由 Unicode 字符数据库的 [Unihan](https://www.unicode.org/charts/unihan.html)
+  与 CJKRadicals.txt 生成，© Unicode, Inc.，[Unicode License v3](https://www.unicode.org/license.txt)。
+- `app/src/main/assets/dict/cedict.tsv.gz`：由 [CC-CEDICT](https://cc-cedict.org/wiki/) 生成，
+  © MDBG，[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)；这份派生数据同样以 CC BY-SA 4.0 提供。
+
+导入的 MDict 词典归其原作者所有，灵阅只在本机读取，不做分发。

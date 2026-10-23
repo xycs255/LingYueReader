@@ -98,6 +98,7 @@ class PagedModeUiTest {
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class MarksUiTest {
     private val seed = object : ExternalResource() {
         override fun before() = seedBook("SCROLL")
@@ -120,7 +121,10 @@ class MarksUiTest {
     @Test
     fun longPressParagraphSavesHighlight() {
         openBook()
+        // 长按先选词查词，再从查词面板进划线。
         compose.onAllNodesWithText("第1段", substring = true)[0].performTouchInput { longClick() }
+        waitForText("划线·批注")
+        compose.onNodeWithText("划线·批注").performClick()
         waitForText("拖动选中要划线的文字")
         compose.onNodeWithText("划线").performClick()
         compose.waitForIdle()

@@ -52,12 +52,14 @@ internal fun PagedReader(
     topInset: Dp,
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
-    onLongPress: (block: Int) -> Unit,
+    onLongPress: (block: Int, char: Int) -> Unit,
     onPosition: (block: Int, char: Int, fraction: Float, pageLabel: String) -> Unit,
     onChapterChange: (index: Int, fromEnd: Boolean) -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
     /** 听书时正在读的一句（本章内）。 */
     speaking: Utterance? = null,
+    /** 正在查的词：第几块、哪一段。 */
+    selected: Pair<Int, IntRange>? = null,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -161,6 +163,7 @@ internal fun PagedReader(
                         content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
                         onLongPress.takeIf { pageChapter == chapterIndex },
                         speaking.takeIf { pageChapter == chapterIndex },
+                        selected.takeIf { pageChapter == chapterIndex },
                     )
                 }
             }
@@ -177,8 +180,9 @@ private fun PageContent(
     marks: Marks,
     topInset: Dp,
     onTap: (Float) -> Unit,
-    onLongPress: ((Int) -> Unit)?,
+    onLongPress: ((Int, Int) -> Unit)?,
     speaking: Utterance?,
+    selected: Pair<Int, IntRange>?,
 ) {
     fun speakRange(block: Int) = speaking?.takeIf { it.block == block }?.let { it.start until it.end }
     Column(Modifier.fillMaxWidth().padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset)) {
@@ -193,28 +197,23 @@ private fun PageContent(
                     chapter.blocks[item.block],
                     styles,
                     marks.notesIn(chapterIndex, item.block),
-                    modifier = Modifier.readerGestures(item, onTap, onLongPress?.let { { it(item.block) } }),
                     range = item.start until item.end,
                     isEnd = item.isEnd,
                     speaking = speakRange(item.block),
+                    selected = selected?.takeIf { it.first == item.block }?.second,
+                    onTap = onTap,
+                    onLongPressChar = onLongPress?.let { cb -> { char -> cb(item.block, char) } },
                 )
                 is PageItem.Whole -> BlockView(
                     chapter.blocks[item.block],
                     styles,
                     marks.notesIn(chapterIndex, item.block),
-                    modifier = Modifier.readerGestures(item, onTap, onLongPress?.let { { it(item.block) } }),
                     speaking = speakRange(item.block),
+                    selected = selected?.takeIf { it.first == item.block }?.second,
+                    onTap = onTap,
+                    onLongPressChar = onLongPress?.let { cb -> { char -> cb(item.block, char) } },
                 )
             }
         }
     }
 }
-
-/** 正文块上的点按：轻点按横向位置交给翻页/菜单处理，长按打开段落面板。 */
-internal fun Modifier.readerGestures(key: Any?, onTap: (Float) -> Unit, onLongPress: (() -> Unit)?): Modifier =
-    pointerInput(key, onLongPress != null) {
-        detectTapGestures(
-            onTap = { onTap(it.x / size.width) },
-            onLongPress = onLongPress?.let { { _ -> it() } },
-        )
-    }

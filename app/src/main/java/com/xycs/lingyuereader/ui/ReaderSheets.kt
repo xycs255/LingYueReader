@@ -208,8 +208,11 @@ internal fun ParagraphSheet(
     onBookmark: () -> Unit,
     onSave: (start: Int, end: Int, note: String, color: MarkColor) -> Unit,
     onDeleteNote: (String) -> Unit,
+    initialSelection: IntRange? = null,
 ) {
-    var selection by remember(text) { mutableStateOf(TextFieldValue(text)) }
+    var selection by remember(text, initialSelection) {
+        mutableStateOf(TextFieldValue(text, initialSelection?.let { TextRange(it.first, it.last + 1) } ?: TextRange(text.length)))
+    }
     var note by remember(text) { mutableStateOf("") }
     var color by remember { mutableStateOf(MarkColor.YELLOW) }
     val fieldColors = TextFieldDefaults.textFieldColors(

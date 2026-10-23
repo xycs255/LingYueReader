@@ -1,5 +1,12 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -89,7 +96,14 @@ internal class ReaderStyles(val settings: ReaderSettings, val palette: ReaderPal
 }
 
 /** 块在阅读页上显示的完整文字（含段首缩进），以及加粗和批注的样式。 */
-internal fun blockText(block: Block, notes: List<Note>, speaking: IntRange? = null, speakingColor: Color = Color.Unspecified): AnnotatedString? {
+internal fun blockText(
+    block: Block,
+    notes: List<Note>,
+    speaking: IntRange? = null,
+    speakingColor: Color = Color.Unspecified,
+    selected: IntRange? = null,
+    selectedColor: Color = Color.Unspecified,
+): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
         is Block.Heading -> block.text
@@ -121,6 +135,12 @@ internal fun blockText(block: Block, notes: List<Note>, speaking: IntRange? = nu
             val end = (r.last + 1 + shift).coerceIn(start, length)
             addStyle(SpanStyle(background = speakingColor), start, end)
         }
+        // 长按选中、正在查的词。
+        selected?.let { r ->
+            val start = (r.first + shift).coerceIn(0, length)
+            val end = (r.last + 1 + shift).coerceIn(start, length)
+            addStyle(SpanStyle(background = selectedColor), start, end)
+        }
     }
 }
 
@@ -129,6 +149,9 @@ internal fun indentOf(block: Block): Int = if (block is Block.Para && block.pros
 /**
  * 渲染一个块。[range] 不为空时只渲染其中一段文字（翻页模式下一段跨页的情形），
  * [isEnd] 表示这一段是否到块尾，决定要不要留段距。
+ *
+ * 文字块自己处理点按：轻点把横向位置交给 [onTap]（翻页/菜单），长按把手指下那个字在
+ * 显示文字（不含段首缩进）里的位置交给 [onLongPressChar]（选词查词）。
  */
 @Composable
 internal fun BlockView(
@@ -139,32 +162,59 @@ internal fun BlockView(
     range: IntRange? = null,
     isEnd: Boolean = true,
     speaking: IntRange? = null,
+    selected: IntRange? = null,
+    onTap: ((Float) -> Unit)? = null,
+    onLongPressChar: ((Int) -> Unit)? = null,
 ) {
     val palette = styles.palette
     val gap = styles.gap
-    val text = remember(block, notes, speaking) { blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f)) }
+    val text = remember(block, notes, speaking, selected) {
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f))
+    }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val tap by rememberUpdatedState(onTap)
+    val longPress by rememberUpdatedState(onLongPressChar)
+    val base = range?.first ?: 0
+    val indent = indentOf(block)
+    val gestures = Modifier.pointerInput(block, base) {
+        detectTapGestures(
+            onTap = { p -> tap?.invoke(p.x / size.width) },
+            onLongPress = { p ->
+                val l = layout ?: return@detectTapGestures
+                // 按在行尾之后的空白处不算选词。
+                if (p.x > l.getLineRight(l.getLineForVerticalPosition(p.y))) return@detectTapGestures
+                longPress?.invoke((l.getOffsetForPosition(p) + base - indent).coerceAtLeast(0))
+            },
+        )
+    }
+    val onLayout: (TextLayoutResult) -> Unit = { layout = it }
+    // 插图、表格等非文字块只响应轻点（翻页/菜单）。
+    val tapOnly = Modifier.pointerInput(block) { detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }) }
     when (block) {
         is Block.Para -> Text(
             shown!!,
             style = styles.para,
-            modifier = modifier.padding(bottom = if (isEnd) gap else 0.dp),
+            onTextLayout = onLayout,
+            modifier = modifier.padding(bottom = if (isEnd) gap else 0.dp).then(gestures),
         )
         is Block.Heading -> Text(
             shown!!,
             style = styles.heading(block.level),
-            modifier = modifier.padding(top = gap * 1.5f, bottom = gap),
+            onTextLayout = onLayout,
+            modifier = modifier.padding(top = gap * 1.5f, bottom = gap).then(gestures),
         )
         is Block.Quote -> Row(modifier.padding(bottom = gap).height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(palette.accent.copy(alpha = 0.5f)))
-            Text(shown!!, style = styles.quote, modifier = Modifier.padding(start = styles.quoteIndent - 3.dp))
+            Text(shown!!, style = styles.quote, onTextLayout = onLayout, modifier = Modifier.padding(start = styles.quoteIndent - 3.dp).then(gestures))
         }
         is Block.ListItem -> Row(modifier.padding(start = (block.indent * 16).dp, bottom = gap / 2)) {
             Text(block.marker, style = styles.list.copy(color = palette.accent), modifier = Modifier.width(styles.listMarkerWidth))
-            Text(shown!!, style = styles.list)
+            Text(shown!!, style = styles.list, onTextLayout = onLayout, modifier = gestures)
         }
         is Block.Table -> Column(
             modifier
+                .then(tapOnly)
                 .padding(bottom = gap)
                 .horizontalScroll(rememberScrollState())
                 .border(1.dp, palette.secondary.copy(alpha = 0.4f)),
@@ -188,13 +238,13 @@ internal fun BlockView(
             }
         }
         Block.Rule -> Box(
-            modifier.padding(vertical = gap).fillMaxWidth().height(1.dp).background(palette.secondary.copy(alpha = 0.3f)),
+            modifier.then(tapOnly).padding(vertical = gap).fillMaxWidth().height(1.dp).background(palette.secondary.copy(alpha = 0.3f)),
         )
         Block.SceneBreak -> Text(
             "＊　＊　＊",
             style = styles.sceneBreak,
-            modifier = modifier.fillMaxWidth().padding(vertical = (styles.settings.fontSize * 0.8f).dp),
+            modifier = modifier.then(tapOnly).fillMaxWidth().padding(vertical = (styles.settings.fontSize * 0.8f).dp),
         )
-        is Block.Image -> BookImage(block.src, palette.bar, modifier.padding(bottom = gap))
+        is Block.Image -> BookImage(block.src, palette.bar, modifier.then(tapOnly).padding(bottom = gap))
     }
 }

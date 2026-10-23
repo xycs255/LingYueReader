@@ -71,6 +71,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.Lookup
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BookContent
@@ -165,7 +166,7 @@ private fun startOf(screen: Screen.Reader, entry: BookEntry, content: BookConten
 private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
     data object Settings : ReaderSheet
-    data class Paragraph(val block: Int) : ReaderSheet
+    data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
     data object ReadAloud : ReaderSheet
 }
 
@@ -247,7 +248,10 @@ private fun Reader(
             else -> menuVisible = true
         }
     }
-    val onLongPress: (Int) -> Unit = { block -> sheet = ReaderSheet.Paragraph(block) }
+    // 长按正文：选出按住的那个词并查词；划线、批注从查词面板进入。
+    val onLongPress: (Int, Int) -> Unit = { block, char -> vm.selectWordAt(chapterIndex, block, char) }
+    val lookup by vm.lookup.collectAsStateWithLifecycle()
+    val selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } }
 
     // 内容区的上下边距不随状态栏显隐变化，否则一开菜单翻页模式就要重新分页。
     val bars = WindowInsets.statusBarsIgnoringVisibility.asPaddingValues()
@@ -275,6 +279,7 @@ private fun Reader(
                         bottomInset = bottomInset,
                         onTap = onTap,
                         onLongPress = onLongPress,
+                        selected = selected,
                         onPosition = { item, offset, fraction ->
                             pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
                         },
@@ -298,6 +303,7 @@ private fun Reader(
                         bottomInset = bottomInset,
                         onTap = onTap,
                         onLongPress = onLongPress,
+                        selected = selected,
                         onPosition = { block, char, fraction, label ->
                             pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
                         },
@@ -457,6 +463,38 @@ private fun Reader(
                     sheet = null
                 },
                 onDeleteNote = vm::deleteNote,
+                initialSelection = paragraph.selection,
+            )
+        }
+    }
+    LookupOverlay(vm, palette) { l ->
+        vm.closeLookup()
+        if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
+    }
+}
+
+@Composable
+private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: (Lookup) -> Unit) {
+    val lookup by vm.lookup.collectAsStateWithLifecycle()
+    // 面板收起的动画期间还要显示内容，记住最后一次查的词。
+    var last by remember { mutableStateOf<Lookup?>(null) }
+    lookup?.let { last = it }
+    OverlayBottomSheet(
+        show = lookup != null,
+        title = "查词",
+        backgroundColor = palette.background,
+        onDismissRequest = vm::closeLookup,
+    ) {
+        last?.let { l ->
+            LookupSheet(
+                lookup = l,
+                palette = palette,
+                vm = vm,
+                onAnnotate = { onAnnotate(l) },
+                onManage = {
+                    vm.closeLookup()
+                    vm.open(Screen.Dictionaries)
+                },
             )
         }
     }

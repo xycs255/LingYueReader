@@ -47,12 +47,14 @@ internal fun ScrollReader(
     topInset: Dp,
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
-    onLongPress: (block: Int) -> Unit,
+    onLongPress: (block: Int, char: Int) -> Unit,
     onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
     /** 听书时正在读的一句（本章内）。 */
     speaking: Utterance? = null,
+    /** 正在查的词：第几块、哪一段。 */
+    selected: Pair<Int, IntRange>? = null,
 ) {
     val palette = styles.palette
     val scope = rememberCoroutineScope()
@@ -111,8 +113,10 @@ internal fun ScrollReader(
                 block,
                 styles,
                 marks.notesIn(chapterIndex, index),
-                modifier = Modifier.readerGestures(index, onTap) { onLongPress(index) },
                 speaking = speaking?.takeIf { it.block == index }?.let { it.start until it.end },
+                selected = selected?.takeIf { it.first == index }?.second,
+                onTap = onTap,
+                onLongPressChar = { char -> onLongPress(index, char) },
             )
         }
         item {
