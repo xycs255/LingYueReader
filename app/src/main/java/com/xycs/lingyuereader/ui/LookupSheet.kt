@@ -8,6 +8,11 @@ import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateListOf
@@ -191,14 +196,26 @@ private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, palette: 
     val styles = vm.dictStyles(dict.id).joinToString("") { """<link rel="stylesheet" href="$it">""" }
     val text = palette.text.hex()
     val accent = palette.accent.hex()
-    val body = entries.joinToString("""<hr style="border:none;border-top:1px solid $text;opacity:.15">""") { it.html }
+    val raw = entries.joinToString("""<hr style="border:none;border-top:1px solid $text;opacity:.15">""") { localResourceUrls(it.html) }
+    // 图片先在后台从词典里取出来直接嵌进网页（data: 地址），不靠 WebView 再去请求——
+    // 不同 WebView 对拦截自定义地址的处理不一，嵌进去最稳；找不到的记下来。
+    val inlined by produceState<Pair<String, List<String>>?>(null, raw, dict.id) {
+        value = withContext(Dispatchers.IO) { inlineImages(raw) { path -> vm.dictResource(dict.id, path) } }
+    }
+    val (body, notFound) = inlined ?: run {
+        Text("正在载入释义……", color = palette.secondary, fontSize = 13.sp)
+        return
+    }
     val html = """<!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">$styles
         <style>body{margin:0;color:$text;background:transparent;font-size:15px;line-height:1.6;word-wrap:break-word}
         a{color:$accent}img{max-width:100%;height:auto}</style></head><body>$body</body></html>"""
     // 释义里引用、却在词典里找不到的文件（多半是图片）：列出来，好知道是没导入 .mdd 还是词典本身缺。
-    val missing = remember(html) { mutableStateListOf<String>() }
-    DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().heightIn(min = 40.dp)) { path -> if (path !in missing) missing += path }
+    val missing = remember(html) { mutableStateListOf<String>().apply { addAll(notFound) } }
+    // 释义区最高占屏幕六成，长的在里面滚。整页撑开的话，几千像素高的网页画在玻璃面板里会闪，
+    // 面板的高度也会跟着释义一变再变。
+    val maxHeight = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.6f).toDp() }
+    DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().heightIn(min = 40.dp, max = maxHeight)) { path -> if (path !in missing) missing += path }
     if (missing.isNotEmpty()) {
         Text(
             buildString {
@@ -233,6 +250,13 @@ private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier
         factory = { ctx ->
             WebView(ctx).apply {
                 setBackgroundColor(0)
+                // 释义比框高、能在里面滚时，手指按下就让外面的面板别抢这次拖动。
+                setOnTouchListener { v, e ->
+                    if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN && (v.canScrollVertically(1) || v.canScrollVertically(-1))) {
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    false
+                }
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.javaScriptEnabled = false
@@ -260,6 +284,44 @@ private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier
 private const val HOST = "dict.lingyue.local"
 
 /**
+ * 把释义里的图片换成 data: 地址：按 src 从词典（.mdd 和同目录文件）里取出来，base64 嵌进去。
+ * 网上的图片（http/https）先按路径在词典里找，找不到就不管（释义页不联网）。
+ * 返回改好的 HTML 和没找到的文件。嵌入总量超过 [limit] 字节后剩下的留给拦截器按需去取。
+ */
+internal fun inlineImages(html: String, limit: Int = 6_000_000, resource: (String) -> ByteArray?): Pair<String, List<String>> {
+    val missing = linkedSetOf<String>()
+    var total = 0
+    val out = Regex("""(<img\b[^>]*?\bsrc\s*=\s*)(["']?)([^"'\s>]+)\2""", RegexOption.IGNORE_CASE).replace(html) { m ->
+        val src = m.groupValues[3]
+        if (src.startsWith("data:", true) || total > limit) return@replace m.value
+        val uri = Uri.parse(src)
+        val path = when (uri.scheme?.lowercase()) {
+            null -> src
+            "http", "https" -> uri.path.orEmpty()
+            else -> uri.host.orEmpty() + uri.path.orEmpty()
+        }.let { Uri.decode(it) }.trim('/')
+        val bytes = path.takeIf { it.isNotEmpty() }?.let { runCatching { resource(it) }.getOrNull() }
+        if (bytes == null) {
+            if (path.isNotEmpty()) missing += path
+            return@replace m.value
+        }
+        total += bytes.size
+        val data = "data:${mimeOf(path)};base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        m.groupValues[1] + "\"" + data + "\""
+    }
+    return out to missing.toList()
+}
+
+/**
+ * 把释义里 file:// 开头的图片、样式地址改成相对地址（file://5357.gif → 5357.gif）。
+ * 网页本身在 https 地址下，WebView 不许它加载 file:// 资源，请求在渲染进程里就被挡掉，
+ * 根本到不了拦截器；改成相对地址后落到词典自己的地址下，由拦截器从 .mdd 里取。
+ */
+internal fun localResourceUrls(html: String): String =
+    html.replace(Regex("""((?:src|href)\s*=\s*["']?)file:/*""", RegexOption.IGNORE_CASE), "$1")
+        .replace(Regex("""(url\(\s*["']?)file:/*""", RegexOption.IGNORE_CASE), "$1")
+
+/**
  * 词典释义页的 WebView 客户端：图片、样式从词典的 .mdd 和同目录文件里取，其他请求一律拦下（释义页不联网）；
  * 点 entry:// 链接在面板里接着查，点普通网址交给浏览器。
  */
@@ -279,13 +341,26 @@ internal class DictWebClient(
         // 释义页本身（loadDataWithBaseURL 给的内容）要放行：较新的 WebView 也会把它交到这里，
         // 拦成 404 就只剩一张“网页无法使用”。它不经过网络。
         if (request.isForMainFrame || url.scheme == "data") return null
-        // 词典里写的地址五花八门：相对路径（落到我们的地址下）、file:///5357.gif、甚至原网站的网址。
-        // 一律按路径到词典里找，找到就给，找不到就 404——释义页不联网。
-        val path = if (url.host == HOST) url.path.orEmpty().removePrefix("/$dictId/") else url.path.orEmpty()
+        // 词典里写的地址五花八门：相对路径（落到我们的地址下）、file://5357.gif、file:///img/5357.gif、
+        // 甚至原网站的网址。一律按路径到词典里找，找到就给，找不到就 404——释义页不联网。
+        val path = resourcePath(url)
         val bytes = path.trim('/').takeIf { it.isNotEmpty() }?.let { runCatching { resource(it) }.getOrNull() }
         if (bytes != null) return WebResourceResponse(mimeOf(path), null, ByteArrayInputStream(bytes))
         if (path.isNotEmpty() && !path.endsWith("favicon.ico")) onMissing(path.trim('/'))
         return WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+    }
+
+    /**
+     * 请求对应词典里的哪个文件。MDict 常写成 file://5357.gif（两道斜杠），
+     * 按网址规则“5357.gif”会被当成主机名、路径为空，所以非 http 的地址把主机名也算进路径。
+     */
+    internal fun resourcePath(url: Uri): String {
+        val path = url.path.orEmpty()
+        return when {
+            url.host == HOST -> path.removePrefix("/$dictId/")
+            url.scheme == "http" || url.scheme == "https" -> path
+            else -> url.host.orEmpty() + path
+        }.trim('/')
     }
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
