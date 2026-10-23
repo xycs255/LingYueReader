@@ -140,6 +140,8 @@ fun VocabularyScreen(vm: AppViewModel) {
             items(shown, key = { it.word }) { w ->
                 WordCard(
                     w,
+                    // 标为掌握、删除、切换标签时，其余的词滑到新位置。
+                    modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()),
                     onToggleMastered = { vm.setMastered(w.word, !w.mastered) },
                     onRemove = { vm.removeFromVocabulary(w.word) },
                 )
@@ -166,8 +168,8 @@ private fun Tab(label: String, selected: Boolean, onClick: () -> Unit) {
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
 
 @Composable
-private fun WordCard(w: VocabWord, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
-    GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
+private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
+    GlassCard(modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(w.word, fontSize = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (w.reading.isNotBlank()) {

@@ -23,6 +23,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,7 +64,10 @@ import top.yukonga.miuix.kmp.utils.overScrollVertical
 fun ThemeScreen(vm: AppViewModel) {
     val a by vm.appearance.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+    // 改配色的设置从点的地方扩散开；其余直接改。
+    val reveal = LocalThemeReveal.current
     val update = vm::updateAppearance
+    val recolor: ((Appearance) -> Appearance) -> Unit = { t -> reveal?.change { update(t) } ?: update(t) }
 
     GlassScaffold(
         topBar = {
@@ -85,22 +92,22 @@ fun ThemeScreen(vm: AppViewModel) {
                 Box(Modifier.fillMaxWidth().padding(vertical = 20.dp), contentAlignment = Alignment.Center) {
                     ThemePreview(a)
                 }
-                ModeButtons(a.mode) { m -> update { it.copy(mode = m) } }
+                ModeButtons(a.mode) { m -> if (m != a.mode) recolor { it.copy(mode = m) } }
 
                 GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), insideMargin = PaddingValues(0.dp)) {
                     SwitchPreference(
                         title = "Monet 取色",
                         summary = "从壁纸取色（Android 12 起）；选了强调色时按强调色生成整套配色",
                         checked = a.monet,
-                        onCheckedChange = { v -> update { it.copy(monet = v) } },
+                        onCheckedChange = { v -> recolor { it.copy(monet = v) } },
                     )
-                    AccentRow(a.accent) { c -> update { it.copy(accent = c) } }
+                    AccentRow(a.accent) { c -> if (c != a.accent) recolor { it.copy(accent = c) } }
                     if (a.dynamicColors) {
                         OverlayDropdownPreference(
                             items = PaletteStyle.entries.map { it.label },
                             selectedIndex = a.paletteStyle.ordinal,
                             title = "配色风格",
-                            onSelectedIndexChange = { i -> update { it.copy(paletteStyle = PaletteStyle.entries[i]) } },
+                            onSelectedIndexChange = { i -> recolor { it.copy(paletteStyle = PaletteStyle.entries[i]) } },
                         )
                     }
                 }
@@ -222,13 +229,15 @@ private fun ModeButtons(mode: ThemeMode, onPick: (ThemeMode) -> Unit) {
         ThemeMode.entries.forEach { m ->
             val on = m == mode
             val shape = RoundedCornerShape(14.dp)
+            val press = remember { MutableInteractionSource() }
             Box(
                 Modifier
                     .weight(1f)
                     .height(48.dp)
+                    .pressScale(press)
                     .clip(shape)
                     .then(if (on) Modifier.background(c.surfaceContainer) else Modifier.border(1.dp, c.onSurface.copy(alpha = 0.25f), shape))
-                    .clickable { onPick(m) }
+                    .clickable(press, LocalIndication.current) { onPick(m) }
                     .semantics { selected = on },
                 contentAlignment = Alignment.Center,
             ) {
@@ -253,15 +262,19 @@ private fun AccentRow(accent: Int, onPick: (Int) -> Unit) {
             val options = listOf(0) + Appearance.ACCENTS
             options.forEach { color ->
                 val on = color == accent
+                val press = remember { MutableInteractionSource() }
+                // 选中的那个外圈弹出来。
+                val ring by animateDpAsState(if (on) 3.dp else 0.dp, Motion.pop(), label = "ring")
                 Box(
                     Modifier
                         .size(34.dp)
+                        .pressScale(press, 0.88f)
                         .clip(CircleShape)
-                        .background(if (on) c.onSurface else Color.Transparent)
-                        .padding(if (on) 3.dp else 0.dp)
+                        .background(if (on || ring > 0.dp) c.onSurface else Color.Transparent)
+                        .padding(ring.coerceAtLeast(0.dp))
                         .clip(CircleShape)
                         .background(if (color == 0) c.surfaceContainer else Color(color))
-                        .clickable { onPick(color) }
+                        .clickable(press, LocalIndication.current) { onPick(color) }
                         .semantics { contentDescription = if (color == 0) "默认强调色" else "强调色 #%06X".format(color and 0xFFFFFF) },
                     contentAlignment = Alignment.Center,
                 ) {

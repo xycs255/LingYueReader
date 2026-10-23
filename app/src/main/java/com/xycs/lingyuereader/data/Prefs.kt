@@ -121,8 +121,8 @@ enum class ThemeMode(val label: String) {
 
 /** 换页面时的动画。 */
 enum class PageTransition(val label: String) {
+    SLIDE("层级滑动"),
     FADE("淡入淡出"),
-    SLIDE("左右滑动"),
     NONE("无"),
 }
 
@@ -149,7 +149,7 @@ data class Appearance(
     val liquidGlass: Boolean = true,
     /** 底部导航栏悬浮在内容上（关掉则贴底）。 */
     val floatingBar: Boolean = true,
-    val transition: PageTransition = PageTransition.FADE,
+    val transition: PageTransition = PageTransition.SLIDE,
     /** 界面缩放，1 为原大小。 */
     val scale: Float = 1f,
 ) {

@@ -10,6 +10,10 @@ import com.xycs.lingyuereader.data.ShelfPrefs
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -25,6 +29,11 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.ui.graphics.TransformOrigin
 import com.xycs.lingyuereader.data.PageTransition
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -106,6 +115,41 @@ import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import com.xycs.lingyuereader.data.ShelfSort
 
+/**
+ * 换页面的动画（docs/motion.md“页面”一节）：
+ * - 从书架打开书：阅读页从封面的位置放大出来，书架略微后退淡出；返回时缩回那本书的封面；
+ * - 层级滑动：进下一层从右边推入，上一层往左退四分之一并变暗；返回反过来，离开的一页在上面；
+ * - 淡入淡出：新页面略放大淡入；
+ * - 无 / 省电：直接切换。
+ */
+private fun AnimatedContentTransitionScope<Screen>.screenTransform(style: PageTransition, forward: Boolean): ContentTransform {
+    if (Effects.reduced || style == PageTransition.NONE) return EnterTransition.None togetherWith ExitTransition.None
+    val target = targetState
+    val initial = initialState
+    val origin = TransformOrigin(OpenFrom.centerX, OpenFrom.centerY)
+    if (target is Screen.Reader && initial == Screen.Shelf && OpenFrom.bookId == target.bookId) {
+        return (scaleIn(Motion.emphasized(), initialScale = OpenFrom.widthFraction, transformOrigin = origin) + fadeIn(Motion.standard(Motion.SHORT))) togetherWith
+            (scaleOut(Motion.emphasized(), targetScale = 1.06f, transformOrigin = origin) + fadeOut(Motion.standard(Motion.LONG)))
+    }
+    if (initial is Screen.Reader && target == Screen.Shelf && OpenFrom.bookId == initial.bookId) {
+        OpenFrom.bookId = null
+        // 缩回去的阅读页在上面。
+        return ((scaleIn(Motion.emphasized(), initialScale = 1.06f, transformOrigin = origin) + fadeIn(Motion.standard())) togetherWith
+            (scaleOut(Motion.emphasized(), targetScale = OpenFrom.widthFraction, transformOrigin = origin) +
+                fadeOut(Motion.standard(Motion.SHORT, delay = Motion.LONG - Motion.SHORT)))).apply { targetContentZIndex = -1f }
+    }
+    return when (style) {
+        PageTransition.FADE -> (fadeIn(Motion.standard()) + scaleIn(Motion.standard(), initialScale = 0.97f)) togetherWith fadeOut(Motion.exit())
+        else -> if (forward) {
+            slideInHorizontally(Motion.emphasized()) { it } togetherWith
+                (slideOutHorizontally(Motion.emphasized()) { -it / 4 } + fadeOut(Motion.standard(Motion.LONG), targetAlpha = 0.35f))
+        } else {
+            (slideInHorizontally(Motion.emphasized()) { -it / 4 } + fadeIn(Motion.standard(Motion.LONG), initialAlpha = 0.35f)) togetherWith
+                slideOutHorizontally(Motion.emphasized()) { it }
+        }.apply { if (!forward) targetContentZIndex = -1f }
+    }
+}
+
 @Composable
 fun App(vm: AppViewModel = viewModel()) {
     val stack by vm.stack.collectAsStateWithLifecycle()
@@ -127,17 +171,7 @@ fun App(vm: AppViewModel = viewModel()) {
 
     AnimatedContent(
         targetState = stack.last(),
-        transitionSpec = {
-            when (appearance.transition) {
-                PageTransition.FADE -> Effects.enter(fadeIn()) togetherWith Effects.exit(fadeOut())
-                PageTransition.SLIDE -> {
-                    val sign = if (depth.forward) 1 else -1
-                    Effects.enter(slideInHorizontally { it * sign } + fadeIn()) togetherWith
-                        Effects.exit(slideOutHorizontally { -it * sign / 3 } + fadeOut())
-                }
-                PageTransition.NONE -> EnterTransition.None togetherWith ExitTransition.None
-            }
-        },
+        transitionSpec = { screenTransform(appearance.transition, depth.forward) },
         contentKey = { it::class },
         label = "screen",
     ) { screen ->
@@ -293,7 +327,9 @@ internal fun ShelfScreen(vm: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 overscrollEffect = null,
             ) {
-                items(shelf, key = { it.id }) { entry -> ShelfRow(entry, vm) }
+                items(shelf, key = { it.id }) { entry ->
+                    ShelfRow(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                }
             }
             else -> LazyVerticalGrid(
                 columns = GridCells.Adaptive(108.dp),
@@ -303,7 +339,10 @@ internal fun ShelfScreen(vm: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 overscrollEffect = null,
             ) {
-                items(shelf, key = { it.id }) { entry -> ShelfItem(entry, vm) }
+                items(shelf, key = { it.id }) { entry ->
+                    // 排序、分组筛选、删书时各本书挪到新位置，而不是一下子跳过去。
+                    ShelfItem(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                }
             }
         }
     }
@@ -404,18 +443,39 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
 internal fun progressLabel(entry: BookEntry): String =
     if (entry.progress == null) "未读 · ${entry.chapterCount} 章" else "读到 ${(entry.readFraction * 100).toInt()}%"
 
+/** 封面在窗口里的位置，点开时交给 [OpenFrom]，阅读页从这里放大出来。 */
+private class OpenFromCover(val track: Modifier, val click: () -> Unit)
+
+@Composable
+private fun rememberOpenFromCover(bookId: String, open: () -> Unit): OpenFromCover {
+    val window = LocalWindowInfo.current
+    val bounds = remember { object { var rect = androidx.compose.ui.geometry.Rect.Zero } }
+    val current by rememberUpdatedState(open)
+    return remember(bookId) {
+        OpenFromCover(
+            track = Modifier.onGloballyPositioned { bounds.rect = it.boundsInWindow() },
+            click = {
+                OpenFrom.set(bookId, bounds.rect, window.containerSize.width.toFloat(), window.containerSize.height.toFloat())
+                current()
+            },
+        )
+    }
+}
+
 /** 网格里的一本书：点开阅读，长按弹出操作菜单。 */
 @Composable
-private fun ShelfItem(entry: BookEntry, vm: AppViewModel) {
+private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
-    Column {
+    val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
+    Column(modifier) {
         Box {
             BookCover(
                 entry.title,
                 entry.format.label,
+                modifier = open.track,
                 cover = entry.cover?.let { vm.bookFile(entry.id, it) },
-                onClick = { vm.open(Screen.Reader(entry.id)) },
+                onClick = open.click,
                 onLongPress = { menu = true },
             )
             BookMenu(entry, vm, menu, dialogs) { menu = false }
@@ -429,18 +489,20 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel) {
 
 /** 列表里的一本书：小封面、书名、作者、进度。 */
 @Composable
-private fun ShelfRow(entry: BookEntry, vm: AppViewModel) {
+private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
+    val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
     GlassCard(
+        modifier = modifier,
         pressFeedbackType = PressFeedbackType.Sink,
-        onClick = { vm.open(Screen.Reader(entry.id)) },
+        onClick = open.click,
         onLongPress = { menu = true },
         insideMargin = PaddingValues(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(52.dp)) {
-                BookCover(entry.title, "", cover = entry.cover?.let { vm.bookFile(entry.id, it) }, compact = true)
+                BookCover(entry.title, "", modifier = open.track, cover = entry.cover?.let { vm.bookFile(entry.id, it) }, compact = true)
             }
             Column(Modifier.weight(1f).padding(start = 14.dp)) {
                 Text(entry.title, style = MiuixTheme.textStyles.title4, maxLines = 1, overflow = TextOverflow.Ellipsis)

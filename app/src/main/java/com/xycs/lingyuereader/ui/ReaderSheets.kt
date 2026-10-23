@@ -38,6 +38,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
@@ -669,14 +672,19 @@ private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selecte
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { (value, text) ->
                 val on = value == selected
+                val press = remember { MutableInteractionSource() }
+                // 选中的底色渐变过去，按下缩一点。
+                val fill by animateColorAsState(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f), Motion.standard(Motion.SHORT), label = "chip")
+                val ink by animateColorAsState(if (on) palette.accent else palette.text, Motion.standard(Motion.SHORT), label = "chipText")
                 Text(
                     text,
-                    color = if (on) palette.accent else palette.text,
+                    color = ink,
                     fontSize = 14.sp,
                     modifier = Modifier
+                        .pressScale(press, 0.93f)
                         .clip(RoundedCornerShape(50))
-                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .clickable { onSelect(value) }
+                        .background(fill)
+                        .clickable(press, LocalIndication.current) { onSelect(value) }
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 )
             }
