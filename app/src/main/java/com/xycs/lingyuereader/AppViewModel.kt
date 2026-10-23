@@ -835,6 +835,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _fonts.value = withContext(Dispatchers.IO) { fontStore.delete(name); fontStore.list() } }
     }
 
+    /** 画书摘卡片用的字体：导入的字体，或按设置用衬线/无衬线。 */
+    fun cardTypeface(settings: ReaderSettings): android.graphics.Typeface =
+        fontStore.file(settings.font)?.let { runCatching { android.graphics.Typeface.createFromFile(it) }.getOrNull() }
+            ?: if (settings.serif) android.graphics.Typeface.SERIF else android.graphics.Typeface.SANS_SERIF
+
     /** 设置里选的导入字体；文件不在了返回空（退回内置字体）。 */
     fun fontFamily(name: String): androidx.compose.ui.text.font.FontFamily? {
         if (name.isEmpty()) return null

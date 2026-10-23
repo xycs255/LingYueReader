@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 只共享生成的书摘卡片。 -->
+    <cache-path name="cards" path="cards/" />
+</paths>

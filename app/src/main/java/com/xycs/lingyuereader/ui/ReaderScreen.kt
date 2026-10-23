@@ -205,6 +205,7 @@ private sealed interface ReaderSheet {
     data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
     /** 跨段落划线。 */
     data object MultiNote : ReaderSheet
+    data class Card(val content: QuoteCardContent) : ReaderSheet
     data object ReadAloud : ReaderSheet
 }
 
@@ -604,6 +605,12 @@ private fun Reader(
                     vm.selectionText()?.let { copyText(context, it) }
                     vm.clearSelection()
                 },
+                onCard = {
+                    vm.selectionText()?.let { text ->
+                        sheet = ReaderSheet.Card(QuoteCardContent(text, entry.title, entry.author, chapter.title))
+                    }
+                    vm.clearSelection()
+                },
                 onCancel = vm::clearSelection,
                 modifier = Modifier.layout { measurable, constraints ->
                     val bar = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
@@ -710,6 +717,20 @@ private fun Reader(
             sheet = null
         }
     }
+    // 书摘卡片：收起动画期间还显示原来的内容。
+    var lastCard by remember { mutableStateOf<QuoteCardContent?>(null) }
+    (sheet as? ReaderSheet.Card)?.let { lastCard = it.content }
+    OverlayBottomSheet(
+        show = sheet is ReaderSheet.Card,
+        title = "书摘卡片",
+        backgroundColor = palette.background,
+        onDismissRequest = { sheet = null },
+    ) {
+        lastCard?.let { c ->
+            val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
+            QuoteCardSheet(c, typeface, palette)
+        }
+    }
     // 注释面板：收起动画期间还显示原来的内容。
     var lastFootnote by remember { mutableStateOf<String?>(null) }
     footnote?.let { lastFootnote = it }
@@ -741,16 +762,24 @@ private fun SelectionBar(
     onLookup: (() -> Unit)?,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
+    onCard: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
-        SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCancel)
+        SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCard, onCancel)
     }
 }
 
 @Composable
-private fun SelectionBarRow(palette: ReaderPalette, onLookup: (() -> Unit)?, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
+private fun SelectionBarRow(
+    palette: ReaderPalette,
+    onLookup: (() -> Unit)?,
+    onAnnotate: () -> Unit,
+    onCopy: () -> Unit,
+    onCard: () -> Unit,
+    onCancel: () -> Unit,
+) {
     Row(
         Modifier
             .shadow(8.dp, RoundedCornerShape(50))
@@ -760,12 +789,12 @@ private fun SelectionBarRow(palette: ReaderPalette, onLookup: (() -> Unit)?, onA
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 跨段落的选区不查词。
-        listOfNotNull(onLookup?.let { "查词" to it }, "划线·批注" to onAnnotate, "复制" to onCopy, "取消" to onCancel).forEach { (label, action) ->
+        listOfNotNull(onLookup?.let { "查词" to it }, "划线·批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard, "取消" to onCancel).forEach { (label, action) ->
             Text(
                 label,
                 color = if (label == "取消") palette.secondary else palette.text,
                 fontSize = 15.sp,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = action).padding(horizontal = 14.dp, vertical = 11.dp),
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = action).padding(horizontal = 12.dp, vertical = 11.dp),
             )
         }
     }
