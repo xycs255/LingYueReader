@@ -430,6 +430,7 @@ internal fun SettingsSheet(
         SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
         FontRow(settings, palette, fonts, update, onImportFonts, onDeleteFont)
         ChoiceRow("繁简", ChineseConvert.entries.map { it to it.label }, settings.chineseConvert, palette) { v -> update { it.copy(chineseConvert = v) } }
+        SwitchRow("注音（汉字上方标拼音）", settings.pinyin, textColor, accent) { v -> update { it.copy(pinyin = v) } }
         SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }

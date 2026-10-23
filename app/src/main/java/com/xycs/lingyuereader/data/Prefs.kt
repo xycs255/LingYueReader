@@ -57,6 +57,8 @@ data class ReaderSettings(
     val dailyGoal: Int = 0,
     /** 晚上还没读够目标时提醒。 */
     val goalReminder: Boolean = true,
+    /** 注音：在汉字上方标拼音。 */
+    val pinyin: Boolean = false,
 )
 
 enum class ShelfSort(val label: String) {
@@ -108,6 +110,7 @@ class Prefs(context: Context) {
             eInk = sp.getBoolean("eInk", d.eInk),
             dailyGoal = sp.getInt("dailyGoal", d.dailyGoal),
             goalReminder = sp.getBoolean("goalReminder", d.goalReminder),
+            pinyin = sp.getBoolean("pinyin", d.pinyin),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -138,6 +141,7 @@ class Prefs(context: Context) {
             putBoolean("eInk", s.eInk)
             putInt("dailyGoal", s.dailyGoal)
             putBoolean("goalReminder", s.goalReminder)
+            putBoolean("pinyin", s.pinyin)
             putFloat("ttsRate", s.ttsRate)
         }
     }

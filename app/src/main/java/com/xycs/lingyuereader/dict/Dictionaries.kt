@@ -70,6 +70,9 @@ class Dictionaries(private val context: Context) {
     private fun builtinUnihan(): Unihan =
         unihan ?: context.assets.open("dict/unihan.tsv").use { Unihan(it) }.also { unihan = it }
 
+    /** 注音用的拼音标注器（用内置词库，不受“内置词典”开关影响）。第一次调用要读字表，放在后台线程。 */
+    fun pinyinAnnotator(): PinyinAnnotator = PinyinAnnotator.of(builtinCedict(), builtinUnihan())
+
     // ---------- 设置与列表 ----------
 
     @Synchronized

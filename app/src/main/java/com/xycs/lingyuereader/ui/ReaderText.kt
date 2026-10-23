@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.dict.PinyinAnnotator
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.draw.drawWithContent
 import com.xycs.lingyuereader.data.displayText
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.unit.Density
@@ -103,7 +108,13 @@ internal class ReaderStyles(
     val chinese: Boolean = true,
     /** 导入的字体；为空时用内置宋体/黑体。 */
     customFont: FontFamily? = null,
+    /** 注音时给汉字配拼音；为空不注音。 */
+    val pinyin: PinyinAnnotator? = null,
 ) {
+    /** 注音时每行上方多留出的高度（放拼音），字压到行底。分页按同样的行高算，两边一致。 */
+    private val bodyLineHeight = if (pinyin != null) (settings.lineHeight + RUBY_SPACE).em else settings.lineHeight.em
+    private val bodyLineStyle = if (pinyin != null) LineHeightStyle(LineHeightStyle.Alignment.Bottom, LineHeightStyle.Trim.None) else null
+
     private val locale: LocaleList? = if (chinese) LocaleList("zh-CN") else null
 
     val fontFamily: FontFamily = customFont ?: if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
@@ -122,7 +133,8 @@ internal class ReaderStyles(
         color = palette.text,
         fontFamily = fontFamily,
         fontSize = size.sp,
-        lineHeight = settings.lineHeight.em,
+        lineHeight = bodyLineHeight,
+        lineHeightStyle = bodyLineStyle,
         letterSpacing = 0.03.em,
         textAlign = if (settings.justify) TextAlign.Justify else TextAlign.Start,
         lineBreak = CJK_LINE_BREAK,
@@ -152,7 +164,8 @@ internal class ReaderStyles(
         color = palette.secondary,
         fontFamily = fontFamily,
         fontSize = (size * 0.92f).sp,
-        lineHeight = settings.lineHeight.em,
+        lineHeight = bodyLineHeight,
+        lineHeightStyle = bodyLineStyle,
         lineBreak = CJK_LINE_BREAK,
         fontFeatureSettings = CJK_FEATURES,
         localeList = locale,
@@ -282,6 +295,10 @@ internal fun BlockView(
             val display = remember(shown, style, width, justify, isEnd) {
                 if (justify && width in 1 until Constraints.Infinity) justifyCjk(shown!!, style, width, measurer, density, justifyLastLine = !isEnd) else shown!!
             }
+            // 注音：汉字上方画拼音（标题不注）。
+            val ruby = styles.pinyin?.takeIf { style.lineHeightStyle != null }
+            val readings = remember(display.text, ruby) { ruby?.annotate(display.text) }
+            val rubyColor = palette.secondary
             Text(
                 display,
                 style = style,
@@ -289,7 +306,11 @@ internal fun BlockView(
                     layout = it
                     register()
                 },
-                modifier = Modifier.onGloballyPositioned {
+                modifier = Modifier.drawWithContent {
+                    drawContent()
+                    val l = layout
+                    if (readings != null && l != null) drawRuby(l, readings, style.fontSize.toPx(), rubyColor)
+                }.onGloballyPositioned {
                     coords = it
                     register()
                 }.pointerInput(block, base) {
@@ -524,4 +545,28 @@ internal fun justifyCjk(
     val sameBreaks = second.lineCount == first.lineCount &&
         (0 until first.lineCount).all { second.getLineEnd(it) == first.getLineEnd(it) }
     return if (sameBreaks) justified else text
+}
+
+/** 注音时每行上方多留的高度（字号的倍数）。 */
+internal const val RUBY_SPACE = 0.6f
+
+/** 在每个有拼音的字上方居中画拼音；拼音比字宽时横向压窄，免得和旁边的挤在一起。 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRuby(layout: TextLayoutResult, readings: Array<String?>, fontPx: Float, color: Color) {
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = fontPx * 0.4f
+        textAlign = android.graphics.Paint.Align.CENTER
+        this.color = color.toArgb()
+    }
+    val canvas = drawContext.canvas.nativeCanvas
+    val count = minOf(readings.size, layout.layoutInput.text.length)
+    for (i in 0 until count) {
+        val r = readings[i] ?: continue
+        val box = layout.getBoundingBox(i)
+        if (box.width <= 0f) continue
+        val baseline = layout.getLineBaseline(layout.getLineForOffset(i))
+        paint.textScaleX = 1f
+        val w = paint.measureText(r)
+        if (w > box.width * 1.08f) paint.textScaleX = (box.width * 1.08f / w).coerceAtLeast(0.55f)
+        canvas.drawText(r, box.center.x, baseline - fontPx * 1.02f, paint)
+    }
 }

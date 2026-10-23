@@ -738,6 +738,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dictResource(dictId: String, path: String): ByteArray? = dictionaries.resource(dictId, path)
 
+    private var annotator: com.xycs.lingyuereader.dict.PinyinAnnotator? = null
+
+    /** 注音用的拼音标注器；第一次要读字表，较慢。 */
+    suspend fun pinyinAnnotator(): com.xycs.lingyuereader.dict.PinyinAnnotator? = annotator ?: withContext(Dispatchers.IO) {
+        runCatching { dictionaries.pinyinAnnotator() }.getOrNull()
+    }?.also { annotator = it }
+
     fun dictStyles(dictId: String): List<String> = dictionaries.looseStyles(dictId)
 
     // ---------- 词典管理 ----------

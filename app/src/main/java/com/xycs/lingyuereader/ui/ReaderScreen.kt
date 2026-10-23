@@ -234,7 +234,11 @@ private fun Reader(
     val marks by vm.marks.collectAsStateWithLifecycle()
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
-    val styles = remember(settings, palette, chinese, customFont) { ReaderStyles(settings, palette, chinese, customFont) }
+    // 注音要读字表，后台准备好再用。
+    val annotator by produceState<com.xycs.lingyuereader.dict.PinyinAnnotator?>(null, settings.pinyin) {
+        value = if (settings.pinyin) vm.pinyinAnnotator() else null
+    }
+    val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
     val initial = remember(screen, content) { startOf(screen, entry, content) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
