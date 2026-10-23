@@ -76,3 +76,34 @@ class EInkUiTest {
         assertEquals(androidx.compose.ui.graphics.Color.White, corner)
     }
 }
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36], qualifiers = "w411dp-h891dp")
+class AutoBackupUiTest {
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private val seed = object : ExternalResource() {
+        override fun before() {
+            File(context.filesDir, "books").deleteRecursively()
+            context.getSharedPreferences("auto-backup", Context.MODE_PRIVATE).edit().clear()
+                .putString("folder", "content://com.example.missing/tree/primary%3ASync")
+                .putString("label", "同步盘")
+                .putLong("lastAt", System.currentTimeMillis())
+                .commit()
+        }
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    @Test
+    fun meShowsTheBackupFolderAndReportsAFailedBackup() {
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("我的").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("我的").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("存到「同步盘」", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        // 文件夹已经不在了（比如授权被收回）：备份失败要说出来，也记在开关下面。
+        compose.onNodeWithText("现在备份一次").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("备份失败", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("上次失败", substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+}

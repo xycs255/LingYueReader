@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import androidx.core.graphics.createBitmap
 import java.io.File
 
 /**
@@ -58,7 +59,7 @@ object PdfPages {
         r.openPage(page).use { p ->
             val width = widthPx.coerceIn(64, 2400)
             val height = (width.toFloat() * p.height / p.width.coerceAtLeast(1)).toInt().coerceAtLeast(1)
-            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { b ->
+            createBitmap(width, height).also { b ->
                 b.eraseColor(Color.WHITE)
                 p.render(b, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
             }

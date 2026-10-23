@@ -32,6 +32,12 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIncoming(intent)
     }
 
+    override fun onStop() {
+        super.onStop()
+        // 退到后台时，离上次自动备份满一天就备份一次。
+        vm.maybeAutoBackup()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncoming(intent)

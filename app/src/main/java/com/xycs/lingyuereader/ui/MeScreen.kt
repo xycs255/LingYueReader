@@ -52,6 +52,7 @@ fun MeScreen(vm: AppViewModel) {
         uri?.let(vm::backup)
     }
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> confirmRestore = uri }
+    val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let(vm::setBackupFolder) }
 
     LaunchedEffect(Unit) {
         vm.reloadDicts()
@@ -103,6 +104,29 @@ fun MeScreen(vm: AppViewModel) {
                 }
                 SmallTitle("数据")
                 GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
+                    val auto by vm.autoBackup.collectAsStateWithLifecycle()
+                    SwitchPreference(
+                        title = "自动备份到文件夹",
+                        summary = if (auto.enabled) {
+                            buildString {
+                                append("每天一份，存到「${auto.label}」，留最近 ${com.xycs.lingyuereader.data.AutoBackup.KEEP} 份")
+                                if (auto.lastAt > 0) {
+                                    append(" · 上次 ")
+                                    append(java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(auto.lastAt)))
+                                }
+                                if (auto.lastError.isNotEmpty()) append(" · 上次失败：${auto.lastError}")
+                            }
+                        } else {
+                            "选一个文件夹（可以是云盘、Syncthing 等同步目录），每天自动备份一份；在另一台设备上从里面的备份恢复"
+                        },
+                        checked = auto.enabled,
+                        enabled = !busy,
+                        onCheckedChange = { on -> if (on) folderLauncher.launch(null) else vm.disableAutoBackup() },
+                    )
+                    if (auto.enabled) {
+                        ArrowPreference(title = "现在备份一次", enabled = !busy, onClick = vm::backupNow)
+                        ArrowPreference(title = "换个文件夹", summary = auto.label, onClick = { folderLauncher.launch(null) })
+                    }
                     val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
                     ArrowPreference(
                         title = "备份书架",

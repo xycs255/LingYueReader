@@ -72,6 +72,8 @@ tasks.withType<Test>().configureEach {
         "--add-opens=java.base/java.io=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
+    // 测试里会建中文文件名（备份文件“灵阅备份-…”）；没设语言环境的机器上 JVM 会把文件名转成问号。
+    environment("LC_ALL", "C.UTF-8")
     // 访问不了 Maven Central 时，可在 ~/.gradle/gradle.properties 里指定镜像。
     providers.gradleProperty("robolectricRepoUrl").orNull?.let {
         systemProperty("robolectric.dependency.repo.url", it)

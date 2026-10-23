@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader
 
+import androidx.core.net.toUri
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -20,6 +21,8 @@ import com.xycs.lingyuereader.dict.Dictionaries
 import com.xycs.lingyuereader.dict.LookupResult
 import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.AutoBackup
+import com.xycs.lingyuereader.data.SafFolder
 import com.xycs.lingyuereader.data.FontStore
 import com.xycs.lingyuereader.data.TextRules
 import com.xycs.lingyuereader.data.DayStats
@@ -125,6 +128,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val selection: StateFlow<TextSelection?> = _selection.asStateFlow()
     private var pressJob: Job? = null
     private val prefs = Prefs(app)
+    private val autoBackups = AutoBackup(app)
+    private val _autoBackup = MutableStateFlow(autoBackups.state())
+    val autoBackup: StateFlow<AutoBackup.State> = _autoBackup.asStateFlow()
+    private var autoBackupJob: Job? = null
+
 
     private val _shelf = MutableStateFlow<List<BookEntry>>(emptyList())
     val shelf: StateFlow<List<BookEntry>> = _shelf.asStateFlow()
@@ -244,6 +252,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loadShelf()
             _shelfLoaded.value = true
+            maybeAutoBackup()
         }
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         reloadVocabulary()
@@ -785,6 +794,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             _busy.value = false
             _messages.value = result.fold({ "已备份 $it 本书" }, { "备份失败：${it.message}" })
+        }
+    }
+
+    /** 选好了自动备份的文件夹：记住授权，马上备份一次。 */
+    fun setBackupFolder(uri: Uri) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val label = withContext(Dispatchers.IO) {
+                runCatching { SafFolder.remember(app, uri) }
+            }.getOrElse {
+                _messages.value = "这个文件夹用不了：${it.message}"
+                return@launch
+            }
+            _autoBackup.value.folder?.takeIf { it != uri.toString() }?.let { SafFolder.forget(app, it.toUri()) }
+            autoBackups.setFolder(uri.toString(), label)
+            _autoBackup.value = autoBackups.state()
+            runAutoBackup(announce = true)
+        }
+    }
+
+    fun disableAutoBackup() {
+        _autoBackup.value.folder?.let { SafFolder.forget(getApplication(), it.toUri()) }
+        autoBackups.setFolder(null, "")
+        _autoBackup.value = autoBackups.state()
+    }
+
+    fun backupNow() = runAutoBackup(announce = true)
+
+    /** 打开应用、退到后台时调用：离上次满一天就悄悄备份一次。 */
+    fun maybeAutoBackup() {
+        if (autoBackups.due()) runAutoBackup(announce = false)
+    }
+
+    private fun runAutoBackup(announce: Boolean) {
+        if (autoBackupJob?.isActive == true) return
+        autoBackupJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                autoBackups.run { out -> library.backup(out, prefs.exportJson(), backupData()) }
+            }
+            _autoBackup.value = autoBackups.state()
+            if (announce) {
+                _messages.value = result.fold({ "已备份到「${_autoBackup.value.label}」：$it" }, { "备份失败：${it.message}" })
+            }
         }
     }
 
