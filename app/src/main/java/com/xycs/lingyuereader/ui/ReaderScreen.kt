@@ -30,6 +30,13 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
 import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.ReadingOrientation
 import com.xycs.lingyuereader.data.TapAction
@@ -368,6 +375,7 @@ private fun Reader(
     }
     // 双指捏合调字号：捏的时候只显示字号，松手再重新排版。
     var pinchSize by remember { mutableStateOf<Float?>(null) }
+    val haptic = LocalHapticFeedback.current
     // 长按正文选出按住的词，松手就查；不松手拖动是自由划选（可跨段落，拖到上下边缘自动滚动），
     // 松手后可拖两端把手微调。
     // 点开的注释（键）。
@@ -378,9 +386,12 @@ private fun Reader(
     val edgePx = with(density) { 56.dp.toPx() }
     // 拖把手时手指在把手上，对应的字在手指上方约这么高。
     val liftPx = with(density) { 30.dp.toPx() }
+    val selectHaptic = LocalHapticFeedback.current
     val tracker = remember(vm, chapterIndex) {
         SelectionTracker(
             onPress = { block, char ->
+                // 长按选中一个词：轻震一下，告诉手指已经抓住了。
+                selectHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 // 开始选字就收起菜单，免得挡住操作条。
                 menuVisible = false
                 vm.pressText(chapterIndex, block, char)
@@ -493,7 +504,10 @@ private fun Reader(
                             startSize = currentSettings.fontSize
                             vm.clearSelection()
                         }
-                        pinchSize = (startSize * d / startDistance).coerceIn(14f, 30f)
+                        val next = (startSize * d / startDistance).coerceIn(14f, 30f)
+                        // 每跨过一个整数字号轻轻震一下。
+                        if (kotlin.math.round(next) != kotlin.math.round(pinchSize ?: startSize)) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        pinchSize = next
                         // 两指在捏：不让下面的列表滚动、翻页、选字。
                         event.changes.forEach { it.consume() }
                     }
@@ -597,38 +611,47 @@ private fun Reader(
         }
 
 
-        pinchSize?.let { size ->
-            Text(
-                "字号 ${kotlin.math.round(size).toInt()}",
-                color = palette.text,
-                fontSize = 16.sp,
-                modifier = Modifier
-                    .align(Alignment.Center)
+        // 捏合时的字号气泡：弹出来，里面的“永”字跟着变大变小。
+        var bubbleSize by remember { mutableFloatStateOf(settings.fontSize) }
+        pinchSize?.let { bubbleSize = it }
+        AnimatedVisibility(
+            visible = pinchSize != null,
+            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.7f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.85f) + fadeOut(Motion.exit())),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            Row(
+                Modifier
                     .readerGlass(RoundedCornerShape(50), palette, glassBackdrop)
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-            )
+                    .padding(horizontal = 22.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("永", color = palette.text, fontSize = kotlin.math.round(bubbleSize).sp, fontFamily = styles.fontFamily)
+                Text("字号 ${kotlin.math.round(bubbleSize).toInt()}", color = palette.secondary, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
+            }
         }
         val back = returnPoint?.takeIf { it.bookId == entry.id }
         AnimatedVisibility(
             visible = back != null && !menuVisible && listening == null && !autoScroll,
-            enter = Effects.enter(fadeIn()),
-            exit = Effects.exit(fadeOut()),
+            // 从页底升上来，轻轻弹一下。
+            enter = Effects.enter(slideInVertically(Motion.pop()) { it / 2 } + fadeIn(Motion.standard(Motion.SHORT)) + scaleIn(Motion.pop(), initialScale = 0.9f)),
+            exit = Effects.exit(slideOutVertically(Motion.exit()) { it / 2 } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 4.dp),
         ) {
             back?.let { ReturnChip(it.chapterTitle, palette, glassBackdrop, onReturn = vm::jumpBack, onDismiss = vm::clearReturnPoint) }
         }
         AnimatedVisibility(
             visible = listening != null && !menuVisible,
-            enter = Effects.enter(fadeIn()),
-            exit = Effects.exit(fadeOut()),
+            enter = Effects.enter(slideInVertically(Motion.emphasized(Motion.MEDIUM)) { it / 2 } + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(slideOutVertically(Motion.exit()) { it / 2 } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             listening?.let { l -> ReadAloudBar(l, palette, onSettings = { sheet = ReaderSheet.ReadAloud }) }
         }
         AnimatedVisibility(
             visible = autoScroll && listening == null && !menuVisible,
-            enter = Effects.enter(fadeIn()),
-            exit = Effects.exit(fadeOut()),
+            enter = Effects.enter(slideInVertically(Motion.emphasized(Motion.MEDIUM)) { it / 2 } + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(slideOutVertically(Motion.exit()) { it / 2 } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             AutoScrollBar(
@@ -644,8 +667,8 @@ private fun Reader(
 
         AnimatedVisibility(
             visible = menuVisible,
-            enter = Effects.enter(slideInVertically { -it } + fadeIn()),
-            exit = Effects.exit(slideOutVertically { -it } + fadeOut()),
+            enter = Effects.enter(slideInVertically(Motion.emphasized(Motion.MEDIUM)) { -it } + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(slideOutVertically(Motion.exit(Motion.MEDIUM)) { -it } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
             val bookmarked = marks.bookmarks.any { it.chapterIndex == chapterIndex && it.itemIndex == pos.item.coerceAtLeast(HEADER_ITEMS) }
@@ -687,8 +710,8 @@ private fun Reader(
 
         AnimatedVisibility(
             visible = menuVisible,
-            enter = Effects.enter(slideInVertically { it } + fadeIn()),
-            exit = Effects.exit(slideOutVertically { it } + fadeOut()),
+            enter = Effects.enter(slideInVertically(Motion.emphasized(Motion.MEDIUM)) { it } + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(slideOutVertically(Motion.exit(Motion.MEDIUM)) { it } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             Column(
@@ -919,7 +942,17 @@ private fun SelectionBar(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier) {
+    // 出现时从 0.9 倍弹到原大小。
+    val appear = remember { Animatable(if (Effects.reduced) 1f else 0f) }
+    LaunchedEffect(Unit) { appear.animateTo(1f, Motion.pop()) }
+    Box(
+        modifier.graphicsLayer {
+            alpha = appear.value.coerceIn(0f, 1f)
+            val s = 0.9f + 0.1f * appear.value
+            scaleX = s
+            scaleY = s
+        },
+    ) {
         SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCard, onCancel)
     }
 }

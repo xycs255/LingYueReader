@@ -19,6 +19,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -257,33 +269,26 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
             return@Column
         }
         val w = deck[index]
+        val haptic = LocalHapticFeedback.current
         Text("${index + 1} / ${deck.size}", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-        Spacer(Modifier.height(40.dp))
-        Text(w.word, fontSize = 40.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
-        if (w.context.isNotBlank()) {
-            Text(
-                highlighted(w.context, w.word),
-                fontFamily = FontFamily.Serif,
-                fontSize = 16.sp,
-                textAlign = TextAlign.Center,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 20.dp),
-            )
-        }
-        Box(Modifier.weight(1f).fillMaxWidth().padding(top = 28.dp), contentAlignment = Alignment.TopCenter) {
-            if (revealed) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (w.reading.isNotBlank()) Text(w.reading, color = MiuixTheme.colorScheme.primary, fontSize = 18.sp)
-                    Text(w.gloss.ifBlank { "（没有记下释义）" }, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
-                }
-            } else {
-                TextButton("看释义", onClick = { revealed = true })
-            }
+        // 换下一个词：旧卡往左滑走，新卡从右边进来。
+        AnimatedContent(
+            targetState = index,
+            transitionSpec = {
+                (slideInHorizontally(Motion.emphasized()) { it / 2 } + fadeIn(Motion.standard())) togetherWith
+                    (slideOutHorizontally(Motion.exit(Motion.MEDIUM)) { -it / 2 } + fadeOut(Motion.exit()))
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 20.dp),
+            label = "card",
+        ) { i ->
+            val card = deck.getOrNull(i) ?: return@AnimatedContent
+            FlipCard(card, revealed && i == index) { revealed = !revealed }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(
                 "还不熟",
                 onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.Reject)
                     onAnswer(w, false)
                     forgotten += w.word
                     if (requeued.add(w.word)) deck.add(w)
@@ -295,6 +300,7 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
             TextButton(
                 "记得",
                 onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                     onAnswer(w, true)
                     forgotten -= w.word
                     revealed = false
@@ -303,6 +309,50 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
                 colors = ButtonDefaults.textButtonColorsPrimary(),
                 modifier = Modifier.weight(1f),
             )
+        }
+    }
+}
+
+/** 复习卡：正面是词和原句，点一下翻到背面看读音和释义。 */
+@Composable
+private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
+    val angle by animateFloatAsState(if (revealed) 180f else 0f, Motion.emphasized(), label = "flip")
+    val c = MiuixTheme.colorScheme
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                rotationY = angle
+                cameraDistance = 14f * density
+            }
+            .clip(RoundedCornerShape(24.dp))
+            .background(c.surfaceContainer)
+            .clickable(onClick = onFlip)
+            .semantics { contentDescription = if (revealed) "复习卡背面" else "复习卡正面" }
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        // 转过一半换成背面，背面再转回来免得字是反的。
+        val back = angle > 90f
+        Column(
+            Modifier.graphicsLayer { if (back) rotationY = 180f },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(w.word, fontSize = 40.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+            if (back) {
+                if (w.reading.isNotBlank()) Text(w.reading, color = c.primary, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
+                Text(w.gloss.ifBlank { "（没有记下释义）" }, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+            } else if (w.context.isNotBlank()) {
+                Text(
+                    highlighted(w.context, w.word),
+                    fontFamily = FontFamily.Serif,
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center,
+                    color = c.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(top = 20.dp),
+                )
+            }
+            if (!back) Text("看释义", color = c.primary, fontSize = 15.sp, modifier = Modifier.padding(top = 28.dp))
         }
     }
 }

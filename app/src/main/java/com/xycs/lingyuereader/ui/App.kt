@@ -10,10 +10,15 @@ import com.xycs.lingyuereader.data.ShelfPrefs
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.EnterExitState
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -126,17 +131,15 @@ private fun AnimatedContentTransitionScope<Screen>.screenTransform(style: PageTr
     if (Effects.reduced || style == PageTransition.NONE) return EnterTransition.None togetherWith ExitTransition.None
     val target = targetState
     val initial = initialState
-    val origin = TransformOrigin(OpenFrom.centerX, OpenFrom.centerY)
+    val origin = TransformOrigin(OpenFrom.pivotX, OpenFrom.pivotY)
     if (target is Screen.Reader && initial == Screen.Shelf && OpenFrom.bookId == target.bookId) {
         return (scaleIn(Motion.emphasized(), initialScale = OpenFrom.widthFraction, transformOrigin = origin) + fadeIn(Motion.standard(Motion.SHORT))) togetherWith
             (scaleOut(Motion.emphasized(), targetScale = 1.06f, transformOrigin = origin) + fadeOut(Motion.standard(Motion.LONG)))
     }
     if (initial is Screen.Reader && target == Screen.Shelf && OpenFrom.bookId == initial.bookId) {
-        OpenFrom.bookId = null
-        // 缩回去的阅读页在上面。
-        return ((scaleIn(Motion.emphasized(), initialScale = 1.06f, transformOrigin = origin) + fadeIn(Motion.standard())) togetherWith
-            (scaleOut(Motion.emphasized(), targetScale = OpenFrom.widthFraction, transformOrigin = origin) +
-                fadeOut(Motion.standard(Motion.SHORT, delay = Motion.LONG - Motion.SHORT)))).apply { targetContentZIndex = -1f }
+        // 缩回去的阅读页在上面。缩小本身由 [CoverShrink] 跟着封面现在的位置做（读过的书可能已排到最前），这里只管最后淡出。
+        return ((scaleIn(Motion.emphasized(), initialScale = 1.06f) + fadeIn(Motion.standard())) togetherWith
+            fadeOut(Motion.standard(Motion.SHORT, delay = Motion.LONG - Motion.SHORT))).apply { targetContentZIndex = -1f }
     }
     return when (style) {
         PageTransition.FADE -> (fadeIn(Motion.standard()) + scaleIn(Motion.standard(), initialScale = 0.97f)) togetherWith fadeOut(Motion.exit())
@@ -177,7 +180,23 @@ fun App(vm: AppViewModel = viewModel()) {
     ) { screen ->
         when (screen) {
             Screen.Shelf -> HomeScreen(vm)
-            is Screen.Reader -> ReaderScreen(vm, screen)
+            is Screen.Reader -> {
+                // 返回书架时缩回这本书的封面：封面的位置在书架排好后才知道，所以每帧现读。
+                val toCover = stack.last() == Screen.Shelf && OpenFrom.bookId == screen.bookId &&
+                    appearance.transition != PageTransition.NONE && !Effects.reduced
+                val shrink by transition.animateFloat({ Motion.emphasized() }, label = "cover") { state ->
+                    if (state == EnterExitState.PostExit && toCover) OpenFrom.widthFraction else 1f
+                }
+                Box(
+                    Modifier.graphicsLayer {
+                        if (shrink < 1f) {
+                            scaleX = shrink
+                            scaleY = shrink
+                            transformOrigin = TransformOrigin(OpenFrom.pivotX, OpenFrom.pivotY)
+                        }
+                    },
+                ) { ReaderScreen(vm, screen) }
+            }
             is Screen.Search -> SearchScreen(vm, screen.bookId)
             Screen.LibrarySearch -> LibrarySearchScreen(vm)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
@@ -448,14 +467,19 @@ private class OpenFromCover(val track: Modifier, val click: () -> Unit)
 
 @Composable
 private fun rememberOpenFromCover(bookId: String, open: () -> Unit): OpenFromCover {
-    val window = LocalWindowInfo.current
+    // 用根视图的大小（和 boundsInWindow 同一坐标系）。
+    val view = LocalView.current
     val bounds = remember { object { var rect = androidx.compose.ui.geometry.Rect.Zero } }
     val current by rememberUpdatedState(open)
     return remember(bookId) {
         OpenFromCover(
-            track = Modifier.onGloballyPositioned { bounds.rect = it.boundsInWindow() },
+            track = Modifier.onGloballyPositioned {
+                bounds.rect = it.boundsInWindow()
+                // 正从这本书退回书架：封面一排好就更新位置，阅读页缩到这里。
+                if (OpenFrom.bookId == bookId) OpenFrom.set(bookId, bounds.rect, view.width.toFloat(), view.height.toFloat())
+            },
             click = {
-                OpenFrom.set(bookId, bounds.rect, window.containerSize.width.toFloat(), window.containerSize.height.toFloat())
+                OpenFrom.set(bookId, bounds.rect, view.width.toFloat(), view.height.toFloat())
                 current()
             },
         )
@@ -468,6 +492,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
     val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
+    val haptic = LocalHapticFeedback.current
     Column(modifier) {
         Box {
             BookCover(
@@ -476,7 +501,10 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                 modifier = open.track,
                 cover = entry.cover?.let { vm.bookFile(entry.id, it) },
                 onClick = open.click,
-                onLongPress = { menu = true },
+                onLongPress = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    menu = true
+                },
             )
             BookMenu(entry, vm, menu, dialogs) { menu = false }
         }
@@ -493,11 +521,15 @@ private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Mo
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
     val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
+    val haptic = LocalHapticFeedback.current
     GlassCard(
         modifier = modifier,
         pressFeedbackType = PressFeedbackType.Sink,
         onClick = open.click,
-        onLongPress = { menu = true },
+        onLongPress = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    menu = true
+                },
         insideMargin = PaddingValues(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

@@ -8,6 +8,8 @@ import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.remember
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -86,10 +88,10 @@ fun StatsScreen(vm: AppViewModel) {
                 val year = ReadingStats.total(days, today.withDayOfYear(1), today)
                 GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), insideMargin = PaddingValues(16.dp)) {
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Figure("今天", minutes(days[today]?.millis ?: 0))
-                        Figure("本周", minutes(week))
-                        Figure("本月", minutes(month))
-                        Figure("今年", minutes(year))
+                        Figure("今天", days[today]?.millis ?: 0)
+                        Figure("本周", week)
+                        Figure("本月", month)
+                        Figure("今年", year)
                     }
                     Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
@@ -132,8 +134,9 @@ fun StatsScreen(vm: AppViewModel) {
                         Text(b.title, modifier = Modifier.weight(1f), maxLines = 1)
                         Text(durationLabel(b.readMillis), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 13.sp)
                     }
+                    val grown = animateFromZero(b.readMillis.toFloat() / longest)
                     Box(Modifier.padding(top = 4.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(MiuixTheme.colorScheme.secondaryContainer)) {
-                        Box(Modifier.fillMaxHeight().fillMaxWidth(b.readMillis.toFloat() / longest).background(MiuixTheme.colorScheme.primary))
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(MiuixTheme.colorScheme.primary))
                     }
                 }
             }
@@ -142,9 +145,11 @@ fun StatsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun Figure(label: String, value: String) {
+private fun Figure(label: String, millis: Long) {
+    // 打开统计页时数字从 0 往上数。
+    val shown = animateFromZero(millis.toFloat(), 900)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(minutes(shown.toLong()), fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text(label, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
 }
@@ -169,6 +174,9 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
     val start = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).minusWeeks((weeks - 1).toLong())
     val colors = HEAT_LEVELS.indices.map { heatColor(it) }
     val readDays = days.count { (d, s) -> !d.isBefore(start) && s.millis >= 60_000 }
+    // 从左往右一列列亮起来。
+    val reveal = remember { Animatable(if (Effects.reduced) 1f else 0f) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(900)) }
     Canvas(
         Modifier
             .fillMaxWidth()
@@ -177,17 +185,23 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
     ) {
         val cell = size.width / weeks
         val gap = cell * 0.18f
+        val front = reveal.value * (weeks + 4)
         for (w in 0 until weeks) {
+            val t = (front - w).coerceIn(0f, 4f) / 4f
+            if (t <= 0f) continue
             for (d in 0 until 7) {
                 val day = start.plusDays((w * 7 + d).toLong())
                 if (day.isAfter(today)) continue
                 val minutes = (days[day]?.millis ?: 0) / 60_000
                 val level = HEAT_LEVELS.indexOfLast { minutes >= it && (it > 0 || minutes == 0L) }.coerceAtLeast(0)
+                val side = (cell - gap) * (0.6f + 0.4f * t)
+                val inset = (cell - side) / 2
                 drawRoundRect(
                     colors[level],
-                    topLeft = Offset(w * cell + gap / 2, d * cell + gap / 2),
-                    size = Size(cell - gap, cell - gap),
-                    cornerRadius = CornerRadius(cell * 0.2f),
+                    topLeft = Offset(w * cell + inset, d * cell + inset),
+                    size = Size(side, side),
+                    cornerRadius = CornerRadius(side * 0.2f),
+                    alpha = t,
                 )
             }
         }
@@ -213,7 +227,7 @@ private fun GoalCard(vm: AppViewModel, todayMinutes: Int) {
         if (goal > 0) {
             val done = todayMinutes >= goal
             Row(verticalAlignment = Alignment.Bottom) {
-                Text("$todayMinutes", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text("${animateFromZero(todayMinutes.toFloat()).toInt()}", fontSize = 28.sp, fontWeight = FontWeight.Bold)
                 Text(" / $goal 分钟", style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(bottom = 4.dp))
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -224,7 +238,8 @@ private fun GoalCard(vm: AppViewModel, todayMinutes: Int) {
                 )
             }
             Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(MiuixTheme.colorScheme.secondaryContainer)) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth((todayMinutes.toFloat() / goal).coerceIn(0f, 1f)).background(MiuixTheme.colorScheme.primary))
+                val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f), 900)
+                Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(MiuixTheme.colorScheme.primary))
             }
         } else {
             Text("设一个每天的阅读目标，统计页会显示今天读到哪了。", style = MiuixTheme.textStyles.body2)

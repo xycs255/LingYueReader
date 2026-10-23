@@ -11,6 +11,9 @@ import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
@@ -93,7 +96,22 @@ object OpenFrom {
         this.bookId = bookId
         centerX = (bounds.center.x / windowWidth).coerceIn(0f, 1f)
         centerY = (bounds.center.y / windowHeight).coerceIn(0f, 1f)
-        widthFraction = (bounds.width / windowWidth).coerceIn(0.1f, 1f)
+        widthFraction = (bounds.width / windowWidth).coerceIn(0.1f, 0.9f)
     }
+
+    /**
+     * 缩放的支点：整页按 [widthFraction] 缩小后，中心正好落在封面中心。
+     * 绕支点 p 缩到 s 倍，页面中心移到 p + s(0.5 − p)；令它等于封面中心 c，得 p = (c − 0.5s) / (1 − s)。
+     */
+    val pivotX: Float get() = ((centerX - 0.5f * widthFraction) / (1f - widthFraction)).coerceIn(0f, 1f)
+    val pivotY: Float get() = ((centerY - 0.5f * widthFraction) / (1f - widthFraction)).coerceIn(0f, 1f)
 }
 
+
+/** 第一次出现时从 0 长到 [target]，之后数值变了再平滑过去（统计数字、进度条）。 */
+@Composable
+fun animateFromZero(target: Float, duration: Int = 700): Float {
+    val value = remember { Animatable(if (Effects.reduced) target else 0f) }
+    LaunchedEffect(target) { value.animateTo(target, Motion.emphasized(duration)) }
+    return value.value
+}
