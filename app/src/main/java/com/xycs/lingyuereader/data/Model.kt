@@ -127,6 +127,8 @@ data class BookEntry(
     val cover: String? = null,
     /** 累计阅读时长。 */
     val readMillis: Long = 0,
+    /** 所在的书架分组（可多个）。 */
+    val groups: List<String> = emptyList(),
 ) {
     val readFraction: Float
         get() = progress?.let { (it.chapterIndex + 1f) / chapterCount.coerceAtLeast(1) } ?: 0f

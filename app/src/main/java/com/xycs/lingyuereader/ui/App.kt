@@ -1,5 +1,15 @@
 package com.xycs.lingyuereader.ui
 
+import top.yukonga.miuix.kmp.basic.Checkbox
+import com.xycs.lingyuereader.data.ShelfPrefs
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -117,6 +127,7 @@ private fun ShelfScreen(vm: AppViewModel) {
     val all by vm.shelf.collectAsStateWithLifecycle()
     val shelf by vm.visibleShelf.collectAsStateWithLifecycle()
     val shelfPrefs by vm.shelfPrefs.collectAsStateWithLifecycle()
+    val groups by vm.shelfGroups.collectAsStateWithLifecycle()
     val query by vm.shelfQuery.collectAsStateWithLifecycle()
     val loaded by vm.shelfLoaded.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -190,6 +201,7 @@ private fun ShelfScreen(vm: AppViewModel) {
                 },
                 bottomContent = {
                     Column {
+                        GroupChips(vm, groups, shelfPrefs.group, hasUngrouped = all.any { it.groups.isEmpty() })
                         if (searching) {
                             TextField(
                                 value = query,
@@ -222,7 +234,7 @@ private fun ShelfScreen(vm: AppViewModel) {
             !loaded -> Unit
             all.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
             shelf.isEmpty() -> Text(
-                "没有找到“$query”",
+                if (query.isNotBlank()) "没有找到“$query”" else "这个分组里还没有书。长按书籍，选“分组…”加进来。",
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(padding).padding(top = 48.dp),
@@ -249,6 +261,62 @@ private fun ShelfScreen(vm: AppViewModel) {
     }
 
     pending?.let { files -> ImportDialog(files, vm) }
+}
+
+/** 书架顶部的分组标签：全部、各分组、未分组。长按分组可改名或删除。没有分组时不显示。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?, hasUngrouped: Boolean) {
+    if (groups.isEmpty()) return
+    var editing by remember { mutableStateOf<String?>(null) }
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        @Composable
+        fun Chip(label: String, value: String?, onLongClick: (() -> Unit)? = null) {
+            val on = selected == value
+            Text(
+                label,
+                fontSize = 14.sp,
+                color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer)
+                    .combinedClickable(onClick = { vm.selectGroup(value) }, onLongClick = onLongClick)
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            )
+        }
+        Chip("全部", null)
+        groups.forEach { g -> Chip(g, g) { editing = g } }
+        if (hasUngrouped) Chip("未分组", ShelfPrefs.UNGROUPED)
+    }
+    editing?.let { g ->
+        var name by remember(g) { mutableStateOf(g) }
+        OverlayDialog(show = true, title = "分组“$g”", summary = "改名，或删除这个分组（书不会被删除）。", onDismissRequest = { editing = null }) {
+            TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(
+                    text = "删除分组",
+                    onClick = {
+                        vm.renameGroup(g, null)
+                        editing = null
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    text = "改名",
+                    enabled = name.isNotBlank() && name.trim() != g,
+                    onClick = {
+                        vm.renameGroup(g, name)
+                        editing = null
+                    },
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -358,6 +426,7 @@ private fun ShelfRow(entry: BookEntry, vm: AppViewModel) {
 internal class BookDialogState {
     var renaming by mutableStateOf(false)
     var removing by mutableStateOf(false)
+    var grouping by mutableStateOf(false)
 }
 
 @Composable
@@ -365,6 +434,7 @@ private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs:
     val actions = buildList {
         add("详情" to { vm.open(Screen.Detail(entry.id)) })
         if (entry.sources.any { it.uri != null }) add("从原文件刷新" to { vm.refresh(entry) })
+        add("分组…" to { dialogs.grouping = true })
         add("重命名" to { dialogs.renaming = true })
         add("移除" to { dialogs.removing = true })
     }
@@ -388,6 +458,53 @@ private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs:
 
 @Composable
 internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialogState, onRemoved: () -> Unit = {}) {
+    if (dialogs.grouping) {
+        val all by vm.shelfGroups.collectAsStateWithLifecycle()
+        var chosen by remember { mutableStateOf(entry.groups.toSet()) }
+        var extra by remember { mutableStateOf(listOf<String>()) }
+        var newName by remember { mutableStateOf("") }
+        OverlayDialog(show = true, title = "《${entry.title}》的分组", onDismissRequest = { dialogs.grouping = false }) {
+            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                (all + extra).distinct().forEach { g ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { chosen = if (g in chosen) chosen - g else chosen + g }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            state = ToggleableState(g in chosen),
+                            onClick = { chosen = if (g in chosen) chosen - g else chosen + g },
+                        )
+                        Text(g, modifier = Modifier.padding(start = 12.dp))
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                TextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = "新建分组",
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    text = "添加",
+                    enabled = newName.isNotBlank(),
+                    onClick = {
+                        val g = newName.trim()
+                        extra = extra + g
+                        chosen = chosen + g
+                        newName = ""
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            DialogButtons(confirm = "确定", onDismiss = { dialogs.grouping = false }) {
+                vm.setBookGroups(entry, (all + extra).filter { it in chosen })
+                dialogs.grouping = false
+            }
+        }
+    }
     if (dialogs.renaming) {
         var title by remember { mutableStateOf(entry.title) }
         OverlayDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {

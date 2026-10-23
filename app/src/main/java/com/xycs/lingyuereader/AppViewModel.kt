@@ -124,8 +124,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val shelfQuery: StateFlow<String> = _shelfQuery.asStateFlow()
 
     /** 书架上实际显示的书：按搜索词过滤、按所选方式排序。 */
-    val visibleShelf: StateFlow<List<BookEntry>> = combine(_shelf, _shelfPrefs, _shelfQuery) { books, p, q ->
+    val visibleShelf: StateFlow<List<BookEntry>> = combine(_shelf, _shelfPrefs, _shelfQuery) { all, p, q ->
         val query = q.trim()
+        val books = when (p.group) {
+            null -> all
+            ShelfPrefs.UNGROUPED -> all.filter { it.groups.isEmpty() }
+            else -> all.filter { p.group in it.groups }
+        }
         val filtered = if (query.isEmpty()) books else books.filter {
             it.title.contains(query, ignoreCase = true) || it.author?.contains(query, ignoreCase = true) == true
         }
@@ -215,6 +220,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun updateShelfPrefs(transform: (ShelfPrefs) -> ShelfPrefs) {
         _shelfPrefs.update(transform)
         prefs.saveShelf(_shelfPrefs.value)
+    }
+
+    // ---------- 书架分组 ----------
+
+    /** 所有分组：按设定的顺序，书上有、顺序里没有的接在后面。 */
+    val shelfGroups: StateFlow<List<String>> = combine(_shelf, _shelfPrefs) { books, p ->
+        (p.groups + books.flatMap { it.groups }).distinct()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun selectGroup(group: String?) = updateShelfPrefs { it.copy(group = group) }
+
+    fun setBookGroups(entry: BookEntry, groups: List<String>) {
+        val clean = groups.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        updateShelfPrefs { p -> p.copy(groups = (p.groups + clean).distinct()) }
+        _shelf.update { list -> list.map { if (it.id == entry.id) it.copy(groups = clean) else it } }
+        viewModelScope.launch(Dispatchers.IO) { library.setGroups(entry.id, clean) }
+    }
+
+    /** 分组改名；[to] 为空即删除分组（书不删）。 */
+    fun renameGroup(from: String, to: String?) {
+        val target = to?.trim()?.takeIf { it.isNotEmpty() }
+        updateShelfPrefs { p ->
+            p.copy(
+                groups = p.groups.flatMap { if (it == from) listOfNotNull(target) else listOf(it) }.distinct(),
+                group = if (p.group == from) target else p.group,
+            )
+        }
+        _shelf.update { list ->
+            list.map { e -> if (from !in e.groups) e else e.copy(groups = e.groups.flatMap { g -> if (g == from) listOfNotNull(target) else listOf(g) }.distinct()) }
+        }
+        viewModelScope.launch(Dispatchers.IO) { library.renameGroup(from, target) }
     }
 
     /** 阅读页在前台的时长，离开或切到后台时累加。 */

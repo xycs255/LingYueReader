@@ -84,6 +84,20 @@ class LibraryTest {
     }
 
     @Test
+    fun groupsAreStoredRenamedAndRemoved() {
+        val a = import("甲.txt", "正文甲".toByteArray())
+        val b = import("乙.txt", "正文乙".toByteArray())
+        library.setGroups(a.id, listOf("武侠", "在读", "武侠"))
+        library.setGroups(b.id, listOf("武侠"))
+        assertEquals(listOf("武侠", "在读"), library.list().first { it.id == a.id }.groups)
+        library.renameGroup("武侠", "江湖")
+        assertEquals(listOf("江湖", "在读"), library.list().first { it.id == a.id }.groups)
+        library.renameGroup("江湖", null)
+        assertEquals(listOf("在读"), library.list().first { it.id == a.id }.groups)
+        assertEquals(emptyList<String>(), library.list().first { it.id == b.id }.groups)
+    }
+
+    @Test
     fun savingRulesReparsesAndInvalidatesTheCache() {
         val e = import("规则.txt", "【一 下山】\n他下了山。广告词\n【二 进城】\n他进了城。\n".toByteArray())
         assertEquals(1, library.content(e).chapters.size)

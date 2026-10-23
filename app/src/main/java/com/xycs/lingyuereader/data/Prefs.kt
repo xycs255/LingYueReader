@@ -53,7 +53,18 @@ enum class ShelfSort(val label: String) {
     ADDED("添加时间"),
 }
 
-data class ShelfPrefs(val sort: ShelfSort = ShelfSort.RECENT, val list: Boolean = false)
+data class ShelfPrefs(
+    val sort: ShelfSort = ShelfSort.RECENT,
+    val list: Boolean = false,
+    /** 分组的先后顺序（书上出现、这里没有的分组排在后面）。 */
+    val groups: List<String> = emptyList(),
+    /** 正在看的分组；为空是全部，[UNGROUPED] 是未分组。 */
+    val group: String? = null,
+) {
+    companion object {
+        const val UNGROUPED = "\u0000未分组"
+    }
+}
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
@@ -110,12 +121,18 @@ class Prefs(context: Context) {
     fun shelf(): ShelfPrefs = ShelfPrefs(
         sort = runCatching { ShelfSort.valueOf(sp.getString("shelf.sort", null)!!) }.getOrDefault(ShelfSort.RECENT),
         list = sp.getBoolean("shelf.list", false),
+        groups = runCatching {
+            org.json.JSONArray(sp.getString("shelf.groups", "[]")).let { a -> (0 until a.length()).map { a.getString(it) } }
+        }.getOrDefault(emptyList()),
+        group = sp.getString("shelf.group", null),
     )
 
     fun saveShelf(p: ShelfPrefs) {
         sp.edit {
             putString("shelf.sort", p.sort.name)
             putBoolean("shelf.list", p.list)
+            putString("shelf.groups", org.json.JSONArray(p.groups).toString())
+            if (p.group == null) remove("shelf.group") else putString("shelf.group", p.group)
         }
     }
 

@@ -315,6 +315,16 @@ class Library(private val context: Context) {
 
     fun rename(id: String, title: String) = update { list -> list.map { if (it.id == id) it.copy(title = title) else it } }
 
+    fun setGroups(id: String, groups: List<String>) = update { list -> list.map { if (it.id == id) it.copy(groups = groups.distinct()) else it } }
+
+    /** 分组改名（并到同名分组里也行）；[to] 为空就是删除分组，书留在书架上。 */
+    fun renameGroup(from: String, to: String?) = update { list ->
+        list.map { e ->
+            if (from !in e.groups) e
+            else e.copy(groups = e.groups.flatMap { g -> if (g == from) listOfNotNull(to) else listOf(g) }.distinct())
+        }
+    }
+
     fun saveProgress(id: String, progress: ReadingProgress) = update { list ->
         list.map { if (it.id == id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it }
     }
@@ -363,6 +373,7 @@ class Library(private val context: Context) {
         .put("description", description.orEmpty())
         .put("cover", cover.orEmpty())
         .put("readMillis", readMillis)
+        .put("groups", JSONArray(groups))
         .put("sources", JSONArray().apply {
             sources.forEach { put(JSONObject().put("name", it.name).put("uri", it.uri.orEmpty()).put("file", it.file)) }
         })
@@ -395,6 +406,7 @@ class Library(private val context: Context) {
             description = optString("description").ifEmpty { null },
             cover = optString("cover").ifEmpty { null },
             readMillis = optLong("readMillis"),
+            groups = optJSONArray("groups")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
             progress = optJSONObject("progress")?.let {
                 ReadingProgress(it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"), it.optInt("char"))
             },
