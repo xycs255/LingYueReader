@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.setValue
@@ -259,7 +264,7 @@ internal fun BlockView(
     val toLayout = { char: Int -> char + indent - base }
 
     @Composable
-    fun SelectableText(style: TextStyle, boxModifier: Modifier) {
+    fun SelectableText(style: TextStyle, boxModifier: Modifier, justify: Boolean = false) {
         var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
         var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
         // 把带把手的选区在屏幕上的位置报上去，操作条好贴着它摆。滚动时位置变了也会再报。
@@ -278,9 +283,16 @@ internal fun BlockView(
             select?.bounds(blockIndex, Rect(origin.x, origin.y + top, origin.x + c.size.width, origin.y + bottom))
         }
         LaunchedEffect(selected, handles, layout) { reportBounds() }
-        Box(boxModifier) {
+        BoxWithConstraints(boxModifier) {
+            val measurer = rememberTextMeasurer(cacheSize = 0)
+            val density = LocalDensity.current
+            val width = constraints.maxWidth
+            // 中文两端对齐：把行尾空出的一点宽度摊到字间（翻页时被截断的段落，最后一行也要排满）。
+            val display = remember(shown, style, width, justify, isEnd) {
+                if (justify && width in 1 until Constraints.Infinity) justifyCjk(shown!!, style, width, measurer, density, justifyLastLine = !isEnd) else shown!!
+            }
             Text(
-                shown!!,
+                display,
                 style = style,
                 onTextLayout = { layout = it },
                 modifier = Modifier.onGloballyPositioned {
@@ -340,11 +352,15 @@ internal fun BlockView(
     // 插图、表格等非文字块只响应轻点（翻页/菜单）。
     val tapOnly = Modifier.pointerInput(block) { detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }) }
     when (block) {
-        is Block.Para -> SelectableText(styles.para, modifier.padding(bottom = if (isEnd) gap else 0.dp))
+        is Block.Para -> SelectableText(
+            styles.para,
+            modifier.padding(bottom = if (isEnd) gap else 0.dp),
+            justify = styles.settings.justify && styles.chinese,
+        )
         is Block.Heading -> SelectableText(styles.heading(block.level), modifier.padding(top = gap * 1.5f, bottom = gap))
         is Block.Quote -> Row(modifier.padding(bottom = gap).height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(palette.accent.copy(alpha = 0.5f)))
-            SelectableText(styles.quote, Modifier.padding(start = styles.quoteIndent - 3.dp))
+            SelectableText(styles.quote, Modifier.padding(start = styles.quoteIndent - 3.dp), justify = styles.settings.justify && styles.chinese)
         }
         is Block.ListItem -> Row(modifier.padding(start = (block.indent * 16).dp, bottom = gap / 2)) {
             Text(block.marker, style = styles.list.copy(color = palette.accent), modifier = Modifier.width(styles.listMarkerWidth))
@@ -473,4 +489,46 @@ internal fun footnoteAt(layout: TextLayoutResult, position: androidx.compose.ui.
     val from = (offset - 1).coerceAtLeast(0)
     val to = (offset + 1).coerceAtMost(text.length)
     return text.getStringAnnotations(FOOTNOTE_TAG, from, to).firstOrNull()?.item
+}
+
+/**
+ * 中文两端对齐。系统的 Justify 只拉宽空格，中文行里没有空格，避头尾挪走一个字后行尾就空着。
+ * 这里先排一遍，把每行右边空出的宽度平均摊到这一行的字间（加大这一段的字距），再排一遍确认换行位置
+ * 完全没变——变了就不动，保证分页、选区、批注的位置都与未拉伸时一致。空得太多（超过三个字）的行也不拉。
+ */
+internal fun justifyCjk(
+    text: AnnotatedString,
+    style: TextStyle,
+    widthPx: Int,
+    measurer: TextMeasurer,
+    density: Density,
+    justifyLastLine: Boolean,
+): AnnotatedString {
+    if (text.length < 2) return text
+    val constraints = Constraints(maxWidth = widthPx)
+    val first = measurer.measure(text, style, constraints = constraints)
+    val lastLine = if (justifyLastLine) first.lineCount - 1 else first.lineCount - 2
+    if (lastLine < 0) return text
+    val fontPx = with(density) { style.fontSize.toPx() }
+    if (fontPx <= 0f) return text
+    val baseEm = if (style.letterSpacing.isEm) style.letterSpacing.value else 0f
+    val builder = AnnotatedString.Builder(text)
+    var changed = false
+    for (line in 0..lastLine) {
+        val start = first.getLineStart(line)
+        val end = first.getLineEnd(line, visibleEnd = true)
+        if (end - start < 2) continue
+        val gap = widthPx - first.getLineRight(line)
+        if (gap < 0.5f || gap > fontPx * 3f) continue
+        // 稍留一点余量，免得舍入误差把最后一个字挤到下一行。
+        val extraEm = gap * 0.99f / (end - start - 1) / fontPx
+        builder.addStyle(SpanStyle(letterSpacing = (baseEm + extraEm).em), start, end - 1)
+        changed = true
+    }
+    if (!changed) return text
+    val justified = builder.toAnnotatedString()
+    val second = measurer.measure(justified, style, constraints = constraints)
+    val sameBreaks = second.lineCount == first.lineCount &&
+        (0 until first.lineCount).all { second.getLineEnd(it) == first.getLineEnd(it) }
+    return if (sameBreaks) justified else text
 }
