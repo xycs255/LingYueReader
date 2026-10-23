@@ -91,7 +91,8 @@ class LibraryTest {
         library.saveProgress(a.id, ReadingProgress(0, "第一章 起", 1, 0))
 
         val out = ByteArrayOutputStream()
-        assertEquals(2, library.backup(out, org.json.JSONObject().put("fontSize", org.json.JSONObject().put("f", 22.0))))
+        val vocab = """[{"word":"银行","addedAt":1}]""".toByteArray()
+        assertEquals(2, library.backup(out, org.json.JSONObject().put("fontSize", org.json.JSONObject().put("f", 22.0)), mapOf("vocabulary.json" to vocab)))
 
         // 换了台手机：书架清空，再从备份恢复。
         library.remove(a.id)
@@ -100,6 +101,7 @@ class LibraryTest {
         val result = library.restore(out.toByteArray().inputStream())
         assertEquals(2, result.books)
         assertEquals(22.0, result.settings!!.getJSONObject("fontSize").getDouble("f"), 0.0)
+        assertEquals(String(vocab), result.data["vocabulary.json"])
 
         val restored = library.list().first { it.id == a.id }
         assertEquals(1, restored.progress!!.itemIndex)

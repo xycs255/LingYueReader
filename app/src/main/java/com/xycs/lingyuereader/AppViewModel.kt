@@ -18,6 +18,9 @@ import com.xycs.lingyuereader.dict.Dictionaries
 import com.xycs.lingyuereader.dict.LookupResult
 import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.HtmlText
+import com.xycs.lingyuereader.data.VocabWord
+import com.xycs.lingyuereader.data.Vocabulary
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReadingProgress
@@ -51,6 +54,7 @@ sealed interface Screen {
     data class Search(val bookId: String) : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
+    data object Vocabulary : Screen
 }
 
 /** 阅读页里正在查的词：在哪一块的哪一段（[range] 为空表示从相关词语、链接跳来的，不在正文里）。 */
@@ -60,6 +64,8 @@ data class Lookup(
     val range: IntRange?,
     val word: String,
     val result: LookupResult? = null,
+    /** 词在书里的原句（从正文选的才有），收进生词本时用。 */
+    val context: String = "",
 )
 
 /**
@@ -82,6 +88,9 @@ data class OpenBook(val entry: BookEntry, val content: BookContent)
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val library = Library(app)
+    private val vocabulary = Vocabulary(java.io.File(app.filesDir, "vocabulary.json"))
+    private val _vocab = MutableStateFlow<List<VocabWord>>(emptyList())
+    val vocab: StateFlow<List<VocabWord>> = _vocab.asStateFlow()
     private val dictionaries = Dictionaries(app)
 
     private val _dictSettings = MutableStateFlow(DictSettings())
@@ -156,6 +165,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _shelfLoaded.value = true
         }
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
+        reloadVocabulary()
         // 听书时跟着朗读位置记进度，锁屏听完再打开也能接着读。
         viewModelScope.launch {
             ReadAloud.state.collect { s ->
@@ -436,7 +446,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun lookupRange(chapterIndex: Int, block: Int, range: IntRange) {
         val text = blockText(chapterIndex, block) ?: return
         if (range.last >= text.length) return
-        showLookup(Lookup(chapterIndex, block, range, text.substring(range.first, range.last + 1).trim()))
+        showLookup(
+            Lookup(chapterIndex, block, range, text.substring(range.first, range.last + 1).trim(), context = Vocabulary.contextOf(text, range)),
+        )
     }
 
     /** 手动调整选词范围：左右各伸缩一个字。 */
@@ -465,6 +477,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _lookup.update { if (it?.word == l.word) it.copy(result = result ?: LookupResult(l.word, emptyList(), emptyList(), emptyList(), emptyList())) else it }
         }
     }
+
+    // ---------- 生词本 ----------
+
+    fun reloadVocabulary() {
+        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.list() } }
+    }
+
+    /** 把查词面板里的词收进生词本：释义摘要取内置词典或导入词典的第一条。 */
+    fun addToVocabulary() {
+        val l = _lookup.value ?: return
+        val book = _openBook.value
+        val r = l.result
+        val word = r?.words?.firstOrNull()
+        val char = r?.chars?.firstOrNull()?.takeIf { l.word.codePointCount(0, l.word.length) == 1 }
+        val reading = word?.pinyin ?: char?.readings?.firstOrNull() ?: ""
+        val gloss = when {
+            word != null -> word.definitions.take(3).joinToString("；")
+            char != null && char.definition.isNotBlank() -> char.definition
+            else -> r?.imported?.firstOrNull()?.second?.firstOrNull()?.html?.let { HtmlText.plain(it).take(120) } ?: ""
+        }
+        val entry = VocabWord(
+            word = l.word,
+            reading = reading,
+            gloss = gloss,
+            context = l.context,
+            bookId = book?.entry?.id ?: "",
+            bookTitle = book?.entry?.title ?: "",
+            addedAt = System.currentTimeMillis(),
+        )
+        viewModelScope.launch {
+            _vocab.value = withContext(Dispatchers.IO) { vocabulary.add(entry); vocabulary.list() }
+            _messages.value = "已收入生词本"
+        }
+    }
+
+    fun removeFromVocabulary(word: String) {
+        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.remove(word); vocabulary.list() } }
+    }
+
+    fun setMastered(word: String, mastered: Boolean) {
+        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.setMastered(word, mastered); vocabulary.list() } }
+    }
+
+    fun vocabularyMarkdown(words: List<VocabWord>): String = vocabulary.toMarkdown(words)
 
     fun closeLookup() {
         _lookup.value = null
@@ -528,12 +584,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _busy.value = true
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    getApplication<Application>().contentResolver.openOutputStream(uri)!!.use { library.backup(it, prefs.exportJson()) }
+                    getApplication<Application>().contentResolver.openOutputStream(uri)!!.use { library.backup(it, prefs.exportJson(), backupData()) }
                 }
             }
             _busy.value = false
             _messages.value = result.fold({ "已备份 $it 本书" }, { "备份失败：${it.message}" })
         }
+    }
+
+    /** 备份里除了书以外的数据。 */
+    private fun backupData(): Map<String, ByteArray> = buildMap {
+        vocabulary.raw()?.let { put("vocabulary.json", it) }
     }
 
     fun restore(uri: Uri) {
@@ -543,6 +604,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching {
                     getApplication<Application>().contentResolver.openInputStream(uri)!!.use { library.restore(it) }
                 }
+            }
+            result.getOrNull()?.data?.let { data ->
+                withContext(Dispatchers.IO) { data["vocabulary.json"]?.let(vocabulary::merge) }
+                reloadVocabulary()
             }
             result.getOrNull()?.settings?.let { s ->
                 prefs.importJson(s)

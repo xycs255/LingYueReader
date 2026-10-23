@@ -70,6 +70,14 @@ object HtmlText {
     private fun attr(attrs: String, name: String): String? =
         Regex("""(?:^|\s)${Regex.escape(name)}\s*=\s*(["'])(.*?)\1""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(2)?.let(::decodeEntities)
 
+    /** 去掉标签、合并空白，得到纯文字（生词本里的释义摘要用）。 */
+    fun plain(html: String): String =
+        decodeEntities(
+            html.replace(Regex("""(?is)<(script|style)\b.*?</\1>"""), " ")
+                .replace(Regex("""(?i)<br\s*/?>|</(p|div|li|h\d)>"""), " ")
+                .replace(Regex("<[^>]*>"), ""),
+        ).replace(Regex("""\s+"""), " ").trim()
+
     fun decodeEntities(s: String): String {
         if ('&' !in s) return s
         return Regex("""&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);""").replace(s) { m ->

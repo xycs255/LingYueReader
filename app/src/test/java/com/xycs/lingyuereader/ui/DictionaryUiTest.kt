@@ -162,6 +162,17 @@ class DictionaryUiTest {
     }
 
     @Test
+    fun lookedUpWordsGoIntoTheVocabularyBook() {
+        java.io.File(context.filesDir, "vocabulary.json").delete()
+        longPressWord()
+        waitForText("bank")
+        compose.onNodeWithText("☆ 收入生词本").performClick()
+        waitForText("★ 已在生词本")
+        val saved = java.io.File(context.filesDir, "vocabulary.json").readText()
+        assertTrue(saved, saved.contains("银行") && saved.contains("银行门口排着长队") && saved.contains("测试书"))
+    }
+
+    @Test
     fun importedDictionaryResultsAppearInTheLookup() {
         val result = importFixture("v2_zlib_utf8.mdx", "v2_zlib_utf8.mdd")
         assertEquals(listOf("测试词典"), result.added)

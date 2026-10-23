@@ -23,6 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +59,7 @@ internal fun LookupSheet(
     onManage: () -> Unit,
 ) {
     val context = LocalContext.current
+    val vocab by vm.vocab.collectAsStateWithLifecycle()
     Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (lookup.range != null) {
@@ -77,6 +80,10 @@ internal fun LookupSheet(
             }
         }
         FlowRow(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val inVocab = vocab.any { it.word == lookup.word }
+            Chip(if (inVocab) "★ 已在生词本" else "☆ 收入生词本", null, palette) {
+                if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
+            }
             Chip("复制", null, palette) { copyText(context, lookup.word) }
             if (lookup.range != null) Chip("划线·批注", null, palette) { onAnnotate() }
             Chip("汉典", null, palette) { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) }

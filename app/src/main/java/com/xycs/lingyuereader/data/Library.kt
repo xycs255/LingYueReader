@@ -23,6 +23,8 @@ class Library(private val context: Context) {
         const val CACHE = "cache.bin"
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
+        /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
+        val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
         val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json)""")
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
     }
@@ -198,12 +200,12 @@ class Library(private val context: Context) {
         }
     }
 
-    data class RestoreResult(val books: Int, val settings: JSONObject?)
+    data class RestoreResult(val books: Int, val settings: JSONObject?, val data: Map<String, String> = emptyMap())
 
     /**
      * 备份：书架索引、每本书的来源副本和书签批注，以及传入的设置。缓存和解出的插图可重建，不打包。
      */
-    fun backup(out: java.io.OutputStream, settings: JSONObject): Int {
+    fun backup(out: java.io.OutputStream, settings: JSONObject, data: Map<String, ByteArray> = emptyMap()): Int {
         val entries = list()
         java.util.zip.ZipOutputStream(out).use { zip ->
             fun put(name: String, write: (java.io.OutputStream) -> Unit) {
@@ -215,6 +217,7 @@ class Library(private val context: Context) {
                 it.write(JSONObject().put("format", 1).put("createdAt", System.currentTimeMillis()).put("settings", settings).toString().toByteArray())
             }
             put("books/index.json") { it.write(indexFile.readBytesOrEmpty()) }
+            data.forEach { (name, bytes) -> put("data/$name") { it.write(bytes) } }
             entries.forEach { e ->
                 val dir = File(root, e.id)
                 (e.sources.map { it.file } + "marks.json").forEach { name ->
@@ -235,6 +238,7 @@ class Library(private val context: Context) {
         try {
             var manifest: JSONObject? = null
             var index: JSONArray? = null
+            val data = HashMap<String, String>()
             java.util.zip.ZipInputStream(input).use { zip ->
                 while (true) {
                     val entry = zip.nextEntry ?: break
@@ -243,6 +247,7 @@ class Library(private val context: Context) {
                         entry.isDirectory -> Unit
                         name == BACKUP_MANIFEST -> manifest = JSONObject(zip.readBytes().toString(Charsets.UTF_8))
                         name == "books/index.json" -> index = JSONArray(zip.readBytes().toString(Charsets.UTF_8))
+                        BACKUP_DATA_FILE.matches(name) -> data[name.removePrefix("data/")] = zip.readBytes().toString(Charsets.UTF_8)
                         BACKUP_BOOK_FILE.matches(name) -> {
                             val target = File(staging, name)
                             target.parentFile!!.mkdirs()
@@ -266,7 +271,7 @@ class Library(private val context: Context) {
             }
             val ids = restored.map { it.id }.toSet()
             update { current -> current.filterNot { it.id in ids } + restored }
-            return RestoreResult(restored.size, manifest?.optJSONObject("settings"))
+            return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data)
         } finally {
             staging.deleteRecursively()
         }
