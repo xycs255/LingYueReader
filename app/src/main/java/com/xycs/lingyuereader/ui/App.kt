@@ -103,6 +103,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
             Screen.Vocabulary -> VocabularyScreen(vm)
+            Screen.Stats -> StatsScreen(vm)
         }
     }
 }
@@ -161,7 +162,7 @@ private fun ShelfScreen(vm: AppViewModel) {
                         }
                         val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
                         val options = ShelfSort.entries.map { "排序：${it.label}" } +
-                            listOf(if (shelfPrefs.list) "网格显示" else "列表显示", "备份书架…", "从备份恢复…", "词典…", "生词本…")
+                            listOf(if (shelfPrefs.list) "网格显示" else "列表显示", "备份书架…", "从备份恢复…", "词典…", "生词本…", "阅读统计…")
                         OverlayListPopup(
                             show = moreMenu,
                             alignment = PopupPositionProvider.Align.End,
@@ -182,7 +183,8 @@ private fun ShelfScreen(vm: AppViewModel) {
                                                 i == ShelfSort.entries.size + 1 -> backupLauncher.launch("灵阅备份-${stamp.format(java.util.Date())}.zip")
                                                 i == ShelfSort.entries.size + 2 -> restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
                                                 i == ShelfSort.entries.size + 3 -> vm.open(Screen.Dictionaries)
-                                                else -> vm.open(Screen.Vocabulary)
+                                                i == ShelfSort.entries.size + 4 -> vm.open(Screen.Vocabulary)
+                                                else -> vm.open(Screen.Stats)
                                             }
                                         },
                                     )

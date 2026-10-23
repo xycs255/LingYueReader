@@ -82,6 +82,7 @@ import com.xycs.lingyuereader.Lookup
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.ReadingStats
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
@@ -255,10 +256,36 @@ private fun Reader(
     }
     VolumeKeys(settings.volumeKeys && sheet == null) { forward -> turner.turn?.invoke(forward) }
 
+    // 阅读统计：各章在全书中的起始字数，用来把位置换算成“读到第几个字”。
+    val chapterStarts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + c.charCount } }
+    fun charIndexOf(p: Position): Long {
+        val c = content.chapters.getOrNull(p.chapter) ?: return -1
+        return chapterStarts[p.chapter] + (p.fraction.coerceIn(0f, 1f) * c.charCount).toLong()
+    }
+    val readTracker = remember(entry.id) { object { var last = -1L; var at = 0L } }
+
     // 停下 300 毫秒再存进度，免得滚动时频繁写文件。
     LaunchedEffect(pos) {
         delay(300)
         vm.saveProgress(pos.chapter, pos.item, pos.offset, pos.char)
+        // 顺着读下去的字数计入统计；跳章、拖进度条这类一下子跳很远的不算（每秒最多算 30 字，外加一页的余量）。
+        val now = android.os.SystemClock.elapsedRealtime()
+        val at = charIndexOf(pos)
+        if (readTracker.last >= 0 && at > readTracker.last) {
+            val moved = at - readTracker.last
+            if (moved <= (now - readTracker.at) / 1000 * 30 + 600) vm.addReadChars(moved)
+        }
+        readTracker.last = at
+        readTracker.at = now
+    }
+    val readingStats by vm.readingStats.collectAsStateWithLifecycle()
+    val speed = remember(readingStats) { ReadingStats.charsPerMinute(readingStats) }
+    val chapterLeft = remember(pos.fraction, chapter, speed) {
+        val minutes = (1f - pos.fraction.coerceIn(0f, 1f)) * chapter.charCount / speed
+        when {
+            minutes < 1f -> "本章不到 1 分钟"
+            else -> "本章约剩 ${kotlin.math.ceil(minutes).toInt()} 分钟"
+        }
     }
 
     val goTo: (Int, Int?) -> Unit = { index, block ->
@@ -370,7 +397,7 @@ private fun Reader(
             }
         }
 
-        StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label}", palette, Modifier.align(Alignment.BottomCenter))
+        StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label} · $chapterLeft", palette, Modifier.align(Alignment.BottomCenter))
 
 
         AnimatedVisibility(

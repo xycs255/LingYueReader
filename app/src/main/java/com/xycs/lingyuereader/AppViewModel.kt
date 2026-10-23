@@ -18,6 +18,8 @@ import com.xycs.lingyuereader.dict.Dictionaries
 import com.xycs.lingyuereader.dict.LookupResult
 import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.DayStats
+import com.xycs.lingyuereader.data.ReadingStats
 import com.xycs.lingyuereader.data.HtmlText
 import com.xycs.lingyuereader.data.VocabWord
 import com.xycs.lingyuereader.data.Vocabulary
@@ -55,6 +57,7 @@ sealed interface Screen {
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
     data object Vocabulary : Screen
+    data object Stats : Screen
 }
 
 /** 阅读页里正在查的词：在哪一块的哪一段（[range] 为空表示从相关词语、链接跳来的，不在正文里）。 */
@@ -89,6 +92,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val library = Library(app)
     private val vocabulary = Vocabulary(java.io.File(app.filesDir, "vocabulary.json"))
+    private val stats = ReadingStats(java.io.File(app.filesDir, "stats.json"))
+    private val _stats = MutableStateFlow<Map<java.time.LocalDate, DayStats>>(emptyMap())
+    val readingStats: StateFlow<Map<java.time.LocalDate, DayStats>> = _stats.asStateFlow()
     private val _vocab = MutableStateFlow<List<VocabWord>>(emptyList())
     val vocab: StateFlow<List<VocabWord>> = _vocab.asStateFlow()
     private val dictionaries = Dictionaries(app)
@@ -166,6 +172,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         reloadVocabulary()
+        reloadStats()
         // 听书时跟着朗读位置记进度，锁屏听完再打开也能接着读。
         viewModelScope.launch {
             ReadAloud.state.collect { s ->
@@ -206,10 +213,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 阅读页在前台的时长，离开或切到后台时累加。 */
+    fun reloadStats() {
+        viewModelScope.launch { _stats.value = withContext(Dispatchers.IO) { stats.days() } }
+    }
+
+    private var pendingChars = 0L
+
+    /** 顺着往下读过的字数（阅读页按位置变化估算）。先攒着，离开阅读页或攒够了再写文件。 */
+    fun addReadChars(chars: Long) {
+        if (chars <= 0) return
+        pendingChars += chars
+        if (pendingChars >= 5_000) flushReadChars()
+    }
+
+    private fun flushReadChars() {
+        val chars = pendingChars
+        pendingChars = 0
+        if (chars <= 0) return
+        viewModelScope.launch(Dispatchers.IO) {
+            stats.addChars(chars)
+            _stats.value = stats.days()
+        }
+    }
+
     fun addReadingTime(bookId: String, millis: Long) {
+        flushReadChars()
         if (millis < 1_000) return
         _shelf.update { list -> list.map { if (it.id == bookId) it.copy(readMillis = it.readMillis + millis) else it } }
-        viewModelScope.launch(Dispatchers.IO) { library.addReadingTime(bookId, millis) }
+        viewModelScope.launch(Dispatchers.IO) {
+            library.addReadingTime(bookId, millis)
+            stats.addTime(bookId, millis)
+            _stats.value = stats.days()
+        }
     }
 
     fun pick(uris: List<Uri>) {
@@ -595,6 +630,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 备份里除了书以外的数据。 */
     private fun backupData(): Map<String, ByteArray> = buildMap {
         vocabulary.raw()?.let { put("vocabulary.json", it) }
+        stats.raw()?.let { put("stats.json", it) }
     }
 
     fun restore(uri: Uri) {
@@ -606,8 +642,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             result.getOrNull()?.data?.let { data ->
-                withContext(Dispatchers.IO) { data["vocabulary.json"]?.let(vocabulary::merge) }
+                withContext(Dispatchers.IO) {
+                    data["vocabulary.json"]?.let(vocabulary::merge)
+                    data["stats.json"]?.let(stats::merge)
+                }
                 reloadVocabulary()
+                reloadStats()
             }
             result.getOrNull()?.settings?.let { s ->
                 prefs.importJson(s)
