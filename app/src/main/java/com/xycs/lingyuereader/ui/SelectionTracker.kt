@@ -50,7 +50,7 @@ internal class SelectionTracker(
         private set
 
     /** 滚动模式登记的滚动函数（翻页模式没有，跨段只在当前页内）。 */
-    var scroller: (suspend (Float) -> Unit)? = null
+    var scroller: (suspend (Float) -> Float)? = null
 
     private var last: Offset? = null
 

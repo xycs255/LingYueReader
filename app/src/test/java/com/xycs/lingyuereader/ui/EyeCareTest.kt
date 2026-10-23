@@ -112,3 +112,14 @@ class EyeCareTest {
         assertTrue(night.accent.red > night.accent.blue)
     }
 }
+
+class AutoScrollMathTest {
+    @org.junit.Test
+    fun speedFollowsReadingSpeedWithinLimits() {
+        org.junit.Assert.assertEquals(25f, autoScrollLinesFor(400, 16f), 0.01f)
+        org.junit.Assert.assertEquals(AUTO_MAX_LINES, autoScrollLinesFor(5000, 16f), 0f)
+        org.junit.Assert.assertEquals(AUTO_MIN_LINES, autoScrollLinesFor(10, 16f), 0f)
+        // 一页 12 行、每分钟 24 行：每页 30 秒。
+        org.junit.Assert.assertEquals(30_000L, autoPageMillis(12f, 24f))
+    }
+}

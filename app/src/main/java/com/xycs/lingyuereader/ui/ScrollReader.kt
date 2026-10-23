@@ -51,7 +51,7 @@ internal fun ScrollReader(
     selector: TextSelector,
     onFootnote: (String) -> Unit = {},
     /** 登记一个滚动函数，划选拖到屏幕边缘时用来自动滚动。 */
-    registerScroller: ((suspend (Float) -> Unit)?) -> Unit = {},
+    registerScroller: ((suspend (Float) -> Float)?) -> Unit = {},
     onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,

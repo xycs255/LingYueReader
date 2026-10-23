@@ -57,6 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import top.yukonga.miuix.kmp.icon.extended.Play
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlin.math.roundToInt
@@ -304,10 +306,14 @@ private fun Reader(
     }
     val currentSettings by rememberUpdatedState(settings)
     val textSelection by vm.selection.collectAsStateWithLifecycle()
+    // 自动滚动：开着时点正文是暂停/继续。
+    var autoScroll by remember { mutableStateOf(false) }
+    var autoPaused by remember { mutableStateOf(false) }
     val onTap: (Float) -> Unit = { x ->
         when {
             // 有划选时，点一下只是取消划选。
             vm.selection.value != null -> vm.clearSelection()
+            autoScroll && !menuVisible -> autoPaused = !autoPaused
             menuVisible -> menuVisible = false
             !currentSettings.tapToTurn -> menuVisible = true
             x < 1f / 3 -> turner.turn?.invoke(false)
@@ -343,6 +349,46 @@ private fun Reader(
             scroll(dir * edgePx * 0.2f)
             tracker.retrack(edgePx, liftPx)
             delay(16)
+        }
+    }
+    // 自动滚动：滚动模式按“每分钟几行”匀速滚，翻页模式按同样的速度定时翻页；
+    // 菜单、面板、划选打开时暂停；章末接着下一章，书末停下。
+    val readingStatsForSpeed by vm.readingStats.collectAsStateWithLifecycle()
+    val linePx = with(density) { (settings.fontSize * settings.lineHeight).sp.toPx() }
+    val autoLines = settings.autoScrollLines.takeIf { it > 0f }
+        ?: autoScrollLinesFor(ReadingStats.charsPerMinute(readingStatsForSpeed), charsPerLine = 16f)
+    val autoActive = autoScroll && !autoPaused && !menuVisible && sheet == null && textSelection == null && footnote == null
+    LaunchedEffect(autoActive, autoLines, settings.pageMode, chapterIndex) {
+        if (!autoActive) return@LaunchedEffect
+        if (settings.pageMode == PageMode.SCROLL) {
+            val pxPerMs = linePx * autoLines / 60_000f
+            var last = 0L
+            while (true) {
+                val now = withFrameMillis { it }
+                val dt = if (last == 0L) 0L else (now - last).coerceAtMost(100)
+                last = now
+                if (dt == 0L) continue
+                val want = pxPerMs * dt
+                // 换章后新的列表还没登记滚动函数，等下一帧。
+                val got = tracker.scroller?.invoke(want) ?: continue
+                if (got < want * 0.5f) {
+                    // 滚到章末：有下一章就接着读，没有就停。
+                    if (chapterIndex < content.chapters.lastIndex) goTo(chapterIndex + 1, null) else autoScroll = false
+                    break
+                }
+            }
+        } else {
+            val height = tracker.root?.size?.height?.toFloat() ?: 0f
+            // 页面上下各留了一点边距，按八成五的高度估算一页几行。
+            val linesPerPage = (height * 0.85f / linePx).coerceAtLeast(3f)
+            while (true) {
+                delay(autoPageMillis(linesPerPage, autoLines))
+                if (pos.chapter >= content.chapters.lastIndex && pos.fraction >= 0.999f) {
+                    autoScroll = false
+                    break
+                }
+                turner.turn?.invoke(true)
+            }
         }
     }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
@@ -444,6 +490,22 @@ private fun Reader(
         ) {
             listening?.let { l -> ReadAloudBar(l, palette, onSettings = { sheet = ReaderSheet.ReadAloud }) }
         }
+        AnimatedVisibility(
+            visible = autoScroll && listening == null && !menuVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            AutoScrollBar(
+                lines = autoLines,
+                paused = autoPaused,
+                paged = settings.pageMode != PageMode.SCROLL,
+                palette = palette,
+                onToggle = { autoPaused = !autoPaused },
+                onSpeed = { v -> vm.updateSettings { it.copy(autoScrollLines = v) } },
+                onStop = { autoScroll = false },
+            )
+        }
 
         AnimatedVisibility(
             visible = menuVisible,
@@ -473,6 +535,13 @@ private fun Reader(
                         contentDescription = if (bookmarked) "删除书签" else "加书签",
                         tint = if (bookmarked) palette.accent else palette.text,
                     )
+                }
+                IconButton(onClick = {
+                    autoScroll = true
+                    autoPaused = false
+                    menuVisible = false
+                }) {
+                    Icon(MiuixIcons.Play, contentDescription = "自动滚动", tint = if (autoScroll) palette.accent else palette.text)
                 }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
                     Icon(MiuixIcons.Search, contentDescription = "书内搜索", tint = palette.text)
