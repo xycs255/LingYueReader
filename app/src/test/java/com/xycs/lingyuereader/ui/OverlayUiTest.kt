@@ -77,6 +77,11 @@ class OverlayUiTest {
         waitForText("目录 2")
         compose.onAllNodesWithText("第二章 路上")[0].performClick()
         waitForText("正文二。")
+        // 跳过去后页底出现“回到刚才”，点一下回到第一章。
+        waitForText("回到刚才 · 第一章 开端")
+        compose.onNodeWithText("回到刚才", substring = true).performClick()
+        waitForText("正文一。")
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("回到刚才", substring = true).fetchSemanticsNodes().isEmpty() }
     }
 
     @Test

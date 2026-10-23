@@ -63,6 +63,9 @@ sealed interface Screen {
         val blockIndex: Int? = null,
         /** 翻页模式下从上一章翻回来时，停在该章最后一页。 */
         val fromEnd: Boolean = false,
+        /** 回到跳转前的位置时用：滚动模式的像素偏移、翻页模式的块内字。 */
+        val offset: Int = 0,
+        val char: Int = 0,
     ) : Screen
     data class Search(val bookId: String) : Screen
     /** 在书架上所有书的正文里搜索。 */
@@ -71,6 +74,16 @@ sealed interface Screen {
     data object Dictionaries : Screen
     data class BookRules(val bookId: String) : Screen
 }
+
+/** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
+data class ReturnPoint(
+    val bookId: String,
+    val chapterIndex: Int,
+    val block: Int,
+    val offset: Int,
+    val char: Int,
+    val chapterTitle: String,
+)
 
 /** 阅读页里正在查的词：在哪一块的哪一段（[range] 为空表示从相关词语、链接跳来的，不在正文里）。 */
 data class Lookup(
@@ -489,7 +502,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val _returnPoint = MutableStateFlow<ReturnPoint?>(null)
+    val returnPoint: StateFlow<ReturnPoint?> = _returnPoint.asStateFlow()
+    /** 上次跳转后位置又变了几次（停下来存进度算一次）。 */
+    private var movesSinceJump = 0
+
+    /** 要跳走了，记下 [from]。刚跳过去还没读几页又跳（比如在目录里来回找），仍回到最早读的那里。 */
+    fun markJump(from: ReturnPoint) {
+        val current = _returnPoint.value
+        if (current == null || current.bookId != from.bookId || movesSinceJump > 2) _returnPoint.value = from
+        movesSinceJump = 0
+    }
+
+    fun clearReturnPoint() {
+        _returnPoint.value = null
+    }
+
+    /** 回到跳转前的位置。 */
+    fun jumpBack() {
+        val p = _returnPoint.value ?: return
+        _returnPoint.value = null
+        replaceTop(Screen.Reader(p.bookId, p.chapterIndex, p.block, offset = p.offset, char = p.char))
+    }
+
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
+        movesSinceJump++
         val book = _openBook.value ?: return
         val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
         val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset)
@@ -1016,6 +1053,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun open(screen: Screen) {
+        if (screen is Screen.Reader && screen.bookId != _returnPoint.value?.bookId) _returnPoint.value = null
         if (screen is Screen.Search) {
             _searchQuery.value = ""
             _searchHits.value = emptyList()
@@ -1030,6 +1068,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 从搜索结果跳到正文：替换掉搜索页和原阅读页，返回时直接回书架。 */
     fun jumpFromSearch(bookId: String, chapterIndex: Int, blockIndex: Int) {
+        // 搜索前读到的地方就是存下的进度。
+        _openBook.value?.entry?.takeIf { it.id == bookId }?.progress?.let { p ->
+            markJump(ReturnPoint(bookId, p.chapterIndex, p.itemIndex - com.xycs.lingyuereader.ui.HEADER_ITEMS, p.itemOffset, p.charOffset, p.chapterTitle))
+        }
         _stack.update { stack ->
             stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex)
         }
@@ -1037,6 +1079,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun back(): Boolean {
         if (_stack.value.size <= 1) return false
+        if (_stack.value.last() is Screen.Reader) _returnPoint.value = null
         _stack.update { it.dropLast(1) }
         return true
     }

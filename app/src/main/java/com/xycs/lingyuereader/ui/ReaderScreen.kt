@@ -29,6 +29,11 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.xycs.lingyuereader.ReturnPoint
+import top.yukonga.miuix.kmp.blur.Backdrop
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -198,7 +203,7 @@ private data class Position(
 private fun startOf(screen: Screen.Reader, entry: BookEntry, content: BookContent): Position {
     screen.chapterIndex?.let { index ->
         val c = index.coerceIn(content.chapters.indices)
-        return Position(c, screen.blockIndex?.let { it + HEADER_ITEMS } ?: 0, 0, 0)
+        return Position(c, screen.blockIndex?.let { it + HEADER_ITEMS } ?: 0, screen.offset, screen.char)
     }
     val p = entry.progress ?: return Position(0, 0, 0, 0)
     val byIndex = content.chapters.getOrNull(p.chapterIndex)?.takeIf { it.title == p.chapterTitle }
@@ -317,6 +322,14 @@ private fun Reader(
             menuVisible = false
         }
     }
+    // 从目录、书签、进度条跳走：先记下现在读到哪里，跳过去后可以一键回来。
+    val jump: (Int, Int?) -> Unit = { index, block ->
+        if (index in content.chapters.indices) {
+            vm.markJump(ReturnPoint(entry.id, pos.chapter, pos.block, pos.offset, pos.char, content.chapters[pos.chapter].title))
+            goTo(index, block)
+        }
+    }
+    val returnPoint by vm.returnPoint.collectAsStateWithLifecycle()
     val currentSettings by rememberUpdatedState(settings)
     val textSelection by vm.selection.collectAsStateWithLifecycle()
     // 自动滚动：开着时点正文是暂停/继续。
@@ -536,6 +549,15 @@ private fun Reader(
         }
 
 
+        val back = returnPoint?.takeIf { it.bookId == entry.id }
+        AnimatedVisibility(
+            visible = back != null && !menuVisible && listening == null && !autoScroll,
+            enter = Effects.enter(fadeIn()),
+            exit = Effects.exit(fadeOut()),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 4.dp),
+        ) {
+            back?.let { ReturnChip(it.chapterTitle, palette, glassBackdrop, onReturn = vm::jumpBack, onDismiss = vm::clearReturnPoint) }
+        }
         AnimatedVisibility(
             visible = listening != null && !menuVisible,
             enter = Effects.enter(fadeIn()),
@@ -618,7 +640,7 @@ private fun Reader(
                     .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
                     .padding(top = 8.dp, bottom = 6.dp),
             ) {
-                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> goTo(ch, block) }
+                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     BarButton("上一章", MiuixIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
                         goTo(chapterIndex - 1, null)
@@ -712,11 +734,11 @@ private fun Reader(
             palette = palette,
             onPickChapter = {
                 sheet = null
-                goTo(it, null)
+                jump(it, null)
             },
             onPickPosition = { ch, block ->
                 sheet = null
-                goTo(ch, block)
+                jump(ch, block)
             },
             onDeleteBookmark = vm::deleteBookmark,
             onDeleteNote = vm::deleteNote,
@@ -932,6 +954,40 @@ private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, pa
             valueRange = 0f..count.toFloat(),
             colors = SliderDefaults.sliderColors(foregroundColor = palette.accent, backgroundColor = palette.text.copy(alpha = 0.12f)),
             modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
+}
+
+/** 跳转后浮在页底的“回到刚才”。 */
+@Composable
+private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop?, onReturn: () -> Unit, onDismiss: () -> Unit) {
+    Row(
+        Modifier
+            .readerGlass(RoundedCornerShape(50), palette, backdrop)
+            .padding(start = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "↩ 回到刚才 · $title",
+            color = palette.accent,
+            fontSize = 14.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .widthIn(max = 240.dp)
+                .clip(RoundedCornerShape(50))
+                .clickable(onClick = onReturn)
+                .padding(start = 12.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
+        )
+        Text(
+            "✕",
+            color = palette.secondary,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .clickable(onClick = onDismiss)
+                .semantics { contentDescription = "不用回去" }
+                .padding(horizontal = 10.dp, vertical = 9.dp),
         )
     }
 }
