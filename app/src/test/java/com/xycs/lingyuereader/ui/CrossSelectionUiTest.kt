@@ -11,7 +11,10 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.lifecycle.ViewModelProvider
+import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.data.MarkColor
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -94,6 +97,19 @@ class CrossSelectionUiTest {
         assertTrue(copied, copied.contains("第2段，城门口排着长队。") && copied.lines().size == 3 && copied.endsWith("排着长队。"))
     }
 
+    /** 连着加很多条批注，一条都不能丢：写盘排队，后加的快照总是最后落盘。 */
+    @Test
+    fun rapidNotesAreAllSaved() {
+        openBook()
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { repeat(30) { vm.addNote(0, it % 10, 0, 2, "", MarkColor.YELLOW) } }
+        val marks = File(context.filesDir, "books/b1/marks.json")
+        compose.waitUntil(10_000) { marks.isFile && JSONObject(marks.readText()).getJSONArray("notes").length() == 30 }
+        // 再等一会儿，确认没有更旧的快照晚到把它盖掉。
+        Thread.sleep(300)
+        assertEquals(marks.readText(), 30, JSONObject(marks.readText()).getJSONArray("notes").length())
+    }
+
     @Test
     fun highlightAcrossParagraphsSavesOneNotePerParagraph() {
         openBook()
@@ -104,11 +120,13 @@ class CrossSelectionUiTest {
         waitForText("写点批注")
         compose.onAllNodesWithText("划线")[1].performClick()
         // 批注在后台线程写盘，整套测试一起跑、机器忙时会慢一些。
-        compose.waitUntil(10_000) {
-            File(context.filesDir, "books/b1/marks.json").let { it.isFile && JSONObject(it.readText()).getJSONArray("notes").length() == 2 }
-        }
-        val notes = JSONObject(File(context.filesDir, "books/b1/marks.json").readText()).getJSONArray("notes")
-        assertEquals(setOf(0, 1), (0 until notes.length()).map { notes.getJSONObject(it).getInt("block") }.toSet())
+        val marks = File(context.filesDir, "books/b1/marks.json")
+        fun saved() = if (marks.isFile) marks.readText() else "（没有 marks.json）"
+        runCatching {
+            compose.waitUntil(10_000) { marks.isFile && JSONObject(marks.readText()).getJSONArray("notes").length() == 2 }
+        }.onFailure { throw AssertionError("两段各一条批注没等到，存下的：${saved()}", it) }
+        val notes = JSONObject(marks.readText()).getJSONArray("notes")
+        assertEquals(saved(), setOf(0, 1), (0 until notes.length()).map { notes.getJSONObject(it).getInt("block") }.toSet())
     }
 
     @Test

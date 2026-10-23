@@ -128,6 +128,11 @@ data class OpenBook(val entry: BookEntry, val content: BookContent)
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val library = Library(app)
+    /**
+     * 书签、批注、进度、分组的写盘排成一队，一个写完再写下一个。各开一个 IO 协程并行写时，
+     * 先拍的旧快照可能最后落盘，把刚加的批注盖掉（跨段划线一次加好几条时就会丢）。
+     */
+    private val disk = Dispatchers.IO.limitedParallelism(1)
     private val vocabulary = Vocabulary(java.io.File(app.filesDir, "vocabulary.json"))
     private val stats = ReadingStats(java.io.File(app.filesDir, "stats.json"))
     private val _stats = MutableStateFlow<Map<java.time.LocalDate, DayStats>>(emptyMap())
@@ -343,7 +348,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val clean = groups.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         updateShelfPrefs { p -> p.copy(groups = (p.groups + clean).distinct()) }
         _shelf.update { list -> list.map { if (it.id == entry.id) it.copy(groups = clean) else it } }
-        viewModelScope.launch(Dispatchers.IO) { library.setGroups(entry.id, clean) }
+        viewModelScope.launch(disk) { library.setGroups(entry.id, clean) }
     }
 
     /** 分组改名；[to] 为空即删除分组（书不删）。 */
@@ -358,7 +363,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _shelf.update { list ->
             list.map { e -> if (from !in e.groups) e else e.copy(groups = e.groups.flatMap { g -> if (g == from) listOfNotNull(target) else listOf(g) }.distinct()) }
         }
-        viewModelScope.launch(Dispatchers.IO) { library.renameGroup(from, target) }
+        viewModelScope.launch(disk) { library.renameGroup(from, target) }
     }
 
     /** 阅读页在前台的时长，离开或切到后台时累加。 */
@@ -547,14 +552,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (book.entry.progress == progress) return
         _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
         _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
-        viewModelScope.launch(Dispatchers.IO) { library.saveProgress(book.entry.id, progress) }
+        viewModelScope.launch(disk) { library.saveProgress(book.entry.id, progress) }
     }
 
     private fun updateMarks(transform: (Marks) -> Marks) {
         val book = _openBook.value ?: return
         _marks.update(transform)
         val snapshot = _marks.value
-        viewModelScope.launch(Dispatchers.IO) { library.saveMarks(book.entry.id, snapshot) }
+        viewModelScope.launch(disk) { library.saveMarks(book.entry.id, snapshot) }
     }
 
     /** 在某块的某个位置加或删书签（同一块已有书签时删除）。 */
