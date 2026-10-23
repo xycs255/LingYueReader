@@ -220,6 +220,22 @@ class ShelfUiTest {
     }
 
     @Test
+    fun searchingTheTextOfEveryBookOpensTheHit() {
+        waitForText("测试书")
+        compose.onNodeWithContentDescription("搜索书架").performClick()
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("乙书正文")
+        waitForText("书名和作者里没有")
+        compose.onNodeWithText("在所有书的正文里搜索", substring = true).performClick()
+        waitForText("在 1 本书里找到 1 处")
+        waitForText("《乙书》")
+        compose.onAllNodesWithText("乙书正文。…")[0].performClick()
+        // 打开那本书的那一处；返回回到搜索结果。
+        waitForText("第一章 起")
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        waitForText("在 1 本书里找到 1 处")
+    }
+
+    @Test
     fun bottomTabsTapDragAndBackToShelf() {
         waitForText("测试书")
         // 点标签换页。

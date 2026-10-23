@@ -133,3 +133,102 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
         }
     }
 }
+
+/** 全书架搜索：在所有书的正文里找一句话，按书分组列出，点一处直接打开那本书的那个位置。 */
+@Composable
+fun LibrarySearchScreen(vm: AppViewModel) {
+    val state by vm.librarySearch.collectAsStateWithLifecycle()
+    var query by remember { mutableStateOf(state.query) }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    GlassScaffold(
+        topBar = {
+            SmallTopAppBar(
+                color = Color.Transparent,
+                modifier = Modifier.glassBar(),
+                title = "在所有书里搜索",
+                navigationIcon = {
+                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
+                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                    }
+                },
+                bottomContent = {
+                    TextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = "一句话、人名、地名…",
+                        useLabelAsPlaceholder = true,
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(
+                                MiuixIcons.Search,
+                                contentDescription = null,
+                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(start = 12.dp, end = 4.dp),
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            vm.searchLibrary(query)
+                            keyboard?.hide()
+                        }),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                },
+            )
+        },
+    ) { padding ->
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 16.dp),
+            overscrollEffect = null,
+        ) {
+            if (state.query.isNotEmpty()) {
+                item {
+                    val found = state.results.sumOf { it.hits.size }
+                    SmallTitle(
+                        when {
+                            state.running -> "正在搜索 ${state.done}/${state.total} 本…"
+                            found == 0 -> "没有找到“${state.query}”"
+                            else -> "在 ${state.results.size} 本书里找到 $found 处"
+                        },
+                    )
+                }
+            }
+            state.results.forEach { book ->
+                item(key = "book-" + book.entry.id) {
+                    Text(
+                        "《${book.entry.title}》" + if (book.more) " · 只列前 ${book.hits.size} 处" else " · ${book.hits.size} 处",
+                        style = MiuixTheme.textStyles.title4,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 8.dp),
+                    )
+                }
+                items(book.hits) { hit ->
+                    GlassCard(
+                        modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 10.dp),
+                        pressFeedbackType = PressFeedbackType.Sink,
+                        onClick = { vm.open(com.xycs.lingyuereader.Screen.Reader(book.entry.id, hit.chapterIndex, hit.blockIndex)) },
+                    ) {
+                        Column {
+                            Text(hit.chapterTitle, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
+                            Text(
+                                buildAnnotatedString {
+                                    if (hit.before.length >= 18) append("…")
+                                    append(hit.before)
+                                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.primary)) {
+                                        append(hit.match)
+                                    }
+                                    append(hit.after)
+                                    append("…")
+                                },
+                                style = MiuixTheme.textStyles.body2,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

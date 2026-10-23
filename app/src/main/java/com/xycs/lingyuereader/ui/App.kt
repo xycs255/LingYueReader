@@ -116,6 +116,7 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.Shelf -> HomeScreen(vm)
             is Screen.Reader -> ReaderScreen(vm, screen)
             is Screen.Search -> SearchScreen(vm, screen.bookId)
+            Screen.LibrarySearch -> LibrarySearchScreen(vm)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
@@ -211,8 +212,23 @@ internal fun ShelfScreen(vm: AppViewModel) {
                                 label = "搜索书名或作者",
                                 useLabelAsPlaceholder = true,
                                 singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { if (query.isNotBlank()) vm.openLibrarySearch(query) }),
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
                             )
+                            if (query.isNotBlank()) {
+                                // 书名、作者之外，还可以在所有书的正文里找。
+                                Text(
+                                    "在所有书的正文里搜索“${query.trim()}” ›",
+                                    color = MiuixTheme.colorScheme.primary,
+                                    style = MiuixTheme.textStyles.body2,
+                                    modifier = Modifier
+                                        .padding(horizontal = 20.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { vm.openLibrarySearch(query) }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                )
+                            }
                         }
                         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
                     }
@@ -236,7 +252,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
             !loaded -> Unit
             all.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
             shelf.isEmpty() -> Text(
-                if (query.isNotBlank()) "没有找到“$query”" else "这个分组里还没有书。长按书籍，选“分组…”加进来。",
+                if (query.isNotBlank()) "书名和作者里没有“$query”" else "这个分组里还没有书。长按书籍，选“分组…”加进来。",
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(padding).padding(top = 48.dp),

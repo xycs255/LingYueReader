@@ -62,6 +62,8 @@ sealed interface Screen {
         val fromEnd: Boolean = false,
     ) : Screen
     data class Search(val bookId: String) : Screen
+    /** 在书架上所有书的正文里搜索。 */
+    data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
     data class BookRules(val bookId: String) : Screen
@@ -191,6 +193,52 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
     private val _searchHits = MutableStateFlow<List<SearchHit>>(emptyList())
     val searchHits: StateFlow<List<SearchHit>> = _searchHits.asStateFlow()
+
+    /** 全书架搜索：一本书一组结果，边搜边出。 */
+    data class BookHits(val entry: BookEntry, val hits: List<SearchHit>, val more: Boolean)
+    data class LibrarySearchState(
+        val query: String = "",
+        val results: List<BookHits> = emptyList(),
+        /** 已搜完几本、一共几本。 */
+        val done: Int = 0,
+        val total: Int = 0,
+    ) {
+        val running: Boolean get() = done < total
+    }
+
+    private val _librarySearch = MutableStateFlow(LibrarySearchState())
+    val librarySearch: StateFlow<LibrarySearchState> = _librarySearch.asStateFlow()
+    private var librarySearchJob: Job? = null
+
+    /** 每本书最多列多少处：结果按书分组，太多了反而难找。 */
+    private val hitsPerBook = 20
+
+    fun searchLibrary(query: String) {
+        librarySearchJob?.cancel()
+        val q = query.trim()
+        val books = _shelf.value.filterNot { it.format.imageOnly }
+        _librarySearch.value = LibrarySearchState(q, emptyList(), 0, if (q.isEmpty()) 0 else books.size)
+        if (q.isEmpty()) return
+        librarySearchJob = viewModelScope.launch {
+            books.forEachIndexed { i, entry ->
+                val found = withContext(Dispatchers.Default) {
+                    runCatching {
+                        val content = converted(library.content(entry), _settings.value.chineseConvert)
+                        BookParser.search(content, q, hitsPerBook + 1)
+                    }.getOrDefault(emptyList())
+                }
+                _librarySearch.update { s ->
+                    val results = if (found.isEmpty()) s.results else s.results + BookHits(entry, found.take(hitsPerBook), found.size > hitsPerBook)
+                    s.copy(results = results, done = i + 1)
+                }
+            }
+        }
+    }
+
+    fun openLibrarySearch(query: String) {
+        open(Screen.LibrarySearch)
+        searchLibrary(query)
+    }
 
     init {
         viewModelScope.launch {
