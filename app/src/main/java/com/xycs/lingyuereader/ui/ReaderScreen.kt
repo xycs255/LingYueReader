@@ -55,6 +55,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import kotlin.math.roundToInt
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -253,16 +259,26 @@ private fun Reader(
         }
     }
     // 长按正文选出按住的词，松手就查；不松手拖动是自由划选，松手后可拖两端把手微调。
+    var selectionBounds by remember { mutableStateOf<Rect?>(null) }
+    var readerBox by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val selector = remember(vm, chapterIndex) {
         object : TextSelector {
             override fun press(block: Int, char: Int) {
-                // 开始选字就收起菜单，不然底部的操作条会被菜单挡住。
+                // 开始选字就收起菜单，免得挡住操作条。
                 menuVisible = false
+                selectionBounds = null
                 vm.pressText(chapterIndex, block, char)
             }
             override fun dragTo(block: Int, char: Int) = vm.dragText(block, char)
             override fun release() = vm.releaseText()
             override fun moveHandle(block: Int, start: Boolean, cursor: Int) = vm.moveSelectionHandle(block, start, cursor)
+            override fun bounds(block: Int, rect: Rect) {
+                // 翻页模式会预先排好左右两页，不在屏幕里的那份不算。
+                val w = readerBox?.size?.width ?: return
+                val origin = readerBox?.takeIf { it.isAttached }?.positionInRoot() ?: return
+                if (rect.right <= origin.x || rect.left >= origin.x + w) return
+                selectionBounds = rect.translate(-origin.x, -origin.y)
+            }
         }
     }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
@@ -278,7 +294,7 @@ private fun Reader(
     val images = remember(entry.id) { BookImages { name -> vm.bookFile(entry.id, name) } }
     val screenHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() }
 
-    Box(Modifier.fillMaxSize().background(palette.background)) {
+    Box(Modifier.fillMaxSize().background(palette.background).onGloballyPositioned { readerBox = it }) {
         CompositionLocalProvider(LocalBookImages provides images, LocalImageMaxHeight provides screenHeight * 0.8f) {
             if (settings.pageMode == PageMode.SCROLL) {
                 key(screen, content) {
@@ -412,13 +428,10 @@ private fun Reader(
                 }
             }
         }
-        // 放在最后，盖在菜单、听书条之上。
-        AnimatedVisibility(
-            visible = textSelection?.dragging == false,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + if (listening != null) 88.dp else 16.dp),
-        ) {
+        // 操作条贴着选区：优先放在首行上方，放不下就放在末行（和把手）下方。放在最后，盖在其他浮层之上。
+        val bounds = selectionBounds
+        if (textSelection?.dragging == false && bounds != null) {
+            val density = LocalDensity.current
             SelectionBar(
                 palette,
                 onLookup = vm::lookupSelection,
@@ -433,6 +446,24 @@ private fun Reader(
                     vm.clearSelection()
                 },
                 onCancel = vm::clearSelection,
+                modifier = Modifier.layout { measurable, constraints ->
+                    val bar = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                    val gap = with(density) { 10.dp.toPx() }
+                    val handle = with(density) { 22.dp.toPx() }
+                    val minTop = with(density) { topInset.toPx() }
+                    val maxBottom = constraints.maxHeight - with(density) { bottomInset.toPx() }
+                    val above = bounds.top - gap - bar.height
+                    val below = bounds.bottom + handle + gap
+                    val y = when {
+                        above >= minTop -> above
+                        below + bar.height <= maxBottom -> below
+                        // 选区占满了整屏，就放在屏幕中间。
+                        else -> (constraints.maxHeight - bar.height) / 2f
+                    }
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        bar.place((constraints.maxWidth - bar.width) / 2, y.roundToInt())
+                    }
+                },
             )
         }
     }
@@ -515,7 +546,21 @@ private fun Reader(
 
 /** 划选后的操作条。 */
 @Composable
-private fun SelectionBar(palette: ReaderPalette, onLookup: () -> Unit, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
+private fun SelectionBar(
+    palette: ReaderPalette,
+    onLookup: () -> Unit,
+    onAnnotate: () -> Unit,
+    onCopy: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier) {
+        SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCancel)
+    }
+}
+
+@Composable
+private fun SelectionBarRow(palette: ReaderPalette, onLookup: () -> Unit, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
     Row(
         Modifier
             .shadow(8.dp, RoundedCornerShape(50))

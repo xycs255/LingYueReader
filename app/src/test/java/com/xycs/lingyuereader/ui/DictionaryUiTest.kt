@@ -111,6 +111,12 @@ class DictionaryUiTest {
         // 松手后出现操作条和两端把手，不直接弹查词面板。
         waitForText("划线·批注")
         compose.onNodeWithContentDescription("选区起点").assertExists()
+        // 操作条贴着选区（上方或下方），而不是沉在屏幕底部。
+        val text = body.fetchSemanticsNode().boundsInRoot
+        val bar = compose.onNodeWithText("查词").fetchSemanticsNode().boundsInRoot
+        val px = context.resources.displayMetrics.density
+        val gap = if (bar.bottom <= text.top) text.top - bar.bottom else bar.top - text.bottom
+        assertTrue("$text / $bar", gap in 0f..60 * px)
         compose.onNodeWithText("复制").performClick()
         assertEquals("银行门口排着长队", clipboard())
 

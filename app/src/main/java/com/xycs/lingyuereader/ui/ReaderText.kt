@@ -18,6 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.platform.LocalDensity
@@ -203,12 +208,32 @@ internal fun BlockView(
     @Composable
     fun SelectableText(style: TextStyle, boxModifier: Modifier) {
         var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+        var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+        // 把带把手的选区在屏幕上的位置报上去，操作条好贴着它摆。滚动时位置变了也会再报。
+        fun reportBounds() {
+            val l = layout ?: return
+            val c = coords?.takeIf { it.isAttached } ?: return
+            if (!handles || selected == null) return
+            val len = l.layoutInput.text.length
+            if (len == 0) return
+            val start = toLayout(selected.first).coerceIn(0, len - 1)
+            val end = toLayout(selected.last).coerceIn(0, len - 1)
+            if (toLayout(selected.last) < 0 || toLayout(selected.first) >= len) return
+            val top = l.getLineTop(l.getLineForOffset(start))
+            val bottom = l.getLineBottom(l.getLineForOffset(end))
+            val origin = c.positionInRoot()
+            select?.bounds(blockIndex, Rect(origin.x, origin.y + top, origin.x + c.size.width, origin.y + bottom))
+        }
+        LaunchedEffect(selected, handles, layout) { reportBounds() }
         Box(boxModifier) {
             Text(
                 shown!!,
                 style = style,
                 onTextLayout = { layout = it },
-                modifier = Modifier.pointerInput(block, base) {
+                modifier = Modifier.onGloballyPositioned {
+                    coords = it
+                    reportBounds()
+                }.pointerInput(block, base) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         var up: PointerInputChange? = null
@@ -323,6 +348,9 @@ internal interface TextSelector {
 
     /** 拖动选区一端的把手；[cursor] 是字与字之间的光标位置。 */
     fun moveHandle(block: Int, start: Boolean, cursor: Int)
+
+    /** 带把手的选区在根布局里的范围（从首行顶到末行底）。 */
+    fun bounds(block: Int, rect: Rect)
 }
 
 /** 选区一端的把手：挂在字的下方，拖动时按手指所在的位置换算成光标。 */
