@@ -346,6 +346,7 @@ internal fun SettingsSheet(
     fonts: List<String> = emptyList(),
     onImportFonts: (List<android.net.Uri>) -> Unit = {},
     onDeleteFont: (String) -> Unit = {},
+    ambient: AmbientLight? = null,
 ) {
     val textColor = palette.text
     val accent = palette.accent
@@ -413,14 +414,16 @@ internal fun SettingsSheet(
         SwitchRow("系统深色时自动用夜间背景", settings.autoNight, textColor, accent) { v -> update { it.copy(autoNight = v) } }
         Text("护眼", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
         SwitchRow("跟随环境光调整背景", settings.ambientLight, textColor, accent) { v -> update { it.copy(ambientLight = v) } }
-        val ambient = LocalAmbientLight.current
         Text(
             buildString {
                 append("昏暗时压暗背景，很暗时换夜间，减少屏幕与周围的亮度落差。")
                 when {
                     !settings.ambientLight -> {}
-                    ambient == null || !ambient.available -> append("这台手机没有光线传感器，按上面的系统深色设置。")
+                    settings.eInk -> append("墨水屏 / 省电模式下不读光线传感器。")
+                    ambient == null -> {}
+                    !ambient.available -> append("这台手机没有光线传感器，按上面的系统深色设置。")
                     ambient.lux >= 0 -> append("当前环境光约 ${ambient.lux} lx（${ambient.level?.label ?: "测量中"}）。")
+                    else -> append("正在读取环境光…")
                 }
             },
             color = palette.secondary,

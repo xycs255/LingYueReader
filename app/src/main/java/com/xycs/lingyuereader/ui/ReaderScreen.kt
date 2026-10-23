@@ -723,6 +723,8 @@ private fun Reader(
             onExportNotes = { vm.notesMarkdown()?.let { shareText(context, "《${entry.title}》批注", it) } },
         )
     }
+    // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
+    val ambient = LocalAmbientLight.current
     GlassSheet(
         show = sheet == ReaderSheet.Settings,
         title = "阅读设置",
@@ -731,7 +733,7 @@ private fun Reader(
         onDismissRequest = { sheet = null },
     ) {
         val fonts by vm.fonts.collectAsStateWithLifecycle()
-        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont)
+        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient)
     }
     GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,

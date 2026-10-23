@@ -3,6 +3,9 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -96,5 +99,21 @@ class EyeCareUiTest {
         compose.mainClock.advanceTimeBy(61_000)
         compose.mainClock.autoAdvance = true
         waitForText("开一盏灯")
+    }
+
+    @Test
+    fun settingsShowTheLightReadingInsteadOfSayingThereIsNoSensor() {
+        openBook()
+        val event = SensorEventBuilder.newBuilder()
+            .setSensor(sensors.getDefaultSensor(Sensor.TYPE_LIGHT)!!)
+            .setValues(floatArrayOf(300f))
+            .build()
+        shadowOf(sensors).sendSensorEventToListeners(event)
+        compose.mainClock.advanceTimeBy(2_000)
+        compose.onRoot().performTouchInput { click(center) }
+        compose.onNodeWithText("设置").performClick()
+        // 设置面板画在最外层，也要拿到阅读页的光线读数。
+        waitForText("当前环境光约")
+        compose.onNodeWithText("没有光线传感器", substring = true).assertDoesNotExist()
     }
 }
