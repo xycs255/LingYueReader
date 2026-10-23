@@ -674,7 +674,7 @@ private fun Reader(
         backgroundColor = palette.background,
         onDismissRequest = { sheet = null },
     ) {
-        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate) }
+        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice) }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }

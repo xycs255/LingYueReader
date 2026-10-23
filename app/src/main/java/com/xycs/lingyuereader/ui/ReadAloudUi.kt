@@ -35,6 +35,8 @@ import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.Pause
 import top.yukonga.miuix.kmp.icon.extended.Play
@@ -70,7 +72,7 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                listOfNotNull(state.chapterTitle, timerLabel(state.timer)).joinToString(" · "),
+                listOfNotNull(state.chapterTitle, progressLabel(state), timerLabel(state.timer)).joinToString(" · "),
                 color = palette.secondary,
                 fontSize = 11.sp,
                 maxLines = 1,
@@ -86,6 +88,10 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
     }
 }
 
+/** “本章 35%”：按本章第几句估算。 */
+internal fun progressLabel(state: ReadAloudState): String? =
+    if (state.sentences <= 0) null else "本章 ${(state.sentence + 1) * 100 / state.sentences}%"
+
 private fun timerLabel(timer: SleepTimer): String? = when (timer) {
     SleepTimer.Off -> null
     SleepTimer.EndOfChapter -> "本章读完停止"
@@ -95,11 +101,28 @@ private fun timerLabel(timer: SleepTimer): String? = when (timer) {
     }
 }
 
-/** 听书设置：语速、定时关闭。 */
+/** 听书设置：进度与上下句、语速、语音、定时关闭。 */
 @Composable
-internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRate: (Float) -> Unit) {
+internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRate: (Float) -> Unit, onVoice: (String?) -> Unit = {}) {
     var rate by remember(state.bookId) { mutableStateOf(state.rate) }
     Column(Modifier.padding(bottom = 24.dp)) {
+        Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = ReadAloud::previousSentence) {
+                Icon(MiuixIcons.ChevronBackward, contentDescription = "上一句", tint = palette.text)
+            }
+            IconButton(onClick = ReadAloud::toggle) {
+                Icon(if (state.playing) MiuixIcons.Pause else MiuixIcons.Play, contentDescription = if (state.playing) "暂停听书" else "继续听书", tint = palette.accent)
+            }
+            IconButton(onClick = ReadAloud::nextSentence) {
+                Icon(MiuixIcons.ChevronForward, contentDescription = "下一句", tint = palette.text)
+            }
+            Text(
+                if (state.sentences > 0) "第 ${state.sentence + 1} / ${state.sentences} 句 · ${progressLabel(state)}" else state.chapterTitle,
+                color = palette.secondary,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("语速", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
             Box(Modifier.weight(1f)) {
@@ -113,6 +136,24 @@ internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRat
                 )
             }
             Text("%.1f×".format(rate), color = palette.text, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+        }
+        if (state.voices.size > 1) {
+            Text("语音", color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
+                    val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
+                    Text(
+                        label,
+                        color = if (on) palette.accent else palette.text,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
+                            .clickable { onVoice(name) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
         }
         Text("定时关闭", color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
         val options = listOf<Pair<Int?, String>>(null to "不定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟", 0 to "本章结束")
@@ -138,7 +179,7 @@ internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRat
         }
         timerLabel(state.timer)?.let { Text(it, color = palette.secondary, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp)) }
         Text(
-            "使用系统的“文字转语音”引擎。锁屏后会继续朗读，可在通知栏暂停或停止。",
+            "使用系统的“文字转语音”引擎。锁屏后会继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
             color = palette.secondary,
             fontSize = 12.sp,
             modifier = Modifier.padding(top = 18.dp),

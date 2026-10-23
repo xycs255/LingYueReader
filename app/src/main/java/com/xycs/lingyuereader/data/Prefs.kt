@@ -49,6 +49,8 @@ data class ReaderSettings(
     val font: String = "",
     /** 自动滚动的速度（每分钟几行）；为 0 时按个人阅读速度估算。 */
     val autoScrollLines: Float = 0f,
+    /** 听书选用的语音名；为空用引擎默认。 */
+    val ttsVoice: String = "",
 )
 
 enum class ShelfSort(val label: String) {
@@ -96,6 +98,7 @@ class Prefs(context: Context) {
             justify = sp.getBoolean("justify", d.justify),
             font = sp.getString("font", d.font) ?: d.font,
             autoScrollLines = sp.getFloat("autoScrollLines", d.autoScrollLines),
+            ttsVoice = sp.getString("ttsVoice", d.ttsVoice) ?: d.ttsVoice,
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -122,6 +125,7 @@ class Prefs(context: Context) {
             putString("chineseConvert", s.chineseConvert.name)
             putString("font", s.font)
             putFloat("autoScrollLines", s.autoScrollLines)
+            putString("ttsVoice", s.ttsVoice)
             putFloat("ttsRate", s.ttsRate)
         }
     }

@@ -24,6 +24,9 @@ sealed interface SleepTimer {
     data object EndOfChapter : SleepTimer
 }
 
+/** 可选的语音。[label] 是给人看的说明，[name] 是引擎里的名字。 */
+data class VoiceOption(val name: String, val label: String)
+
 data class ReadAloudState(
     val bookId: String,
     val bookTitle: String,
@@ -36,6 +39,13 @@ data class ReadAloudState(
     val timer: SleepTimer,
     /** 语音引擎不可用（未安装或不支持中文）时的说明。 */
     val error: String? = null,
+    /** 本章第几句（从 0 起）、共几句，用来显示进度。 */
+    val sentence: Int = 0,
+    val sentences: Int = 0,
+    /** 引擎里可选的中文语音；为空时只能用默认。 */
+    val voices: List<VoiceOption> = emptyList(),
+    /** 选用的语音名；为空用引擎默认。 */
+    val voice: String? = null,
 )
 
 /**
@@ -58,14 +68,29 @@ object ReadAloud {
     private var pendingStart: (() -> Unit)? = null
 
     /** 从某本书的某个位置开始读；已在读的话先停下。 */
-    fun start(context: Context, bookId: String, bookTitle: String, content: BookContent, chapterIndex: Int, block: Int, char: Int, rate: Float) {
+    fun start(
+        context: Context,
+        bookId: String,
+        bookTitle: String,
+        content: BookContent,
+        chapterIndex: Int,
+        block: Int,
+        char: Int,
+        rate: Float,
+        voice: String? = null,
+    ) {
         appContext = context.applicationContext
         this.content = content
-        val previousTimer = _state.value?.takeIf { it.bookId == bookId }?.timer ?: SleepTimer.Off
-        _state.value = ReadAloudState(bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, true, rate, previousTimer)
+        val previous = _state.value
+        val previousTimer = previous?.takeIf { it.bookId == bookId }?.timer ?: SleepTimer.Off
+        _state.value = ReadAloudState(
+            bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, true, rate, previousTimer,
+            voices = previous?.voices.orEmpty(), voice = voice,
+        )
         loadChapter(chapterIndex, block, char)
         ensureEngine {
             tts?.setSpeechRate(rate)
+            applyVoice(voice)
             speakFrom(index)
         }
         ContextCompat.startForegroundService(context, Intent(context, ReadAloudService::class.java))
@@ -106,6 +131,44 @@ object ReadAloud {
         }
     }
 
+    /** 换语音：从当前这句重新读起。 */
+    fun setVoice(name: String?) {
+        val s = _state.value ?: return
+        _state.value = s.copy(voice = name)
+        applyVoice(name)
+        if (s.playing) {
+            tts?.stop()
+            speakFrom(index)
+        }
+    }
+
+    private fun applyVoice(name: String?) {
+        val engine = tts ?: return
+        val voice = name?.let { n -> runCatching { engine.voices?.firstOrNull { it.name == n } }.getOrNull() }
+        if (voice != null) {
+            engine.voice = voice
+        } else {
+            engine.setLanguage(Locale.SIMPLIFIED_CHINESE)
+        }
+    }
+
+    /** 上一句、下一句（下一句读到章末就接下一章）。 */
+    fun previousSentence() = jump(index - 1)
+
+    fun nextSentence() = jump(index + 1)
+
+    private fun jump(to: Int) {
+        val s = _state.value ?: return
+        if (to >= queue.size) {
+            tts?.stop()
+            nextChapter()
+            return
+        }
+        index = to.coerceAtLeast(0)
+        _state.value = s.copy(current = queue.getOrNull(index), sentence = index)
+        if (s.playing) speakFrom(index)
+    }
+
     fun setTimer(minutes: Int?) {
         main.removeCallbacks(sleepRunnable)
         val timer = when (minutes) {
@@ -125,7 +188,9 @@ object ReadAloud {
         val chapter = content?.chapters?.getOrNull(chapterIndex) ?: return
         queue = Sentences.split(chapter.blocks, block, char)
         index = 0
-        _state.update { it?.copy(chapterIndex = chapterIndex, chapterTitle = chapter.title, current = queue.firstOrNull()) }
+        _state.update {
+            it?.copy(chapterIndex = chapterIndex, chapterTitle = chapter.title, current = queue.firstOrNull(), sentence = 0, sentences = queue.size)
+        }
     }
 
     /** 把本章从第 [from] 句起全部排进语音队列。 */
@@ -160,7 +225,7 @@ object ReadAloud {
         val s = _state.value ?: return@post
         if (chapter != s.chapterIndex) return@post
         index = i
-        _state.value = s.copy(current = queue.getOrNull(i))
+        _state.value = s.copy(current = queue.getOrNull(i), sentence = i, sentences = queue.size)
     }
 
     internal fun onUtteranceDone(id: String) = main.post {
@@ -181,6 +246,28 @@ object ReadAloud {
         queue = emptyList()
         index = 0
         _state.value = null
+    }
+
+    /** 引擎里的中文语音，按“本机、女声/男声”排序并起个看得懂的名字。 */
+    private fun chineseVoices(engine: TextToSpeech): List<VoiceOption> {
+        val all = runCatching { engine.voices?.toList() }.getOrNull().orEmpty()
+            .filter { it.locale.language == "zh" || it.locale.language == "cmn" || it.locale.language == "yue" }
+            .filterNot { it.features?.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) == true }
+            .sortedWith(compareBy({ it.isNetworkConnectionRequired }, { it.locale.toLanguageTag() }, { it.name }))
+        return all.mapIndexed { i, v ->
+            val region = when {
+                v.locale.language == "yue" || v.locale.country == "HK" -> "粤语"
+                v.locale.country == "TW" -> "台湾"
+                else -> "普通话"
+            }
+            val gender = when {
+                v.name.contains("female", true) -> "女声"
+                v.name.contains("male", true) -> "男声"
+                else -> null
+            }
+            val parts = listOfNotNull("语音 ${i + 1}", region, gender, if (v.isNetworkConnectionRequired) "在线" else "本机")
+            VoiceOption(v.name, parts.joinToString(" · "))
+        }
     }
 
     private fun parseId(id: String): Pair<Int, Int>? {
@@ -209,6 +296,7 @@ object ReadAloud {
                 if (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED) {
                     _state.update { it?.copy(error = "语音引擎缺少中文语音包，朗读可能不正常") }
                 }
+                _state.update { it?.copy(voices = chineseVoices(engine)) }
                 engine.setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)

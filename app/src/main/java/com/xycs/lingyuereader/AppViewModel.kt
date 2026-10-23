@@ -210,7 +210,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ReadAloud.start(
             getApplication(), book.entry.id, book.entry.title, book.content,
             chapterIndex, block.coerceAtLeast(0), char, _settings.value.ttsRate,
+            _settings.value.ttsVoice.ifEmpty { null },
         )
+    }
+
+    fun setReadAloudVoice(name: String?) {
+        updateSettings { it.copy(ttsVoice = name.orEmpty()) }
+        ReadAloud.setVoice(name)
     }
 
     fun setReadAloudRate(rate: Float) {
