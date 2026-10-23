@@ -116,6 +116,26 @@
 ./gradlew :app:testDebugUnitTest :app:assembleRelease
 ```
 
+### 签名
+
+正式版用开发者自己的密钥签名，密钥和密码不进仓库。没有密钥时 release 包用 Android 调试签名，照样能装，
+但两种签名的包不能互相覆盖安装（换签名要先卸载，卸载前用“我的 → 备份”存一份）。
+
+- **本机**：在项目根目录建 `keystore.properties`（已在 `.gitignore` 里）：
+
+  ```
+  storeFile=/path/to/lingyue-release.p12
+  storePassword=…
+  keyAlias=lingyue
+  keyPassword=…
+  ```
+
+- **GitHub Actions**：在仓库 Settings → Secrets and variables → Actions 里添加
+  `LINGYUE_KEYSTORE_BASE64`（密钥文件的 base64）、`LINGYUE_KEYSTORE_PASSWORD`、`LINGYUE_KEY_ALIAS`、`LINGYUE_KEY_PASSWORD`。
+  也可以直接设同名的环境变量，`LINGYUE_KEYSTORE_FILE` 指向密钥文件。
+
+密钥丢了就再也发不出能覆盖安装的更新，务必在离线处多存几份。
+
 代码结构：
 
 | 路径 | 作用 |

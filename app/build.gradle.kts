@@ -1,8 +1,32 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+/*
+ * 正式签名。密钥不进仓库，按顺序从这两处找：
+ * - 环境变量 LINGYUE_KEYSTORE_FILE、LINGYUE_KEYSTORE_PASSWORD、LINGYUE_KEY_ALIAS、LINGYUE_KEY_PASSWORD（CI 用，
+ *   见 .github/workflows/build.yml）；
+ * - 项目根目录的 keystore.properties（本机用，已在 .gitignore 里），键为 storeFile、storePassword、keyAlias、keyPassword。
+ * 都没有时 release 仍用调试签名，方便没有密钥的人（以及别人 fork 后的 PR）照样能构建、安装。
+ */
+val releaseKey: Map<String, String>? = run {
+    val env = mapOf(
+        "storeFile" to System.getenv("LINGYUE_KEYSTORE_FILE"),
+        "storePassword" to System.getenv("LINGYUE_KEYSTORE_PASSWORD"),
+        "keyAlias" to System.getenv("LINGYUE_KEY_ALIAS"),
+        "keyPassword" to System.getenv("LINGYUE_KEY_PASSWORD"),
+    )
+    if (env.values.all { !it.isNullOrBlank() }) return@run env.mapValues { it.value!! }
+    val file = rootProject.file("keystore.properties")
+    if (!file.isFile) return@run null
+    val props = Properties().apply { file.inputStream().use { load(it) } }
+    val keys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    if (keys.any { props.getProperty(it).isNullOrBlank() }) return@run null
+    keys.associateWith { props.getProperty(it) }
 }
 
 android {
@@ -18,12 +42,23 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        releaseKey?.let { key ->
+            create("release") {
+                storeFile = rootProject.file(key.getValue("storeFile"))
+                storePassword = key.getValue("storePassword")
+                keyAlias = key.getValue("keyAlias")
+                keyPassword = key.getValue("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // 没有正式签名时用调试签名，方便直接安装。
-            signingConfig = signingConfigs.getByName("debug")
+            // 有正式密钥用正式签名；没有时用调试签名，方便直接安装（两种签名的包不能互相覆盖安装）。
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
