@@ -3,6 +3,13 @@ package com.xycs.lingyuereader.data
 import android.content.Context
 import androidx.core.content.edit
 
+/** 阅读时的屏幕方向。 */
+enum class ReadingOrientation(val label: String) {
+    SYSTEM("跟随系统"),
+    PORTRAIT("竖屏"),
+    LANDSCAPE("横屏"),
+}
+
 enum class ReaderTheme(val label: String) {
     PAPER("纸白"),
     PARCHMENT("宣黄"),
@@ -101,6 +108,8 @@ data class ReaderSettings(
     val customText: Int = 0xFF2A2724.toInt(),
     /** 九格点击区域各做什么（见 [TapZones]）。 */
     val tapZones: List<TapAction> = TapZones.DEFAULT,
+    /** 阅读时锁定横屏或竖屏（仍可上下或左右颠倒）。 */
+    val orientation: ReadingOrientation = ReadingOrientation.SYSTEM,
 )
 
 enum class ShelfSort(val label: String) {
@@ -159,6 +168,7 @@ class Prefs(context: Context) {
             customBackground = sp.getInt("customBackground", d.customBackground),
             customText = sp.getInt("customText", d.customText),
             tapZones = TapZones.decode(sp.getString("tapZones", null)),
+            orientation = runCatching { ReadingOrientation.valueOf(sp.getString("orientation", null)!!) }.getOrDefault(d.orientation),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -196,6 +206,7 @@ class Prefs(context: Context) {
             putInt("customBackground", s.customBackground)
             putInt("customText", s.customText)
             putString("tapZones", TapZones.encode(s.tapZones))
+            putString("orientation", s.orientation.name)
             putFloat("ttsRate", s.ttsRate)
         }
     }

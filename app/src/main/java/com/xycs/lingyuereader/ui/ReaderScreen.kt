@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import android.os.Build
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.Manifest
 import android.app.Activity
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import com.xycs.lingyuereader.data.TapZones
+import com.xycs.lingyuereader.data.ReadingOrientation
 import com.xycs.lingyuereader.data.TapAction
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -170,6 +172,7 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
         }
     }
     KeepScreenOn(settings.keepScreenOn)
+    OrientationLock(settings.orientation)
     Brightness(settings.brightness)
 
     // 阅读页铺满全屏自己处理边距；外面套一层 Scaffold 是为了给底部弹窗和提示条提供宿主。
@@ -1179,6 +1182,20 @@ private fun VolumeKeys(enabled: Boolean, onTurn: (Boolean) -> Unit) {
     DisposableEffect(activity, enabled) {
         activity.volumeKeyHandler = if (enabled) { forward -> current(forward) } else null
         onDispose { activity.volumeKeyHandler = null }
+    }
+}
+
+/** 阅读页锁定方向，离开阅读页恢复跟随系统。 */
+@Composable
+private fun OrientationLock(orientation: ReadingOrientation) {
+    val activity = LocalActivity.current ?: return
+    DisposableEffect(orientation) {
+        activity.requestedOrientation = when (orientation) {
+            ReadingOrientation.SYSTEM -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ReadingOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            ReadingOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        onDispose { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
     }
 }
 

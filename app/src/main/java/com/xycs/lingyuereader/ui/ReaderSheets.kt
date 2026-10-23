@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.TapAction
+import com.xycs.lingyuereader.data.ReadingOrientation
 import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Note
@@ -462,6 +463,7 @@ internal fun SettingsSheet(
         SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
         SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
         SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
+        ChoiceRow("方向", ReadingOrientation.entries.map { it to it.label }, settings.orientation, palette) { v -> update { it.copy(orientation = v) } }
         SwitchRow("横屏时双页", settings.twoPage, textColor, accent) { v -> update { it.copy(twoPage = v) } }
         SwitchRow("墨水屏 / 省电模式", settings.eInk, textColor, accent) { v -> update { it.copy(eInk = v) } }
         Text(
