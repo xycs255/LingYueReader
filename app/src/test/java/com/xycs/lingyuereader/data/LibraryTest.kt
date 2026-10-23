@@ -84,11 +84,29 @@ class LibraryTest {
     }
 
     @Test
+    fun savingRulesReparsesAndInvalidatesTheCache() {
+        val e = import("规则.txt", "【一 下山】\n他下了山。广告词\n【二 进城】\n他进了城。\n".toByteArray())
+        assertEquals(1, library.content(e).chapters.size)
+        val rules = TextRules(listOf(ReplaceRule("广告词")), toc = """^【.+】$""")
+        val content = library.saveRules(e, rules)
+        assertEquals(listOf("【一 下山】", "【二 进城】"), content.chapters.map { it.title })
+        assertEquals(listOf(Block.Para("他下了山。")), content.chapters[0].blocks)
+        // 再打开（读缓存）也是新规则的结果；书架上的章数同步更新。
+        val again = library.list().first { it.id == e.id }
+        assertEquals(2, again.chapterCount)
+        assertEquals(2, library.content(again).chapters.size)
+        assertEquals(rules, library.rules(e.id))
+        // 清空规则恢复自动识别。
+        assertEquals(1, library.saveRules(again, TextRules()).chapters.size)
+    }
+
+    @Test
     fun backupAndRestoreRoundTrip() {
         val a = import("甲.txt", "第一章 起\n　　甲的正文。\n".toByteArray())
         val b = import("乙.txt", "第一章 起\n　　乙的正文。\n".toByteArray())
         library.saveMarks(a.id, Marks(notes = listOf(Note("n", 0, "第一章 起", 0, 0, 2, "甲的", "批注", MarkColor.RED, 1))))
         library.saveProgress(a.id, ReadingProgress(0, "第一章 起", 1, 0))
+        library.saveRules(a, TextRules(listOf(ReplaceRule("甲的", "甲之"))))
 
         val out = ByteArrayOutputStream()
         val vocab = """[{"word":"银行","addedAt":1}]""".toByteArray()
@@ -106,7 +124,8 @@ class LibraryTest {
         val restored = library.list().first { it.id == a.id }
         assertEquals(1, restored.progress!!.itemIndex)
         assertEquals("批注", library.marks(a.id).notes.single().text)
-        assertEquals(listOf(Block.Para("甲的正文。")), library.content(restored).chapters[0].blocks)
+        // 规则也一起恢复了。
+        assertEquals(listOf(Block.Para("甲之正文。")), library.content(restored).chapters[0].blocks)
     }
 
     @Test

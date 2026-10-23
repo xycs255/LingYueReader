@@ -104,6 +104,7 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.Dictionaries -> DictionariesScreen(vm)
             Screen.Vocabulary -> VocabularyScreen(vm)
             Screen.Stats -> StatsScreen(vm)
+            is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
     }
 }

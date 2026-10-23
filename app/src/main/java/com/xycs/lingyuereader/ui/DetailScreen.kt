@@ -21,6 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BookEntry
+import com.xycs.lingyuereader.data.BookFormat
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -88,6 +89,13 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                 Card(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(0.dp)) {
                     if (entry.sources.any { it.uri != null }) {
                         ArrowPreference(title = "从原文件刷新", summary = "原文件改过后重新读取", onClick = { vm.refresh(entry) })
+                    }
+                    if (entry.format != BookFormat.EPUB) {
+                        ArrowPreference(
+                            title = "净化与分章规则",
+                            summary = "删掉广告、水印等杂质文字，或自定义分章",
+                            onClick = { vm.open(Screen.BookRules(entry.id)) },
+                        )
                     }
                     ArrowPreference(title = "重命名", onClick = { dialogs.renaming = true })
                     ArrowPreference(

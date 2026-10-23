@@ -5,7 +5,7 @@ object TxtParser {
     /** 认不出章名时按此长度切段，避免整本书挤在一章里。 */
     private const val SECTION_CHARS = 6000
 
-    fun parse(text: String): List<Chapter> {
+    fun parse(text: String, isTitle: (String) -> Boolean = ChapterTitles::isTxtChapterTitle): List<Chapter> {
         val chapters = mutableListOf<Chapter>()
         var title: String? = null
         var blocks = mutableListOf<Block>()
@@ -24,7 +24,7 @@ object TxtParser {
         for (raw in text.lineSequence()) {
             val line = raw.trim().trim('　').trim()
             if (line.isEmpty()) continue
-            if (ChapterTitles.isTxtChapterTitle(line)) {
+            if (isTitle(line)) {
                 flush()
                 title = line.replace(Regex("""[\s　]+"""), " ")
                 blocks = mutableListOf()

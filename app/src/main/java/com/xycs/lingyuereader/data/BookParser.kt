@@ -15,12 +15,12 @@ object BookParser {
 
     fun titleOf(name: String): String = name.substringBeforeLast('.').trim().ifEmpty { name }
 
-    private fun parseOne(source: SourceBytes): BookContent {
+    private fun parseOne(source: SourceBytes, rules: TextRules): BookContent {
         val fallback = titleOf(source.name)
         return when (formatOf(source.name)) {
             BookFormat.EPUB -> EpubParser.parse(source.bytes, fallback)
-            BookFormat.MARKDOWN -> BookContent(null, null, MarkdownParser.parse(TextDecoder.decode(source.bytes), fallback))
-            else -> BookContent(null, null, TxtParser.parse(TextDecoder.decode(source.bytes)))
+            BookFormat.MARKDOWN -> BookContent(null, null, MarkdownParser.parse(rules.clean(TextDecoder.decode(source.bytes)), fallback))
+            else -> BookContent(null, null, TxtParser.parse(rules.clean(TextDecoder.decode(source.bytes)), rules.titleMatcher()))
         }
     }
 
@@ -29,11 +29,11 @@ object BookParser {
      * 若每一章都有“第X章”序号，就按序号排序；同一章出现在多份文件里时，以排在后面的文件为准，
      * 这样把改过的新稿和旧稿一起导入，读到的是新稿。
      */
-    fun parse(sources: List<SourceBytes>): BookContent {
+    fun parse(sources: List<SourceBytes>, rules: TextRules = TextRules()): BookContent {
         // 插图和封面路径前加上来源序号（“序号|书内路径”），导入时据此从对应文件里解出图片。
         val parsed = sources.withIndex()
             .sortedWith(compareBy(NaturalOrder) { it.value.name })
-            .map { (i, source) -> tagImages(parseOne(source), i) }
+            .map { (i, source) -> tagImages(parseOne(source, rules), i) }
         if (parsed.size == 1) return parsed.single()
         val all = parsed.flatMap { it.chapters }
         val chapters = if (all.isNotEmpty() && all.all { it.number != null }) {

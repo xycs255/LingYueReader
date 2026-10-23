@@ -21,11 +21,12 @@ class Library(private val context: Context) {
 
     private companion object {
         const val CACHE = "cache.bin"
+        const val RULES = "rules.json"
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
         val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
-        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json)""")
+        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json)""")
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
     }
 
@@ -94,7 +95,7 @@ class Library(private val context: Context) {
      * 解析来源文件，把 EPUB 里用到的插图和封面解到书籍目录，写缓存，再从缓存读回（释放解析时占用的内存）。
      */
     private fun buildCache(dir: File, sources: List<SourceRef>): BookContent {
-        val parsed = BookParser.parse(load(dir, sources))
+        val parsed = BookParser.parse(load(dir, sources), rulesIn(dir))
         val withImages = extractImages(dir, sources, parsed)
         val fingerprint = fingerprint(dir, sources)
         val cacheFile = File(dir, CACHE)
@@ -102,12 +103,41 @@ class Library(private val context: Context) {
         return BookCache.read(cacheFile, fingerprint) ?: withImages
     }
 
-    /** 来源副本的大小和修改时间，加上缓存版本；任一变化都会让缓存作废。 */
+    /** 来源副本的大小和修改时间、文本规则，加上缓存版本；任一变化都会让缓存作废。 */
     private fun fingerprint(dir: File, sources: List<SourceRef>): String =
         "v${BookCache.VERSION}|" + sources.joinToString("|") { s ->
             val f = File(dir, s.file)
             "${s.file}:${f.length()}:${f.lastModified()}"
+        } + rulesIn(dir).let { if (it.isEmpty) "" else "|rules:" + it.toJson().toString().hashCode() }
+
+    private fun rulesIn(dir: File): TextRules {
+        val f = File(dir, RULES)
+        if (!f.isFile) return TextRules()
+        return runCatching { TextRules.fromJson(JSONObject(f.readText())) }.getOrDefault(TextRules())
+    }
+
+    fun rules(id: String): TextRules = rulesIn(File(root, id))
+
+    /** 来源文件解码后的全文（规则页预览用）。 */
+    fun sourceTexts(entry: BookEntry): List<String> {
+        val dir = File(root, entry.id)
+        return entry.sources.map { TextDecoder.decode(File(dir, it.file).readBytes()) }
+    }
+
+    /** 按 [rules] 试解析，不写缓存（规则页预览分章用）。 */
+    fun previewWith(entry: BookEntry, rules: TextRules): BookContent = BookParser.parse(load(File(root, entry.id), entry.sources), rules)
+
+    /** 保存文本规则并重新解析。 */
+    fun saveRules(entry: BookEntry, rules: TextRules): BookContent {
+        val dir = File(root, entry.id)
+        val f = File(dir, RULES)
+        if (rules.isEmpty && rules.replace.isEmpty()) f.delete() else f.writeText(rules.toJson().toString())
+        val content = buildCache(dir, entry.sources)
+        update { list ->
+            list.map { if (it.id == entry.id) it.copy(chapterCount = content.chapters.size, charCount = content.charCount) else it }
         }
+        return content
+    }
 
     /** 把书内路径（“来源序号|路径”）的图片解出到 img/ 目录，块里的路径改成文件名；找不到或不支持的图片去掉。 */
     private fun extractImages(dir: File, sources: List<SourceRef>, content: BookContent): BookContent {
@@ -220,7 +250,7 @@ class Library(private val context: Context) {
             data.forEach { (name, bytes) -> put("data/$name") { it.write(bytes) } }
             entries.forEach { e ->
                 val dir = File(root, e.id)
-                (e.sources.map { it.file } + "marks.json").forEach { name ->
+                (e.sources.map { it.file } + "marks.json" + RULES).forEach { name ->
                     val f = File(dir, name)
                     if (f.isFile) put("books/${e.id}/$name") { o -> f.inputStream().use { it.copyTo(o) } }
                 }

@@ -18,6 +18,7 @@ import com.xycs.lingyuereader.dict.Dictionaries
 import com.xycs.lingyuereader.dict.LookupResult
 import com.xycs.lingyuereader.dict.WordFinder
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.TextRules
 import com.xycs.lingyuereader.data.DayStats
 import com.xycs.lingyuereader.data.ReadingStats
 import com.xycs.lingyuereader.data.HtmlText
@@ -58,6 +59,7 @@ sealed interface Screen {
     data object Dictionaries : Screen
     data object Vocabulary : Screen
     data object Stats : Screen
+    data class BookRules(val bookId: String) : Screen
 }
 
 /** 阅读页里正在查的词：在哪一块的哪一段（[range] 为空表示从相关词语、链接跳来的，不在正文里）。 */
@@ -307,6 +309,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onFailure = { "刷新失败：${it.message}" },
             )
+        }
+    }
+
+    // ---------- 净化与分章规则 ----------
+
+    suspend fun bookRules(id: String): TextRules = withContext(Dispatchers.IO) { library.rules(id) }
+
+    /** 来源文件全文（净化规则预览用）。 */
+    suspend fun bookSourceText(entry: BookEntry): String = withContext(Dispatchers.IO) { library.sourceTexts(entry).joinToString("\n") }
+
+    /** 按 [rules] 试分章，返回章名列表。 */
+    suspend fun previewChapters(entry: BookEntry, rules: TextRules): List<String> =
+        withContext(Dispatchers.Default) { library.previewWith(entry, rules).chapters.map { it.title } }
+
+    fun saveRules(entry: BookEntry, rules: TextRules) {
+        viewModelScope.launch {
+            _busy.value = true
+            val result = withContext(Dispatchers.IO) { runCatching { library.saveRules(entry, rules) } }
+            loadShelf()
+            if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
+            _busy.value = false
+            _messages.value = result.fold({ "已按新规则重新整理：${it.chapters.size} 章" }, { "保存失败：${it.message}" })
+            if (result.isSuccess) back()
         }
     }
 
