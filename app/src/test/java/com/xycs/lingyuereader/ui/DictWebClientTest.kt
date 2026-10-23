@@ -12,11 +12,13 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
 class DictWebClientTest {
+    private val missing = mutableListOf<String>()
     private val client = DictWebClient(
         dictId = "d1",
-        resource = { path -> if (path == "img/a b.png") byteArrayOf(1, 2, 3) else null },
+        resource = { path -> if (path == "img/a b.png" || path == "5357.gif") byteArrayOf(1, 2, 3) else null },
         onEntry = {},
         onLink = {},
+        onMissing = { missing += it },
     )
 
     private fun request(url: String, mainFrame: Boolean = false) = object : WebResourceRequest {
@@ -42,5 +44,15 @@ class DictWebClientTest {
         assertEquals(3, image.data.readBytes().size)
         assertEquals(404, client.intercept(request("https://dict.lingyue.local/d1/missing.css"))!!.statusCode)
         assertEquals(404, client.intercept(request("https://example.com/track.js"))!!.statusCode)
+    }
+
+    @Test
+    fun oddResourceAddressesAreLookedUpInTheDictionaryToo() {
+        // 词典里写成 file:///5357.gif，或者原网站的网址：都按路径到词典里找。
+        assertEquals(3, client.intercept(request("file:///5357.gif"))!!.data.readBytes().size)
+        assertEquals(3, client.intercept(request("http://www.zdic.net/5357.gif"))!!.data.readBytes().size)
+        // 找不到的记下来，面板里告诉读者缺了什么。
+        assertEquals(404, client.intercept(request("https://dict.lingyue.local/d1/gif/9999.gif"))!!.statusCode)
+        assertEquals(listOf("gif/9999.gif"), missing)
     }
 }

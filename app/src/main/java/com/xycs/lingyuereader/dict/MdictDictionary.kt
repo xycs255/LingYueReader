@@ -43,12 +43,31 @@ class MdictDictionary(
 
     /** 释义里引用的图片、样式等：先找 .mdd，再找同目录的文件。 */
     fun resource(path: String): ByteArray? {
-        val key = resourceKey(path)
+        // 去掉 ?参数、#锚点、开头的 ./ ../
+        val clean = path.substringBefore('?').substringBefore('#').replace('\\', '/').split('/')
+            .filter { it.isNotEmpty() && it != "." && it != ".." }.joinToString("/")
+        if (clean.isEmpty()) return null
+        val key = resourceKey(clean)
         for ((mdd, idx) in resources) {
             val row = idx.matches(key).firstOrNull() ?: continue
             return mdd.record(row[2].toLong(), row[3].toInt())
         }
-        return looseFiles[path.substringAfterLast('/').substringAfterLast('\\').lowercase(Locale.ROOT)]?.readBytes()
+        val name = clean.substringAfterLast('/').lowercase(Locale.ROOT)
+        // 释义里写的目录和 .mdd 里存的对不上（比如写 5357.gif、存的是 \\gif\\5357.gif）：按文件名找。
+        byName[name]?.let { (mdd, idx, line) ->
+            val row = idx.line(line).split('\t')
+            if (row.size >= 4) return mdd.record(row[2].toLong(), row[3].toInt())
+        }
+        return looseFiles[name]?.readBytes()
+    }
+
+    /** .mdd 里每个文件名（不含目录）在哪：第一次按目录找不到时才扫一遍索引。 */
+    private val byName: Map<String, Triple<MdictFile, SortedLines, Int>> by lazy {
+        val map = HashMap<String, Triple<MdictFile, SortedLines, Int>>()
+        for ((mdd, idx) in resources) {
+            for (i in 0 until idx.size) map.putIfAbsent(idx.key(i).substringAfterLast('\\'), Triple(mdd, idx, i))
+        }
+        map
     }
 
     companion object {

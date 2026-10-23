@@ -8,6 +8,9 @@ import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateListOf
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -193,7 +196,27 @@ private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, palette: 
         <meta name="viewport" content="width=device-width,initial-scale=1">$styles
         <style>body{margin:0;color:$text;background:transparent;font-size:15px;line-height:1.6;word-wrap:break-word}
         a{color:$accent}img{max-width:100%;height:auto}</style></head><body>$body</body></html>"""
-    DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().heightIn(min = 40.dp))
+    // 释义里引用、却在词典里找不到的文件（多半是图片）：列出来，好知道是没导入 .mdd 还是词典本身缺。
+    val missing = remember(html) { mutableStateListOf<String>() }
+    DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().heightIn(min = 40.dp)) { path -> if (path !in missing) missing += path }
+    if (missing.isNotEmpty()) {
+        Text(
+            buildString {
+                append("有 ${missing.size} 个文件没找到：")
+                append(missing.take(3).joinToString("、") { it.substringAfterLast('/') })
+                if (missing.size > 3) append(" 等")
+                append("。")
+                if (dict.mdds.isEmpty()) {
+                    append("这本词典导入时没有带 .mdd，图片、读音一般都在 .mdd 里——到“管理词典”删掉它，重新导入时把同名的 .mdd 一起选上。")
+                } else {
+                    append("词典的 .mdd 里也没有这些文件。")
+                }
+            },
+            color = palette.secondary,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
 }
 
 /**
@@ -202,8 +225,9 @@ private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, palette: 
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier: Modifier) {
+private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier: Modifier, onMissing: (String) -> Unit = {}) {
     val base = "https://$HOST/$dictId/"
+    val missing by rememberUpdatedState(onMissing)
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
@@ -217,10 +241,19 @@ private fun DictWebView(dictId: String, html: String, vm: AppViewModel, modifier
                     resource = { path -> vm.dictResource(dictId, path) },
                     onEntry = vm::lookupWord,
                     onLink = { url -> openUrl(context, url) },
+                    // 拦截在后台线程里调，回到主线程再记。
+                    onMissing = { path -> post { missing(path) } },
                 )
             }
         },
-        update = { it.loadDataWithBaseURL(base, html, "text/html", "utf-8", null) },
+        // 只在释义变了时才重新载入。每次重组都载入的话：长释义让面板变高 → 面板重组 → 页面重载变矮 → 又变高……
+        // 整个查词面板就一直闪。
+        update = { view ->
+            if (view.tag != html) {
+                view.tag = html
+                view.loadDataWithBaseURL(base, html, "text/html", "utf-8", null)
+            }
+        },
     )
 }
 
@@ -235,6 +268,8 @@ internal class DictWebClient(
     private val resource: (String) -> ByteArray?,
     private val onEntry: (String) -> Unit,
     private val onLink: (String) -> Unit,
+    /** 释义引用的文件在词典里找不到（路径）。 */
+    private val onMissing: (String) -> Unit = {},
 ) : WebViewClient() {
 
     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest): WebResourceResponse? = intercept(request)
@@ -244,12 +279,12 @@ internal class DictWebClient(
         // 释义页本身（loadDataWithBaseURL 给的内容）要放行：较新的 WebView 也会把它交到这里，
         // 拦成 404 就只剩一张“网页无法使用”。它不经过网络。
         if (request.isForMainFrame || url.scheme == "data") return null
-        if (url.host == HOST) {
-            val path = Uri.decode(url.path.orEmpty().removePrefix("/$dictId/"))
-            val bytes = path.takeIf { it.isNotEmpty() }?.let(resource)
-            if (bytes != null) return WebResourceResponse(mimeOf(path), null, ByteArrayInputStream(bytes))
-        }
-        // 不让释义页联网。
+        // 词典里写的地址五花八门：相对路径（落到我们的地址下）、file:///5357.gif、甚至原网站的网址。
+        // 一律按路径到词典里找，找到就给，找不到就 404——释义页不联网。
+        val path = if (url.host == HOST) url.path.orEmpty().removePrefix("/$dictId/") else url.path.orEmpty()
+        val bytes = path.trim('/').takeIf { it.isNotEmpty() }?.let { runCatching { resource(it) }.getOrNull() }
+        if (bytes != null) return WebResourceResponse(mimeOf(path), null, ByteArrayInputStream(bytes))
+        if (path.isNotEmpty() && !path.endsWith("favicon.ico")) onMissing(path.trim('/'))
         return WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     }
 

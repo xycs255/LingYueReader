@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.dict
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -69,6 +70,16 @@ class MdictTest {
         assertNotNull(png)
         assertArrayEquals(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte()), png!!.copyOf(4))
         assertEquals(".def{color:#a23b2a}", String(dict.resource("/style.css")!!))
+    }
+
+    @Test
+    fun resourcesAreFoundEvenWhenTheEntryWritesAnotherFolderOrDecoratesThePath() {
+        val dict = open("v2_zlib_utf8.mdx", withMdd = true)
+        // .mdd 里存的是 \bank.png；释义里写了别的目录、带了 ./ 和参数，按文件名也能找到。
+        assertNotNull(dict.resource("images/bank.png"))
+        assertNotNull(dict.resource("./BANK.PNG?v=2#top"))
+        assertNotNull(dict.resource("..\\pic\\bank.png"))
+        assertNull(dict.resource("nothing.gif"))
     }
 
     @Test
