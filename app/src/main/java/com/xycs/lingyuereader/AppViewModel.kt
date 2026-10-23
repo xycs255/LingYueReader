@@ -122,6 +122,35 @@ data class TextSelection(
     val singleBlock: Boolean get() = start.block == end.block
 }
 
+/**
+ * 划选按词伸缩的规则，参照 Android 系统 TextView（AOSP Editor）和 Compose 的 CharacterWithWordAccelerate：
+ * - 长按后不松手拖动，按整词伸缩；
+ * - 拖把手时，往外拉、且原来停在词的边界上，就对齐到新词的边界；往回收按单字走，方便微调；换了一行时对齐到词。
+ * [wordOf] 给出某个字所在的词（这一块里的范围），还没切好词时为空，按单字处理。
+ */
+internal object SelectionSnap {
+    fun drag(sel: TextSelection, p: TextPos, wordOf: (TextPos) -> IntRange?): TextSelection {
+        val w = wordOf(p)
+        val lo = if (w != null) TextPos(p.block, w.first) else p
+        val hi = if (w != null) TextPos(p.block, w.last) else p
+        return sel.copy(start = minOf(sel.anchorStart, lo), end = maxOf(sel.anchorEnd, hi))
+    }
+
+    /** 终点把手拖到 [p]（选区的最后一个字）后，终点落在哪。 */
+    fun end(sel: TextSelection, p: TextPos, lineChanged: Boolean, wordOf: (TextPos) -> IntRange?): TextPos {
+        val w = wordOf(p) ?: return p
+        val atBoundary = wordOf(sel.end)?.let { sel.end.char == it.last } ?: true
+        return if (lineChanged || (p > sel.end && atBoundary)) TextPos(p.block, w.last) else p
+    }
+
+    /** 起点把手拖到 [p]（选区的第一个字）后，起点落在哪。 */
+    fun start(sel: TextSelection, p: TextPos, lineChanged: Boolean, wordOf: (TextPos) -> IntRange?): TextPos {
+        val w = wordOf(p) ?: return p
+        val atBoundary = wordOf(sel.start)?.let { sel.start.char == it.first } ?: true
+        return if (lineChanged || (p < sel.start && atBoundary)) TextPos(p.block, w.first) else p
+    }
+}
+
 /** 正在读的书：书架条目加上解析好的正文。 */
 data class OpenBook(val entry: BookEntry, val content: BookContent)
 
@@ -149,6 +178,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _selection = MutableStateFlow<TextSelection?>(null)
     val selection: StateFlow<TextSelection?> = _selection.asStateFlow()
     private var pressJob: Job? = null
+
+    /** 各段切好的词（书、章、块 → 词的范围），划选按词伸缩时用；在后台切，没切好时按单字。 */
+    private val segmented = HashMap<Triple<String, Int, Int>, List<IntRange>>()
+    private val segmenting = HashSet<Triple<String, Int, Int>>()
+
+    private fun wordsOf(chapterIndex: Int, block: Int): List<IntRange>? {
+        val id = _openBook.value?.entry?.id ?: return null
+        val key = Triple(id, chapterIndex, block)
+        segmented[key]?.let { return it }
+        val text = blockText(chapterIndex, block)?.takeIf { it.isNotEmpty() } ?: return null
+        if (segmenting.add(key)) {
+            viewModelScope.launch {
+                val words = withContext(Dispatchers.IO) { runCatching { WordFinder.words(text, dictionaries::isWord) }.getOrNull() }
+                segmenting.remove(key)
+                if (words != null) {
+                    if (segmented.size > 300) segmented.clear()
+                    segmented[key] = words
+                }
+            }
+        }
+        return null
+    }
+
+    /** 某个字所在的词；还没切好时为空。 */
+    private fun wordAt(chapterIndex: Int, p: TextPos): IntRange? {
+        val words = wordsOf(chapterIndex, p.block) ?: return null
+        var lo = 0
+        var hi = words.lastIndex
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val w = words[mid]
+            when {
+                p.char < w.first -> hi = mid - 1
+                p.char > w.last -> lo = mid + 1
+                else -> return w
+            }
+        }
+        return null
+    }
     private val prefs = Prefs(app)
     private val autoBackups = AutoBackup(app)
     private val _autoBackup = MutableStateFlow(autoBackups.state())
@@ -609,10 +677,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val at = TextPos(block, offset.coerceIn(0, text.lastIndex))
         val pressed = TextSelection(chapterIndex, at, at, at, at, dragging = true, anchorIsWord = false)
         _selection.value = pressed
+        // 前后几段也在后台切好词。
+        for (b in (block - 2)..(block + 4)) if (b >= 0 && b != block) wordsOf(chapterIndex, b)
+        val key = _openBook.value?.entry?.id?.let { Triple(it, chapterIndex, block) }
         pressJob = viewModelScope.launch {
-            val word = withContext(Dispatchers.IO) {
-                runCatching { WordFinder.wordAt(text, at.char, dictionaries::isWord) }.getOrNull()
-            } ?: return@launch
+            // 顺手把按住的这段整段切好词，接着拖动时按词伸缩。
+            val (word, words) = withContext(Dispatchers.IO) {
+                runCatching { WordFinder.wordAt(text, at.char, dictionaries::isWord) }.getOrNull() to
+                    runCatching { WordFinder.words(text, dictionaries::isWord) }.getOrNull()
+            }
+            if (key != null && words != null) segmented[key] = words
+            word ?: return@launch
             _selection.update { sel ->
                 if (sel == null || sel.anchorStart != pressed.anchorStart || !sel.dragging) return@update sel
                 val ws = TextPos(block, word.first)
@@ -641,13 +716,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return TextPos(block, char.coerceIn(0, len - 1))
     }
 
-    /** 长按后拖到某个字：选区从长按的词伸到这个字。 */
+    /** 长按后拖到某个字：选区从长按的词伸到这个字所在的词。 */
     fun dragText(block: Int, offset: Int) {
-        _selection.update { sel ->
-            if (sel == null) return@update sel
-            val p = clampPos(sel.chapterIndex, block, offset) ?: return@update sel
-            sel.copy(start = minOf(sel.anchorStart, p), end = maxOf(sel.anchorEnd, p))
-        }
+        val sel = _selection.value ?: return
+        val p = clampPos(sel.chapterIndex, block, offset) ?: return
+        _selection.value = SelectionSnap.drag(sel, p) { wordAt(sel.chapterIndex, it) }
     }
 
     /** 松手：没拖动就直接查长按的词，拖过了就留着选区（显示把手和操作条）。 */
@@ -667,18 +740,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 拖动选区的起点或终点把手到某块的光标位置 [cursor]（字与字之间）。 */
-    fun moveSelectionHandle(start: Boolean, block: Int, cursor: Int) {
-        _selection.update { sel ->
-            if (sel == null) return@update sel
-            val next = if (start) {
-                val p = clampPos(sel.chapterIndex, block, cursor) ?: return@update sel
-                sel.copy(start = minOf(p, sel.end))
-            } else {
-                val p = clampPos(sel.chapterIndex, block, cursor - 1) ?: return@update sel
-                sel.copy(end = maxOf(p, sel.start))
-            }
-            next.copy(anchorStart = next.start, anchorEnd = next.end)
+    fun moveSelectionHandle(start: Boolean, block: Int, cursor: Int, lineChanged: Boolean = false) {
+        val sel = _selection.value ?: return
+        val wordOf = { p: TextPos -> wordAt(sel.chapterIndex, p) }
+        val next = if (start) {
+            val p = clampPos(sel.chapterIndex, block, cursor) ?: return
+            sel.copy(start = minOf(SelectionSnap.start(sel, p, lineChanged, wordOf), sel.end))
+        } else {
+            val p = clampPos(sel.chapterIndex, block, cursor - 1) ?: return
+            sel.copy(end = maxOf(SelectionSnap.end(sel, p, lineChanged, wordOf), sel.start))
         }
+        _selection.value = next.copy(anchorStart = next.start, anchorEnd = next.end)
     }
 
     /** 选区在各块里的文字（块号 → 范围），跨段时每段一份。 */

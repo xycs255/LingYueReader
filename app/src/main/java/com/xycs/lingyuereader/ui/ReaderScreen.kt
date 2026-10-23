@@ -410,6 +410,7 @@ private fun Reader(
     var zoomed by remember { mutableStateOf<String?>(null) }
     val density = LocalDensity.current
     val edgePx = with(density) { 56.dp.toPx() }
+    val viewConfig = androidx.compose.ui.platform.LocalViewConfiguration.current
     // 拖把手时手指在把手上，对应的字在手指上方约这么高。
     val liftPx = with(density) { 30.dp.toPx() }
     val selectHaptic = LocalHapticFeedback.current
@@ -429,6 +430,15 @@ private fun Reader(
             onRelease = vm::releaseText,
             onHandle = vm::moveSelectionHandle,
         )
+    }
+    // 划选、拖把手时选区每变一格轻震一下（系统和 Compose 都这样），手指能感觉到走了几个字。
+    val selectionEnds = textSelection?.let { it.start to it.end }
+    var lastEnds by remember { mutableStateOf(selectionEnds) }
+    LaunchedEffect(selectionEnds) {
+        if (selectionEnds != null && lastEnds != null && selectionEnds != lastEnds && tracker.mode != null && tracker.moved) {
+            selectHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+        lastEnds = selectionEnds
     }
     // 拖到上下边缘：滚动模式下一直滚，滚的同时按手指位置更新选区。
     LaunchedEffect(tracker, tracker.edge) {
@@ -501,7 +511,12 @@ private fun Reader(
         Modifier
             .fillMaxSize()
             .background(palette.background)
-            .onGloballyPositioned { tracker.root = it }
+            .onGloballyPositioned {
+                tracker.root = it
+                tracker.dp = density.density
+                tracker.touchSlop = viewConfig.touchSlop
+                tracker.lensHalfWidth = with(density) { 75.dp.toPx() }
+            }
             // 选字开始后，手指的移动和松手都在这里统一处理（抢在列表滚动、翻页之前）。
             .pointerInput(tracker) {
                 awaitPointerEventScope {
@@ -515,7 +530,7 @@ private fun Reader(
                         if (tracker.mode == null) continue
                         val change = event.changes.firstOrNull() ?: continue
                         change.consume()
-                        if (change.pressed) tracker.track(change.position, edgePx, liftPx) else tracker.finish()
+                        if (change.pressed) tracker.track(change.position, edgePx, liftPx, change.uptimeMillis) else tracker.finish(change.uptimeMillis)
                     }
                 }
             }
@@ -535,20 +550,27 @@ private fun Reader(
                     pressRing.cancel(ringScope)
                 }
             }
-            .magnifier(
-                sourceCenter = { tracker.magnifierSource() },
-                // 放大镜在手指上方；太靠上时放到手指下方。
-                magnifierCenter = {
-                    val src = tracker.magnifierSource()
-                    if (!src.isSpecified) Offset.Unspecified
-                    else {
-                        val lift = 76.dp.toPx()
-                        if (src.y - lift < 48.dp.toPx()) src + Offset(0f, lift) else src - Offset(0f, lift)
-                    }
+            .then(
+                // Robolectric 里的系统放大镜显示后一收起就崩（没有真正的 Surface），测试环境不挂。
+                if (android.os.Build.FINGERPRINT == "robolectric") {
+                    Modifier
+                } else {
+                    Modifier.magnifier(
+                        sourceCenter = { tracker.lens },
+                        // 放大镜在正在选的那一行上方；太靠上时放到下方。
+                        magnifierCenter = {
+                            val src = tracker.lens
+                            if (!src.isSpecified) Offset.Unspecified
+                            else {
+                                val lift = 76.dp.toPx()
+                                if (src.y - lift < 48.dp.toPx()) src + Offset(0f, lift) else src - Offset(0f, lift)
+                            }
+                        },
+                        zoom = 1.5f,
+                        size = DpSize(150.dp, 56.dp),
+                        cornerRadius = 28.dp,
+                    )
                 },
-                zoom = 1.5f,
-                size = DpSize(150.dp, 56.dp),
-                cornerRadius = 28.dp,
             )
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -703,6 +725,8 @@ private fun Reader(
                 Text("字号 ${kotlin.math.round(bubbleSize).toInt()}", color = palette.secondary, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
             }
         }
+        // 选区两端的把手：盖在正文上面，段末那一行下方的把手也按得到。
+        selected?.takeIf { it.handles }?.let { SelectionHandles(tracker, it, palette.accent) }
         PressRingOverlay(pressRing, palette.accent)
         val back = returnPoint?.takeIf { it.bookId == entry.id }
         AnimatedVisibility(

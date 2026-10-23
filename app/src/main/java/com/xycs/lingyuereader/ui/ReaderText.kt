@@ -21,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
@@ -32,7 +31,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
@@ -329,12 +328,20 @@ internal fun BlockView(
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         var up: PointerInputChange? = null
-                        val longPressed = try {
-                            withTimeout(viewConfiguration.longPressTimeoutMillis) { up = waitForUpOrCancellation() }
+                        // 到长按时间前手指移出了触摸容差、第二根手指按下或被列表滚动拿走，就不算长按
+                        // （横着挪不会让列表滚动、竖着挪不会让翻页模式翻页，这些都要自己判断）。
+                        val slop = viewConfiguration.touchSlop
+                        val longPressed = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                            var gone = false
+                            while (!gone) {
+                                val e = awaitPointerEvent()
+                                val c = e.changes.firstOrNull { it.id == down.id }
+                                if (c != null && c.changedToUp()) up = c
+                                gone = c == null || c.changedToUp() || c.isConsumed || e.changes.size > 1 ||
+                                    (c.position - down.position).getDistance() > slop
+                            }
                             false
-                        } catch (_: PointerEventTimeoutCancellationException) {
-                            true
-                        }
+                        } ?: true
                         if (!longPressed) {
                             up?.let {
                                 it.consume()
@@ -355,20 +362,6 @@ internal fun BlockView(
                     }
                 },
             )
-            val l = layout
-            if (highlight != null && highlight.handles && selected != null && l != null && select != null) {
-                val len = l.layoutInput.text.length
-                val start = toLayout(selected.first)
-                val end = toLayout(selected.last + 1)
-                // 按住把手时告诉调度器光标在哪：之后按手指和光标的相对位置拖，按下去选区不会跳。
-                fun caret(offset: Int) = l.getCursorRect(offset).let { Offset(it.left, it.center.y) }
-                if (blockIndex == highlight.startBlock && start in 0..len) {
-                    SelectionHandle(l, start, isStart = true, palette.accent) { coords?.let { c -> select?.beginHandle(true, c, caret(start)) } }
-                }
-                if (blockIndex == highlight.endBlock && end in 1..len) {
-                    SelectionHandle(l, end, isStart = false, palette.accent) { coords?.let { c -> select?.beginHandle(false, c, caret(end)) } }
-                }
-            }
         }
     }
 
@@ -471,40 +464,51 @@ internal interface TextSelector {
     /** 长按某个字，开始选字；之后的移动由阅读区跟踪。 */
     fun press(block: Int, char: Int)
 
-    /** 按住了选区起点或终点的把手（光标在 [coords] 里的 [caret] 处）；之后的移动由阅读区跟踪。 */
-    fun beginHandle(start: Boolean, coords: LayoutCoordinates, caret: Offset)
-
     /** 文字块登记自己的位置和排版；[toChar]、[toLayout] 在排版位置与块文字位置之间换算。 */
     fun register(key: Any, block: Int, coords: LayoutCoordinates, layout: TextLayoutResult, toChar: (Int) -> Int, toLayout: (Int) -> Int)
 
     fun unregister(key: Any)
 }
 
-/** 选区一端的把手：挂在字的下方。按住后由阅读区跟踪手指（可以拖到别的段落）。 */
+/**
+ * 选区两端的把手，画在阅读区最上层，位置按登记的排版现算，滚动、翻页时跟着走。
+ * 不画在段落里面：挂在段末那一行下方的把手会伸出段落，伸出去的部分按不到（系统和 Compose 的把手也都在单独一层）。
+ */
 @Composable
-private fun SelectionHandle(layout: TextLayoutResult, offset: Int, isStart: Boolean, color: Color, onBegin: () -> Unit) {
-    val density = LocalDensity.current
-    val size = 22.dp
-    val sizePx = with(density) { size.toPx() }
-    val rect = layout.getCursorRect(offset)
-    // 起点把手挂在光标左下，终点把手挂在右下，像系统的选择把手。
-    val anchor = Offset(if (isStart) rect.left - sizePx else rect.left, rect.bottom)
-    val begin by rememberUpdatedState(onBegin)
+internal fun SelectionHandles(tracker: SelectionTracker, highlight: Highlight, color: Color) {
+    tracker.caret(highlight.startBlock, highlight.startChar, atLineEnd = false)?.let { SelectionHandle(it, isStart = true, color, tracker) }
+    tracker.caret(highlight.endBlock, highlight.endChar + 1, atLineEnd = true)?.let { SelectionHandle(it, isStart = false, color, tracker) }
+}
+
+/**
+ * 一端的把手：起点挂在光标左下，终点挂在右下，像系统的选择把手。看上去 22dp，能按到的范围 44dp 见方，
+ * 从行底往下，横向以把手为中心，手指不必按得很准，也不会盖住这一行的字。
+ */
+@Composable
+private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker: SelectionTracker) {
+    val visual = 22.dp
+    val touch = 44.dp
+    val current by rememberUpdatedState(caret)
     Box(
         Modifier
-            .offset { IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt()) }
-            .size(size)
-            .pointerInput(isStart) {
+            .offset {
+                val v = visual.toPx()
+                val center = if (isStart) caret.left - v / 2 else caret.left + v / 2
+                IntOffset((center - touch.toPx() / 2).roundToInt(), caret.bottom.roundToInt())
+            }
+            .size(touch)
+            .pointerInput(isStart, tracker) {
                 awaitEachGesture {
                     awaitFirstDown().consume()
-                    begin()
+                    tracker.beginHandle(isStart, Offset(current.left, current.center.y))
                 }
             }
             .semantics { contentDescription = if (isStart) "选区起点" else "选区终点" },
     ) {
         Box(
             Modifier
-                .fillMaxSize()
+                .align(androidx.compose.ui.Alignment.TopCenter)
+                .size(visual)
                 .clip(
                     if (isStart) RoundedCornerShape(topStart = 0.dp, topEnd = 50.dp, bottomStart = 50.dp, bottomEnd = 50.dp)
                     else RoundedCornerShape(topStart = 50.dp, topEnd = 0.dp, bottomStart = 50.dp, bottomEnd = 50.dp),

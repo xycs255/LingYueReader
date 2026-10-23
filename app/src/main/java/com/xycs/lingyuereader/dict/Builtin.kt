@@ -213,6 +213,32 @@ object WordFinder {
         return null
     }
 
+    /**
+     * 把整段文字切成一个个“词”，首尾相接、覆盖每个字：汉字串按 [segment] 切，连续的英文、数字算一个词，
+     * 标点、空白各自单独一个。划选按词伸缩时用。
+     */
+    fun words(text: String, contains: (String) -> Boolean): List<IntRange> {
+        val out = ArrayList<IntRange>()
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            var j = i + 1
+            when {
+                isHan(c) -> {
+                    while (j < text.length && isHan(text[j])) j++
+                    segment(text.substring(i, j), contains).forEach { out += (it.first + i)..(it.last + i) }
+                }
+                c.isLetterOrDigit() -> {
+                    while (j < text.length && text[j].isLetterOrDigit() && !isHan(text[j])) j++
+                    out += i until j
+                }
+                else -> out += i..i
+            }
+            i = j
+        }
+        return out
+    }
+
     /** 把一串汉字切成词：词数最少，一样多时单字最少，再一样时前面的词长（动态规划）。 */
     fun segment(han: String, contains: (String) -> Boolean): List<IntRange> {
         val n = han.length

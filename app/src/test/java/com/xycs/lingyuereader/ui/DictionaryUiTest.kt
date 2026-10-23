@@ -134,6 +134,35 @@ class DictionaryUiTest {
         assertTrue(shorter, shorter.startsWith("银行") && shorter.length in 2..7)
     }
 
+    /** 长按“银行”不松手拖到“门”：按整词伸到“门口”（系统和 Compose 都这样），不是只多一个“门”字。 */
+    @Test
+    fun dragAfterLongPressGrowsByWholeWords() {
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("银行门口")
+        val body = compose.onAllNodesWithText("银行门口", substring = true)[0]
+        val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        body.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action!!.invoke(results)
+        val layout = results.first()
+        val men = layout.getBoundingBox(layout.layoutInput.text.indexOf('门'))
+        body.performTouchInput { down(Offset(8.dp.toPx(), centerY)) }
+        compose.mainClock.advanceTimeBy(1_000)
+        // 找词、切词在后台，等长按的词选出来再拖。
+        val vm = androidx.lifecycle.ViewModelProvider(compose.activity)[com.xycs.lingyuereader.AppViewModel::class.java]
+        // 手指还按着时测试框架不替主线程排空消息，自己排。
+        compose.waitUntil(10_000) {
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            vm.selection.value?.anchorIsWord == true
+        }
+        body.performTouchInput {
+            moveTo(Offset(men.center.x, centerY))
+            up()
+        }
+        waitForText("划线·批注")
+        compose.onNodeWithText("复制").performClick()
+        assertEquals("银行门口", clipboard())
+    }
+
     @Test
     fun selectingTextHidesTheMenuSoTheToolbarIsVisible() {
         waitForText("测试书")

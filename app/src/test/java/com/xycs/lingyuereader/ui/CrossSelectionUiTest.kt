@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -142,5 +143,43 @@ class CrossSelectionUiTest {
         val last = Regex("""第(\d+)段""").findAll(copied).map { it.groupValues[1].toInt() }.maxOrNull() ?: 0
         assertTrue("last=$last", last >= 20)
         assertTrue(copied.startsWith("第1段") || copied.startsWith("1段") || copied.contains("第1段"))
+    }
+
+    /** 段末那一行下方的把手伸出了段落，原来只有上沿按得到，按中下部会把选区取消。 */
+    @Test
+    fun endHandleUnderTheLastLineCanBeGrabbedLowDown() {
+        openBook()
+        val third = compose.onAllNodesWithText("第3段", substring = true)[0].fetchSemanticsNode().boundsInRoot
+        dragFrom(1) { _, _ -> Offset(third.right - 4f, third.center.y) }
+        waitForText("划线·批注")
+        val handle = compose.onNodeWithContentDescription("选区终点").fetchSemanticsNode().boundsInRoot
+        compose.onRoot().performTouchInput {
+            // 按在把手的下半部，往上拖到第 2 段。
+            down(Offset(handle.center.x, handle.top + 16.dp.toPx()))
+            moveBy(Offset(0f, -(third.height + 4.dp.toPx())))
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("复制").performClick()
+        val copied = clipboard()
+        assertTrue(copied, copied.startsWith("第1段") || copied.contains("1段"))
+        assertTrue(copied, !copied.contains("第3段"))
+    }
+
+    /** 到长按时间前手指已经挪开（横着挪，列表不接手），不算长按。 */
+    @Test
+    fun movingAwayBeforeTheLongPressTimeoutDoesNotSelect() {
+        openBook()
+        val node = compose.onAllNodesWithText("第3段", substring = true)[0]
+        val start = node.fetchSemanticsNode().boundsInRoot
+        compose.onRoot().performTouchInput {
+            down(Offset(start.left + 40.dp.toPx(), start.center.y))
+            moveBy(Offset(48.dp.toPx(), 0f))
+        }
+        compose.mainClock.advanceTimeBy(1_500)
+        compose.onRoot().performTouchInput { up() }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithText("划线·批注").fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodesWithText("查词").fetchSemanticsNodes().isEmpty())
     }
 }

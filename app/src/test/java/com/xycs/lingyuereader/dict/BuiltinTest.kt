@@ -102,4 +102,16 @@ class BuiltinTest {
         assertEquals(listOf("研究", "生命", "起源"), parts)
         assertEquals(listOf("天"), WordFinder.segment("天", dict::contains).map { "天".substring(it) })
     }
+
+    @Test
+    fun wordsCoverTheWholeParagraph() {
+        val text = "他说：研究生命起源，用了DNA 3年。"
+        val words = WordFinder.words(text, cedict::contains)
+        // 首尾相接，覆盖每个字。
+        assertEquals(0, words.first().first)
+        assertEquals(text.lastIndex, words.last().last)
+        words.zipWithNext().forEach { (a, b) -> assertEquals(a.last + 1, b.first) }
+        val parts = words.map { text.substring(it) }
+        assertTrue(parts.toString(), parts.containsAll(listOf("生命", "起源", "DNA", "3", "：", "，")))
+    }
 }
