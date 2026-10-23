@@ -4,6 +4,8 @@ import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
 import com.xycs.lingyuereader.ui.glass.readerGlass
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -25,6 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,7 +62,16 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
                 tint = palette.accent,
             )
         }
-        Column(Modifier.weight(1f).clickable(onClick = onSettings).padding(horizontal = 6.dp)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(role = Role.Button, onClick = onSettings)
+                .semantics { contentDescription = "打开听书设置" }
+                .padding(horizontal = 6.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Text(
                 state.error ?: if (state.playing) "正在听书" else "已暂停",
                 color = if (state.error != null) palette.accent else palette.text,
@@ -96,7 +111,13 @@ private fun timerLabel(timer: SleepTimer): String? = when (timer) {
 
 /** 听书设置：进度与上下句、语速、语音、定时关闭。 */
 @Composable
-internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRate: (Float) -> Unit, onVoice: (String?) -> Unit = {}) {
+internal fun ReadAloudSheet(
+    state: ReadAloudState,
+    palette: ReaderPalette,
+    onRate: (Float) -> Unit,
+    onVoice: (String?) -> Unit = {},
+    onTimer: (Int?) -> Unit = ReadAloud::setTimer,
+) {
     var rate by remember(state.bookId) { mutableStateOf(state.rate) }
     Column(Modifier.padding(bottom = 24.dp)) {
         Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -132,19 +153,24 @@ internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRat
         }
         if (state.voices.size > 1) {
             Text("语音", color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                modifier = Modifier.selectableGroup(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
                     val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
-                    Text(
-                        label,
-                        color = if (on) palette.accent else palette.text,
-                        fontSize = 13.sp,
+                    Box(
                         modifier = Modifier
+                            .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(50))
                             .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                            .clickable { onVoice(name) }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    )
+                            .selectable(selected = on, role = Role.RadioButton) { onVoice(name) }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, color = if (on) palette.accent else palette.text, fontSize = 13.sp)
+                    }
                 }
             }
         }
@@ -155,19 +181,24 @@ internal fun ReadAloudSheet(state: ReadAloudState, palette: ReaderPalette, onRat
             SleepTimer.EndOfChapter -> 0
             is SleepTimer.At -> t.minutes
         }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             options.forEach { (minutes, label) ->
                 val on = minutes == selected
-                Text(
-                    label,
-                    color = if (on) palette.accent else palette.text,
-                    fontSize = 13.sp,
+                Box(
                     modifier = Modifier
+                        .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(50))
                         .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .clickable { ReadAloud.setTimer(minutes) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                )
+                        .selectable(selected = on, role = Role.RadioButton) { onTimer(minutes) }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(label, color = if (on) palette.accent else palette.text, fontSize = 13.sp)
+                }
             }
         }
         timerLabel(state.timer)?.let { Text(it, color = palette.secondary, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp)) }

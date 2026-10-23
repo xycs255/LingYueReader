@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 /** 行内格式只认 `**加粗**`。返回去掉标记后的文字和加粗区间，批注的位置都按去掉标记后的文字计。 */
 object InlineText {
@@ -75,6 +76,51 @@ val Block.displayText: String?
         else -> null
     }
 
+data class TextLocation(val block: Int, val char: Int)
+
+/** 原文字符坐标，不含段首排版缩进。重排、刷新和重复文本都按这个坐标恢复。 */
+object TextAnchors {
+    fun capture(chapter: Chapter, block: Int, char: Int): TextAnchor {
+        val text = chapter.blocks.getOrNull(block)?.displayText.orEmpty()
+        if (text.isEmpty()) return TextAnchor()
+        val at = char.coerceIn(0, text.length)
+        val from = (at - 24).coerceAtLeast(0)
+        val to = (at + 48).coerceAtMost(text.length)
+        return TextAnchor(text.substring(from, to), at - from)
+    }
+
+    /** 多处命中时选择离旧块、旧字符最近的原文；没有命中则交给调用者保守回退。 */
+    fun resolve(chapter: Chapter, oldBlock: Int, oldChar: Int, anchor: TextAnchor): TextLocation? {
+        if (anchor.text.isEmpty()) return null
+        val original = chapter.blocks.getOrNull(oldBlock)?.displayText
+        val originalStart = oldChar - anchor.offset
+        if (original != null && originalStart >= 0 && originalStart + anchor.text.length <= original.length &&
+            original.regionMatches(originalStart, anchor.text, 0, anchor.text.length)
+        ) return TextLocation(oldBlock, oldChar)
+        var best: TextLocation? = null
+        var bestBlockDistance = Int.MAX_VALUE
+        var bestCharDistance = Int.MAX_VALUE
+        chapter.blocks.forEachIndexed { block, entry ->
+            val text = entry.displayText ?: return@forEachIndexed
+            var from = 0
+            while (from <= text.length - anchor.text.length) {
+                val found = text.indexOf(anchor.text, from)
+                if (found < 0) break
+                val char = (found + anchor.offset).coerceIn(0, text.length)
+                val blockDistance = abs(block - oldBlock)
+                val charDistance = abs(char - oldChar)
+                if (blockDistance < bestBlockDistance || blockDistance == bestBlockDistance && charDistance < bestCharDistance) {
+                    best = TextLocation(block, char)
+                    bestBlockDistance = blockDistance
+                    bestCharDistance = charDistance
+                }
+                from = found + 1
+            }
+        }
+        return best
+    }
+}
+
 enum class MarkColor(val label: String, val argb: Long) {
     YELLOW("黄", 0x66F5C518),
     GREEN("绿", 0x5566BB6A),
@@ -91,6 +137,9 @@ data class Bookmark(
     val charOffset: Int,
     val excerpt: String,
     val createdAt: Long,
+    val anchor: TextAnchor = TextAnchor(),
+    /** 文稿刷新后原文找不到时保留书签，并提示读者需要重新定位。 */
+    val lost: Boolean = false,
 )
 
 data class Note(
@@ -118,7 +167,7 @@ data class Marks(
 
     /**
      * 文稿刷新后章节和段落可能挪动。先按章名找章，再在章内按原文找段落和位置；
-     * 原文已被改掉的批注标为 [Note.lost]。书签只需按章名对齐章序。
+     * 原文已被改掉的批注和书签保留，但标为失联。
      */
     fun resolve(content: BookContent): Marks {
         fun chapterOf(index: Int, title: String): Int {
@@ -141,9 +190,13 @@ data class Marks(
             }
             note.copy(chapterIndex = ci, lost = true)
         }
-        val bookmarks = bookmarks.mapNotNull { b ->
+        val bookmarks = bookmarks.map { b ->
             val ci = chapterOf(b.chapterIndex, b.chapterTitle)
-            if (ci < 0) null else b.copy(chapterIndex = ci)
+            val chapter = content.chapters.getOrNull(ci) ?: return@map b.copy(lost = true)
+            if (b.anchor.text.isEmpty()) return@map b.copy(chapterIndex = ci, lost = false)
+            val found = TextAnchors.resolve(chapter, b.itemIndex - 1, b.charOffset, b.anchor)
+            if (found == null) b.copy(chapterIndex = ci, lost = true)
+            else b.copy(chapterIndex = ci, itemIndex = found.block + 1, charOffset = found.char, lost = false)
         }
         return Marks(bookmarks, notes)
     }
@@ -170,7 +223,8 @@ data class Marks(
         .put("bookmarks", JSONArray().apply {
             bookmarks.forEach {
                 put(JSONObject().put("id", it.id).put("chapter", it.chapterIndex).put("title", it.chapterTitle)
-                    .put("item", it.itemIndex).put("char", it.charOffset).put("excerpt", it.excerpt).put("at", it.createdAt))
+                    .put("item", it.itemIndex).put("char", it.charOffset).put("excerpt", it.excerpt).put("at", it.createdAt)
+                    .put("anchorText", it.anchor.text).put("anchorOffset", it.anchor.offset).put("lost", it.lost))
             }
         })
         .put("notes", JSONArray().apply {
@@ -189,7 +243,8 @@ data class Marks(
                 bookmarks = (0 until b.length()).map { i ->
                     val j = b.getJSONObject(i)
                     Bookmark(j.getString("id"), j.getInt("chapter"), j.getString("title"), j.getInt("item"),
-                        j.optInt("char"), j.optString("excerpt"), j.optLong("at"))
+                        j.optInt("char"), j.optString("excerpt"), j.optLong("at"),
+                        TextAnchor(j.optString("anchorText"), j.optInt("anchorOffset")), j.optBoolean("lost"))
                 },
                 notes = (0 until n.length()).map { i ->
                     val j = n.getJSONObject(i)

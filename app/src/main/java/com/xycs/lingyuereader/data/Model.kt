@@ -114,7 +114,12 @@ data class ReadingProgress(
     val itemOffset: Int,
     /** 翻页模式下当前页从该块的第几个字开始。 */
     val charOffset: Int = 0,
+    /** 排版无关的原文锚点；旧版进度没有此字段时仍可按原位置回退。 */
+    val anchor: TextAnchor = TextAnchor(),
 )
+
+/** [text] 是当前位置附近的原文，[offset] 是当前位置在这段原文中的下标。 */
+data class TextAnchor(val text: String = "", val offset: Int = 0)
 
 data class BookEntry(
     val id: String,

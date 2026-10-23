@@ -1,7 +1,9 @@
 package com.xycs.lingyuereader.data
 
+import android.util.AtomicFile
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.time.LocalDate
 
 /** 某一天的阅读：时长（毫秒）、读过的字数，以及各本书的时长。 */
@@ -12,8 +14,10 @@ data class DayStats(val millis: Long = 0, val chars: Long = 0, val books: Map<St
  * 字数只算顺着往下读的部分（跳章、拖进度条不算），用来估计个人阅读速度。
  */
 class ReadingStats(private val file: File) {
+    private val atomicFile = AtomicFile(file)
+
     @Synchronized
-    fun days(): Map<LocalDate, DayStats> = runCatching { parse(file.readText()) }.getOrDefault(emptyMap())
+    fun days(): Map<LocalDate, DayStats> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyMap())
 
     @Synchronized
     fun addTime(bookId: String, millis: Long, day: LocalDate = LocalDate.now()) {
@@ -43,7 +47,8 @@ class ReadingStats(private val file: File) {
         write(all)
     }
 
-    fun raw(): ByteArray? = if (file.isFile) file.readBytes() else null
+    @Synchronized
+    fun raw(): ByteArray? = if (file.isFile || File(file.path + ".bak").isFile) atomicFile.readFully() else null
 
     private fun update(day: LocalDate, transform: (DayStats) -> DayStats) {
         val all = days().toMutableMap()
@@ -60,11 +65,16 @@ class ReadingStats(private val file: File) {
             )
         }
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(JSONObject().put("days", days).toString())
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            tmp.renameTo(file)
+        val bytes = JSONObject().put("days", days).toString().toByteArray(Charsets.UTF_8)
+        var output: FileOutputStream? = null
+        try {
+            output = atomicFile.startWrite()
+            output.write(bytes)
+            atomicFile.finishWrite(output)
+            check(atomicFile.readFully().contentEquals(bytes)) { "无法保存阅读统计" }
+        } catch (error: Exception) {
+            atomicFile.failWrite(output)
+            throw error
         }
     }
 

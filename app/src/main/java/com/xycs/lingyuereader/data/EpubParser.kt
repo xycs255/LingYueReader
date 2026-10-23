@@ -41,7 +41,10 @@ object EpubParser {
         val spineTag = Regex("""<spine\b[^>]*>""").find(opf)?.value.orEmpty()
         val spine = Regex("""<itemref\b[^>]*>""").findAll(opf)
             .filter { attr(it.value, "linear") != "no" }
-            .mapNotNull { attr(it.value, "idref")?.let(manifest::get) }
+            .map { ref ->
+                val id = attr(ref.value, "idref") ?: error("不是有效的 EPUB：阅读顺序缺少 idref")
+                manifest[id] ?: error("不是有效的 EPUB：阅读顺序引用了缺失的文件 $id")
+            }
             .filter { it.type in textTypes || it.href.endsWith("html", ignoreCase = true) }
             .toList()
 
@@ -51,7 +54,8 @@ object EpubParser {
         val chapters = mutableListOf<Chapter>()
         val noteKeys = linkedSetOf<String>()
         for (item in spine) {
-            val html = files[item.href]?.let(TextDecoder::decode) ?: continue
+            val html = files[item.href]?.let(TextDecoder::decode)
+                ?: error("不是有效的 EPUB：正文文件缺失 ${item.href}")
             val htmlBase = item.href.substringBeforeLast('/', "")
             // 注释链接换算成“书内路径#锚点”；只写 #锚点 的指向本文件。
             val link = { href: String ->
@@ -112,8 +116,10 @@ object EpubParser {
             while (true) {
                 val entry = zip.nextEntry ?: break
                 val name = entry.name
-                val wanted = name.endsWith(".xml") || name.endsWith(".opf") || name.endsWith(".ncx") ||
-                    name.endsWith("html", ignoreCase = true) || name.endsWith(".htm", ignoreCase = true)
+                val wanted = name.endsWith(".xml", ignoreCase = true) || name.endsWith(".opf", ignoreCase = true) ||
+                    name.endsWith(".ncx", ignoreCase = true) || name.endsWith(".xht", ignoreCase = true) ||
+                    name.endsWith(".xhtml", ignoreCase = true) || name.endsWith(".html", ignoreCase = true) ||
+                    name.endsWith(".htm", ignoreCase = true)
                 if (!entry.isDirectory && wanted) files[name] = zip.readBytes()
             }
         }

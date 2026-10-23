@@ -10,6 +10,7 @@ import com.xycs.lingyuereader.data.Library
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -26,6 +27,33 @@ import java.util.concurrent.TimeUnit
 @Config(sdk = [36])
 @LooperMode(LooperMode.Mode.PAUSED)
 class AppViewModelTest {
+    @Test
+    fun manualBackupLeavesTheChosenTargetUntouchedWhenARequiredSourceIsMissing() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        app.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        val library = Library(app)
+        val source = File(app.cacheDir, "manual-backup-source.txt").apply { writeText("第一章 起\n　　正文。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        assertTrue(library.bookFile(entry.id, entry.sources.single().file).delete())
+        val target = File(app.cacheDir, "manual-backup-target.zip").apply { writeText("原有目标内容") }
+        val original = target.readBytes()
+
+        val vm = AppViewModel(app)
+        vm.backup(Uri.fromFile(target))
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        while ((vm.messages.value == null || vm.busy.value) && System.nanoTime() < deadline) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(vm.messages.value.orEmpty().contains("备份失败"))
+        assertFalse(vm.busy.value)
+        assertArrayEquals(original, target.readBytes())
+        assertTrue(app.cacheDir.listFiles().orEmpty().none { it.name.startsWith("manual-backup-") && it.name.endsWith(".zip") && it != target })
+    }
+
     @Test
     fun malformedBackupSettingsLeaveRestoredBooksVisibleAndReleaseBusyState() {
         val app = ApplicationProvider.getApplicationContext<Application>()

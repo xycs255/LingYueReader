@@ -61,7 +61,7 @@ data class ReaderPalette(
     val isDark: Boolean,
 )
 
-fun ReaderTheme.palette(): ReaderPalette = when (this) {
+fun ReaderTheme.palette(): ReaderPalette = (when (this) {
     // 浅灰暖白而不是近乎纯白：亮处更柔和，对比度仍在 13:1 左右。
     ReaderTheme.PAPER -> ReaderPalette(Color(0xFFF4F2EC), Color(0xFF2A2724), Color(0xFF857D73), Cinnabar, Color(0xFFEAE6DD), false)
     ReaderTheme.PARCHMENT -> ReaderPalette(Color(0xFFF2E6CC), Color(0xFF3E3222), Color(0xFF8C7A5E), Color(0xFF9A3A22), Color(0xFFE8D9B9), false)
@@ -69,6 +69,23 @@ fun ReaderTheme.palette(): ReaderPalette = when (this) {
     // 深底配偏暖的浅黄字（不用纯白），对比度约 9:1。
     ReaderTheme.NIGHT -> ReaderPalette(Color(0xFF151413), Color(0xFFC4B48E), Color(0xFF7D7565), Amber, Color(0xFF22201E), true)
     ReaderTheme.CUSTOM -> customPalette(Color(ReaderSettings().customBackground), Color(ReaderSettings().customText))
+}).withReadableSecondary()
+
+/** 次要文字仍比正文柔和，但在书页及不透明浮层上都达到普通小字的对比度。 */
+private fun ReaderPalette.withReadableSecondary(): ReaderPalette {
+    fun minimumContrast(color: Color) = minOf(contrastRatio(color, background), contrastRatio(color, bar))
+    // 留一点余量，避免黄昏暖色调整后正好跌破 4.5:1。
+    val target = 4.7f
+    if (minimumContrast(secondary) >= target) return this
+    val anchor = if (minimumContrast(text) >= target) text else listOf(Color.Black, Color.White).maxBy(::minimumContrast)
+    if (minimumContrast(anchor) < target) return copy(secondary = anchor)
+    var low = 0f
+    var high = 1f
+    repeat(12) {
+        val middle = (low + high) / 2f
+        if (minimumContrast(lerp(secondary, anchor, middle)) >= target) high = middle else low = middle
+    }
+    return copy(secondary = lerp(secondary, anchor, high))
 }
 
 /** 自定义背景：次要文字取字色和底色之间，深底用琥珀色强调。 */
@@ -81,7 +98,7 @@ fun customPalette(background: Color, text: Color): ReaderPalette {
         accent = if (dark) Amber else Cinnabar,
         bar = lerp(background, text, 0.07f),
         isDark = dark,
-    )
+    ).withReadableSecondary()
 }
 
 /** [theme] 的配色；自定义背景用设置里的颜色。 */
@@ -99,11 +116,11 @@ fun ReaderPalette.adjusted(dim: Float, warmth: Float): ReaderPalette {
         return Color(c.red, c.green * (1 - 0.04f * w), c.blue * (1 - 0.16f * w), c.alpha)
     }
     fun dimmed(c: Color) = Color(c.red * dim, c.green * dim, c.blue * dim, c.alpha)
-    return if (isDark) {
+    return (if (isDark) {
         copy(text = warm(text, 1f), secondary = warm(secondary, 1f))
     } else {
         copy(background = dimmed(warm(background, 1f)), bar = dimmed(warm(bar, 1f)))
-    }
+    }).withReadableSecondary()
 }
 
 /** WCAG 定义的相对亮度对比度，用来检查配色。 */

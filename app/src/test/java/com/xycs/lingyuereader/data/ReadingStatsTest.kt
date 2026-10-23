@@ -1,12 +1,20 @@
 package com.xycs.lingyuereader.data
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 import java.time.LocalDate
 
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
 class ReadingStatsTest {
     @get:Rule val tmp = TemporaryFolder()
     private val today = LocalDate.of(2026, 10, 23)
@@ -54,5 +62,27 @@ class ReadingStatsTest {
         b.merge(backup)
         assertEquals(10 * 60_000L, b.days()[today]!!.millis)
         assertEquals(3 * 60_000L, b.days()[today.minusDays(1)]!!.millis)
+    }
+
+    @Test
+    fun failedWriteKeepsThePreviousReadingStatsBytes() {
+        val file = File(tmp.root, "s.json")
+        val s = ReadingStats(file)
+        s.addTime("b1", 60_000, today)
+        val original = file.readBytes()
+        // 阻断 AtomicFile 的新文件：更新失败时旧统计仍应完整可读。
+        val blocker = File(tmp.root, "s.json.new")
+        assertTrue(blocker.mkdir())
+        File(blocker, "keep").writeText("阻止清理")
+
+        assertTrue(runCatching { s.addChars(100, today) }.exceptionOrNull() is IOException)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, s.raw())
+        assertEquals(60_000L, s.days()[today]!!.millis)
+        assertEquals(0L, s.days()[today]!!.chars)
+
+        assertTrue(blocker.deleteRecursively())
+        s.addChars(100, today)
+        assertEquals(100L, s.days()[today]!!.chars)
     }
 }

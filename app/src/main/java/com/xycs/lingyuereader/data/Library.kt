@@ -40,29 +40,63 @@ class Library(private val context: Context) {
     @Synchronized
     fun list(): List<BookEntry> {
         if (!indexFile.isFile) return emptyList()
-        val array = runCatching { JSONArray(indexFile.readText()) }.getOrElse { return emptyList() }
-        return (0 until array.length()).mapNotNull { runCatching { array.getJSONObject(it).toEntry() }.getOrNull() }
+        return parseIndex(indexFile.readText())
+    }
+
+    private fun parseIndex(json: String): List<BookEntry> {
+        val array = try {
+            JSONArray(json)
+        } catch (error: Exception) {
+            throw IllegalStateException("书架索引损坏，已停止写入并保留原文件", error)
+        }
+        return try {
+            (0 until array.length()).map { array.getJSONObject(it).toEntry() }
+        } catch (error: Exception) {
+            throw IllegalStateException("书架索引损坏，已停止写入并保留原文件", error)
+        }
     }
 
     fun describe(uris: List<Uri>): List<Picked> =
         uris.map { Picked(it, displayName(it) ?: it.lastPathSegment?.substringAfterLast('/') ?: "未命名.txt") }
 
     /** 导入一本书；[files] 多于一个时合成一本。 */
-    fun add(files: List<Picked>, title: String?): BookEntry {
+    @Synchronized
+    fun add(files: List<Picked>, title: String?, checkCancelled: () -> Unit = {}): BookEntry {
+        require(files.isNotEmpty()) { "没有选择文件" }
+        val existing = list()
+        // 同一来源可能已改写；读者应使用“刷新”，避免重新导入时生成第二本书。
+        if (existing.any { entry -> entry.sources.map { it.uri } == files.map { it.uri.toString() } }) {
+            throw IllegalArgumentException("这本书已在书架上，可使用刷新更新内容")
+        }
         val id = UUID.randomUUID().toString()
         val dir = File(root, id).apply { mkdirs() }
         try {
             val sources = files.mapIndexed { i, picked ->
-                val bytes = readUri(picked.uri)
-                val ext = picked.name.substringAfterLast('.', "txt")
+                checkCancelled()
+                val ext = picked.name.substringAfterLast('.', "txt").lowercase()
+                require(ext.matches(Regex("[a-z0-9]{1,10}"))) { "文件扩展名无效：${picked.name}" }
                 val file = "s$i.$ext"
-                File(dir, file).writeBytes(bytes)
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(picked.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                requireNotNull(context.contentResolver.openInputStream(picked.uri)) { "无法打开文件：${picked.name}" }.use { input ->
+                    File(dir, file).outputStream().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            checkCancelled()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                        }
+                    }
                 }
+                require(File(dir, file).length() > 0L) { "文件为空：${picked.name}" }
                 SourceRef(picked.name, picked.uri.toString(), file)
             }
+            // 不同 URI 的逐字节相同文件也只保留一份。先比长度，再分块比较，避免长篇书全文常驻内存。
+            if (existing.any { entry -> checkCancelled(); sameSources(entry, sources, dir, checkCancelled) }) {
+                throw IllegalArgumentException("这本书已在书架上，可使用刷新更新内容")
+            }
+            checkCancelled()
             val content = buildCache(dir, sources)
+            checkCancelled()
             require(content.chapters.isNotEmpty()) { "没有读出正文" }
             val now = System.currentTimeMillis()
             val entry = BookEntry(
@@ -80,10 +114,45 @@ class Library(private val context: Context) {
                 cover = content.cover,
             )
             update { it + entry }
+            // 解析、索引均成功后才持有 URI 授权；失败或取消不会留下无主授权。
+            files.forEach { picked ->
+                runCatching { context.contentResolver.takePersistableUriPermission(picked.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            }
             return entry
         } catch (e: Throwable) {
             dir.deleteRecursively()
             throw e
+        }
+    }
+
+    private fun sameSources(entry: BookEntry, sources: List<SourceRef>, incoming: File, checkCancelled: () -> Unit): Boolean {
+        if (entry.sources.size != sources.size || entry.sources.map { it.name } != sources.map { it.name }) return false
+        return entry.sources.zip(sources).all { (old, fresh) ->
+            val a = File(File(root, entry.id), old.file)
+            val b = File(incoming, fresh.file)
+            sameFile(a, b, checkCancelled)
+        }
+    }
+
+    private fun sameFile(a: File, b: File, checkCancelled: () -> Unit): Boolean {
+        if (!a.isFile || !b.isFile || a.length() != b.length()) return false
+        a.inputStream().buffered().use { left ->
+            b.inputStream().buffered().use { right ->
+                val first = ByteArray(DEFAULT_BUFFER_SIZE)
+                val second = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    checkCancelled()
+                    val size = left.read(first)
+                    if (size < 0) return true
+                    var filled = 0
+                    while (filled < size) {
+                        val read = right.read(second, filled, size - filled)
+                        if (read < 0) return false
+                        filled += read
+                    }
+                    for (i in 0 until size) if (first[i] != second[i]) return false
+                }
+            }
         }
     }
 
@@ -133,15 +202,52 @@ class Library(private val context: Context) {
     fun previewWith(entry: BookEntry, rules: TextRules): BookContent = BookParser.parse(load(File(root, entry.id), entry.sources), rules)
 
     /** 保存文本规则并重新解析。 */
+    @Synchronized
     fun saveRules(entry: BookEntry, rules: TextRules): BookContent {
         val dir = File(root, entry.id)
-        val f = File(dir, RULES)
-        if (rules.isEmpty && rules.replace.isEmpty()) f.delete() else f.writeText(rules.toJson().toString())
-        val content = buildCache(dir, entry.sources)
-        update { list ->
-            list.map { if (it.id == entry.id) it.copy(chapterCount = content.chapters.size, charCount = content.charCount) else it }
+        require(dir.isDirectory) { "书籍文件不存在" }
+        val staging = File(root, ".rules-${entry.id}-${UUID.randomUUID()}")
+        val next = File(staging, "next")
+        val previous = File(staging, "previous")
+        var committed = false
+        try {
+            // 规则、插图和缓存都只改临时副本；重解析失败不能让原书变得不可读。
+            check(dir.copyRecursively(next)) { "无法准备书籍规则目录" }
+            val stagedRules = File(next, RULES)
+            if (rules.isEmpty && rules.replace.isEmpty()) {
+                check(!stagedRules.exists() || stagedRules.delete()) { "无法清除旧文本规则" }
+            } else {
+                stagedRules.writeText(rules.toJson().toString())
+            }
+            val content = buildCache(next, entry.sources)
+            require(content.chapters.isNotEmpty()) { "新规则没有读出正文" }
+            try {
+                check(dir.renameTo(previous)) { "无法保存旧书籍文件" }
+                check(next.renameTo(dir)) { "无法应用新的文本规则" }
+                update { list ->
+                    list.map {
+                        if (it.id == entry.id) it.copy(chapterCount = content.chapters.size, charCount = content.charCount)
+                        else it
+                    }
+                }
+                committed = true
+            } catch (error: Throwable) {
+                if (previous.isDirectory) {
+                    if (dir.exists() && !dir.renameTo(next) && !dir.deleteRecursively()) {
+                        error.addSuppressed(IllegalStateException("无法移走新规则书籍文件"))
+                    }
+                    if (!previous.renameTo(dir)) {
+                        error.addSuppressed(IllegalStateException("无法还原旧书籍文件：${previous.absolutePath}"))
+                    }
+                }
+                throw error
+            }
+            // buildCache 的章节按需读取 staging/cache.bin；目录已移动，须从正式路径重新打开。
+            return this.content(entry)
+        } finally {
+            // 回滚失败时留下 previous，保留唯一的旧副本供人工恢复。
+            if (committed || !previous.exists()) staging.deleteRecursively()
         }
-        return content
     }
 
     /**
@@ -293,7 +399,7 @@ class Library(private val context: Context) {
         val dir = File(root, id).takeIf { it.isDirectory } ?: return
         val tmp = File(dir, "marks.json.tmp")
         tmp.writeText(marks.toJson().toString())
-        tmp.renameTo(File(dir, "marks.json"))
+        check(tmp.renameTo(File(dir, "marks.json"))) { "无法保存书签与批注" }
     }
 
     /** 从别的应用打开同一个文件时，找回书架上已有的那本，而不是再导入一份。 */
@@ -307,13 +413,34 @@ class Library(private val context: Context) {
         }
     }
 
-    data class RestoreResult(val books: Int, val settings: JSONObject?, val data: Map<String, String> = emptyMap())
+    data class RestoreResult(
+        val books: Int,
+        val settings: JSONObject?,
+        val data: Map<String, String> = emptyMap(),
+        val skippedBooks: Int = 0,
+    )
 
     /**
      * 备份：书架索引、每本书的来源副本和书签批注，以及传入的设置。缓存和解出的插图可重建，不打包。
      */
+    @Synchronized
     fun backup(out: java.io.OutputStream, settings: JSONObject, data: Map<String, ByteArray> = emptyMap()): Int {
-        val entries = list()
+        val indexBytes = if (indexFile.isFile) indexFile.readBytes() else {
+            check(root.listFiles().orEmpty().none { it.isDirectory && BACKUP_ID.matches(it.name) }) {
+                "书架索引缺失；原书籍文件已保留，请先恢复索引"
+            }
+            "[]".toByteArray()
+        }
+        val entries = parseIndex(indexBytes.toString(Charsets.UTF_8))
+        // 来源副本是恢复阅读所必需的，任何缺失都必须使整份备份失败。
+        entries.forEach { entry ->
+            check(BACKUP_ID.matches(entry.id) && entry.sources.isNotEmpty()) { "书架包含无效的书籍记录" }
+            entry.sources.forEach { source ->
+                check(BACKUP_SOURCE_FILE.matches(source.file) && File(File(root, entry.id), source.file).isFile) {
+                    "书籍来源文件缺失：${entry.title} / ${source.name}"
+                }
+            }
+        }
         java.util.zip.ZipOutputStream(out).use { zip ->
             fun put(name: String, write: (java.io.OutputStream) -> Unit) {
                 zip.putNextEntry(java.util.zip.ZipEntry(name))
@@ -323,11 +450,16 @@ class Library(private val context: Context) {
             put(BACKUP_MANIFEST) {
                 it.write(JSONObject().put("format", 1).put("createdAt", System.currentTimeMillis()).put("settings", settings).toString().toByteArray())
             }
-            put("books/index.json") { it.write(indexFile.readBytesOrEmpty()) }
+            put("books/index.json") { it.write(indexBytes) }
             data.forEach { (name, bytes) -> put("data/$name") { it.write(bytes) } }
             entries.forEach { e ->
                 val dir = File(root, e.id)
-                (e.sources.map { it.file } + "marks.json" + RULES).forEach { name ->
+                e.sources.forEach { source ->
+                    val f = File(dir, source.file)
+                    check(f.isFile) { "书籍来源文件缺失：${e.title} / ${source.name}" }
+                    put("books/${e.id}/${source.file}") { o -> f.inputStream().use { it.copyTo(o) } }
+                }
+                listOf("marks.json", RULES).forEach { name ->
                     val f = File(dir, name)
                     if (f.isFile) put("books/${e.id}/$name") { o -> f.inputStream().use { it.copyTo(o) } }
                 }
@@ -374,7 +506,10 @@ class Library(private val context: Context) {
                 if (e.sources.isEmpty() || e.sources.any { !BACKUP_SOURCE_FILE.matches(it.file) || !File(from, it.file).isFile }) return@mapNotNull null
                 e
             }
-            if (candidates.isEmpty()) return RestoreResult(0, manifest?.optJSONObject("settings"), data)
+            if (candidates.isEmpty()) {
+                require(books.length() == 0) { "备份中的书籍文件不完整，未修改现有数据" }
+                return RestoreResult(0, manifest?.optJSONObject("settings"), data)
+            }
             val transaction = File(root, ".restore-${UUID.randomUUID()}")
             val prepared = File(transaction, "prepared")
             val previous = File(transaction, "previous")
@@ -389,28 +524,26 @@ class Library(private val context: Context) {
                     val next = File(prepared, e.id)
                     check(from.copyRecursively(next)) { "无法复制备份书籍：${e.title}" }
                     val existing = File(root, e.id)
-                    if (existing.isDirectory) {
-                        // 只有覆盖现有书籍时才预解析。坏备份不能替换仍可阅读的旧书。
-                        val content = runCatching {
+                    // 新书也须读得出正文；不能把损坏的 EPUB 等报作“已恢复”。
+                    val content = runCatching {
+                        if (existing.isDirectory) {
                             require(e.sources.none { source ->
                                 val old = File(existing, source.file)
                                 File(next, source.file).length() == 0L && old.isFile && old.length() > 0L
                             }) { "来源文件为空" }
-                            val parsed = buildCache(next, e.sources)
-                            require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
-                            parsed
-                        }.getOrNull()
-                        if (content == null) {
-                            next.deleteRecursively()
-                            continue
                         }
-                        restored += e.copy(chapterCount = content.chapters.size, charCount = content.charCount,
-                            cover = content.cover, description = content.description)
-                    } else {
-                        restored += e
+                        val parsed = buildCache(next, e.sources)
+                        require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
+                        parsed
+                    }.getOrNull()
+                    if (content == null) {
+                        next.deleteRecursively()
+                        continue
                     }
+                    restored += e.copy(chapterCount = content.chapters.size, charCount = content.charCount,
+                        cover = content.cover, description = content.description)
                 }
-                if (restored.isEmpty()) return RestoreResult(0, manifest?.optJSONObject("settings"), data)
+                require(restored.isNotEmpty()) { "备份中的书籍均无法读取，未修改现有数据" }
                 try {
                     for (e in restored) {
                         val current = File(root, e.id)
@@ -443,7 +576,7 @@ class Library(private val context: Context) {
                     }
                     throw error
                 }
-                return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data)
+                return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data, books.length() - restored.size)
             } finally {
                 // 如果回滚也失败，保留 previous 中的原书副本供恢复。
                 if (committed || previous.listFiles().isNullOrEmpty()) transaction.deleteRecursively()
@@ -452,8 +585,6 @@ class Library(private val context: Context) {
             staging.deleteRecursively()
         }
     }
-
-    private fun File.readBytesOrEmpty(): ByteArray = if (isFile) readBytes() else "[]".toByteArray()
 
     fun addReadingTime(id: String, millis: Long) = update { list ->
         list.map { if (it.id == id) it.copy(readMillis = it.readMillis + millis) else it }
@@ -475,14 +606,15 @@ class Library(private val context: Context) {
         list.map { if (it.id == id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it }
     }
 
+    @Synchronized
     fun remove(id: String) {
         val entry = list().firstOrNull { it.id == id } ?: return
+        update { list -> list.filterNot { it.id == id } }
         entry.sources.mapNotNull { it.uri }.forEach { uri ->
             runCatching {
                 context.contentResolver.releasePersistableUriPermission(uri.toUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
         }
-        update { list -> list.filterNot { it.id == id } }
         File(root, id).deleteRecursively()
     }
 
@@ -530,7 +662,9 @@ class Library(private val context: Context) {
                     .put("title", it.chapterTitle)
                     .put("item", it.itemIndex)
                     .put("offset", it.itemOffset)
-                    .put("char", it.charOffset))
+                    .put("char", it.charOffset)
+                    .put("anchorText", it.anchor.text)
+                    .put("anchorOffset", it.anchor.offset))
             }
         }
 
@@ -554,7 +688,10 @@ class Library(private val context: Context) {
             readMillis = optLong("readMillis"),
             groups = optJSONArray("groups")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
             progress = optJSONObject("progress")?.let {
-                ReadingProgress(it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"), it.optInt("char"))
+                ReadingProgress(
+                    it.getInt("chapter"), it.optString("title"), it.optInt("item"), it.optInt("offset"), it.optInt("char"),
+                    TextAnchor(it.optString("anchorText"), it.optInt("anchorOffset")),
+                )
             },
         )
     }

@@ -132,6 +132,7 @@ import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
 import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.TextAnchors
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -206,7 +207,7 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     }
 }
 
-/** 当前阅读位置。滚动模式记列表项与像素偏移，翻页模式记块与块内字。 */
+/** 当前阅读位置。正文的字符坐标不含排版缩进；像素偏移只用于读取旧版进度。 */
 private data class Position(
     val chapter: Int,
     val item: Int,
@@ -227,8 +228,21 @@ private fun startOf(screen: Screen.Reader, entry: BookEntry, content: BookConten
     val p = entry.progress ?: return Position(0, 0, 0, 0)
     val byIndex = content.chapters.getOrNull(p.chapterIndex)?.takeIf { it.title == p.chapterTitle }
     val index = if (byIndex != null) p.chapterIndex else content.chapters.indexOfFirst { it.title == p.chapterTitle }
-    return if (index >= 0) Position(index, p.itemIndex, p.itemOffset, p.charOffset) else Position(p.chapterIndex.coerceIn(content.chapters.indices), 0, 0, 0)
+    if (index < 0) return Position(p.chapterIndex.coerceIn(content.chapters.indices), 0, 0, 0)
+    val chapter = content.chapters[index]
+    val found = TextAnchors.resolve(chapter, p.itemIndex - HEADER_ITEMS, p.charOffset, p.anchor)
+    val block = (found?.block ?: p.itemIndex - HEADER_ITEMS).coerceIn(-1, chapter.blocks.lastIndex)
+    val char = found?.char ?: p.charOffset.coerceIn(0, chapter.blocks.getOrNull(block)?.displayText?.length ?: 0)
+    // 新进度用文字恢复；只有旧进度才依赖当时的像素偏移。
+    return Position(index, block + HEADER_ITEMS, if (p.anchor.text.isEmpty()) p.itemOffset else 0, char)
 }
+
+/** 横排分页坐标包含视觉缩进，进度与书签始终使用不含缩进的原文坐标。 */
+internal fun pageSourceChar(chapter: com.xycs.lingyuereader.data.Chapter, block: Int, layoutChar: Int, indent: Boolean): Int =
+    (layoutChar - (chapter.blocks.getOrNull(block)?.let { indentOf(it, indent) } ?: 0)).coerceAtLeast(0)
+
+internal fun pageLayoutChar(chapter: com.xycs.lingyuereader.data.Chapter, block: Int, sourceChar: Int, indent: Boolean): Int =
+    sourceChar + (chapter.blocks.getOrNull(block)?.let { indentOf(it, indent) } ?: 0)
 
 private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
@@ -289,8 +303,7 @@ private fun Reader(
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val block = pos.block.coerceAtLeast(0)
-        val indent = chapter.blocks.getOrNull(block)?.let { indentOf(it, settings.indent) } ?: 0
-        vm.startReadAloud(chapterIndex, block, (pos.char - indent).coerceAtLeast(0))
+        vm.startReadAloud(chapterIndex, block, pos.char)
         menuVisible = false
     }
 
@@ -346,6 +359,13 @@ private fun Reader(
         if (index in content.chapters.indices) {
             vm.markJump(ReturnPoint(entry.id, pos.chapter, pos.block, pos.offset, pos.char, content.chapters[pos.chapter].title))
             goTo(index, block, highlight)
+        }
+    }
+    val jumpAt: (Int, Int, Int) -> Unit = { index, block, char ->
+        if (index in content.chapters.indices) {
+            vm.markJump(ReturnPoint(entry.id, pos.chapter, pos.block, pos.offset, pos.char, content.chapters[pos.chapter].title))
+            vm.replaceTop(Screen.Reader(entry.id, index, block, char = char, highlight = true))
+            menuVisible = false
         }
     }
     // 跳过来的那一段：亮一下再慢慢褪掉（墨水屏上不渐变，亮两秒后消失）。
@@ -599,7 +619,7 @@ private fun Reader(
             LocalImageZoom provides { zoomed = it },
         ) {
             if (settings.pageMode == PageMode.SCROLL) {
-                key(screen, content) {
+                key(screen, content, settings) {
                     val start = remember { pos }
                     val listState = rememberLazyListState(start.item, start.offset)
                     ScrollReader(
@@ -613,10 +633,12 @@ private fun Reader(
                         bottomInset = bottomInset,
                         onTap = onTap,
                         selector = tracker,
+                        startItem = start.item,
+                        startChar = start.char,
                         onFootnote = { footnote = it },
                         selected = selected,
-                        onPosition = { item, offset, fraction ->
-                            pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
+                        onPosition = { item, _, char, fraction ->
+                            pos = Position(chapterIndex, item, 0, char, fraction, "${(fraction * 100).toInt()}%")
                         },
                         onNext = { goTo(chapterIndex + 1, null, false) },
                         registerTurner = { turner.turn = it },
@@ -656,7 +678,7 @@ private fun Reader(
                     PagedReader(
                         content = content,
                         chapterIndex = chapterIndex,
-                        start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                        start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
                         styles = styles,
                         mode = settings.pageMode,
                         marks = marks,
@@ -667,7 +689,7 @@ private fun Reader(
                         onFootnote = { footnote = it },
                         selected = selected,
                         onPosition = { block, char, fraction, label ->
-                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
+                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, pageSourceChar(chapter, block, char, settings.indent), fraction, label)
                         },
                         onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
                         registerTurner = { turner.turn = it },
@@ -905,9 +927,9 @@ private fun Reader(
                 sheet = null
                 jump(it, null, false)
             },
-            onPickPosition = { ch, block ->
+            onPickPosition = { ch, block, char ->
                 sheet = null
-                jump(ch, block, true)
+                jumpAt(ch, block, char)
             },
             onDeleteBookmark = vm::deleteBookmark,
             onDeleteNote = vm::deleteNote,
@@ -1373,17 +1395,16 @@ private fun SystemBars(darkBackground: Boolean, hidden: Boolean) {
     DisposableEffect(darkBackground, hidden) {
         val window = (view.context as? Activity)?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
-        val previous = controller?.isAppearanceLightStatusBars
+        val previousStatus = controller?.isAppearanceLightStatusBars
+        val previousNavigation = controller?.isAppearanceLightNavigationBars
         controller?.isAppearanceLightStatusBars = !darkBackground
         controller?.isAppearanceLightNavigationBars = !darkBackground
         controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (hidden) controller?.hide(WindowInsetsCompat.Type.statusBars()) else controller?.show(WindowInsetsCompat.Type.statusBars())
         onDispose {
             controller?.show(WindowInsetsCompat.Type.statusBars())
-            if (previous != null) {
-                controller.isAppearanceLightStatusBars = previous
-                controller.isAppearanceLightNavigationBars = previous
-            }
+            if (previousStatus != null) controller?.isAppearanceLightStatusBars = previousStatus
+            if (previousNavigation != null) controller?.isAppearanceLightNavigationBars = previousNavigation
         }
     }
 }

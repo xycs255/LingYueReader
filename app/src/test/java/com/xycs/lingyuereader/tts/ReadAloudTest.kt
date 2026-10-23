@@ -10,6 +10,7 @@ import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.Chapter
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -78,16 +79,118 @@ class ReadAloudTest {
     fun pauseHoldsPositionAndResumeContinuesFromCurrentSentence() {
         start()
         engineReady()
+        val interrupted = ReadAloud.activeUtteranceId(2)
         ReadAloud.pause()
-        idle() // 暂停后引擎的回调只更新位置，不会接着读下一章
+        idle() // 排队但尚未处理的旧回调不得推动阅读位置。
+        ReadAloud.onUtteranceStart(interrupted)
+        ReadAloud.onUtteranceDone(interrupted)
+        idle()
         val paused = ReadAloud.state.value!!
         assertEquals(false, paused.playing)
         assertEquals(0, paused.chapterIndex)
-        assertEquals("甲三。", paused.current!!.text)
+        assertEquals("甲一。", paused.current!!.text)
 
         ReadAloud.resume()
-        assertEquals("甲三。", engine().lastSpokenText)
+        assertEquals(listOf("甲一。", "甲二。", "甲三。"), engine().spokenTextList.takeLast(3))
         assertEquals(true, ReadAloud.state.value!!.playing)
+    }
+
+    @Test
+    fun oldCallbacksCannotMovePositionOrAdvanceChapterAfterJumpAndRateChange() {
+        start() // 引擎尚未就绪，方便单独验证主线程上的回调。
+        val beforeJump = ReadAloud.activeUtteranceId(2)
+        ReadAloud.nextSentence()
+        assertNotEquals(beforeJump, ReadAloud.activeUtteranceId(2))
+        ReadAloud.onUtteranceStart(beforeJump)
+        ReadAloud.onUtteranceDone(beforeJump)
+        idle()
+        assertEquals(0, ReadAloud.state.value!!.chapterIndex)
+        assertEquals("甲二。", ReadAloud.state.value!!.current!!.text)
+
+        val beforeRate = ReadAloud.activeUtteranceId(2)
+        ReadAloud.setRate(1.5f)
+        assertNotEquals(beforeRate, ReadAloud.activeUtteranceId(2))
+        ReadAloud.onUtteranceStart(beforeRate)
+        ReadAloud.onUtteranceDone(beforeRate)
+        idle()
+        assertEquals(0, ReadAloud.state.value!!.chapterIndex)
+        assertEquals("甲二。", ReadAloud.state.value!!.current!!.text)
+        assertEquals(1.5f, ReadAloud.state.value!!.rate)
+    }
+
+    @Test
+    fun callbacksFromPreviousSessionCannotAffectSameChapter() {
+        start()
+        val previousSession = ReadAloud.activeUtteranceId(2)
+        start()
+        assertNotEquals(previousSession, ReadAloud.activeUtteranceId(2))
+        ReadAloud.onUtteranceStart(previousSession)
+        ReadAloud.onUtteranceDone(previousSession)
+        idle()
+        assertEquals(0, ReadAloud.state.value!!.chapterIndex)
+        assertEquals("甲一。", ReadAloud.state.value!!.current!!.text)
+    }
+
+    @Test
+    fun speechErrorStopsAtFailedSentenceAndOldCallbacksCannotAdvance() {
+        start()
+        val failed = ReadAloud.activeUtteranceId(1)
+        ReadAloud.onUtteranceStart(failed)
+        idle()
+        ReadAloud.onUtteranceError(failed)
+        idle()
+
+        val stopped = ReadAloud.state.value!!
+        assertEquals(false, stopped.playing)
+        assertEquals(0, stopped.chapterIndex)
+        assertEquals(1, stopped.sentence)
+        assertEquals("甲二。", stopped.current!!.text)
+        assertTrue(stopped.error!!.contains("朗读失败"))
+
+        ReadAloud.onUtteranceDone(failed)
+        ReadAloud.onUtteranceStart(failed)
+        ReadAloud.onUtteranceError(failed)
+        idle()
+        assertEquals(stopped, ReadAloud.state.value)
+
+        ReadAloud.resume()
+        assertEquals(true, ReadAloud.state.value!!.playing)
+        assertNull(ReadAloud.state.value!!.error)
+        engineReady()
+        assertEquals(listOf("甲二。", "甲三。"), engine().spokenTextList)
+    }
+
+    @Test
+    fun engineErrorCallbackDoesNotPretendSentenceFinished() {
+        start()
+        engineReady()
+        val failed = ReadAloud.activeUtteranceId(0)
+        engine().utteranceProgressListener.onError(failed, TextToSpeech.ERROR)
+        idle()
+
+        val stopped = ReadAloud.state.value!!
+        assertEquals(false, stopped.playing)
+        assertEquals(0, stopped.chapterIndex)
+        assertEquals(0, stopped.sentence)
+        assertEquals("甲一。", stopped.current!!.text)
+        assertTrue(stopped.error!!.contains("朗读失败"))
+    }
+
+    @Test
+    fun errorFromOtherSentenceOrInterruptedQueueIsIgnored() {
+        start()
+        val futureSentence = ReadAloud.activeUtteranceId(2)
+        ReadAloud.onUtteranceError(futureSentence)
+        idle()
+        assertEquals(true, ReadAloud.state.value!!.playing)
+        assertNull(ReadAloud.state.value!!.error)
+
+        ReadAloud.nextSentence()
+        ReadAloud.onUtteranceError(futureSentence)
+        idle()
+        assertEquals(true, ReadAloud.state.value!!.playing)
+        assertEquals("甲二。", ReadAloud.state.value!!.current!!.text)
+        assertNull(ReadAloud.state.value!!.error)
     }
 
     @Test
@@ -118,6 +221,7 @@ class ReadAloudTest {
         // 先暂停：测试环境里引擎会瞬间“读完”所有句子，暂停后位置才稳定。
         ReadAloud.pause()
         idle()
+        ReadAloud.nextSentence()
         val service = org.robolectric.Robolectric.buildService(ReadAloudService::class.java).create().get()
         try {
             // 媒体会话已登记（耳机、蓝牙按键由系统分发给它；测试环境不会真的转发按键）。

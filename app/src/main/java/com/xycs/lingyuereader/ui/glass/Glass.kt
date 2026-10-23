@@ -3,6 +3,8 @@ package com.xycs.lingyuereader.ui.glass
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
@@ -33,10 +35,13 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -51,6 +56,10 @@ import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
+import top.yukonga.miuix.kmp.theme.ThemeController
+import top.yukonga.miuix.kmp.basic.Text
+import com.xycs.lingyuereader.ui.contrastRatio
 import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.MiuixPopupHost
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 
@@ -302,22 +311,41 @@ fun GlassSheet(
 ) {
     val radius = 28.dp
     val active = backdrop != null && liquidGlassSupported()
-    OverlayBottomSheet(
-        show = show,
-        title = title,
-        modifier = Modifier.glass(
-            backdrop = backdrop,
-            shape = RoundedCornerShape(topStart = radius, topEnd = radius),
-            tint = panelTint(background),
-            blur = 28.dp,
-            refraction = 18.dp,
-            highlight = highlight,
-        ),
-        backgroundColor = if (active) Color.Transparent else background,
-        cornerRadius = radius,
-        onDismissRequest = onDismissRequest,
-        content = content,
-    )
+    // 阅读面板的底色可以独立于应用主题；内置标题和拖动条也须按书页深浅配色。
+    val mode = if (background.luminance() < 0.5f) ColorSchemeMode.Dark else ColorSchemeMode.Light
+    val controller = remember(mode) { ThemeController(colorSchemeMode = mode) }
+    val preferredTitle = if (mode == ColorSchemeMode.Dark) Color(0xFFE6DCC4) else Color(0xFF2A2724)
+    val titleColor = if (contrastRatio(preferredTitle, background) >= 4.5f) preferredTitle
+        else listOf(Color.Black, Color.White).maxBy { contrastRatio(it, background) }
+    MiuixTheme(controller = controller) {
+        OverlayBottomSheet(
+            show = show,
+            title = null,
+            modifier = Modifier.glass(
+                backdrop = backdrop,
+                shape = RoundedCornerShape(topStart = radius, topEnd = radius),
+                tint = panelTint(background),
+                blur = 28.dp,
+                refraction = 18.dp,
+                highlight = highlight,
+            ),
+            backgroundColor = if (active) Color.Transparent else background,
+            cornerRadius = radius,
+            onDismissRequest = onDismissRequest,
+        ) {
+            if (title != null) {
+                Text(
+                    title,
+                    color = titleColor,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                )
+            }
+            content()
+        }
+    }
 }
 
 /** 卡片玻璃：半透明底色加高光描边。 */

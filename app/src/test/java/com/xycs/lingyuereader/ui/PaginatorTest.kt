@@ -72,6 +72,15 @@ class PaginatorTest {
         assertEquals(0, pages.indexOfFirst { it.contains(-1, 0) })
         assertEquals(slice.start, third.firstChar)
     }
+
+    @Test
+    fun pageOffsetsRoundTripWithoutVisualIndent() {
+        val chapter = Chapter("第一章", listOf(Block.Para("中文正文")))
+        assertEquals(18, pageLayoutChar(chapter, 0, 16, true))
+        assertEquals(16, pageSourceChar(chapter, 0, 18, true))
+        assertEquals(16, pageLayoutChar(chapter, 0, 16, false))
+        assertEquals(16, pageSourceChar(chapter, 0, 16, false))
+    }
 }
 
 class ChineseDetectionTest {

@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
@@ -28,10 +30,15 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -39,10 +46,57 @@ import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Utterance
+import com.xycs.lingyuereader.data.displayText
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
+
+/** 复用正文选字时的真实排版结果，把滚动视口上沿换算为原文字符。 */
+private class ScrollAnchorSelector(private val delegate: TextSelector) : TextSelector {
+    private data class Entry(
+        val block: Int,
+        val coords: LayoutCoordinates,
+        val layout: TextLayoutResult,
+        val toChar: (Int) -> Int,
+        val toLayout: (Int) -> Int,
+    )
+
+    private val entries = mutableMapOf<Any, Entry>()
+    var version by mutableIntStateOf(0)
+        private set
+
+    override fun press(block: Int, char: Int) = delegate.press(block, char)
+
+    override fun register(key: Any, block: Int, coords: LayoutCoordinates, layout: TextLayoutResult, toChar: (Int) -> Int, toLayout: (Int) -> Int) {
+        delegate.register(key, block, coords, layout, toChar, toLayout)
+        entries[key] = Entry(block, coords, layout, toChar, toLayout)
+        version++
+    }
+
+    override fun unregister(key: Any) {
+        delegate.unregister(key)
+        if (entries.remove(key) != null) version++
+    }
+
+    private fun entry(block: Int): Entry? = entries.values.firstOrNull { it.block == block && it.coords.isAttached }
+
+    fun charAtTop(block: Int, viewport: LayoutCoordinates?): Int? {
+        val e = entry(block) ?: return null
+        val top = viewport?.takeIf { it.isAttached }?.positionInRoot()?.y ?: return null
+        val y = (top - e.coords.positionInRoot().y).coerceIn(0f, e.layout.size.height.toFloat())
+        val line = e.layout.getLineForVerticalPosition(y)
+        return e.toChar(e.layout.getLineStart(line))
+    }
+
+    fun offsetForChar(block: Int, char: Int, itemOffset: Int, viewport: LayoutCoordinates?): Int? {
+        val e = entry(block) ?: return null
+        val top = viewport?.takeIf { it.isAttached }?.positionInRoot()?.y ?: return null
+        val layoutChar = e.toLayout(char).coerceIn(0, (e.layout.layoutInput.text.length - 1).coerceAtLeast(0))
+        val line = e.layout.getLineForOffset(layoutChar)
+        return (e.coords.positionInRoot().y - top - itemOffset + e.layout.getLineTop(line)).toInt().coerceAtLeast(0)
+    }
+}
 
 /** 列表里第 0 项是章名，正文块从第 1 项开始。 */
 internal const val HEADER_ITEMS = 1
@@ -68,10 +122,13 @@ internal fun ScrollReader(
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
     selector: TextSelector,
+    /** 重排后恢复到这一原文字符；像素偏移只供旧版进度读取。 */
+    startItem: Int = 0,
+    startChar: Int = 0,
     onFootnote: (String) -> Unit = {},
     /** 登记一个滚动函数，划选拖到屏幕边缘时用来自动滚动。 */
     registerScroller: ((suspend (Float) -> Float)?) -> Unit = {},
-    onPosition: (item: Int, offset: Int, fraction: Float) -> Unit,
+    onPosition: (item: Int, offset: Int, char: Int, fraction: Float) -> Unit,
     onNext: () -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
     /** 听书时正在读的一句（本章内）。 */
@@ -81,6 +138,9 @@ internal fun ScrollReader(
 ) {
     val palette = styles.palette
     val scope = rememberCoroutineScope()
+    val anchorSelector = remember(selector) { ScrollAnchorSelector(selector) }
+    var viewport by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var ready by remember(listState) { mutableStateOf(startChar <= 0) }
     val lineHeightPx = with(LocalDensity.current) { (styles.settings.fontSize * styles.settings.lineHeight).sp.toPx() }
     val total = chapter.blocks.size + 2
 
@@ -119,12 +179,33 @@ internal fun ScrollReader(
         if (!fullyVisible) listState.animateScrollToItem(item)
     }
 
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collect { (item, offset) ->
+    LaunchedEffect(listState, startItem, startChar) {
+        if (startChar > 0) {
+            // 首个正文块排版完成后，把锚点所在行放到视口上沿。
+            repeat(12) {
+                withFrameNanos { }
+                val itemOffset = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == startItem }?.offset
+                val offset = itemOffset?.let { anchorSelector.offsetForChar(startItem - HEADER_ITEMS, startChar, it, viewport) }
+                if (offset != null) {
+                    listState.scrollToItem(startItem, offset)
+                    ready = true
+                    return@LaunchedEffect
+                }
+            }
+        }
+        ready = true
+    }
+
+    LaunchedEffect(listState, anchorSelector) {
+        snapshotFlow { Triple(Triple(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, anchorSelector.version), ready, viewport) }
+            .collect { (state, canReport, visibleViewport) ->
+                if (!canReport) return@collect
+                val (item, offset) = state
                 val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: item
                 val fraction = if (last >= total - 1) 1f else item.toFloat() / total
-                onPosition(item, offset, fraction)
+                val char = anchorSelector.charAtTop(item - HEADER_ITEMS, visibleViewport)
+                if (char == null && chapter.blocks.getOrNull(item - HEADER_ITEMS)?.displayText?.isNotEmpty() == true) return@collect
+                onPosition(item, offset, char ?: 0, fraction)
             }
     }
 
@@ -137,6 +218,7 @@ internal fun ScrollReader(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { viewport = it }
             .drawWithContent {
                 drawContent()
                 val a = marker.value
@@ -175,7 +257,7 @@ internal fun ScrollReader(
                 highlight = selected,
                 onTap = onTap,
                 blockIndex = index,
-                selector = selector,
+                selector = anchorSelector,
                 onFootnote = onFootnote,
             )
         }

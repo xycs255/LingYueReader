@@ -43,6 +43,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
@@ -86,7 +87,7 @@ internal fun CatalogSheet(
     marks: Marks,
     palette: ReaderPalette,
     onPickChapter: (Int) -> Unit,
-    onPickPosition: (chapter: Int, block: Int) -> Unit,
+    onPickPosition: (chapter: Int, block: Int, char: Int) -> Unit,
     onDeleteBookmark: (String) -> Unit,
     onDeleteNote: (String) -> Unit,
     onExportNotes: () -> Unit,
@@ -134,12 +135,12 @@ internal fun CatalogSheet(
                     LazyColumn {
                         items(marks.bookmarks.sortedWith(compareBy({ it.chapterIndex }, { it.itemIndex })), key = { it.id }) { b ->
                             MarkRow(
-                                title = chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
+                                title = if (b.lost) "原文已改动 · ${b.chapterTitle}" else chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
                                 body = b.excerpt,
                                 note = null,
                                 color = null,
                                 palette = palette,
-                                onClick = { onPickPosition(b.chapterIndex, b.itemIndex - HEADER_ITEMS) },
+                                onClick = if (b.lost) null else ({ onPickPosition(b.chapterIndex, b.itemIndex - HEADER_ITEMS, b.charOffset) }),
                                 onDelete = { onDeleteBookmark(b.id) },
                             )
                         }
@@ -163,7 +164,7 @@ internal fun CatalogSheet(
                                     note = n.text.ifBlank { null },
                                     color = Color(n.color.argb),
                                     palette = palette,
-                                    onClick = if (n.lost) null else ({ onPickPosition(n.chapterIndex, n.blockIndex) }),
+                                    onClick = if (n.lost) null else ({ onPickPosition(n.chapterIndex, n.blockIndex, n.start) }),
                                     onDelete = { onDeleteNote(n.id) },
                                 )
                             }
@@ -258,12 +259,14 @@ internal fun ParagraphSheet(
             MarkColor.entries.forEach { c ->
                 Box(
                     Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(Color(c.argb).copy(alpha = 0.9f))
-                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier)
-                        .clickable { color = c },
-                )
+                        .size(48.dp)
+                        .clickable { color = c }
+                        .semantics { contentDescription = "${c.label}批注颜色"; selected = c == color },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(30.dp).clip(CircleShape).background(Color(c.argb).copy(alpha = 0.9f))
+                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier))
+                }
             }
         }
         TextField(
@@ -318,12 +321,14 @@ internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, onSave: (Mark
             MarkColor.entries.forEach { c ->
                 Box(
                     Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(Color(c.argb).copy(alpha = 0.9f))
-                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier)
-                        .clickable { color = c },
-                )
+                        .size(48.dp)
+                        .clickable { color = c }
+                        .semantics { contentDescription = "${c.label}批注颜色"; selected = c == color },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(30.dp).clip(CircleShape).background(Color(c.argb).copy(alpha = 0.9f))
+                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier))
+                }
             }
         }
         TextField(
@@ -422,7 +427,8 @@ internal fun SettingsSheet(
                 val p = settings.paletteOf(theme)
                 // 圆和下面的名字都能点。
                 Column(
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { update { it.copy(theme = theme) } },
+                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { update { it.copy(theme = theme) } }
+                        .semantics { contentDescription = "${theme.label}背景"; selected = settings.theme == theme },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Box(
@@ -523,7 +529,11 @@ private fun TapZoneEditor(zones: List<TapAction>, palette: ReaderPalette, onChan
                         val action = zones[i]
                         Box(
                             Modifier
-                                .size(66.dp, 44.dp)
+                                .size(66.dp, 48.dp)
+                                .clickable {
+                                    val next = TapAction.entries[(action.ordinal + 1) % TapAction.entries.size]
+                                    onChange(zones.toMutableList().also { it[i] = next })
+                                }
                                 .padding(2.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(
@@ -533,10 +543,6 @@ private fun TapZoneEditor(zones: List<TapAction>, palette: ReaderPalette, onChan
                                         else -> palette.text.copy(alpha = 0.07f)
                                     },
                                 )
-                                .clickable {
-                                    val next = TapAction.entries[(action.ordinal + 1) % TapAction.entries.size]
-                                    onChange(zones.toMutableList().also { it[i] = next })
-                                }
                                 .semantics { contentDescription = "点击区域第${row + 1}行第${col + 1}格：${action.label}" },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -556,6 +562,7 @@ private fun TapZoneEditor(zones: List<TapAction>, palette: ReaderPalette, onChan
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
+                        .heightIn(min = 48.dp)
                         .clickable { onChange(preset) }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
@@ -583,15 +590,15 @@ private fun CustomColors(settings: ReaderSettings, palette: ReaderPalette, updat
                     val argb = c.toInt()
                     Box(
                         Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(if (argb == selected) palette.accent else palette.secondary.copy(alpha = 0.35f))
-                            .padding(if (argb == selected) 3.dp else 1.dp)
-                            .clip(CircleShape)
-                            .background(Color(argb))
+                            .size(48.dp)
                             .clickable { onPick(argb) }
-                            .semantics { contentDescription = "$label #%06X".format(argb and 0xFFFFFF) },
-                    )
+                            .semantics { contentDescription = "$label #%06X".format(argb and 0xFFFFFF); this.selected = argb == selected },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(Modifier.size(30.dp).clip(CircleShape)
+                            .background(if (argb == selected) palette.accent else palette.secondary.copy(alpha = 0.35f))
+                            .padding(if (argb == selected) 3.dp else 1.dp).clip(CircleShape).background(Color(argb)))
+                    }
                 }
             }
         }
@@ -701,7 +708,9 @@ private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selecte
                         .pressScale(press, 0.93f)
                         .clip(RoundedCornerShape(50))
                         .background(fill)
+                        .heightIn(min = 48.dp)
                         .clickable(press, LocalIndication.current) { onSelect(value) }
+                        .semantics { this.selected = on }
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 )
             }

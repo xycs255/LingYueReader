@@ -1,13 +1,20 @@
 package com.xycs.lingyuereader.data
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
 class VocabularyTest {
     @get:Rule val tmp = TemporaryFolder()
 
@@ -82,5 +89,26 @@ class VocabularyTest {
         assertEquals(0, w.interval)
         assertFalse(w.mastered)
         assertTrue(w.isDue(now))
+    }
+
+    @Test
+    fun failedWriteKeepsThePreviousVocabularyBytes() {
+        val file = File(tmp.root, "v.json")
+        val v = Vocabulary(file)
+        v.add(word("银行"))
+        val original = file.readBytes()
+        // 阻断 AtomicFile 的新文件：写入必须报错，而不能删掉旧生词本。
+        val blocker = File(tmp.root, "v.json.new")
+        assertTrue(blocker.mkdir())
+        File(blocker, "keep").writeText("阻止清理")
+
+        assertTrue(runCatching { v.add(word("门口")) }.exceptionOrNull() is IOException)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, v.raw())
+        assertEquals(listOf("银行"), v.list().map { it.word })
+
+        assertTrue(blocker.deleteRecursively())
+        v.add(word("门口"))
+        assertEquals(listOf("门口", "银行"), v.list().map { it.word })
     }
 }

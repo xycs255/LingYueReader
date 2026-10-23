@@ -71,9 +71,43 @@ class MarksTest {
     @Test
     fun jsonRoundTrip() {
         val m = Marks(
-            bookmarks = listOf(Bookmark("b", 1, "第二章", 3, 5, "摘录", 9)),
+            bookmarks = listOf(Bookmark("b", 1, "第二章", 3, 5, "摘录", 9, TextAnchor("附近原文", 2))),
             notes = listOf(note(0, "第一章", 2, "原文", 1).copy(color = MarkColor.BLUE)),
         )
         assertEquals(m, Marks.fromJson(JSONObject(m.toJson().toString())))
+    }
+
+    @Test
+    fun anchorFollowsTextAfterParagraphInsertion() {
+        val original = book("第一章" to listOf("开头。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        val char = 18
+        val anchor = TextAnchors.capture(original.chapters[0], 1, char)
+        val revised = book("第一章" to listOf("开头。", "新加入的段落。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        assertEquals(TextLocation(2, char), TextAnchors.resolve(revised.chapters[0], 1, char, anchor))
+
+        val bookmark = Bookmark("b", 0, "第一章", 2, char, "田槐走到打谷场", 1, anchor)
+        val moved = Marks(bookmarks = listOf(bookmark)).resolve(revised).bookmarks.single()
+        assertEquals(3, moved.itemIndex)
+        assertEquals(char, moved.charOffset)
+        assertFalse(moved.lost)
+    }
+
+    @Test
+    fun repeatedAnchorChoosesNearestOldLocation() {
+        val chapter = book("第一章" to listOf("重复句。", "别的。", "重复句。", "别的。", "重复句。", "别的。", "重复句。"))
+            .chapters.single()
+        assertEquals(TextLocation(4, 2), TextAnchors.resolve(chapter, 5, 2, TextAnchor("重复句。", 2)))
+    }
+
+    @Test
+    fun unmatchedBookmarkIsRetainedAndMarkedLost() {
+        val old = book("旧章" to listOf("已经删除的原文。"))
+        val anchor = TextAnchors.capture(old.chapters.single(), 0, 4)
+        val bookmark = Bookmark("b", 0, "旧章", 1, 4, "已经删除", 1, anchor)
+        val revised = book("新章" to listOf("完全不同的正文。"))
+        val restored = Marks(bookmarks = listOf(bookmark)).resolve(revised)
+        assertEquals("b", restored.bookmarks.single().id)
+        assertTrue(restored.bookmarks.single().lost)
+        assertEquals(restored, Marks.fromJson(JSONObject(restored.toJson().toString())))
     }
 }

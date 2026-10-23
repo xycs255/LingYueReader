@@ -33,6 +33,7 @@ import com.xycs.lingyuereader.data.Vocabulary
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReadingProgress
+import com.xycs.lingyuereader.data.TextAnchors
 import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
@@ -40,6 +41,9 @@ import com.xycs.lingyuereader.tts.ReadAloud
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +53,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 /** 首页底部导航的四个标签。 */
@@ -270,6 +275,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    private val _importing = MutableStateFlow(false)
+    val importing: StateFlow<Boolean> = _importing.asStateFlow()
+    private var importJob: Job? = null
 
     /** 一次选了多个文件时，先问是分别导入还是合成一本。 */
     private val _pendingImport = MutableStateFlow<List<Library.Picked>?>(null)
@@ -354,7 +362,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            loadShelf()
+            try {
+                loadShelf()
+            } catch (error: Exception) {
+                _messages.value = error.message ?: "书架读取失败；原文件已保留"
+            }
             _shelfLoaded.value = true
             maybeAutoBackup()
             com.xycs.lingyuereader.reminder.GoalReminder.schedule(getApplication())
@@ -367,9 +379,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ReadAloud.state.collect { s ->
                 val u = s?.current ?: return@collect
                 val book = _openBook.value?.takeIf { it.entry.id == s.bookId } ?: return@collect
-                val block = book.content.chapters.getOrNull(s.chapterIndex)?.blocks?.getOrNull(u.block)
-                val indent = if (block is Block.Para && block.prose) 2 else 0
-                saveProgress(s.chapterIndex, u.block + 1, 0, u.start + indent)
+                if (book.content.chapters.getOrNull(s.chapterIndex)?.blocks?.getOrNull(u.block) != null) {
+                    saveProgress(s.chapterIndex, u.block + 1, 0, u.start)
+                }
             }
         }
     }
@@ -478,9 +490,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val picked = withContext(Dispatchers.IO) { library.describe(uris) }
             val (ok, unsupported) = picked.partition { BookParser.isSupported(it.name) }
-            if (unsupported.isNotEmpty()) _messages.value = "暂不支持：${unsupported.joinToString("、") { it.name }}"
+            val unsupportedMessage = unsupported.takeIf { it.isNotEmpty() }
+                ?.let { "暂不支持：${it.joinToString("、") { file -> file.name }}" }
+            if (unsupportedMessage != null) _messages.value = unsupportedMessage
             when {
-                ok.size == 1 -> importBooks(ok, merge = false, title = null)
+                ok.size == 1 -> importBooks(ok, merge = false, title = null, precedingMessage = unsupportedMessage)
                 ok.size > 1 -> _pendingImport.value = ok
             }
         }
@@ -488,29 +502,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelImport() {
         _pendingImport.value = null
+        importJob?.cancel()
     }
 
-    fun importBooks(files: List<Library.Picked>, merge: Boolean, title: String?) {
+    fun importBooks(files: List<Library.Picked>, merge: Boolean, title: String?, precedingMessage: String? = null) {
         _pendingImport.value = null
-        viewModelScope.launch {
+        if (_busy.value || files.isEmpty()) return
+        importJob = viewModelScope.launch {
             _busy.value = true
+            _importing.value = true
             val groups = if (merge) listOf(files) else files.map { listOf(it) }
             val failed = mutableListOf<String>()
             var added = 0
-            withContext(Dispatchers.IO) {
-                groups.forEach { group ->
-                    runCatching { library.add(group, if (merge) title else null) }
-                        .onSuccess { added++ }
-                        .onFailure { failed += group.first().name + "（${it.message ?: "读取失败"}）" }
+            var cancelled = false
+            try {
+                withContext(Dispatchers.IO) {
+                    val context = currentCoroutineContext()
+                    groups.forEach { group ->
+                        context.ensureActive()
+                        try {
+                            library.add(group, if (merge) title else null) { context.ensureActive() }
+                            added++
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            failed += group.first().name + "（${error.message ?: "读取失败"}）"
+                        }
+                    }
                 }
-            }
-            loadShelf()
-            _busy.value = false
-            _messages.value = buildString {
-                if (added > 0) append("已加入 $added 本书")
-                if (failed.isNotEmpty()) {
-                    if (isNotEmpty()) append("；")
-                    append("导入失败：${failed.joinToString("、")}")
+            } catch (_: CancellationException) {
+                cancelled = true
+            } finally {
+                try {
+                    withContext(NonCancellable) { loadShelf() }
+                    val message = buildString {
+                        if (cancelled) append("已取消导入")
+                        if (added > 0) {
+                            if (isNotEmpty()) append("；")
+                            append("已加入 $added 本书")
+                        }
+                        if (failed.isNotEmpty()) {
+                            if (isNotEmpty()) append("；")
+                            append("导入失败：${failed.joinToString("、")}")
+                        }
+                        if (precedingMessage != null) {
+                            if (isNotEmpty()) append("；")
+                            append(precedingMessage)
+                        }
+                    }
+                    _messages.value = message.takeIf { it.isNotEmpty() }
+                } catch (error: Exception) {
+                    _messages.value = "刷新书架失败：${error.message ?: "读取失败"}"
+                } finally {
+                    _busy.value = false
+                    _importing.value = false
+                    importJob = null
                 }
             }
         }
@@ -644,11 +690,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
-        movesSinceJump++
         val book = _openBook.value ?: return
         val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
-        val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset)
+        val anchor = TextAnchors.capture(chapter, itemIndex - 1, charOffset)
+        val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset, anchor)
         if (book.entry.progress == progress) return
+        movesSinceJump++
         _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
         _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
         viewModelScope.launch(disk) { library.saveProgress(book.entry.id, progress) }
@@ -673,7 +720,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val excerpt = chapter.blocks.getOrNull(blockIndex)?.displayText?.trim()?.take(40) ?: chapter.title
-        val bookmark = Bookmark(UUID.randomUUID().toString(), chapterIndex, chapter.title, itemIndex, charOffset, excerpt, System.currentTimeMillis())
+        val bookmark = Bookmark(
+            UUID.randomUUID().toString(), chapterIndex, chapter.title, itemIndex, charOffset, excerpt, System.currentTimeMillis(),
+            anchor = TextAnchors.capture(chapter, blockIndex, charOffset),
+        )
         updateMarks { m -> m.copy(bookmarks = m.bookmarks + bookmark) }
         _messages.value = "已加书签"
     }
@@ -970,13 +1020,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun backup(uri: Uri) {
         viewModelScope.launch {
             _busy.value = true
+            var copyingToDestination = false
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    getApplication<Application>().contentResolver.openOutputStream(uri)!!.use { library.backup(it, prefs.exportJson(), backupData()) }
+                    val app = getApplication<Application>()
+                    val staged = File.createTempFile("manual-backup-", ".zip", app.cacheDir)
+                    try {
+                        // 先完成 ZIP；来源文件读到一半失败时，不会碰已选的目标文件。
+                        val count = staged.outputStream().use { library.backup(it, prefs.exportJson(), backupData()) }
+                        val output = app.contentResolver.openOutputStream(uri)
+                            ?: throw IllegalArgumentException("无法写入备份文件")
+                        output.use { dest ->
+                            copyingToDestination = true
+                            staged.inputStream().use { it.copyTo(dest) }
+                        }
+                        count
+                    } finally {
+                        staged.delete()
+                    }
                 }
             }
             _busy.value = false
-            _messages.value = result.fold({ "已备份 $it 本书" }, { "备份失败：${it.message}" })
+            _messages.value = result.fold(
+                { "已备份 $it 本书" },
+                { "备份失败：${it.message}${if (copyingToDestination) "；目标文件可能不完整，请删除后重试" else ""}" },
+            )
         }
     }
 
@@ -1055,7 +1123,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     _appearance.value = prefs.appearance()
                     _shelfPrefs.value = prefs.shelf()
                 }
-                _messages.value = "已恢复 ${result.books} 本书"
+                _messages.value = buildString {
+                    append("已恢复 ${result.books} 本书")
+                    if (result.skippedBooks > 0) append("；备份中另有 ${result.skippedBooks} 本无法读取，已跳过")
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
