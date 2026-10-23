@@ -185,24 +185,23 @@ object WordFinder {
     fun isHan(c: Char): Boolean = Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
 
     /**
-     * 在 [text] 的第 [pos] 个字处选词：汉字取词典里覆盖该字的最长词（一样长时取靠前的），
-     * 词典里没有就只取这个字；英文、数字取连续的一串；标点返回空。
+     * 在 [text] 的第 [pos] 个字处选词。
+     *
+     * 汉字：把按住的字所在的这一串汉字整个切成词，取包含它的那个词。切法是词数最少、其次单字最少
+     * （最少分词法）。只看“覆盖这个字的最长词”会被旁边的词带偏：“研究生命起源”按“生”会选出“研究生”，
+     * 整串切开是“研究 / 生命 / 起源”，选“生命”。词典里没有的字单独成词。
+     * 英文、数字取连续的一串；标点返回空。
      */
     fun wordAt(text: String, pos: Int, contains: (String) -> Boolean): IntRange? {
         if (pos !in text.indices) return null
         val c = text[pos]
         if (isHan(c)) {
-            var best = pos..pos
-            for (start in maxOf(0, pos - MAX_WORD + 1)..pos) {
-                for (end in pos until minOf(text.length, start + MAX_WORD)) {
-                    if (!isHan(text[end])) break
-                    val len = end - start + 1
-                    if (len > best.count() || (len == best.count() && start < best.first)) {
-                        if ((start..end).all { isHan(text[it]) } && contains(text.substring(start, end + 1))) best = start..end
-                    }
-                }
-            }
-            return best
+            // 按住的字所在的这串汉字（最长看前后各 40 字，够一句话）。
+            var from = pos
+            var to = pos + 1
+            while (from > 0 && pos - from < 40 && isHan(text[from - 1])) from--
+            while (to < text.length && to - pos < 40 && isHan(text[to])) to++
+            return segment(text.substring(from, to), contains).map { (it.first + from)..(it.last + from) }.first { pos in it }
         }
         if (c.isLetterOrDigit()) {
             var s = pos
@@ -212,6 +211,39 @@ object WordFinder {
             return s..e
         }
         return null
+    }
+
+    /** 把一串汉字切成词：词数最少，一样多时单字最少，再一样时前面的词长（动态规划）。 */
+    fun segment(han: String, contains: (String) -> Boolean): List<IntRange> {
+        val n = han.length
+        if (n == 0) return emptyList()
+        // cost[i]：前 i 个字的最好切法（词数, 单字数）；from[i]：最后一个词从哪开始。
+        val words = IntArray(n + 1) { Int.MAX_VALUE }
+        val singles = IntArray(n + 1)
+        val from = IntArray(n + 1)
+        words[0] = 0
+        for (i in 0 until n) {
+            if (words[i] == Int.MAX_VALUE) continue
+            for (j in i + 1..minOf(n, i + MAX_WORD)) {
+                val len = j - i
+                if (len > 1 && !contains(han.substring(i, j))) continue
+                val w = words[i] + 1
+                val sg = singles[i] + if (len == 1) 1 else 0
+                if (w < words[j] || (w == words[j] && sg < singles[j]) || (w == words[j] && sg == singles[j] && i < from[j])) {
+                    words[j] = w
+                    singles[j] = sg
+                    from[j] = i
+                }
+            }
+        }
+        val out = ArrayDeque<IntRange>()
+        var j = n
+        while (j > 0) {
+            val i = from[j]
+            out.addFirst(i until j)
+            j = i
+        }
+        return out.toList()
     }
 }
 

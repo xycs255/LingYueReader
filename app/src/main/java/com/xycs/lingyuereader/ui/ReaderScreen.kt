@@ -30,6 +30,14 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.foundation.magnifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Size
@@ -405,11 +413,14 @@ private fun Reader(
     // 拖把手时手指在把手上，对应的字在手指上方约这么高。
     val liftPx = with(density) { 30.dp.toPx() }
     val selectHaptic = LocalHapticFeedback.current
+    val pressRing = remember { PressRing() }
+    val ringScope = rememberCoroutineScope()
     val tracker = remember(vm, chapterIndex) {
         SelectionTracker(
             onPress = { block, char ->
-                // 长按选中一个词：轻震一下，告诉手指已经抓住了。
+                // 长按选中一个词：轻震一下，蓄力环迸开，告诉手指已经抓住了。
                 selectHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                pressRing.burst(ringScope)
                 // 开始选字就收起菜单，免得挡住操作条。
                 menuVisible = false
                 vm.pressText(chapterIndex, block, char)
@@ -499,6 +510,8 @@ private fun Reader(
                         if (event.type == PointerEventType.Press) {
                             event.changes.firstOrNull()?.let { touch.y = it.position.y / size.height.coerceAtLeast(1) }
                         }
+                        // 手指在哪：放大镜跟着它。
+                        event.changes.firstOrNull()?.let { tracker.finger = if (it.pressed) it.position else Offset.Unspecified }
                         if (tracker.mode == null) continue
                         val change = event.changes.firstOrNull() ?: continue
                         change.consume()
@@ -506,6 +519,37 @@ private fun Reader(
                     }
                 }
             }
+            // 长按蓄力环：按住超过 0.15 秒，手指周围出现一圈慢慢画满，满了就选中；移动或松手就消失。
+            .pointerInput(Unit) {
+                val slop = viewConfiguration.touchSlop
+                val timeout = viewConfiguration.longPressTimeoutMillis
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    if (Effects.noMotion || menuVisible || sheet != null || !tracker.overText(down.position)) return@awaitEachGesture
+                    pressRing.start(down.position, ringScope, timeout)
+                    while (true) {
+                        val e = awaitPointerEvent(PointerEventPass.Initial)
+                        val c = e.changes.firstOrNull() ?: break
+                        if (e.changes.size > 1 || !c.pressed || (c.position - down.position).getDistance() > slop) break
+                    }
+                    pressRing.cancel(ringScope)
+                }
+            }
+            .magnifier(
+                sourceCenter = { tracker.magnifierSource() },
+                // 放大镜在手指上方；太靠上时放到手指下方。
+                magnifierCenter = {
+                    val src = tracker.magnifierSource()
+                    if (!src.isSpecified) Offset.Unspecified
+                    else {
+                        val lift = 76.dp.toPx()
+                        if (src.y - lift < 48.dp.toPx()) src + Offset(0f, lift) else src - Offset(0f, lift)
+                    }
+                },
+                zoom = 1.5f,
+                size = DpSize(150.dp, 56.dp),
+                cornerRadius = 28.dp,
+            )
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -659,6 +703,7 @@ private fun Reader(
                 Text("字号 ${kotlin.math.round(bubbleSize).toInt()}", color = palette.secondary, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
             }
         }
+        PressRingOverlay(pressRing, palette.accent)
         val back = returnPoint?.takeIf { it.bookId == entry.id }
         AnimatedVisibility(
             visible = back != null && !menuVisible && listening == null && !autoScroll,
@@ -1075,6 +1120,76 @@ private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, pa
             valueRange = 0f..count.toFloat(),
             colors = SliderDefaults.sliderColors(foregroundColor = palette.accent, backgroundColor = palette.text.copy(alpha = 0.12f)),
             modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
+}
+
+/** 长按蓄力环的状态：在哪、画了多少、是否正在迸开。 */
+private class PressRing {
+    var at by mutableStateOf(Offset.Unspecified)
+    val progress = Animatable(0f)
+    val burst = Animatable(0f)
+    private var job: kotlinx.coroutines.Job? = null
+
+    fun start(position: Offset, scope: kotlinx.coroutines.CoroutineScope, longPressMillis: Long) {
+        job?.cancel()
+        job = scope.launch {
+            burst.snapTo(0f)
+            progress.snapTo(0f)
+            // 快速点按不出现，按住了才开始画。
+            delay(150)
+            at = position
+            progress.animateTo(1f, tween((longPressMillis - 150).toInt().coerceAtLeast(100), easing = LinearEasing))
+        }
+    }
+
+    fun cancel(scope: kotlinx.coroutines.CoroutineScope) {
+        if (burst.isRunning) return
+        job?.cancel()
+        scope.launch {
+            at = Offset.Unspecified
+            progress.snapTo(0f)
+        }
+    }
+
+    /** 长按生效：环迸开淡出。 */
+    fun burst(scope: kotlinx.coroutines.CoroutineScope) {
+        if (!at.isSpecified) return
+        job?.cancel()
+        job = scope.launch {
+            progress.snapTo(1f)
+            burst.snapTo(0f)
+            burst.animateTo(1f, tween(280, easing = Motion.Standard))
+            at = Offset.Unspecified
+            burst.snapTo(0f)
+            progress.snapTo(0f)
+        }
+    }
+}
+
+@Composable
+private fun PressRingOverlay(ring: PressRing, color: Color) {
+    Canvas(Modifier.fillMaxSize()) {
+        val c = ring.at
+        if (!c.isSpecified) return@Canvas
+        val r = 30.dp.toPx()
+        val b = ring.burst.value
+        if (b > 0f) {
+            drawCircle(color.copy(alpha = 0.28f * (1f - b)), radius = r * (1f + 0.6f * b), center = c)
+            return@Canvas
+        }
+        val p = ring.progress.value
+        if (p <= 0f) return@Canvas
+        val stroke = 3.dp.toPx()
+        drawCircle(color.copy(alpha = 0.15f), radius = r, center = c, style = Stroke(stroke))
+        drawArc(
+            color.copy(alpha = 0.75f),
+            startAngle = -90f,
+            sweepAngle = 360f * p,
+            useCenter = false,
+            topLeft = c - Offset(r, r),
+            size = Size(r * 2, r * 2),
+            style = Stroke(stroke, cap = StrokeCap.Round),
         )
     }
 }

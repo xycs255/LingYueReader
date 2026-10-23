@@ -4,6 +4,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.text.TextLayoutResult
@@ -60,9 +62,27 @@ internal class SelectionTracker(
         onPress(block, char)
     }
 
-    override fun beginHandle(start: Boolean) {
+    /** 把手的光标在阅读区里的位置，和手指与它的相对位置（第一次移动时定下）。 */
+    private var handleAnchor: Offset? = null
+    private var grab: Offset? = null
+
+    override fun beginHandle(start: Boolean, coords: LayoutCoordinates, caret: Offset) {
         mode = if (start) Mode.START_HANDLE else Mode.END_HANDLE
         last = null
+        grab = null
+        handleAnchor = root?.takeIf { it.isAttached && coords.isAttached }?.localPositionOf(coords, caret)
+        // 手指按下的位置阅读区先收到（[finger] 已是按下处），这时就定下手指和光标的相对位置。
+        grab = handleAnchor?.let { a -> finger.takeIf { it.isSpecified }?.let { it - a } }
+    }
+
+    /** 手指当前的位置（阅读区坐标），按下时就开始更新；放大镜跟着它。 */
+    var finger by mutableStateOf(Offset.Unspecified)
+
+    /** 放大镜要放大的点：选字时是手指下面，拖把手时是光标处；不在选字时为 Unspecified。 */
+    fun magnifierSource(): Offset {
+        val m = mode ?: return Offset.Unspecified
+        val f = finger.takeIf { it.isSpecified } ?: return Offset.Unspecified
+        return if (m == Mode.SELECT) f else f - (grab ?: Offset.Zero)
     }
 
     override fun register(key: Any, block: Int, coords: LayoutCoordinates, layout: TextLayoutResult, toChar: (Int) -> Int, toLayout: (Int) -> Int) {
@@ -80,7 +100,10 @@ internal class SelectionTracker(
         if (entries.remove(key) != null) version++
     }
 
-    /** 手指移到 [position]（阅读区坐标）。把手的位置在手指上方，换算时往上挪 [handleLift]。 */
+    /**
+     * 手指移到 [position]（阅读区坐标）。拖把手时按按下那一刻手指和光标的相对位置换算（按下去选区不跳）；
+     * 拿不到光标位置时退回往上挪 [handleLift]。
+     */
     fun track(position: Offset, edgeSize: Float, handleLift: Float) {
         val m = mode ?: return
         last = position
@@ -91,8 +114,10 @@ internal class SelectionTracker(
             position.y > h - edgeSize -> 1
             else -> 0
         }
-        val target = if (m == Mode.SELECT) position else position.copy(y = position.y - handleLift)
-        val (block, offset) = resolve(target) ?: return
+        if (m != Mode.SELECT && grab == null) grab = Offset(0f, handleLift)
+        val target = if (m == Mode.SELECT) position else position - (grab ?: Offset(0f, handleLift))
+        // 选字时取手指下面的字；拖把手时取光标（字缝）位置。
+        val (block, offset) = resolve(target, caret = m != Mode.SELECT) ?: return
         when (m) {
             Mode.SELECT -> onDrag(block, offset)
             Mode.START_HANDLE -> onHandle(true, block, offset)
@@ -110,11 +135,27 @@ internal class SelectionTracker(
         mode = null
         edge = 0
         last = null
+        grab = null
+        handleAnchor = null
         if (m == Mode.SELECT) onRelease()
     }
 
+    /** [p]（阅读区坐标）是否按在文字上：长按这里才会选字，蓄力环只在这时出现。 */
+    fun overText(p: Offset): Boolean {
+        val r = root?.takeIf { it.isAttached } ?: return false
+        return entries.values.any { e ->
+            if (!e.coords.isAttached) return@any false
+            val b = r.localBoundingBoxOf(e.coords, clipBounds = false)
+            if (!b.contains(p)) return@any false
+            val l = e.layout
+            val y = p.y - b.top
+            if (y < 0f || y > l.size.height) return@any false
+            p.x - b.left <= l.getLineRight(l.getLineForVerticalPosition(y))
+        }
+    }
+
     /** 阅读区里某点落在哪一块的哪个字上；不在任何块里时取上下最近的块。 */
-    private fun resolve(p: Offset): Pair<Int, Int>? {
+    private fun resolve(p: Offset, caret: Boolean): Pair<Int, Int>? {
         val r = root?.takeIf { it.isAttached } ?: return null
         val width = r.size.width.toFloat()
         var best: Pair<Entry, Rect>? = null
@@ -139,7 +180,7 @@ internal class SelectionTracker(
             (p.x - b.left).coerceIn(0f, e.layout.size.width.toFloat()),
             (p.y - b.top).coerceIn(0f, (e.layout.size.height - 1).coerceAtLeast(0).toFloat()),
         )
-        return e.block to e.toChar(e.layout.getOffsetForPosition(local))
+        return e.block to e.toChar(if (caret) e.layout.getOffsetForPosition(local) else charUnder(e.layout, local))
     }
 
     /**

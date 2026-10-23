@@ -72,4 +72,34 @@ class BuiltinTest {
         assertEquals("说", word('说'))
         assertFalse(cedict.contains("说H"))
     }
+
+    @Test
+    fun wordAtSegmentsTheWholeRunInsteadOfGrabbingTheLongestNeighbour() {
+        fun word(text: String, at: Int) = WordFinder.wordAt(text, at, cedict::contains)?.let { text.substring(it) }
+        // 只看“覆盖这个字的最长词”会选成“研究生”。
+        val life = "研究生命起源"
+        assertEquals("生命", word(life, life.indexOf('生')))
+        assertEquals("研究", word(life, life.indexOf('研')))
+        assertEquals("起源", word(life, life.indexOf('源')))
+        // 真是“研究生”时还选“研究生”。
+        val student = "他是研究生，在读书。"
+        assertEquals("研究生", word(student, student.indexOf('生')))
+        assertEquals("读书", word(student, student.indexOf('读')))
+        // 经典歧义句：切成“南京市 / 长江 / 大桥”，不会选出“市长”。
+        val bridge = "南京市长江大桥"
+        assertEquals("长江", word(bridge, bridge.indexOf('长')))
+        assertEquals("南京市", word(bridge, bridge.indexOf('市')))
+        // 句子里的常见词。
+        val s = "我们一起去图书馆借书吧"
+        assertEquals("图书馆", word(s, s.indexOf('馆')))
+        assertEquals("一起", word(s, s.indexOf('起')))
+    }
+
+    @Test
+    fun segmentationPrefersFewerWordsThenFewerSingles() {
+        val dict = setOf("研究", "研究生", "生命", "起源")
+        val parts = WordFinder.segment("研究生命起源", dict::contains).map { "研究生命起源".substring(it) }
+        assertEquals(listOf("研究", "生命", "起源"), parts)
+        assertEquals(listOf("天"), WordFinder.segment("天", dict::contains).map { "天".substring(it) })
+    }
 }

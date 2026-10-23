@@ -350,8 +350,8 @@ internal fun BlockView(
                         if (l == null || s == null || down.position.x > l.getLineRight(l.getLineForVerticalPosition(down.position.y))) {
                             return@awaitEachGesture
                         }
-                        // 之后的拖动和松手由阅读区跟踪。
-                        s.press(blockIndex, toChar(l.getOffsetForPosition(down.position)))
+                        // 之后的拖动和松手由阅读区跟踪。取手指下面的那个字，而不是离手指最近的字缝。
+                        s.press(blockIndex, toChar(charUnder(l, down.position)))
                     }
                 },
             )
@@ -360,11 +360,13 @@ internal fun BlockView(
                 val len = l.layoutInput.text.length
                 val start = toLayout(selected.first)
                 val end = toLayout(selected.last + 1)
+                // 按住把手时告诉调度器光标在哪：之后按手指和光标的相对位置拖，按下去选区不会跳。
+                fun caret(offset: Int) = l.getCursorRect(offset).let { Offset(it.left, it.center.y) }
                 if (blockIndex == highlight.startBlock && start in 0..len) {
-                    SelectionHandle(l, start, isStart = true, palette.accent) { select?.beginHandle(true) }
+                    SelectionHandle(l, start, isStart = true, palette.accent) { coords?.let { c -> select?.beginHandle(true, c, caret(start)) } }
                 }
                 if (blockIndex == highlight.endBlock && end in 1..len) {
-                    SelectionHandle(l, end, isStart = false, palette.accent) { select?.beginHandle(false) }
+                    SelectionHandle(l, end, isStart = false, palette.accent) { coords?.let { c -> select?.beginHandle(false, c, caret(end)) } }
                 }
             }
         }
@@ -434,6 +436,21 @@ internal fun BlockView(
  * 正文里高亮的选区，可以跨段落：从第 [startBlock] 块第 [startChar] 字到第 [endBlock] 块第 [endChar] 字（含）。
  * [handles] 为真时两端显示把手。
  */
+/**
+ * [p] 落在哪个字上。排版的 getOffsetForPosition 给的是离手指最近的字缝：按在一个字的右半边，
+ * 它会给出后一个字的位置，选中的就成了下一个字。这里换成“手指下面那个字”。
+ */
+internal fun charUnder(l: TextLayoutResult, p: Offset): Int {
+    val len = l.layoutInput.text.length
+    if (len == 0) return 0
+    val line = l.getLineForVerticalPosition(p.y)
+    val lineStart = l.getLineStart(line)
+    val lineEnd = l.getLineEnd(line, visibleEnd = true).coerceAtLeast(lineStart + 1).coerceAtMost(len)
+    var o = l.getOffsetForPosition(p)
+    if (o > lineStart && (o >= lineEnd || l.getBoundingBox(o).left > p.x)) o--
+    return o.coerceIn(lineStart, lineEnd - 1)
+}
+
 /** 刚跳到的一段（第几块），[alpha] 从 1 褪到 0。 */
 internal class Landing(val block: Int, val alpha: () -> Float)
 
@@ -454,8 +471,8 @@ internal interface TextSelector {
     /** 长按某个字，开始选字；之后的移动由阅读区跟踪。 */
     fun press(block: Int, char: Int)
 
-    /** 按住了选区起点或终点的把手；之后的移动由阅读区跟踪。 */
-    fun beginHandle(start: Boolean)
+    /** 按住了选区起点或终点的把手（光标在 [coords] 里的 [caret] 处）；之后的移动由阅读区跟踪。 */
+    fun beginHandle(start: Boolean, coords: LayoutCoordinates, caret: Offset)
 
     /** 文字块登记自己的位置和排版；[toChar]、[toLayout] 在排版位置与块文字位置之间换算。 */
     fun register(key: Any, block: Int, coords: LayoutCoordinates, layout: TextLayoutResult, toChar: (Int) -> Int, toLayout: (Int) -> Int)
