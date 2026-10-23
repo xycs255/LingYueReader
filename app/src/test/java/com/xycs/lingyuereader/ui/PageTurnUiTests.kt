@@ -37,10 +37,13 @@ abstract class PageTurnUiBase(private val mode: String) {
                 .put("sources", JSONArray().put(JSONObject().put("name", "测试书.txt").put("uri", "").put("file", "s0.txt")))
             File(files, "books/index.json").writeText(JSONArray().put(entry).toString())
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear()
-                .putString("pageMode", mode).putBoolean("breakReminder", false).commit()
+                .putString("pageMode", mode).putBoolean("breakReminder", false).also(::prefs).commit()
         }
     }
     protected val compose = createAndroidComposeRule<MainActivity>()
+
+    /** 子类在打开前再放些设置。 */
+    protected open fun prefs(editor: android.content.SharedPreferences.Editor) {}
 
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)

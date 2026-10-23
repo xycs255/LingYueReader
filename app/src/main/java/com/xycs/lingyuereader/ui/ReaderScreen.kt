@@ -29,6 +29,11 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import com.xycs.lingyuereader.data.TapZones
+import com.xycs.lingyuereader.data.TapAction
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -335,6 +340,8 @@ private fun Reader(
     // 自动滚动：开着时点正文是暂停/继续。
     var autoScroll by remember { mutableStateOf(false) }
     var autoPaused by remember { mutableStateOf(false) }
+    // 点击区域要知道点在多高：按下时在最外层记下（各处传进来的只有横向位置）。
+    val touch = remember { object { var y = 0.5f } }
     val onTap: (Float) -> Unit = { x ->
         when {
             // 有划选时，点一下只是取消划选。
@@ -342,11 +349,22 @@ private fun Reader(
             autoScroll && !menuVisible -> autoPaused = !autoPaused
             menuVisible -> menuVisible = false
             !currentSettings.tapToTurn -> menuVisible = true
-            x < 1f / 3 -> turner.turn?.invoke(false)
-            x > 2f / 3 -> turner.turn?.invoke(true)
-            else -> menuVisible = true
+            else -> {
+                val zones = currentSettings.tapZones
+                val i = TapZones.indexOf(x, touch.y)
+                // 哪一格都不是菜单时，中间那格仍打开菜单，免得菜单再也叫不出来。
+                val action = if (i == 4 && TapAction.MENU !in zones) TapAction.MENU else zones[i]
+                when (action) {
+                    TapAction.PREV -> turner.turn?.invoke(false)
+                    TapAction.NEXT -> turner.turn?.invoke(true)
+                    TapAction.MENU -> menuVisible = true
+                    TapAction.NONE -> {}
+                }
+            }
         }
     }
+    // 双指捏合调字号：捏的时候只显示字号，松手再重新排版。
+    var pinchSize by remember { mutableStateOf<Float?>(null) }
     // 长按正文选出按住的词，松手就查；不松手拖动是自由划选（可跨段落，拖到上下边缘自动滚动），
     // 松手后可拖两端把手微调。
     // 点开的注释（键）。
@@ -446,11 +464,38 @@ private fun Reader(
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.type == PointerEventType.Press) {
+                            event.changes.firstOrNull()?.let { touch.y = it.position.y / size.height.coerceAtLeast(1) }
+                        }
                         if (tracker.mode == null) continue
                         val change = event.changes.firstOrNull() ?: continue
                         change.consume()
                         if (change.pressed) tracker.track(change.position, edgePx, liftPx) else tracker.finish()
                     }
+                }
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var startDistance = 0f
+                    var startSize = 0f
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.isEmpty()) break
+                        if (pressed.size < 2) continue
+                        val d = (pressed[0].position - pressed[1].position).getDistance()
+                        if (startDistance <= 0f) {
+                            startDistance = d.coerceAtLeast(1f)
+                            startSize = currentSettings.fontSize
+                            vm.clearSelection()
+                        }
+                        pinchSize = (startSize * d / startDistance).coerceIn(14f, 30f)
+                        // 两指在捏：不让下面的列表滚动、翻页、选字。
+                        event.changes.forEach { it.consume() }
+                    }
+                    pinchSize?.let { size -> vm.updateSettings { it.copy(fontSize = kotlin.math.round(size)) } }
+                    pinchSize = null
                 }
             },
     ) {
@@ -549,6 +594,17 @@ private fun Reader(
         }
 
 
+        pinchSize?.let { size ->
+            Text(
+                "字号 ${kotlin.math.round(size).toInt()}",
+                color = palette.text,
+                fontSize = 16.sp,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .readerGlass(RoundedCornerShape(50), palette, glassBackdrop)
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+            )
+        }
         val back = returnPoint?.takeIf { it.bookId == entry.id }
         AnimatedVisibility(
             visible = back != null && !menuVisible && listening == null && !autoScroll,

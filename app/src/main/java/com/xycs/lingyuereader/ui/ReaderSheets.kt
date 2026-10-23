@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.MarkColor
+import com.xycs.lingyuereader.data.TapAction
+import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Note
 import com.xycs.lingyuereader.data.PageMode
@@ -467,7 +469,8 @@ internal fun SettingsSheet(
             color = palette.secondary,
             fontSize = 12.sp,
         )
-        SwitchRow("点击左右两侧翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
+        SwitchRow("点击翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
+        if (settings.tapToTurn) TapZoneEditor(settings.tapZones, palette) { z -> update { it.copy(tapZones = z) } }
         SwitchRow("音量键翻页", settings.volumeKeys, textColor, accent) { v -> update { it.copy(volumeKeys = v) } }
         SwitchRow("阅读时屏幕常亮", settings.keepScreenOn, textColor, accent) { v -> update { it.copy(keepScreenOn = v) } }
         TextButton(
@@ -478,6 +481,70 @@ internal fun SettingsSheet(
             },
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
+        )
+    }
+}
+
+/** 九格点击区域：点一格换下一种动作；下面两个按钮是常用的两种布局。 */
+@Composable
+private fun TapZoneEditor(zones: List<TapAction>, palette: ReaderPalette, onChange: (List<TapAction>) -> Unit) {
+    Column(Modifier.padding(start = 48.dp, bottom = 8.dp)) {
+        Column(
+            Modifier
+                .width(198.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(palette.text.copy(alpha = 0.05f)),
+        ) {
+            (0 until 3).forEach { row ->
+                Row {
+                    (0 until 3).forEach { col ->
+                        val i = row * 3 + col
+                        val action = zones[i]
+                        Box(
+                            Modifier
+                                .size(66.dp, 44.dp)
+                                .padding(2.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    when (action) {
+                                        TapAction.MENU -> palette.accent.copy(alpha = 0.18f)
+                                        TapAction.NONE -> Color.Transparent
+                                        else -> palette.text.copy(alpha = 0.07f)
+                                    },
+                                )
+                                .clickable {
+                                    val next = TapAction.entries[(action.ordinal + 1) % TapAction.entries.size]
+                                    onChange(zones.toMutableList().also { it[i] = next })
+                                }
+                                .semantics { contentDescription = "点击区域第${row + 1}行第${col + 1}格：${action.label}" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(action.label, color = if (action == TapAction.NONE) palette.secondary else palette.text, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("左右翻页" to TapZones.DEFAULT, "单手（都翻下一页）" to TapZones.ONE_HAND).forEach { (label, preset) ->
+                val on = zones == preset
+                Text(
+                    label,
+                    color = if (on) palette.accent else palette.text,
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
+                        .clickable { onChange(preset) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+        Text(
+            "点一格换动作。竖排时左右对调；双指捏合正文可以直接调字号。",
+            color = palette.secondary,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 6.dp),
         )
     }
 }

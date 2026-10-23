@@ -19,6 +19,34 @@ enum class PageMode(val label: String) {
     VERTICAL("竖排"),
 }
 
+/** 点正文某处做什么。 */
+enum class TapAction(val label: String) {
+    PREV("上一页"),
+    NEXT("下一页"),
+    MENU("菜单"),
+    NONE("不响应"),
+}
+
+/** 点击区域：把正文分成 3×3 九格，按行从上到下、每行从左到右。 */
+object TapZones {
+    /** 左边上一页、右边下一页、中间菜单。 */
+    val DEFAULT: List<TapAction> = List(3) { listOf(TapAction.PREV, TapAction.MENU, TapAction.NEXT) }.flatten()
+    /** 单手：中间菜单，其余都是下一页。 */
+    val ONE_HAND: List<TapAction> = List(9) { if (it == 4) TapAction.MENU else TapAction.NEXT }
+
+    /** [x]、[y] 是点在正文里的相对位置（0..1）。 */
+    fun indexOf(x: Float, y: Float): Int {
+        val col = (x.coerceIn(0f, 0.999f) * 3).toInt()
+        val row = (y.coerceIn(0f, 0.999f) * 3).toInt()
+        return row * 3 + col
+    }
+
+    fun encode(zones: List<TapAction>): String = zones.joinToString(",") { it.name }
+
+    fun decode(s: String?): List<TapAction> =
+        s?.split(",")?.mapNotNull { n -> TapAction.entries.firstOrNull { it.name == n } }?.takeIf { it.size == 9 } ?: DEFAULT
+}
+
 data class ReaderSettings(
     val fontSize: Float = 19f,
     val lineHeight: Float = 1.8f,
@@ -71,6 +99,8 @@ data class ReaderSettings(
     /** 自定义背景的底色和字色（ARGB）。 */
     val customBackground: Int = 0xFFF4F2EC.toInt(),
     val customText: Int = 0xFF2A2724.toInt(),
+    /** 九格点击区域各做什么（见 [TapZones]）。 */
+    val tapZones: List<TapAction> = TapZones.DEFAULT,
 )
 
 enum class ShelfSort(val label: String) {
@@ -128,6 +158,7 @@ class Prefs(context: Context) {
             letterSpacing = sp.getFloat("letterSpacing", d.letterSpacing),
             customBackground = sp.getInt("customBackground", d.customBackground),
             customText = sp.getInt("customText", d.customText),
+            tapZones = TapZones.decode(sp.getString("tapZones", null)),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
     }
@@ -164,6 +195,7 @@ class Prefs(context: Context) {
             putFloat("letterSpacing", s.letterSpacing)
             putInt("customBackground", s.customBackground)
             putInt("customText", s.customText)
+            putString("tapZones", TapZones.encode(s.tapZones))
             putFloat("ttsRate", s.ttsRate)
         }
     }
