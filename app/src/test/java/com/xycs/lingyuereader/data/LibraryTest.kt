@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -40,9 +41,36 @@ class LibraryTest {
         return out.toByteArray()
     }
 
+    private fun cbz(vararg imageNames: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            imageNames.forEach { name ->
+                zip.putNextEntry(ZipEntry(name)); zip.write(PNG); zip.closeEntry()
+            }
+        }
+        return out.toByteArray()
+    }
+
     private fun import(name: String, bytes: ByteArray): BookEntry {
         val file = File(context.cacheDir, name).apply { writeBytes(bytes) }
         return library.add(library.describe(listOf(Uri.fromFile(file))), null)
+    }
+
+    private fun replacementBackup(replacements: Map<String, ByteArray>): ByteArray {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            fun put(name: String, bytes: ByteArray) {
+                zip.putNextEntry(ZipEntry(name)); zip.write(bytes); zip.closeEntry()
+            }
+            put("lingyue-backup.json", """{"format":1}""".toByteArray())
+            put("books/index.json", File(context.filesDir, "books/index.json").readBytes())
+            library.list().forEach { entry ->
+                entry.sources.forEach { source ->
+                    put("books/${entry.id}/${source.file}", replacements[entry.id] ?: library.bookFile(entry.id, source.file).readBytes())
+                }
+            }
+        }
+        return out.toByteArray()
     }
 
     @Test
@@ -81,6 +109,118 @@ class LibraryTest {
         val rebuilt = library.content(entry)
         assertEquals(1, rebuilt.chapters.size)
         assertEquals(listOf(Block.Para("改过的正文。")), rebuilt.chapters[0].blocks)
+    }
+
+    @Test
+    fun refreshRejectsEmptySourceWithoutChangingTheBook() {
+        val original = "第一章 起\n　　旧正文。\n".toByteArray()
+        val entry = import("空稿.txt", original)
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val cache = library.bookFile(entry.id, "cache.bin")
+        val oldCache = cache.readBytes()
+        val oldIndex = File(context.filesDir, "books/index.json").readBytes()
+
+        File(context.cacheDir, "空稿.txt").writeBytes(byteArrayOf())
+        val error = runCatching { library.refresh(entry) }.exceptionOrNull()
+
+        assertEquals("来源文件为空：空稿.txt", error?.message)
+        assertArrayEquals(original, source.readBytes())
+        assertArrayEquals(oldCache, cache.readBytes())
+        assertArrayEquals(oldIndex, File(context.filesDir, "books/index.json").readBytes())
+        assertEquals(listOf(Block.Para("旧正文。")), library.content(entry).chapters.single().blocks)
+    }
+
+    @Test
+    fun refreshRejectsInvalidEpubWithoutLosingCacheOrImages() {
+        val original = epub()
+        val entry = import("损坏前.epub", original)
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val cache = library.bookFile(entry.id, "cache.bin")
+        val oldCache = cache.readBytes()
+        val oldIndex = File(context.filesDir, "books/index.json").readBytes()
+        val cover = library.bookFile(entry.id, entry.cover!!)
+        val oldCover = cover.readBytes()
+
+        File(context.cacheDir, "损坏前.epub").writeText("这不是 EPUB")
+        assertTrue(runCatching { library.refresh(entry) }.isFailure)
+
+        assertArrayEquals(original, source.readBytes())
+        assertArrayEquals(oldCache, cache.readBytes())
+        assertArrayEquals(oldIndex, File(context.filesDir, "books/index.json").readBytes())
+        assertArrayEquals(oldCover, cover.readBytes())
+        assertEquals("正文", library.content(entry).chapters.single().blocks.filterIsInstance<Block.Para>().single().text)
+    }
+
+    @Test
+    fun refreshKeepsLocalCopyWhenTheSourceCannotBeRead() {
+        val original = "第一章 起\n　　离线正文。\n".toByteArray()
+        val entry = import("已移走.txt", original)
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val cache = library.bookFile(entry.id, "cache.bin")
+        val oldCache = cache.readBytes()
+        val oldIndex = File(context.filesDir, "books/index.json").readBytes()
+
+        assertTrue(File(context.cacheDir, "已移走.txt").delete())
+        assertEquals(Library.RefreshResult(0, 1), library.refresh(entry))
+
+        assertArrayEquals(original, source.readBytes())
+        assertArrayEquals(oldCache, cache.readBytes())
+        assertArrayEquals(oldIndex, File(context.filesDir, "books/index.json").readBytes())
+        assertEquals(listOf(Block.Para("离线正文。")), library.content(entry).chapters.single().blocks)
+    }
+
+    @Test
+    fun refreshUpdatesContentAndKeepsProgressMarksAndRules() {
+        val entry = import("继续写.txt", "第一章 起\n　　旧正文。\n".toByteArray())
+        val rules = TextRules(listOf(ReplaceRule("广告词")))
+        library.saveRules(entry, rules)
+        val progress = ReadingProgress(0, "第一章 起", 1, 3)
+        val marks = Marks(
+            bookmarks = listOf(Bookmark("b", 0, "第一章 起", 1, 0, "旧正文", 1)),
+            notes = listOf(Note("n", 0, "第一章 起", 0, 0, 2, "旧正", "批注", MarkColor.RED, 2)),
+        )
+        library.saveProgress(entry.id, progress)
+        library.saveMarks(entry.id, marks)
+        library.setGroups(entry.id, listOf("在读"))
+
+        File(context.cacheDir, "继续写.txt").writeText("第一章 起\n　　新正文广告词。\n第二章 承\n　　又一段。\n")
+        assertEquals(Library.RefreshResult(1, 0), library.refresh(entry))
+
+        val updated = library.list().single { it.id == entry.id }
+        val content = library.content(updated)
+        assertEquals(2, updated.chapterCount)
+        assertEquals(content.charCount, updated.charCount)
+        assertEquals(progress, updated.progress)
+        assertEquals(listOf("在读"), updated.groups)
+        assertEquals(marks, library.marks(entry.id))
+        assertEquals(rules, library.rules(entry.id))
+        assertEquals(listOf(Block.Para("新正文。")), content.chapters[0].blocks)
+        assertEquals(listOf(Block.Para("又一段。")), content.chapters[1].blocks)
+    }
+
+    @Test
+    fun refreshRestoresTheOriginalBookWhenTheIndexCannotBeSaved() {
+        val original = "第一章 起\n　　旧正文。\n".toByteArray()
+        val entry = import("索引故障.txt", original)
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val cache = library.bookFile(entry.id, "cache.bin")
+        val oldCache = cache.readBytes()
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+        File(context.cacheDir, "索引故障.txt").writeText("第一章 起\n　　新正文。\n")
+
+        val blocker = File(context.filesDir, "books/index.json.tmp")
+        assertTrue(blocker.mkdir())
+        try {
+            assertTrue(runCatching { library.refresh(entry) }.isFailure)
+        } finally {
+            blocker.deleteRecursively()
+        }
+
+        assertArrayEquals(original, source.readBytes())
+        assertArrayEquals(oldCache, cache.readBytes())
+        assertArrayEquals(oldIndex, index.readBytes())
+        assertEquals(listOf(Block.Para("旧正文。")), library.content(entry).chapters.single().blocks)
     }
 
     @Test
@@ -143,6 +283,100 @@ class LibraryTest {
     }
 
     @Test
+    fun restoreReplacesAnExistingBookAfterPreparingItsFiles() {
+        val entry = import("恢复前.txt", "第一章 起\n　　旧正文。\n".toByteArray())
+        val replacement = "第一章 起\n　　恢复后的正文。\n".toByteArray()
+        val archive = replacementBackup(mapOf(entry.id to replacement))
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+
+        val restored = library.list().single { it.id == entry.id }
+        assertArrayEquals(replacement, library.bookFile(entry.id, entry.sources.single().file).readBytes())
+        assertEquals(listOf(Block.Para("恢复后的正文。")), library.content(restored).chapters.single().blocks)
+    }
+
+    @Test
+    fun restoreSkipsUnreadableReplacementsAndKeepsRestoringValidBooks() {
+        val empty = import("空来源.txt", "第一章 起\n　　仍能读。\n".toByteArray())
+        val epubBytes = epub()
+        val invalidEpub = import("有效.epub", epubBytes)
+        val valid = import("正常.txt", "第一章 起\n　　旧内容。\n".toByteArray())
+        val oldEntries = library.list().associateBy { it.id }
+        val oldEmptyCache = library.bookFile(empty.id, "cache.bin").readBytes()
+        val oldEpubCache = library.bookFile(invalidEpub.id, "cache.bin").readBytes()
+        val cover = library.bookFile(invalidEpub.id, invalidEpub.cover!!)
+        val oldCover = cover.readBytes()
+        val archive = replacementBackup(mapOf(
+            empty.id to byteArrayOf(),
+            invalidEpub.id to "不是 EPUB".toByteArray(),
+            valid.id to "第一章 起\n　　恢复成功。\n".toByteArray(),
+        ))
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+
+        val after = library.list().associateBy { it.id }
+        assertEquals(oldEntries.getValue(empty.id), after.getValue(empty.id))
+        assertEquals(oldEntries.getValue(invalidEpub.id), after.getValue(invalidEpub.id))
+        assertArrayEquals("第一章 起\n　　仍能读。\n".toByteArray(), library.bookFile(empty.id, empty.sources.single().file).readBytes())
+        assertArrayEquals(epubBytes, library.bookFile(invalidEpub.id, invalidEpub.sources.single().file).readBytes())
+        assertArrayEquals(oldEmptyCache, library.bookFile(empty.id, "cache.bin").readBytes())
+        assertArrayEquals(oldEpubCache, library.bookFile(invalidEpub.id, "cache.bin").readBytes())
+        assertArrayEquals(oldCover, cover.readBytes())
+        assertEquals(listOf(Block.Para("仍能读。")), library.content(empty).chapters.single().blocks)
+        assertEquals("正文", library.content(invalidEpub).chapters.single().blocks.filterIsInstance<Block.Para>().single().text)
+        assertEquals(listOf(Block.Para("恢复成功。")), library.content(after.getValue(valid.id)).chapters.single().blocks)
+    }
+
+    @Test
+    fun restoreAcceptsImageOnlyComicReplacement() {
+        val entry = import("漫画.cbz", cbz("1.png"))
+        val archive = replacementBackup(mapOf(entry.id to cbz("1.png", "2.png")))
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+
+        val restored = library.list().single { it.id == entry.id }
+        val content = library.content(restored)
+        assertEquals(0, restored.charCount)
+        assertEquals(2, content.chapters.single().blocks.filterIsInstance<Block.Image>().size)
+        assertTrue(library.bookFile(entry.id, restored.cover!!).isFile)
+    }
+
+    @Test
+    fun restoreRollsBackAllReplacedBooksWhenTheIndexCannotBeSaved() {
+        val a = import("旧甲.txt", "第一章 起\n　　旧甲正文。\n".toByteArray())
+        val b = import("旧乙.txt", "第一章 起\n　　旧乙正文。\n".toByteArray())
+        val marks = Marks(notes = listOf(Note("n", 0, "第一章 起", 0, 0, 2, "旧甲", "保留批注", MarkColor.BLUE, 1)))
+        library.saveMarks(a.id, marks)
+        val archive = replacementBackup(mapOf(
+            a.id to "第一章 起\n　　新甲正文。\n".toByteArray(),
+            b.id to "第一章 起\n　　新乙正文。\n".toByteArray(),
+        ))
+        val oldSources = listOf(a, b).associate { it.id to library.bookFile(it.id, it.sources.single().file).readBytes() }
+        val oldCaches = listOf(a, b).associate { it.id to library.bookFile(it.id, "cache.bin").readBytes() }
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+
+        // 让最终索引写入失败；此时两本书都已完成目录切换，必须整体回滚。
+        val blocker = File(context.filesDir, "books/index.json.tmp")
+        assertTrue(blocker.mkdir())
+        try {
+            assertTrue(runCatching { library.restore(archive.inputStream()) }.isFailure)
+        } finally {
+            blocker.deleteRecursively()
+        }
+
+        assertArrayEquals(oldIndex, index.readBytes())
+        for (entry in listOf(a, b)) {
+            assertArrayEquals(oldSources.getValue(entry.id), library.bookFile(entry.id, entry.sources.single().file).readBytes())
+            assertArrayEquals(oldCaches.getValue(entry.id), library.bookFile(entry.id, "cache.bin").readBytes())
+        }
+        assertEquals(marks, library.marks(a.id))
+        assertEquals(listOf(Block.Para("旧甲正文。")), library.content(a).chapters.single().blocks)
+        assertEquals(listOf(Block.Para("旧乙正文。")), library.content(b).chapters.single().blocks)
+        assertTrue(File(context.filesDir, "books").listFiles().orEmpty().none { it.name.startsWith(".restore-") })
+    }
+
+    @Test
     fun restoreIgnoresPathsOutsideTheLibraryAndRejectsOtherZips() {
         val evil = ByteArrayOutputStream()
         ZipOutputStream(evil).use { z ->
@@ -163,6 +397,25 @@ class LibraryTest {
         ZipOutputStream(notBackup).use { z -> z.putNextEntry(ZipEntry("hello.txt")); z.write(1); z.closeEntry() }
         val error = runCatching { library.restore(notBackup.toByteArray().inputStream()) }.exceptionOrNull()
         assertEquals("不是灵阅的备份文件", error?.message)
+
+        val existing = import("安全.txt", "旧正文".toByteArray())
+        val indexFile = File(context.filesDir, "books/index.json")
+        val oldIndex = indexFile.readBytes()
+        val unsafeIndex = org.json.JSONArray(indexFile.readText())
+        unsafeIndex.getJSONObject(0).getJSONArray("sources").getJSONObject(0).put("file", "../other/s0.txt")
+        val unsafe = ByteArrayOutputStream()
+        ZipOutputStream(unsafe).use { z ->
+            fun put(name: String, bytes: ByteArray) {
+                z.putNextEntry(ZipEntry(name)); z.write(bytes); z.closeEntry()
+            }
+            put("lingyue-backup.json", """{"format":1}""".toByteArray())
+            put("books/index.json", unsafeIndex.toString().toByteArray())
+            put("books/${existing.id}/s0.txt", "替身".toByteArray())
+            put("books/other/s0.txt", "越界来源".toByteArray())
+        }
+        assertEquals(0, library.restore(unsafe.toByteArray().inputStream()).books)
+        assertArrayEquals(oldIndex, indexFile.readBytes())
+        assertEquals("旧正文", (library.content(existing).chapters.single().blocks.single() as Block.Para).text)
     }
 
     private companion object {

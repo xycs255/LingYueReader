@@ -11,6 +11,7 @@ import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /** 放备份的文件夹。正式用系统文件选择器选的文件夹（[SafFolder]），测试用普通目录（[FileFolder]）。 */
 interface BackupFolder {
@@ -68,25 +69,36 @@ class AutoBackup(
     }
 
     /**
-     * 备份一次：先写成“.part”，写完再改名，中途被打断也不会留下半个备份；然后删掉多出来的旧备份。
+     * 备份一次：先写入本次独有的“.part”，完成后改名；失败时只清理本次临时文件。
+     * 同一分钟再备份时使用递增编号，避免先删除上一份可用备份；最后只保留最近几份。
      * 返回写好的文件名。
      */
     fun run(write: (OutputStream) -> Unit): Result<String> {
         val folderUri = state().folder ?: return Result.failure(IllegalStateException("没有选备份文件夹"))
         return runCatching {
             val folder = folderOf(folderUri)
-            val name = "灵阅备份-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.ROOT).format(Date(now())) + ".zip"
-            val part = "$name.part"
-            folder.list().filter { it.endsWith(".part") && it.startsWith("灵阅备份-") }.forEach { runCatching { folder.delete(it) } }
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.ROOT).format(Date(now()))
+            val stem = "灵阅备份-$stamp"
+            val latestCopy = folder.list().mapNotNull { file ->
+                BACKUP_NAME.matchEntire(file)?.let { match ->
+                    if (match.groupValues[1] == stamp) match.groupValues[2].toLongOrNull() ?: 1L else null
+                }
+            }.maxOrNull() ?: 0L
+            val copy = latestCopy + 1
+            val name = if (copy == 1L) "$stem.zip" else "$stem-${copy.toString().padStart(4, '0')}.zip"
+            val part = "$name.${UUID.randomUUID()}.part"
             try {
                 folder.write(part, write)
-                if (name in folder.list()) folder.delete(name)
                 folder.rename(part, name)
             } catch (e: Throwable) {
                 runCatching { folder.delete(part) }
                 throw e
             }
-            folder.list().filter { BACKUP_NAME.matches(it) }.sortedDescending().drop(KEEP).forEach { runCatching { folder.delete(it) } }
+            folder.list().mapNotNull { file -> BACKUP_NAME.matchEntire(file)?.let { file to it } }
+                .sortedWith(compareByDescending<Pair<String, MatchResult>> { it.second.groupValues[1] }
+                    .thenByDescending { it.second.groupValues[2].toLongOrNull() ?: 1L })
+                .drop(KEEP)
+                .forEach { runCatching { folder.delete(it.first) } }
             name
         }.onSuccess { name ->
             sp.edit {
@@ -104,7 +116,7 @@ class AutoBackup(
 
         /** 留最近几份。 */
         const val KEEP = 7
-        val BACKUP_NAME = Regex("""灵阅备份-\d{8}-\d{4}\.zip""")
+        val BACKUP_NAME = Regex("""灵阅备份-(\d{8}-\d{4})(?:-(\d{4,}))?\.zip""")
     }
 }
 

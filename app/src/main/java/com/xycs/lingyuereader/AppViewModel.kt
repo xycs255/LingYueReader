@@ -37,6 +37,7 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -259,6 +260,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _openBook = MutableStateFlow<OpenBook?>(null)
     val openBook: StateFlow<OpenBook?> = _openBook.asStateFlow()
+    private var bookLoadJob: Job? = null
+    private var loadingBookId: String? = null
+    private var bookLoadGeneration = 0L
 
     /** 当前打开的书的书签与批注。 */
     private val _marks = MutableStateFlow(Marks())
@@ -565,27 +569,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun remove(entry: BookEntry) {
         viewModelScope.launch {
+            if (loadingBookId == entry.id) cancelBookLoad()
             withContext(Dispatchers.IO) { library.remove(entry.id) }
             if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
             loadShelf()
         }
     }
 
+    private fun cancelBookLoad() {
+        bookLoadGeneration++
+        bookLoadJob?.cancel()
+        bookLoadJob = null
+        loadingBookId = null
+    }
+
     /** 阅读页进来时调用；已加载的同一本书不重复解析。 */
     fun ensureLoaded(bookId: String) {
-        if (_openBook.value?.entry?.id == bookId) return
+        if (_openBook.value?.entry?.id == bookId) {
+            // 刚回到这本已加载的书时，先取消仍在后台加载的另一本书。
+            if (loadingBookId != null && loadingBookId != bookId) cancelBookLoad()
+            return
+        }
+        if (loadingBookId == bookId && bookLoadJob?.isActive == true) return
+        cancelBookLoad()
+        val generation = bookLoadGeneration
         val entry = _shelf.value.firstOrNull { it.id == bookId } ?: return
         _openBook.value = null
-        viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) { runCatching { converted(library.content(entry), _settings.value.chineseConvert) } }
-            content.onSuccess {
-                _marks.value = withContext(Dispatchers.IO) { library.marks(entry.id).resolve(it) }
-                _openBook.value = OpenBook(entry, it)
-            }
-                .onFailure {
-                    _messages.value = "打不开《${entry.title}》：${it.message}"
-                    back()
+        loadingBookId = bookId
+        bookLoadJob = viewModelScope.launch {
+            try {
+                val mode = _settings.value.chineseConvert
+                val content = withContext(Dispatchers.IO) { converted(library.content(entry), mode) }
+                val marks = withContext(Dispatchers.IO) { library.marks(entry.id).resolve(content) }
+                if (generation != bookLoadGeneration) return@launch
+                _marks.value = marks
+                _openBook.value = OpenBook(entry, content)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (generation == bookLoadGeneration) {
+                    _messages.value = "打不开《${entry.title}》：${error.message ?: "读取失败"}"
+                    if ((_stack.value.lastOrNull() as? Screen.Reader)?.bookId == bookId) back()
                 }
+            } finally {
+                if (generation == bookLoadGeneration) {
+                    loadingBookId = null
+                    bookLoadJob = null
+                }
+            }
         }
     }
 
@@ -1001,29 +1032,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun restore(uri: Uri) {
         viewModelScope.launch {
             _busy.value = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    getApplication<Application>().contentResolver.openInputStream(uri)!!.use { library.restore(it) }
+            cancelBookLoad()
+            var restoredBooks: Int? = null
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?: throw IllegalArgumentException("无法读取备份文件")
+                    input.use { library.restore(it) }
+                }
+                restoredBooks = result.books
+                result.data.let { data ->
+                    withContext(Dispatchers.IO) {
+                        data["vocabulary.json"]?.let(vocabulary::merge)
+                        data["stats.json"]?.let(stats::merge)
+                    }
+                    reloadVocabulary()
+                    reloadStats()
+                }
+                result.settings?.let { settings ->
+                    prefs.importJson(settings)
+                    _settings.value = prefs.settings()
+                    _appearance.value = prefs.appearance()
+                    _shelfPrefs.value = prefs.shelf()
+                }
+                _messages.value = "已恢复 ${result.books} 本书"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val detail = error.message ?: "请检查备份文件"
+                _messages.value = if (restoredBooks == null) "恢复失败：$detail"
+                else "已恢复 $restoredBooks 本书，但附加数据恢复失败：$detail"
+            } finally {
+                _openBook.value = null
+                try {
+                    loadShelf()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _messages.value = "刷新书架失败：${error.message ?: "读取失败"}"
+                } finally {
+                    _busy.value = false
                 }
             }
-            result.getOrNull()?.data?.let { data ->
-                withContext(Dispatchers.IO) {
-                    data["vocabulary.json"]?.let(vocabulary::merge)
-                    data["stats.json"]?.let(stats::merge)
-                }
-                reloadVocabulary()
-                reloadStats()
-            }
-            result.getOrNull()?.settings?.let { s ->
-                prefs.importJson(s)
-                _settings.value = prefs.settings()
-                _appearance.value = prefs.appearance()
-                _shelfPrefs.value = prefs.shelf()
-            }
-            _openBook.value = null
-            loadShelf()
-            _busy.value = false
-            _messages.value = result.fold({ "已恢复 ${it.books} 本书" }, { "恢复失败：${it.message}" })
         }
     }
 
@@ -1071,8 +1121,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 换了繁简转换方向：重新打开当前这本书。
         if (_settings.value.chineseConvert != before) {
-            _openBook.value?.entry?.id?.let { id ->
+            (_openBook.value?.entry?.id ?: loadingBookId)?.let { id ->
                 _openBook.value = null
+                cancelBookLoad()
                 ensureLoaded(id)
             }
         }

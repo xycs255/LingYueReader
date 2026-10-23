@@ -191,6 +191,25 @@ data class ShelfPrefs(
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
 
+    private companion object {
+        // 备份可以来自旧版本或另一台设备；只导入当前版本认识且类型正确的键。
+        val FLOAT_KEYS = setOf(
+            "fontSize", "lineHeight", "paragraphSpacing", "brightness", "ttsRate", "autoScrollLines",
+            "margin", "letterSpacing", "ui.scale",
+        )
+        val BOOLEAN_KEYS = setOf(
+            "serif", "keepScreenOn", "tapToTurn", "volumeKeys", "fullscreen", "autoNight",
+            "ambientLight", "eveningWarmth", "breakReminder", "indent", "justify", "eInk",
+            "goalReminder", "pinyin", "twoPage", "pageEdges", "ui.monet", "ui.blur",
+            "ui.liquidGlass", "ui.floatingBar", "shelf.list",
+        )
+        val INT_KEYS = setOf("dailyGoal", "customBackground", "customText", "ui.accent")
+        val STRING_KEYS = setOf(
+            "theme", "pageMode", "font", "ttsVoice", "chineseConvert", "tapZones", "orientation",
+            "ui.mode", "ui.paletteStyle", "ui.transition", "shelf.sort", "shelf.groups", "shelf.group",
+        )
+    }
+
     fun settings(): ReaderSettings {
         val d = ReaderSettings()
         return ReaderSettings(
@@ -333,15 +352,32 @@ class Prefs(context: Context) {
     }
 
     fun importJson(o: org.json.JSONObject) {
+        // 全部校验完再写盘。若某个已知键类型错误，旧偏好保持原样，避免下次启动时 getFloat 等抛异常。
+        val values = mutableMapOf<String, Any>()
+        o.keys().forEach { key ->
+            val tag = when (key) {
+                in FLOAT_KEYS -> "f"
+                in BOOLEAN_KEYS -> "b"
+                in INT_KEYS -> "i"
+                in STRING_KEYS -> "s"
+                else -> return@forEach
+            }
+            val wrapped = o.optJSONObject(key) ?: throw IllegalArgumentException("备份设置类型错误：$key")
+            require(wrapped.length() == 1 && wrapped.has(tag)) { "备份设置类型错误：$key" }
+            values[key] = when (tag) {
+                "f" -> wrapped.getDouble(tag).toFloat().also { require(it.isFinite()) { "备份设置数值错误：$key" } }
+                "b" -> wrapped.getBoolean(tag)
+                "i" -> wrapped.getInt(tag)
+                else -> wrapped.getString(tag)
+            }
+        }
         sp.edit {
-            o.keys().forEach { k ->
-                val v = o.optJSONObject(k) ?: return@forEach
-                when {
-                    v.has("b") -> putBoolean(k, v.getBoolean("b"))
-                    v.has("f") -> putFloat(k, v.getDouble("f").toFloat())
-                    v.has("i") -> putInt(k, v.getInt("i"))
-                    v.has("l") -> putLong(k, v.getLong("l"))
-                    v.has("s") -> putString(k, v.getString("s"))
+            values.forEach { (key, value) ->
+                when (value) {
+                    is Boolean -> putBoolean(key, value)
+                    is Float -> putFloat(key, value)
+                    is Int -> putInt(key, value)
+                    is String -> putString(key, value)
                 }
             }
         }
