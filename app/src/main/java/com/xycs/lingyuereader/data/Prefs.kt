@@ -14,6 +14,7 @@ enum class PageMode(val label: String) {
     SCROLL("上下滚动"),
     SLIDE("左右平移"),
     COVER("左右覆盖"),
+    VERTICAL("竖排"),
 }
 
 data class ReaderSettings(

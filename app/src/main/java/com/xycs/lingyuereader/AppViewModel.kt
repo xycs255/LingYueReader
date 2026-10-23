@@ -566,6 +566,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 竖排时长按某个字：直接查它所在的词。 */
+    fun lookupAt(chapterIndex: Int, block: Int, char: Int) {
+        val text = blockText(chapterIndex, block)?.takeIf { it.isNotEmpty() } ?: return
+        val at = char.coerceIn(0, text.lastIndex)
+        viewModelScope.launch {
+            val word = withContext(Dispatchers.IO) {
+                runCatching { WordFinder.wordAt(text, at, dictionaries::isWord) }.getOrNull()
+            } ?: return@launch
+            lookupRange(chapterIndex, block, word)
+        }
+    }
+
     /** 把位置限制在这一块的文字里；空块（插图、分隔线）返回空。 */
     private fun clampPos(chapterIndex: Int, block: Int, char: Int): TextPos? {
         val len = blockText(chapterIndex, block)?.length ?: return null

@@ -474,6 +474,30 @@ private fun Reader(
                         speaking = speaking,
                     )
                 }
+            } else if (settings.pageMode == PageMode.VERTICAL) {
+                key(screen, content, settings) {
+                    val start = remember { pos }
+                    val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
+                    VerticalReader(
+                        content = content,
+                        chapterIndex = chapterIndex,
+                        start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                        styles = styles,
+                        typeface = typeface,
+                        marks = marks,
+                        topInset = topInset,
+                        bottomInset = bottomInset,
+                        onTap = onTap,
+                        onLongPress = { block, char -> vm.lookupAt(chapterIndex, block, char) },
+                        onPosition = { block, char, fraction, label ->
+                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
+                        },
+                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                        registerTurner = { turner.turn = it },
+                        speaking = speaking,
+                        selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
+                    )
+                }
             } else {
                 // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
                 // 只在排版设置变化时重新分页；配色随环境渐变时不必。
