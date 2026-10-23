@@ -26,6 +26,7 @@ import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -61,6 +62,20 @@ data class Lookup(
     val result: LookupResult? = null,
 )
 
+/**
+ * 正文里划选的文字（只在一段之内）。[anchor] 是长按选出的词，拖动时选区总包含它；
+ * [dragging] 为真表示手指还没松开。
+ */
+data class TextSelection(
+    val chapterIndex: Int,
+    val block: Int,
+    val range: IntRange,
+    val anchor: IntRange,
+    val dragging: Boolean,
+    /** 长按处是不是一个能查的词（标点、空白不是）。 */
+    val anchorIsWord: Boolean,
+)
+
 /** 正在读的书：书架条目加上解析好的正文。 */
 data class OpenBook(val entry: BookEntry, val content: BookContent)
 
@@ -74,6 +89,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lookup = MutableStateFlow<Lookup?>(null)
     val lookup: StateFlow<Lookup?> = _lookup.asStateFlow()
+    private val _selection = MutableStateFlow<TextSelection?>(null)
+    val selection: StateFlow<TextSelection?> = _selection.asStateFlow()
+    private var pressJob: Job? = null
     private val prefs = Prefs(app)
 
     private val _shelf = MutableStateFlow<List<BookEntry>>(emptyList())
@@ -334,19 +352,91 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 查词 ----------
 
-    /** 长按正文某个字：选出它所在的词并查。 */
-    fun selectWordAt(chapterIndex: Int, block: Int, offset: Int) {
-        val book = _openBook.value ?: return
-        viewModelScope.launch {
-            val text = withContext(Dispatchers.IO) {
-                book.content.chapters.getOrNull(chapterIndex)?.blocks?.getOrNull(block)?.displayText
+    private fun blockText(chapterIndex: Int, block: Int): String? =
+        _openBook.value?.content?.chapters?.getOrNull(chapterIndex)?.blocks?.getOrNull(block)?.displayText
+
+    /** 长按正文某个字：先选出它所在的词；松手前接着拖就扩大选区。 */
+    fun pressText(chapterIndex: Int, block: Int, offset: Int) {
+        _lookup.value = null
+        // 当前章已在内存里，先同步选中按住的字，免得找词期间的拖动落空。
+        val text = blockText(chapterIndex, block)?.takeIf { it.isNotEmpty() } ?: return
+        val at = offset.coerceIn(0, text.lastIndex)
+        val pressed = TextSelection(chapterIndex, block, at..at, at..at, dragging = true, anchorIsWord = false)
+        _selection.value = pressed
+        pressJob = viewModelScope.launch {
+            val word = withContext(Dispatchers.IO) {
+                runCatching { WordFinder.wordAt(text, at, dictionaries::isWord) }.getOrNull()
             } ?: return@launch
-            if (text.isEmpty()) return@launch
-            val range = withContext(Dispatchers.IO) {
-                runCatching { WordFinder.wordAt(text, offset.coerceIn(0, text.lastIndex), dictionaries::isWord) }.getOrNull()
-            } ?: return@launch
-            showLookup(Lookup(chapterIndex, block, range, text.substring(range.first, range.last + 1)))
+            _selection.update { sel ->
+                if (sel == null || sel.anchor != pressed.anchor || sel.block != block || !sel.dragging) return@update sel
+                sel.copy(
+                    range = minOf(sel.range.first, word.first)..maxOf(sel.range.last, word.last),
+                    anchor = word,
+                    anchorIsWord = true,
+                )
+            }
         }
+    }
+
+    /** 长按后拖到 [offset]：选区从长按的词伸到这个字（同一段之内）。 */
+    fun dragText(block: Int, offset: Int) {
+        _selection.update { sel ->
+            if (sel == null || sel.block != block) return@update sel
+            val len = blockText(sel.chapterIndex, block)?.length ?: return@update sel
+            val o = offset.coerceIn(0, len - 1)
+            sel.copy(range = minOf(sel.anchor.first, o)..maxOf(sel.anchor.last, o))
+        }
+    }
+
+    /** 松手：没拖动就直接查长按的词，拖过了就留着选区（显示把手和操作条）。 */
+    fun releaseText() {
+        val job = pressJob
+        viewModelScope.launch {
+            job?.join()
+            val sel = _selection.value ?: return@launch
+            if (!sel.dragging) return@launch
+            if (sel.range == sel.anchor) {
+                _selection.value = null
+                if (sel.anchorIsWord) lookupRange(sel.chapterIndex, sel.block, sel.range)
+            } else {
+                _selection.value = sel.copy(dragging = false)
+            }
+        }
+    }
+
+    /** 拖动选区的起点或终点把手到光标位置 [cursor]。 */
+    fun moveSelectionHandle(block: Int, start: Boolean, cursor: Int) {
+        _selection.update { sel ->
+            if (sel == null || sel.block != block) return@update sel
+            val len = blockText(sel.chapterIndex, block)?.length ?: return@update sel
+            val range = if (start) {
+                cursor.coerceIn(0, sel.range.last)..sel.range.last
+            } else {
+                sel.range.first..(cursor - 1).coerceIn(sel.range.first, len - 1)
+            }
+            sel.copy(range = range, anchor = range)
+        }
+    }
+
+    fun selectionText(): String? = _selection.value?.let { sel ->
+        blockText(sel.chapterIndex, sel.block)?.let { t -> t.substring(sel.range.first, minOf(sel.range.last + 1, t.length)) }
+    }
+
+    fun clearSelection() {
+        _selection.value = null
+    }
+
+    /** 查划选的文字。 */
+    fun lookupSelection() {
+        val sel = _selection.value ?: return
+        _selection.value = null
+        lookupRange(sel.chapterIndex, sel.block, sel.range)
+    }
+
+    private fun lookupRange(chapterIndex: Int, block: Int, range: IntRange) {
+        val text = blockText(chapterIndex, block) ?: return
+        if (range.last >= text.length) return
+        showLookup(Lookup(chapterIndex, block, range, text.substring(range.first, range.last + 1).trim()))
     }
 
     /** 手动调整选词范围：左右各伸缩一个字。 */

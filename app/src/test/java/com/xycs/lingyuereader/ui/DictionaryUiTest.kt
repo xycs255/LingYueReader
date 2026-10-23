@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
@@ -32,13 +33,13 @@ import java.io.File
 
 private val context: Context get() = ApplicationProvider.getApplicationContext()
 
-/** 一本只有一段“银行”的书：长按哪里都落在这个词上。 */
+/** 一本只有一短段的书，开头是“银行”。 */
 private fun seedDictBook() {
     val files = context.filesDir
     File(files, "books").deleteRecursively()
     File(files, "dicts").deleteRecursively()
     val dir = File(files, "books/b1").apply { mkdirs() }
-    File(dir, "s0.txt").writeText("第一章 开端\n银行\n")
+    File(dir, "s0.txt").writeText("第一章 开端\n银行门口排着长队\n")
     val entry = JSONObject()
         .put("id", "b1").put("title", "测试书").put("author", "").put("format", "TXT")
         .put("addedAt", 1L).put("openedAt", 0L).put("chapterCount", 1).put("charCount", 2)
@@ -77,8 +78,8 @@ class DictionaryUiTest {
     private fun longPressWord() {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
-        waitForText("银行")
-        compose.onAllNodesWithText("银行", substring = true)[0].performTouchInput {
+        waitForText("银行门口")
+        compose.onAllNodesWithText("银行门口", substring = true)[0].performTouchInput {
             // 按在“银”上（这一段太短，不加段首缩进）。
             longClick(Offset(8.dp.toPx(), centerY))
         }
@@ -96,6 +97,48 @@ class DictionaryUiTest {
         // 从面板进词典管理。
         compose.onNodeWithText("管理词典 ›").performScrollTo().performClick()
         waitForText("基础字典与词典")
+    }
+
+    @Test
+    fun dragAfterLongPressSelectsFreelyAndHandlesAdjust() {
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("银行门口")
+        val body = compose.onAllNodesWithText("银行门口", substring = true)[0]
+        dragSelect(body)
+        // 松手后出现操作条和两端把手，不直接弹查词面板。
+        waitForText("划线·批注")
+        compose.onNodeWithContentDescription("选区起点").assertExists()
+        compose.onNodeWithText("复制").performClick()
+        assertEquals("银行门口排着长队", clipboard())
+
+        // 再选一次，把终点把手往左拖，选区变短。
+        dragSelect(body)
+        waitForText("划线·批注")
+        compose.onNodeWithContentDescription("选区终点").performTouchInput {
+            down(center)
+            moveBy(Offset(-40.dp.toPx(), 0f))
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("复制").performClick()
+        val shorter = clipboard()
+        assertTrue(shorter, shorter.startsWith("银行") && shorter.length in 2..7)
+    }
+
+    /** 按住开头的字，等过长按时间，再拖到这一段末尾松手。 */
+    private fun dragSelect(body: SemanticsNodeInteraction) {
+        body.performTouchInput { down(Offset(8.dp.toPx(), centerY)) }
+        compose.mainClock.advanceTimeBy(1_000)
+        body.performTouchInput {
+            moveTo(Offset(right - 2f, centerY))
+            up()
+        }
+    }
+
+    private fun clipboard(): String {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        return cm.primaryClip!!.getItemAt(0).text.toString()
     }
 
     @Test

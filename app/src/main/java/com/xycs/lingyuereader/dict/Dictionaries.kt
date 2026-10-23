@@ -198,7 +198,8 @@ class Dictionaries(private val context: Context) {
 
     fun lookup(word: String): LookupResult {
         val s = settings()
-        val chars = if (s.builtinEnabled) {
+        // 划选了一长段时不逐字列字典。
+        val chars = if (s.builtinEnabled && word.codePointCount(0, word.length) <= 8) {
             word.codePoints().toArray().map { String(Character.toChars(it)) }.distinct()
                 .filter { WordFinder.isHan(it[0]) }.mapNotNull { builtinUnihan()[it] }
         } else {

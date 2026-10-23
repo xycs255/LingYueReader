@@ -6,7 +6,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -150,8 +168,8 @@ internal fun indentOf(block: Block): Int = if (block is Block.Para && block.pros
  * 渲染一个块。[range] 不为空时只渲染其中一段文字（翻页模式下一段跨页的情形），
  * [isEnd] 表示这一段是否到块尾，决定要不要留段距。
  *
- * 文字块自己处理点按：轻点把横向位置交给 [onTap]（翻页/菜单），长按把手指下那个字在
- * 显示文字（不含段首缩进）里的位置交给 [onLongPressChar]（选词查词）。
+ * 文字块自己处理手势：轻点把横向位置交给 [onTap]（翻页/菜单）；长按交给 [selector] 选字——
+ * 不松手接着拖就是自由划选。[handles] 为真时在选区两端显示可拖动的把手。
  */
 @Composable
 internal fun BlockView(
@@ -163,8 +181,10 @@ internal fun BlockView(
     isEnd: Boolean = true,
     speaking: IntRange? = null,
     selected: IntRange? = null,
+    handles: Boolean = false,
     onTap: ((Float) -> Unit)? = null,
-    onLongPressChar: ((Int) -> Unit)? = null,
+    blockIndex: Int = 0,
+    selector: TextSelector? = null,
 ) {
     val palette = styles.palette
     val gap = styles.gap
@@ -172,45 +192,83 @@ internal fun BlockView(
         blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f))
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val tap by rememberUpdatedState(onTap)
-    val longPress by rememberUpdatedState(onLongPressChar)
+    val select by rememberUpdatedState(selector)
     val base = range?.first ?: 0
     val indent = indentOf(block)
-    val gestures = Modifier.pointerInput(block, base) {
-        detectTapGestures(
-            onTap = { p -> tap?.invoke(p.x / size.width) },
-            onLongPress = { p ->
-                val l = layout ?: return@detectTapGestures
-                // 按在行尾之后的空白处不算选词。
-                if (p.x > l.getLineRight(l.getLineForVerticalPosition(p.y))) return@detectTapGestures
-                longPress?.invoke((l.getOffsetForPosition(p) + base - indent).coerceAtLeast(0))
-            },
-        )
+    // 排版里的位置 ↔ 块文字（不含缩进）里的位置。
+    val toChar = { layoutOffset: Int -> (layoutOffset + base - indent).coerceAtLeast(0) }
+    val toLayout = { char: Int -> char + indent - base }
+
+    @Composable
+    fun SelectableText(style: TextStyle, boxModifier: Modifier) {
+        var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+        Box(boxModifier) {
+            Text(
+                shown!!,
+                style = style,
+                onTextLayout = { layout = it },
+                modifier = Modifier.pointerInput(block, base) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        var up: PointerInputChange? = null
+                        val longPressed = try {
+                            withTimeout(viewConfiguration.longPressTimeoutMillis) { up = waitForUpOrCancellation() }
+                            false
+                        } catch (_: PointerEventTimeoutCancellationException) {
+                            true
+                        }
+                        if (!longPressed) {
+                            up?.let {
+                                it.consume()
+                                tap?.invoke(it.position.x / size.width)
+                            }
+                            return@awaitEachGesture
+                        }
+                        val l = layout
+                        val s = select
+                        // 按在行尾之后的空白处不算选字。
+                        if (l == null || s == null || down.position.x > l.getLineRight(l.getLineForVerticalPosition(down.position.y))) {
+                            return@awaitEachGesture
+                        }
+                        s.press(blockIndex, toChar(l.getOffsetForPosition(down.position)))
+                        drag(down.id) { change ->
+                            change.consume()
+                            s.dragTo(blockIndex, toChar(l.getOffsetForPosition(change.position)))
+                        }
+                        // 松手这一下也吃掉，免得外层再当成轻点（取消划选、开菜单）。
+                        currentEvent.changes.forEach { it.consume() }
+                        s.release()
+                    }
+                },
+            )
+            val l = layout
+            if (handles && selected != null && l != null && select != null) {
+                val start = toLayout(selected.first)
+                val end = toLayout(selected.last + 1)
+                val len = l.layoutInput.text.length
+                if (start in 0..len) SelectionHandle(l, start, isStart = true, palette.accent) { cursor ->
+                    select?.moveHandle(blockIndex, true, toChar(cursor))
+                }
+                if (end in 0..len && end > 0) SelectionHandle(l, end, isStart = false, palette.accent) { cursor ->
+                    select?.moveHandle(blockIndex, false, toChar(cursor))
+                }
+            }
+        }
     }
-    val onLayout: (TextLayoutResult) -> Unit = { layout = it }
+
     // 插图、表格等非文字块只响应轻点（翻页/菜单）。
     val tapOnly = Modifier.pointerInput(block) { detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }) }
     when (block) {
-        is Block.Para -> Text(
-            shown!!,
-            style = styles.para,
-            onTextLayout = onLayout,
-            modifier = modifier.padding(bottom = if (isEnd) gap else 0.dp).then(gestures),
-        )
-        is Block.Heading -> Text(
-            shown!!,
-            style = styles.heading(block.level),
-            onTextLayout = onLayout,
-            modifier = modifier.padding(top = gap * 1.5f, bottom = gap).then(gestures),
-        )
+        is Block.Para -> SelectableText(styles.para, modifier.padding(bottom = if (isEnd) gap else 0.dp))
+        is Block.Heading -> SelectableText(styles.heading(block.level), modifier.padding(top = gap * 1.5f, bottom = gap))
         is Block.Quote -> Row(modifier.padding(bottom = gap).height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(palette.accent.copy(alpha = 0.5f)))
-            Text(shown!!, style = styles.quote, onTextLayout = onLayout, modifier = Modifier.padding(start = styles.quoteIndent - 3.dp).then(gestures))
+            SelectableText(styles.quote, Modifier.padding(start = styles.quoteIndent - 3.dp))
         }
         is Block.ListItem -> Row(modifier.padding(start = (block.indent * 16).dp, bottom = gap / 2)) {
             Text(block.marker, style = styles.list.copy(color = palette.accent), modifier = Modifier.width(styles.listMarkerWidth))
-            Text(shown!!, style = styles.list, onTextLayout = onLayout, modifier = gestures)
+            SelectableText(styles.list, Modifier)
         }
         is Block.Table -> Column(
             modifier
@@ -246,5 +304,65 @@ internal fun BlockView(
             modifier = modifier.then(tapOnly).fillMaxWidth().padding(vertical = (styles.settings.fontSize * 0.8f).dp),
         )
         is Block.Image -> BookImage(block.src, palette.bar, modifier.then(tapOnly).padding(bottom = gap))
+    }
+}
+
+/** 正文里高亮的选区；[handles] 为真时两端显示把手。 */
+internal data class Highlight(val block: Int, val range: IntRange, val handles: Boolean)
+
+/** 正文选字的回调。位置都是块文字（不含段首缩进）里的下标。 */
+internal interface TextSelector {
+    /** 长按某个字。 */
+    fun press(block: Int, char: Int)
+
+    /** 长按后不松手，拖到某个字。 */
+    fun dragTo(block: Int, char: Int)
+
+    /** 松手。 */
+    fun release()
+
+    /** 拖动选区一端的把手；[cursor] 是字与字之间的光标位置。 */
+    fun moveHandle(block: Int, start: Boolean, cursor: Int)
+}
+
+/** 选区一端的把手：挂在字的下方，拖动时按手指所在的位置换算成光标。 */
+@Composable
+private fun SelectionHandle(layout: TextLayoutResult, offset: Int, isStart: Boolean, color: Color, onMove: (Int) -> Unit) {
+    val density = LocalDensity.current
+    val size = 22.dp
+    val sizePx = with(density) { size.toPx() }
+    val rect = layout.getCursorRect(offset)
+    // 起点把手挂在光标左下，终点把手挂在右下，像系统的选择把手。
+    val anchor = Offset(if (isStart) rect.left - sizePx else rect.left, rect.bottom)
+    val move by rememberUpdatedState(onMove)
+    val currentLayout by rememberUpdatedState(layout)
+    val currentOffset by rememberUpdatedState(offset)
+    Box(
+        Modifier
+            .offset { IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt()) }
+            .size(size)
+            .pointerInput(isStart) {
+                // 从光标所在行的中线出发，跟着手指的位移找字。
+                var target = Offset.Zero
+                detectDragGestures(
+                    onDragStart = { target = currentLayout.getCursorRect(currentOffset).center },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        target += amount
+                        move(currentLayout.getOffsetForPosition(target))
+                    },
+                )
+            }
+            .semantics { contentDescription = if (isStart) "选区起点" else "选区终点" },
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clip(
+                    if (isStart) RoundedCornerShape(topStart = 0.dp, topEnd = 50.dp, bottomStart = 50.dp, bottomEnd = 50.dp)
+                    else RoundedCornerShape(topStart = 50.dp, topEnd = 0.dp, bottomStart = 50.dp, bottomEnd = 50.dp),
+                )
+                .background(color),
+        )
     }
 }

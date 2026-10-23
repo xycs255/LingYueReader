@@ -52,14 +52,14 @@ internal fun PagedReader(
     topInset: Dp,
     bottomInset: Dp,
     onTap: (xFraction: Float) -> Unit,
-    onLongPress: (block: Int, char: Int) -> Unit,
+    selector: TextSelector,
     onPosition: (block: Int, char: Int, fraction: Float, pageLabel: String) -> Unit,
     onChapterChange: (index: Int, fromEnd: Boolean) -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
     /** 听书时正在读的一句（本章内）。 */
     speaking: Utterance? = null,
     /** 正在查的词：第几块、哪一段。 */
-    selected: Pair<Int, IntRange>? = null,
+    selected: Highlight? = null,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -161,7 +161,7 @@ internal fun PagedReader(
                 CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
                     PageContent(
                         content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
-                        onLongPress.takeIf { pageChapter == chapterIndex },
+                        selector.takeIf { pageChapter == chapterIndex },
                         speaking.takeIf { pageChapter == chapterIndex },
                         selected.takeIf { pageChapter == chapterIndex },
                     )
@@ -180,9 +180,9 @@ private fun PageContent(
     marks: Marks,
     topInset: Dp,
     onTap: (Float) -> Unit,
-    onLongPress: ((Int, Int) -> Unit)?,
+    selector: TextSelector?,
     speaking: Utterance?,
-    selected: Pair<Int, IntRange>?,
+    selected: Highlight?,
 ) {
     fun speakRange(block: Int) = speaking?.takeIf { it.block == block }?.let { it.start until it.end }
     Column(Modifier.fillMaxWidth().padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset)) {
@@ -200,18 +200,22 @@ private fun PageContent(
                     range = item.start until item.end,
                     isEnd = item.isEnd,
                     speaking = speakRange(item.block),
-                    selected = selected?.takeIf { it.first == item.block }?.second,
+                    selected = selected?.takeIf { it.block == item.block }?.range,
+                    handles = selected?.takeIf { it.block == item.block }?.handles == true,
                     onTap = onTap,
-                    onLongPressChar = onLongPress?.let { cb -> { char -> cb(item.block, char) } },
+                    blockIndex = item.block,
+                    selector = selector,
                 )
                 is PageItem.Whole -> BlockView(
                     chapter.blocks[item.block],
                     styles,
                     marks.notesIn(chapterIndex, item.block),
                     speaking = speakRange(item.block),
-                    selected = selected?.takeIf { it.first == item.block }?.second,
+                    selected = selected?.takeIf { it.block == item.block }?.range,
+                    handles = selected?.takeIf { it.block == item.block }?.handles == true,
                     onTap = onTap,
-                    onLongPressChar = onLongPress?.let { cb -> { char -> cb(item.block, char) } },
+                    blockIndex = item.block,
+                    selector = selector,
                 )
             }
         }

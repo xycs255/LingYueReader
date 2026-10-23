@@ -55,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -239,8 +240,11 @@ private fun Reader(
         }
     }
     val currentSettings by rememberUpdatedState(settings)
+    val textSelection by vm.selection.collectAsStateWithLifecycle()
     val onTap: (Float) -> Unit = { x ->
         when {
+            // 有划选时，点一下只是取消划选。
+            vm.selection.value != null -> vm.clearSelection()
             menuVisible -> menuVisible = false
             !currentSettings.tapToTurn -> menuVisible = true
             x < 1f / 3 -> turner.turn?.invoke(false)
@@ -248,10 +252,18 @@ private fun Reader(
             else -> menuVisible = true
         }
     }
-    // 长按正文：选出按住的那个词并查词；划线、批注从查词面板进入。
-    val onLongPress: (Int, Int) -> Unit = { block, char -> vm.selectWordAt(chapterIndex, block, char) }
+    // 长按正文选出按住的词，松手就查；不松手拖动是自由划选，松手后可拖两端把手微调。
+    val selector = remember(vm, chapterIndex) {
+        object : TextSelector {
+            override fun press(block: Int, char: Int) = vm.pressText(chapterIndex, block, char)
+            override fun dragTo(block: Int, char: Int) = vm.dragText(block, char)
+            override fun release() = vm.releaseText()
+            override fun moveHandle(block: Int, start: Boolean, cursor: Int) = vm.moveSelectionHandle(block, start, cursor)
+        }
+    }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
-    val selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } }
+    val selected = textSelection?.takeIf { it.chapterIndex == chapterIndex }?.let { Highlight(it.block, it.range, handles = !it.dragging) }
+        ?: lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { Highlight(l.block, it, handles = false) } }
 
     // 内容区的上下边距不随状态栏显隐变化，否则一开菜单翻页模式就要重新分页。
     val bars = WindowInsets.statusBarsIgnoringVisibility.asPaddingValues()
@@ -278,7 +290,7 @@ private fun Reader(
                         topInset = topInset,
                         bottomInset = bottomInset,
                         onTap = onTap,
-                        onLongPress = onLongPress,
+                        selector = selector,
                         selected = selected,
                         onPosition = { item, offset, fraction ->
                             pos = Position(chapterIndex, item, offset, 0, fraction, "${(fraction * 100).toInt()}%")
@@ -302,7 +314,7 @@ private fun Reader(
                         topInset = topInset,
                         bottomInset = bottomInset,
                         onTap = onTap,
-                        onLongPress = onLongPress,
+                        selector = selector,
                         selected = selected,
                         onPosition = { block, char, fraction, label ->
                             pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
@@ -316,6 +328,29 @@ private fun Reader(
         }
 
         StatusLine(chapter.title, "${chapterIndex + 1}/${content.chapters.size} · ${pos.label}", palette, Modifier.align(Alignment.BottomCenter))
+
+        AnimatedVisibility(
+            visible = textSelection?.dragging == false,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 16.dp),
+        ) {
+            SelectionBar(
+                palette,
+                onLookup = vm::lookupSelection,
+                onAnnotate = {
+                    textSelection?.let { sel ->
+                        vm.clearSelection()
+                        if (sel.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(sel.block, sel.range)
+                    }
+                },
+                onCopy = {
+                    vm.selectionText()?.let { copyText(context, it) }
+                    vm.clearSelection()
+                },
+                onCancel = vm::clearSelection,
+            )
+        }
 
         AnimatedVisibility(
             visible = listening != null && !menuVisible,
@@ -470,6 +505,28 @@ private fun Reader(
     LookupOverlay(vm, palette) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
+    }
+}
+
+/** 划选后的操作条。 */
+@Composable
+private fun SelectionBar(palette: ReaderPalette, onLookup: () -> Unit, onAnnotate: () -> Unit, onCopy: () -> Unit, onCancel: () -> Unit) {
+    Row(
+        Modifier
+            .shadow(8.dp, RoundedCornerShape(50))
+            .clip(RoundedCornerShape(50))
+            .background(palette.bar)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf("查词" to onLookup, "划线·批注" to onAnnotate, "复制" to onCopy, "取消" to onCancel).forEach { (label, action) ->
+            Text(
+                label,
+                color = if (label == "取消") palette.secondary else palette.text,
+                fontSize = 15.sp,
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = action).padding(horizontal = 14.dp, vertical = 11.dp),
+            )
+        }
     }
 }
 
