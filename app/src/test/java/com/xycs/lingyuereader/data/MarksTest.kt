@@ -24,7 +24,7 @@ class MarksTest {
 
     @Test
     fun noteStaysPutWhenTextIsUnchanged() {
-        val content = book("第一章 甲" to listOf("田槐是天亮前回来的。", "他蹲下来划了几道。"))
+        val content = book("第一章 甲" to listOf("老周是天亮前回来的。", "他蹲下来划了几道。"))
         val m = Marks(notes = listOf(note(0, "第一章 甲", 1, "划了几道", 4))).resolve(content)
         assertFalse(m.notes.single().lost)
         assertEquals(1, m.notes.single().blockIndex)
@@ -35,7 +35,7 @@ class MarksTest {
         // 改稿：前面插了一章、本章开头加了一段，原句也挪了位置。
         val content = book(
             "楔子" to listOf("新加的楔子。"),
-            "第一章 甲" to listOf("新加的开头。", "田槐是天亮前回来的。", "他先喝了水，又蹲下来划了几道。"),
+            "第一章 甲" to listOf("新加的开头。", "老周是天亮前回来的。", "他先喝了水，又蹲下来划了几道。"),
         )
         val m = Marks(notes = listOf(note(0, "第一章 甲", 1, "划了几道", 4))).resolve(content)
         val n = m.notes.single()
@@ -55,15 +55,15 @@ class MarksTest {
 
     @Test
     fun markdownExportGroupsByChapter() {
-        val content = book("第一章 甲" to listOf("田槐是天亮前回来的。"), "第二章 乙" to listOf("他蹲下来划了几道。"))
+        val content = book("第一章 甲" to listOf("老周是天亮前回来的。"), "第二章 乙" to listOf("他蹲下来划了几道。"))
         val md = Marks(
             notes = listOf(
                 note(1, "第二章 乙", 0, "划了几道", 5).copy(id = "b", text = "这里节奏太快"),
                 note(0, "第一章 甲", 0, "天亮前", 3).copy(id = "a", text = ""),
             ),
-        ).toMarkdown("沐平", content)
+        ).toMarkdown("长夜", content)
         assertEquals(
-            "# 《沐平》批注\n\n## 第一章 甲\n\n> 天亮前\n\n## 第二章 乙\n\n> 划了几道\n\n这里节奏太快\n",
+            "# 《长夜》批注\n\n## 第一章 甲\n\n> 天亮前\n\n## 第二章 乙\n\n> 划了几道\n\n这里节奏太快\n",
             md,
         )
     }
@@ -79,13 +79,13 @@ class MarksTest {
 
     @Test
     fun anchorFollowsTextAfterParagraphInsertion() {
-        val original = book("第一章" to listOf("开头。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        val original = book("第一章" to listOf("开头。", "老周走到打谷场，看见门边那盏旧灯仍然亮着。"))
         val char = 18
         val anchor = TextAnchors.capture(original.chapters[0], 1, char)
-        val revised = book("第一章" to listOf("开头。", "新加入的段落。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        val revised = book("第一章" to listOf("开头。", "新加入的段落。", "老周走到打谷场，看见门边那盏旧灯仍然亮着。"))
         assertEquals(TextLocation(2, char), TextAnchors.resolve(revised.chapters[0], 1, char, anchor))
 
-        val bookmark = Bookmark("b", 0, "第一章", 2, char, "田槐走到打谷场", 1, anchor)
+        val bookmark = Bookmark("b", 0, "第一章", 2, char, "老周走到打谷场", 1, anchor)
         val moved = Marks(bookmarks = listOf(bookmark)).resolve(revised).bookmarks.single()
         assertEquals(3, moved.itemIndex)
         assertEquals(char, moved.charOffset)
