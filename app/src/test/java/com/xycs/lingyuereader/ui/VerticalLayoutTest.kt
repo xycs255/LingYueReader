@@ -63,4 +63,15 @@ class VerticalLayoutTest {
         val page = VerticalLayout(rows = 40, columns = 4, indent = false).layout(chapter).single()
         assertTrue(page.contains(0, 7))
     }
+
+    @Test
+    fun aPageOfOnlyTableRowsStillKnowsWhichBlockItIs() {
+        val chapter = com.xycs.lingyuereader.data.Chapter("第一章", listOf(
+            com.xycs.lingyuereader.data.Block.Para("甲"),
+            com.xycs.lingyuereader.data.Block.Table(List(8) { listOf("行$it", "值$it") }),
+        ))
+        val pages = VerticalLayout(rows = 6, columns = 2, indent = false).layout(chapter)
+        // 后面几页全是表格的行：进度要记在表格那一块，不能记成第 0 块。
+        assertEquals(1, pages.last().firstBlock)
+    }
 }

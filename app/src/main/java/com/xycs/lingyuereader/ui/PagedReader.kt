@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
@@ -21,6 +21,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -61,11 +62,13 @@ import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
 import kotlin.math.floor
 
@@ -154,7 +157,17 @@ internal fun PagedReader(
         }
 
         val chapter = content.chapters[chapterIndex]
-        val pages = remember(chapter, paginator, widthPx, heightPx) { pagesOf(chapterIndex)!! }
+        // 分页要逐段量文字、读插图大小，长章节、图多的漫画要好一会儿：放到后台线程分，不卡界面。
+        // 分好之前只露出纸（前后章多半已经提前分好，翻过来时直接就有）。
+        var ready by remember(chapter, paginator, widthPx, heightPx) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex)) }
+        LaunchedEffect(chapter, paginator, widthPx, heightPx) {
+            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) }
+        }
+        val pages = ready ?: run {
+            // 还在分页：轻点照样能叫出菜单、翻页。
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) })
+            return@BoxWithConstraints
+        }
         // 相邻两章：分过的直接拿；没分过的等这一章先画出来、书页停着时再分（见下面），打开书、换章那一下不用一口气分三章。
         val hasPrev = chapterIndex > 0
         val hasNext = chapterIndex < content.chapters.lastIndex
@@ -169,14 +182,21 @@ internal fun PagedReader(
         val lead = if (hasPrev) 1 else 0
         val count = lead + spreads.size + if (hasNext) 1 else 0
 
+        // 最近停在哪一页的开头（块、字）：同一章重新分页（窗口大小变了）时按它找回所在的页，不按页码。
+        val settledAt = remember { arrayOfNulls<Pair<Int, Int>>(1) }
         val startPage = remember(pages, start) {
+            val at = settledAt[0]
             when {
+                at != null -> pages.indexOfFirst { it.contains(at.first, at.second) }.coerceAtLeast(0)
                 start.fromEnd -> pages.lastIndex
                 start.block == null -> 0
                 else -> pages.indexOfFirst { it.contains(start.block, start.char) }.coerceAtLeast(0)
             }
         }
-        val pager = key(per) { rememberPagerState(initialPage = lead + startPage / per) { count } }
+        // 不用 rememberPagerState：它会在旋转屏幕后恢复旧的页码，而新的排版里那一页已是别的内容。
+        // 分页一变就按位置重新定页。
+        val pageCount by rememberUpdatedState(count)
+        val pager = remember(per, pages) { PagerState(lead + startPage / per) { pageCount } }
         val scope = rememberCoroutineScope()
 
         LaunchedEffect(chapterIndex, content, paginator, widthPx, heightPx) {
@@ -184,10 +204,10 @@ internal fun PagedReader(
             // 先让这一章画出来（打开书的放大动画就在这几帧），再趁书页停着时分；往后翻的多，先分下一章。
             repeat(2) { withFrameNanos { } }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (next == null) next = pagesOf(chapterIndex + 1)
+            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) }
             withFrameNanos { }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (prev == null) prev = pagesOf(chapterIndex - 1)
+            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) }
         }
 
         // 墨水屏上、选了“无动画”时翻页直接换过去，免得一页页地闪。
@@ -278,6 +298,7 @@ internal fun PagedReader(
                         val i = ((p - lead) * per).coerceIn(pages.indices)
                         val last = (i + per - 1).coerceAtMost(pages.lastIndex)
                         val label = if (last > i) "${i + 1}-${last + 1}/${pages.size} 页" else "${i + 1}/${pages.size} 页"
+                        settledAt[0] = pages[i].firstBlock to pages[i].firstChar
                         onPosition(pages[i].firstBlock, pages[i].firstChar, (last + 1f) / pages.size, label)
                     }
                 }
@@ -418,7 +439,9 @@ internal fun PagedReader(
                             Box(Modifier.weight(1f)) {
                                 PageContent(
                                     content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
-                                    selector.takeIf { pageChapter == chapterIndex },
+                                    // 只有停在屏幕上的那一页参与选字：覆盖翻页时下一页就垫在当前页下面、位置重合，
+                                    // 也算进来的话手指会选到看不见的字。
+                                    selector.takeIf { pageChapter == chapterIndex && p == pager.settledPage },
                                     speaking.takeIf { pageChapter == chapterIndex },
                                     selected.takeIf { pageChapter == chapterIndex },
                                     onFootnote,

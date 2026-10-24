@@ -33,6 +33,8 @@ import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.AiProtocol
 import com.xycs.lingyuereader.ai.AnswerLength
 import com.xycs.lingyuereader.ai.QuickAsk
+import com.xycs.lingyuereader.ai.SpeechConfig
+import com.xycs.lingyuereader.ai.SpeechPresets
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -233,6 +235,7 @@ fun AiScreen(vm: AppViewModel) {
                             )
                         }
                     }
+                    SpeechSection(config, update, fieldColors, mono, vm)
                     if (config.enabled && !config.complete) {
                         Text(
                             "填好接口地址、模型和密钥（局域网模型可不填密钥）后，AI 功能才会出现在阅读界面里。",
@@ -278,6 +281,103 @@ fun AiScreen(vm: AppViewModel) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * AI 朗读：听书、讲书用的语音合成服务商（OpenAI 兼容的 /audio/speech）。
+ * 选服务商、填密钥、选声音，可以试听；打开后听书默认用 AI 语音（听书面板里也能切回系统语音）。
+ */
+@Composable
+private fun SpeechSection(
+    config: AiConfig,
+    update: (AiConfig) -> Unit,
+    fieldColors: top.yukonga.miuix.kmp.basic.TextFieldColors,
+    mono: androidx.compose.ui.text.TextStyle,
+    vm: AppViewModel,
+) {
+    val c = LocalGroupedColors.current
+    val sp = config.speech
+    val preset = SpeechPresets.of(sp.preset)
+    val editableUrl = sp.preset == SpeechPresets.CUSTOM || sp.preset == SpeechPresets.LOCAL
+    var previewError by remember { mutableStateOf<String?>(null) }
+    var showKey by remember { mutableStateOf(false) }
+    val setSpeech: (SpeechConfig) -> Unit = { update(config.copy(speech = it)) }
+    GroupedSection(
+        header = "AI 朗读",
+        footer = previewError ?: when {
+            sp.baseUrl.trim().startsWith("http://") && !sp.lan -> "公网地址只支持 https://（局域网地址可以用 http://）。"
+            sp.preset == SpeechPresets.LOCAL -> "局域网里的 Kokoro-FastAPI 等兼容 OpenAI 语音接口的服务，默认端口 8880。密钥可不填。"
+            preset.keySite.isNotEmpty() -> "听书、讲书用的语音。密钥在 ${preset.keySite} 申请，按字数计费；读过的句子缓存在本机。"
+            else -> "听书、讲书用的语音：任何兼容 OpenAI /audio/speech 接口的服务。"
+        },
+    ) {
+        row {
+            ToggleRow("听书用 AI 语音", sp.enabled, icon = LingYueIcons.VolumeUp, iconBackground = Color(0xFFFF2D55)) {
+                setSpeech(sp.copy(enabled = it))
+                // 和离线语音只能用一样。
+                if (it) vm.saveOfflineConfig(vm.offlineVoiceState.value.config.copy(enabled = false))
+            }
+        }
+        row { PickerRow("服务商", SpeechPresets.ALL.map { it.id to it.label }, sp.preset) { id -> setSpeech(sp.withPreset(SpeechPresets.of(id))) } }
+        row {
+            TextField(
+                value = sp.baseUrl,
+                onValueChange = { setSpeech(sp.copy(baseUrl = it.trim())) },
+                label = "接口地址",
+                singleLine = true,
+                enabled = editableUrl,
+                colors = fieldColors,
+                textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        row { TextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+        row {
+            TextField(
+                value = sp.apiKey,
+                onValueChange = { setSpeech(sp.withKey(it.trim())) },
+                label = if (sp.lan) "API 密钥（可不填）" else "API 密钥",
+                singleLine = true,
+                colors = fieldColors,
+                textStyle = mono,
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                trailingIcon = {
+                    if (sp.apiKey.isNotEmpty()) {
+                        Text(
+                            if (showKey) "隐藏" else "显示",
+                            color = c.tint,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(8.dp)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (preset.voices.isNotEmpty()) {
+            row { PickerRow("声音", preset.voices, sp.voice) { setSpeech(sp.copy(voice = it)) } }
+        } else {
+            row { TextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+        }
+        if (preset.instructions) {
+            row {
+                TextField(
+                    value = sp.instructions,
+                    onValueChange = { setSpeech(sp.copy(instructions = it)) },
+                    label = "朗读风格（可不填，如“像讲故事一样，语气温和”）",
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        row {
+            ActionRow("试听", enabled = sp.complete) {
+                previewError = null
+                vm.previewSpeech { previewError = "试听失败：$it" }
             }
         }
     }

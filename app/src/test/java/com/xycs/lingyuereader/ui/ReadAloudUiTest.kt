@@ -86,4 +86,31 @@ class ReadAloudUiTest {
         compose.onNodeWithContentDescription("打开听书设置").performClick()
         assertEquals(1, openings)
     }
+
+    @Test
+    fun engineChoicesSwitchAndOfferTheOfflineDownload() {
+        val picked = mutableListOf<com.xycs.lingyuereader.tts.ReadAloudEngine>()
+        var setups = 0
+        val engines = listOf(
+            com.xycs.lingyuereader.tts.ReadAloudEngine.SYSTEM to "系统语音",
+            com.xycs.lingyuereader.tts.ReadAloudEngine.OFFLINE to "离线语音 · Kokoro 中英",
+        )
+        val current = mutableStateOf(state())
+        compose.setContent {
+            LingYueTheme {
+                ReadAloudSheet(current.value, palette, onRate = {}, engines = engines, onEngine = { picked += it }, onOfflineSetup = { setups += 1; Unit }.takeIf { current.value.aiLabel == null })
+            }
+        }
+        assertTrue(compose.onNodeWithText("系统语音").fetchSemanticsNode().config[SemanticsProperties.Selected])
+        compose.onNodeWithText("系统语音").performClick()
+        compose.onNodeWithText("离线语音 · Kokoro 中英").performClick()
+        assertEquals(listOf(com.xycs.lingyuereader.tts.ReadAloudEngine.OFFLINE), picked)
+        compose.onNodeWithText("下载模型").performClick()
+        assertEquals(1, setups)
+
+        current.value = state().copy(aiLabel = "Kokoro 中英", offline = true, voices = listOf(VoiceOption("3", "女声 1")), voice = "3")
+        compose.waitForIdle()
+        assertTrue(compose.onNodeWithText("离线语音 · Kokoro 中英").fetchSemanticsNode().config[SemanticsProperties.Selected])
+        compose.onNodeWithText("不联网", substring = true).assertExists()
+    }
 }

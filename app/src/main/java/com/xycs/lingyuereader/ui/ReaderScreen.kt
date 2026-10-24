@@ -142,6 +142,7 @@ import com.xycs.lingyuereader.data.TextAnchors
 import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.data.layoutKey
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassSheet
 import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
@@ -247,9 +248,13 @@ private data class Position(
     val block: Int get() = item - HEADER_ITEMS
 }
 
-/** 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。 */
-private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: BookContent): Position {
-    screen.chapterIndex?.let { index ->
+/**
+ * 打开阅读页时从哪读起：刚跳过去（目录、书签、换章）时用跳转的目标；已经在那里读过、存过进度
+ * （[landed]）之后再重建阅读页（返回、旋转屏幕、换繁简），就用存下的进度，不再回到跳转的地方。
+ * 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。
+ */
+private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: BookContent, landed: Boolean): Position {
+    if (!landed || entry.progress == null) screen.chapterIndex?.let { index ->
         val c = index.coerceIn(sourceContent.chapters.indices)
         return Position(c, screen.blockIndex?.let { it + HEADER_ITEMS } ?: 0, screen.offset, screen.char)
     }
@@ -301,9 +306,12 @@ private fun Reader(
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val offline by vm.offlineVoiceState.collectAsStateWithLifecycle()
     val aiSession by vm.ai.collectAsStateWithLifecycle()
     // 人物表在本机：打开书时读进来，查词时认人名。
     LaunchedEffect(entry.id) { vm.loadCharacters() }
+    val summaryState by vm.summaries.collectAsStateWithLifecycle()
+    LaunchedEffect(entry.id) { vm.loadSummaries() }
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
     // 注音要读字表，后台准备好再用。
@@ -315,7 +323,7 @@ private fun Reader(
     val pageCache = remember(content) { PageCache() }
     // 正在翻的那一页翻到哪：书页厚度跟着它走。
     val pageTurn = remember(content) { PageTurn() }
-    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
+    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent, vm.landedOn(screen)) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
     val chapter = content.chapters[chapterIndex]
@@ -355,13 +363,15 @@ private fun Reader(
         val start = System.currentTimeMillis()
         onPauseOrDispose { vm.addReadingTime(entry.id, System.currentTimeMillis() - start) }
     }
-    VolumeKeys(settings.volumeKeys && sheet == null) { forward -> turner.turn?.invoke(forward) }
 
     // 阅读统计：各章在全书中的起始字数，用来把位置换算成“读到第几个字”。
-    val chapterStarts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + c.charCount } }
+    // 漫画、PDF 没有文字（字数都是 0）：按章算进度，每章一份，不然全书进度永远是 0%。
+    val byChapter = remember(content) { content.chapters.all { it.charCount == 0 } }
+    fun weightOf(c: com.xycs.lingyuereader.data.Chapter): Int = if (byChapter) 1 else c.charCount
+    val chapterStarts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + weightOf(c) } }
     fun charIndexOf(p: Position): Long {
         val c = content.chapters.getOrNull(p.chapter) ?: return -1
-        return chapterStarts[p.chapter] + (p.fraction.coerceIn(0f, 1f) * c.charCount).toLong()
+        return chapterStarts[p.chapter] + (p.fraction.coerceIn(0f, 1f) * weightOf(c)).toLong()
     }
     val readTracker = remember(entry.id) { object { var last = -1L; var at = 0L } }
 
@@ -374,7 +384,7 @@ private fun Reader(
         val at = charIndexOf(pos)
         if (readTracker.last >= 0 && at > readTracker.last) {
             val moved = at - readTracker.last
-            if (moved <= (now - readTracker.at) / 1000 * 30 + 600) vm.addReadChars(moved)
+            if (!byChapter && moved <= (now - readTracker.at) / 1000 * 30 + 600) vm.addReadChars(moved)
         }
         readTracker.last = at
         readTracker.at = now
@@ -382,7 +392,7 @@ private fun Reader(
     // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
     val bookFraction = run {
         val total = chapterStarts.last().coerceAtLeast(1)
-        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * weightOf(chapter)) / total).coerceIn(0f, 1f)
     }
     val readingStats by vm.readingStats.collectAsStateWithLifecycle()
     val speed = remember(readingStats) { ReadingStats.charsPerMinute(readingStats) }
@@ -547,6 +557,10 @@ private fun Reader(
         }
     }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
+    // 音量键翻页只在纯读书时：开着查词、AI、注释等面板，或者正在听书时，音量键调音量。
+    VolumeKeys(
+        settings.volumeKeys && sheet == null && lookup == null && aiSession == null && footnote == null && aiTool == null && listening?.playing != true,
+    ) { forward -> turner.turn?.invoke(forward) }
     val selected = textSelection?.takeIf { it.chapterIndex == chapterIndex }
         ?.let { Highlight(it.start.block, it.start.char, it.end.block, it.end.char, handles = !it.dragging) }
         ?: lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { Highlight(l.block, it.first, l.block, it.last, handles = false) } }
@@ -691,12 +705,16 @@ private fun Reader(
                         registerTurner = { turner.turn = it },
                         registerScroller = { tracker.scroller = it },
                         speaking = speaking,
+                        onCompanion = { aiTool = AiTool.COMPANION }.takeIf { aiConfig.ready },
                     )
                 }
             } else {
                 // 书页夹在两摞纸中间（书页厚度），翻页时两摞跟着换。
                 val turnedReader: @Composable () -> Unit = {
-                    if (settings.pageMode == PageMode.VERTICAL) {
+                    // 注音的字表在后台读：读好之前不分页，免得先按没有拼音分一次、字表到了再分一次，页码对不上。
+                    if (settings.pinyin && annotator == null) {
+                        Unit
+                    } else if (settings.pageMode == PageMode.VERTICAL) {
                         key(screen, content, settings.layoutKey) {
                             val start = remember { pos }
                             val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
@@ -755,7 +773,7 @@ private fun Reader(
                 if (settings.pageEdges) {
                     BookEdges(
                         fraction = bookFraction,
-                        pageShare = pageTurn.chapterShare * chapter.charCount / chapterStarts.last().coerceAtLeast(1),
+                        pageShare = pageTurn.chapterShare * weightOf(chapter) / chapterStarts.last().coerceAtLeast(1),
                         turn = pageTurn,
                         mode = settings.pageMode,
                         palette = palette,
@@ -900,6 +918,8 @@ private fun Reader(
                                                 AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
                                                 AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
                                                 AiMenuItem.NOTES -> aiTool = AiTool.NOTES
+                                                AiMenuItem.COMPANION -> aiTool = AiTool.COMPANION
+                                                AiMenuItem.TALK -> aiTool = AiTool.TALK
                                                 AiMenuItem.TRANSLATE -> aiTool = AiTool.TRANSLATE
                                             }
                                         },
@@ -1080,6 +1100,15 @@ private fun Reader(
             chapterFraction = pos.fraction,
             charsPerMinute = speed.toFloat(),
             onClose = { sheet = null },
+            summaries = summaryState.summaries.takeIf { summaryState.bookId == entry.id }.orEmpty(),
+            summary = if (aiConfig.ready && !entry.format.imageOnly) SummaryControls(
+                running = summaryState.running,
+                progress = summaryState.progress,
+                error = summaryState.error,
+                estimate = { r -> vm.summaryTargets(r, chapterIndex).let { it.size to vm.summarySize(it) } },
+                onStart = { r -> vm.buildSummaries(vm.summaryTargets(r, chapterIndex)) },
+                onCancel = vm::cancelSummaries,
+            ) else null,
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
@@ -1112,7 +1141,21 @@ private fun Reader(
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
-        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint) }
+        aloud?.let { a ->
+            ReadAloudSheet(
+                a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint,
+                engines = buildList {
+                    add(ReadAloudEngine.SYSTEM to "系统语音")
+                    offline.config.current.takeIf { it.id in offline.installed }?.let { add(ReadAloudEngine.OFFLINE to "离线语音 · ${it.label}") }
+                    if (aiConfig.enabled && aiConfig.speech.complete) add(ReadAloudEngine.ONLINE to "AI 语音 · ${aiConfig.speech.label}")
+                },
+                onEngine = vm::setReadAloudEngine,
+                onOfflineSetup = {
+                    sheet = null
+                    vm.open(Screen.OfflineVoice)
+                }.takeIf { offline.installed.isEmpty() },
+            )
+        }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }

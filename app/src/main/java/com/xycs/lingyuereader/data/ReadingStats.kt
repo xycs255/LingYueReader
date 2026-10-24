@@ -17,7 +17,14 @@ class ReadingStats internal constructor(private val file: File, private val atom
     constructor(file: File) : this(file, AtomicFile(file))
 
     @Synchronized
-    fun days(): Map<LocalDate, DayStats> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyMap())
+    fun days(): Map<LocalDate, DayStats> {
+        val bytes = runCatching { atomicFile.readFully() }.getOrNull() ?: return emptyMap()
+        // 读不出（文件坏了）时先另存一份，免得接下来的保存把它覆盖掉。
+        return runCatching { parse(bytes.toString(Charsets.UTF_8)) }.getOrElse {
+            DurableFiles.keepDamaged(file)
+            emptyMap()
+        }
+    }
 
     @Synchronized
     fun addTime(bookId: String, millis: Long, day: LocalDate = LocalDate.now()) {

@@ -1,9 +1,12 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
@@ -142,6 +145,8 @@ internal fun ScrollReader(
     speaking: Utterance? = null,
     /** 正在查的词：第几块、哪一段。 */
     selected: Highlight? = null,
+    /** 开了 AI 助手时章末的“AI 伴读”。 */
+    onCompanion: (() -> Unit)? = null,
 ) {
     val palette = styles.palette
     val scope = rememberCoroutineScope()
@@ -277,6 +282,18 @@ internal fun ScrollReader(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text("· 本章完 ·", color = palette.secondary, fontSize = 13.sp, letterSpacing = 0.3.em)
+                if (onCompanion != null) {
+                    Text(
+                        "AI 伴读：本章要点与思考题",
+                        color = palette.accent,
+                        fontSize = 14.sp,
+                        modifier = Modifier
+                            .padding(top = 16.dp)
+                            .clip(RoundedCornerShape(50))
+                            .clickable(onClick = onCompanion)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                }
                 Spacer(Modifier.height(24.dp))
                 if (nextTitle != null) {
                     Button(onClick = onNext, colors = ButtonDefaults.buttonColors(color = palette.bar)) {

@@ -1,12 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 系统备份和换机迁移（Android 12 起）：AI 助手的密钥、书源的密码只留在这台手机上。 -->
+<!--
+  系统备份和换机迁移（Android 12 起）：
+  - AI 助手的密钥、书源的密码只留在这台手机上；
+  - 云备份每个应用只有 25 MB，超了整个应用都不再备份：书、词典、字体、离线语音模型不进云备份（用灵阅自己的备份）；
+    换机迁移没有这个限制，照常带过去；
+  - 自动备份的文件夹授权换了手机就不能用，都不带过去。
+-->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="ai.xml" />
         <exclude domain="sharedpref" path="catalogs.xml" />
+        <exclude domain="sharedpref" path="auto-backup.xml" />
+        <exclude domain="file" path="books/" />
+        <exclude domain="file" path="dicts/" />
+        <exclude domain="file" path="fonts/" />
+        <exclude domain="file" path="tts-models/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="ai.xml" />
         <exclude domain="sharedpref" path="catalogs.xml" />
+        <exclude domain="sharedpref" path="auto-backup.xml" />
     </device-transfer>
 </data-extraction-rules>

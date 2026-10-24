@@ -8,6 +8,8 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -108,7 +110,8 @@ class AutoBackupUiTest {
         compose.onNodeWithText("我的").performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("存到「同步盘」", substring = true).fetchSemanticsNodes().isNotEmpty() }
         // 文件夹已经不在了（比如授权被收回）：备份失败要说出来，也记在开关下面。
-        compose.onNodeWithText("现在备份一次").performClick()
+        // “我的”页加了几行后，这一行落在浮动的底部导航栏下面，点屏幕会点到导航栏：直接触发它的点击动作。
+        compose.onNodeWithText("现在备份一次").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(10_000) { compose.onAllNodesWithText("备份失败", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("上次失败", substring = true).fetchSemanticsNodes().isNotEmpty() }
     }

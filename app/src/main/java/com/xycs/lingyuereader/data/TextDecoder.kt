@@ -33,7 +33,7 @@ object TextDecoder {
             strictDecode(bytes, Charsets.UTF_8)
         } catch (_: CharacterCodingException) {
             try {
-                strictDecode(bytes, gb18030)
+                strictDecode(bytes, gb18030).let { gb -> big5Instead(bytes, gb) ?: gb }
             } catch (_: CharacterCodingException) {
                 val utf8 = lenientDecode(bytes, Charsets.UTF_8)
                 val utf8Bad = utf8.count { it == '\uFFFD' }
@@ -43,6 +43,31 @@ object TextDecoder {
         }
         return validate(text, "文本编码无法识别或文件已损坏")
     }
+
+    private val big5: Charset? = listOf("Big5-HKSCS", "Big5").firstNotNullOfOrNull { runCatching { Charset.forName(it) }.getOrNull() }
+
+    /**
+     * 繁体书常用 Big5 编码，而 Big5 的字节在 GB18030 里几乎总能“解码成功”，只是成了一堆生僻字和符号。
+     * 两种都解得通时，比一比哪种解出的常用字多（繁简常用字都算）。按 Big5 读明显更像正常中文时返回它。
+     */
+    private fun big5Instead(bytes: ByteArray, gb: String): String? {
+        val charset = big5 ?: return null
+        val sample = bytes.copyOf(minOf(bytes.size, 64 * 1024))
+        val b5 = runCatching { lenientDecode(sample, charset) }.getOrNull() ?: return null
+        val gbScore = commonScore(gb.take(b5.length))
+        val b5Score = commonScore(b5)
+        if (b5Score <= gbScore * 2 || b5Score < 20) return null
+        return runCatching { strictDecode(bytes, charset) }.getOrNull() ?: lenientDecode(bytes, charset)
+    }
+
+    /** 常用字（简体和繁体写法都在内）出现的次数。 */
+    private fun commonScore(text: String): Int = text.count { it in COMMON }
+
+    private val COMMON: Set<Char> = (
+        "的一是不了在人有我他这個个们們中来來上大为為和国國地到以说說时時要就出会會可也你对對生能而子那得于於着著下自之年过過发發后後作里裡用道行所然家种種事成方多经經么麼去法学學如都同现現当當没沒动動面起看定天分还還进進好小部其些主样樣理心她本前开開但因只从從想实實日" +
+            "者意无無力它与與长長把机機十民第公此已工使情明性知全三又关關点點正业業外将將两兩高间間由问問很最重并並物手应應战戰向头頭文体體政美相见見被利什二等产產或新己制身果加西月话話合回特代内內信表化老给給世位次度门門任常先海通教儿兒原东東声聲提立及比员員解水名真论論处處走义義各入几幾口认認条條平系气氣题題活更别別打女变變四神总總何电電数數安少报報才结結反受目太量再感建务務做接必场場件计計管期市直德资資命山金指许許统統区區保至队隊形社便空决決治展马馬科司五基眼书書非则則听聽白却界达達光放强強即像难難且权權思王象完设設式色路记記南品住告类類求据據程北边邊死张張该該交规規万萬取拉格望觉覺术術领領共确確传傳师師观觀清今切院让讓识識候带帶导導争爭运運笑飞飛风風步改收根干造言联聯持组組每济濟车車亲親极極林服快办辦议議往元英士证證近失转轉夫令准始怎呢存未远遠叫台单單影具罗羅字爱愛击擊流备備兵连連调調深商算质質团團集百需价價花党黨华華城石级級整府离離况況" +
+            "，。“”「」？！"
+        ).toSet()
 
     private fun strictDecode(bytes: ByteArray, charset: Charset, offset: Int = 0): String =
         charset.newDecoder()

@@ -22,7 +22,7 @@ object BookCache {
     const val VERSION = 3
 
     fun write(file: File, content: BookContent, fingerprint: String) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
+        val tmp = File(file.parentFile, file.name + "." + java.util.UUID.randomUUID() + ".tmp")
         RandomAccessFile(tmp, "rw").use { raf ->
             raf.setLength(0)
             raf.writeInt(MAGIC)
@@ -62,7 +62,7 @@ object BookCache {
         }
         if (!tmp.renameTo(file)) {
             file.delete()
-            tmp.renameTo(file)
+            if (!tmp.renameTo(file)) tmp.delete()
         }
     }
 

@@ -315,13 +315,19 @@ internal fun BlockView(
             val c = coords?.takeIf { it.isAttached } ?: return
             select?.register(key, blockIndex, c, l, toChar, toLayout)
         }
-        DisposableEffect(key) { onDispose { select?.unregister(key) } }
+        // 选字调度换了（比如翻页停稳后这一页才参与选字）：登记到新的，从旧的里撤掉。
+        DisposableEffect(key, selector) {
+            register()
+            onDispose { selector?.unregister(key) }
+        }
         BoxWithConstraints(boxModifier) {
             val measurer = rememberTextMeasurer(cacheSize = 0)
             val density = LocalDensity.current
             val width = constraints.maxWidth
             // 中文两端对齐：把行尾空出的一点宽度摊到字间（翻页时被截断的段落，最后一行也要排满）。
-            val display = remember(shown, style, width, justify, isEnd) {
+            // 按不含颜色的样式记住：环境光、傍晚变暖时颜色每帧都在渐变，颜色不影响排版，不必每帧重算两端对齐。
+            val layoutStyle = style.copy(color = Color.Unspecified)
+            val display = remember(shown, layoutStyle, width, justify, isEnd) {
                 if (justify && width in 1 until Constraints.Infinity) justifyCjk(shown!!, style, width, measurer, density, justifyLastLine = !isEnd) else shown!!
             }
             // 注音：汉字上方画拼音（标题不注）。

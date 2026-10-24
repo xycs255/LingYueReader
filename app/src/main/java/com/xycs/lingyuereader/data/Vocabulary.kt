@@ -38,7 +38,14 @@ class Vocabulary internal constructor(private val file: File, private val atomic
     constructor(file: File) : this(file, AtomicFile(file))
 
     @Synchronized
-    fun list(): List<VocabWord> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyList())
+    fun list(): List<VocabWord> {
+        val bytes = runCatching { atomicFile.readFully() }.getOrNull() ?: return emptyList()
+        // 读不出（文件坏了）时先另存一份，免得接下来的保存把它覆盖掉。
+        return runCatching { parse(bytes.toString(Charsets.UTF_8)) }.getOrElse {
+            DurableFiles.keepDamaged(file)
+            emptyList()
+        }
+    }
 
     fun contains(word: String): Boolean = list().any { it.word == word }
 

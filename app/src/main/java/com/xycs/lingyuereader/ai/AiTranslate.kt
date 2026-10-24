@@ -3,7 +3,7 @@ package com.xycs.lingyuereader.ai
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.InlineText
-import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.spokenText
 import org.json.JSONObject
 import java.io.File
 
@@ -19,6 +19,11 @@ data class Translations(
     val show: Boolean = true,
     val target: TranslateTarget = TranslateTarget.CHINESE,
     val chapters: Map<Int, Pair<String, Map<Int, String>>> = emptyMap(),
+    /**
+     * 译的时候每段原文的指纹（章 → 段 → 指纹）。书刷新后段落增删了，同一个段号已是别的段：指纹对不上就不显示那段译文。
+     * 旧版存的没有指纹，照旧按段号对。
+     */
+    val hashes: Map<Int, Map<Int, Int>> = emptyMap(),
 ) {
     fun of(chapter: Int, title: String): Map<Int, String>? = chapters[chapter]?.takeIf { it.first == title }?.second
 }
@@ -45,7 +50,7 @@ object AiTranslate {
         var cur = ArrayList<Pair<Int, String>>()
         var size = 0
         blocks.forEachIndexed { i, b ->
-            val text = b.displayText?.let(InlineText::stripTranslation)?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEachIndexed
+            val text = b.spokenText?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEachIndexed
             if (size + text.length > BATCH && cur.isNotEmpty()) {
                 out += cur
                 cur = ArrayList()
@@ -79,14 +84,21 @@ object AiTranslate {
     }
 
     /** 把译文接到段落后面（[content] 是不带译文的正文）；没有译文的章节原样不动，章节仍按需加载。 */
-    fun apply(content: BookContent, t: Translations): BookContent {
+    /** 一段原文的指纹（按原文，不按繁简转换后的显示文字）。 */
+    fun hash(block: Block?): Int = block?.spokenText?.trim()?.hashCode() ?: 0
+
+    /** [source] 是原文（没做繁简转换），用来核对段落指纹；不给时只按段号对。 */
+    fun apply(content: BookContent, t: Translations, source: BookContent? = null): BookContent {
         if (!t.show || t.chapters.isEmpty()) return content
         return content.copy(
             chapters = content.chapters.mapIndexed { i, ch ->
                 val map = t.of(i, ch.title) ?: return@mapIndexed ch
+                val hashes = t.hashes[i]
                 ch.mapped(ch.title) { blocks ->
+                    val original = if (hashes != null) source?.chapters?.getOrNull(i)?.blocks else null
                     blocks.mapIndexed { b, block ->
                         val tr = map[b] ?: return@mapIndexed block
+                        if (original != null && hashes!![b]?.let { it != hash(original.getOrNull(b)) } == true) return@mapIndexed block
                         when (block) {
                             is Block.Para -> block.copy(text = InlineText.withTranslation(block.text, tr))
                             is Block.Quote -> block.copy(text = InlineText.withTranslation(block.text, tr))
@@ -110,6 +122,10 @@ object AiTranslate {
                 val blocks = c.getJSONObject("blocks")
                 key.toInt() to (c.getString("title") to blocks.keys().asSequence().associate { b -> b.toInt() to blocks.getString(b) })
             },
+            hashes = chapters.keys().asSequence().mapNotNull { key ->
+                val h = chapters.getJSONObject(key).optJSONObject("hashes") ?: return@mapNotNull null
+                key.toInt() to h.keys().asSequence().associate { b -> b.toInt() to h.getInt(b) }
+            }.toMap(),
         )
     }.getOrDefault(Translations())
 
@@ -121,7 +137,9 @@ object AiTranslate {
             t.chapters.forEach { (i, pair) ->
                 val blocks = JSONObject()
                 pair.second.forEach { (b, text) -> blocks.put(b.toString(), text) }
-                chapters.put(i.toString(), JSONObject().put("title", pair.first).put("blocks", blocks))
+                val c = JSONObject().put("title", pair.first).put("blocks", blocks)
+                t.hashes[i]?.let { h -> c.put("hashes", JSONObject().apply { h.forEach { (b, v) -> put(b.toString(), v) } }) }
+                chapters.put(i.toString(), c)
             }
             f.writeText(JSONObject().put("show", t.show).put("target", t.target.name).put("chapters", chapters).toString())
         }

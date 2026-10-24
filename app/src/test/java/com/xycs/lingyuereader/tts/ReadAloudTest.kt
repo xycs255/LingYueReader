@@ -239,4 +239,33 @@ class ReadAloudTest {
             service.onDestroy()
         }
     }
+
+    @Test
+    fun listeningProgressIsSavedByReadAloudItselfWhenStopping() {
+        // 界面关了（ViewModel 没了）也要存：进度由 ReadAloud 存，停下时存最后读到的那句。
+        val calls = java.util.Collections.synchronizedList(mutableListOf<Triple<Int, Int, Int>>())
+        ReadAloud.start(context, "b", "书", book, 0, 0, 0, 1f, saveProgress = { c, b, ch ->
+            calls += Triple(c, b, ch)
+            com.xycs.lingyuereader.data.ReadingProgress(c, "第一章", b + 1, 0, ch)
+        })
+        // 引擎尚未就绪：直接跳到第二句，读到哪由这里定。
+        ReadAloud.nextSentence()
+        assertEquals("甲二。", ReadAloud.state.value!!.current!!.text)
+        ReadAloud.stop()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (ReadAloud.saved.value == null && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertEquals("b", ReadAloud.saved.value!!.first)
+        assertEquals(Triple(0, 0, 3), calls.last())
+    }
+
+    @Test
+    fun switchingBooksCancelsTheOldSleepTimerForReal() {
+        start()
+        ReadAloud.setTimer(15)
+        // 换一本书听：界面显示不定时，旧的定时也不能到点把新书停掉。
+        ReadAloud.start(context, "另一本", "书二", book, 0, 0, 0, 1f)
+        assertEquals(SleepTimer.Off, ReadAloud.state.value!!.timer)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMinutes(16))
+        assertEquals("另一本", ReadAloud.state.value?.bookId)
+    }
 }

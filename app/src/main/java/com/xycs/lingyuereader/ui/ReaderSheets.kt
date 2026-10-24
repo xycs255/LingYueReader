@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.PaddingValues
@@ -82,6 +83,10 @@ internal fun CatalogSheet(
     /** 每分钟读多少字，估每章、全书还要读多久。 */
     charsPerMinute: Float = 400f,
     onClose: () -> Unit = {},
+    /** AI 速读：各章摘要（章下标 → 摘要），显示在章名下面。 */
+    summaries: Map<Int, String> = emptyMap(),
+    /** 开了 AI 助手时的速读入口；为空不显示。 */
+    summary: SummaryControls? = null,
 ) {
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
@@ -121,6 +126,7 @@ internal fun CatalogSheet(
                     tab,
                 ) { tab = it }
             }
+            if (tab == 0 && summary != null) SummaryBar(summary)
             Box(Modifier.fillMaxWidth().height(460.dp).padding(top = 6.dp)) {
                 when (tab) {
                     0 -> {
@@ -145,16 +151,20 @@ internal fun CatalogSheet(
                                             fontSize = 13.sp,
                                             modifier = Modifier.width(34.dp).clearAndSetSemantics { },
                                         )
-                                        Text(
-                                            chapter.title,
-                                            color = c.label,
-                                            fontFamily = FontFamily.Serif,
-                                            fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
-                                            fontSize = 16.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f),
-                                        )
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                chapter.title,
+                                                color = c.label,
+                                                fontFamily = FontFamily.Serif,
+                                                fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
+                                                fontSize = 16.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            summaries[index]?.let {
+                                                Text(it, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+                                            }
+                                        }
                                         if (now) {
                                             Box(Modifier.padding(start = 8.dp, end = 6.dp).size(6.dp).clip(CircleShape).background(c.tint))
                                             Text("正在读 · ${(chapterFraction * 100).toInt()}%", color = c.tint, fontSize = 12.sp)
@@ -485,5 +495,49 @@ private fun MiniCover(title: String) {
             textAlign = TextAlign.Center,
             modifier = Modifier.clearAndSetSemantics { },
         )
+    }
+}
+
+/** 目录里的 AI 速读入口：选范围（显示约多少字），生成中显示进度、可停止。 */
+internal class SummaryControls(
+    val running: Boolean,
+    val progress: String?,
+    val error: String?,
+    /** 某个范围还差几章、约多少字没有摘要。 */
+    val estimate: (com.xycs.lingyuereader.ai.SummaryRange) -> Pair<Int, Int>,
+    val onStart: (com.xycs.lingyuereader.ai.SummaryRange) -> Unit,
+    val onCancel: () -> Unit,
+)
+
+@Composable
+private fun SummaryBar(s: SummaryControls) {
+    val c = LocalGroupedColors.current
+    Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (s.running) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 16.dp, color = c.tint)
+                Text("AI 速读生成中 ${s.progress.orEmpty()} 章", color = c.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("停止", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = s.onCancel).padding(8.dp))
+            }
+        } else {
+            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("AI 速读", color = c.secondary, fontSize = 13.sp)
+                com.xycs.lingyuereader.ai.SummaryRange.entries.forEach { r ->
+                    val (count, chars) = s.estimate(r)
+                    val label = if (count == 0) "${r.label} · 已有" else "${r.label} · 约 ${if (chars >= 10_000) "%.1f 万".format(chars / 10_000f) else chars.toString()} 字"
+                    Text(
+                        label,
+                        color = if (count == 0) c.tertiary else c.tint,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(c.tint.copy(alpha = if (count == 0) 0.04f else 0.1f))
+                            .clickable(enabled = count > 0) { s.onStart(r) }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+            }
+        }
+        s.error?.let { Text(it, color = c.destructive, fontSize = 13.sp) }
     }
 }

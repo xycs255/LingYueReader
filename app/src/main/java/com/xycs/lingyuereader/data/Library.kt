@@ -14,14 +14,33 @@ import java.util.UUID
  * 书架。每本书一个目录，存导入文件的副本，离线也能读；同时记下来源地址，
  * 原文件（如云盘里的文稿）改过之后可以“刷新”。
  */
+/**
+ * 整个应用共用一个书架实例：写书架索引的锁在实例上，两个实例同时写会互相覆盖。
+ * 听书在界面关掉后还会存进度，用的必须是同一个实例。
+ */
+object SharedLibrary {
+    @Volatile
+    private var library: Library? = null
+
+    @Synchronized
+    fun get(context: Context): Library {
+        val root = File(context.filesDir, "books").path
+        val app = context.applicationContext
+        return library?.takeIf { it.rootPath == root && it.appContext === app } ?: Library(app).also { library = it }
+    }
+}
+
 class Library(private val context: Context) {
 
     private val root = File(context.filesDir, "books").apply { mkdirs() }
+    internal val rootPath: String get() = root.path
+    internal val appContext: Context get() = context
     private val indexFile = File(root, "index.json")
 
     init {
         BookParser.pdfAspects = PdfPages::aspects
         recoverInterruptedRules()
+        recoverInterruptedSwaps()
     }
 
     private companion object {
@@ -30,12 +49,16 @@ class Library(private val context: Context) {
         const val RULES_INDEX_BEFORE = "index-before.json"
         const val RULES_COMMITTED = "committed"
         val RULES_STAGE = Regex("""\.rules-([A-Za-z0-9-]{1,64})-([0-9a-fA-F-]{36})""")
+        val REFRESH_STAGE = Regex("""\.refresh-([A-Za-z0-9-]{1,64})-[0-9a-fA-F-]{36}""")
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
         /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
         val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
-        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json)""")
+        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json|ai-[a-z0-9-]{1,40}\.(json|md|bin))""")
+
+        /** 每本书的 AI 数据（读书笔记、整章翻译、讲书稿、人物表等）：备份时打包，恢复时保留本机已有的。 */
+        val AI_BOOK_FILE = Regex("""ai-[a-z0-9-]{1,40}\.(json|md|bin)""")
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
     }
 
@@ -181,8 +204,14 @@ class Library(private val context: Context) {
     /** 读出一本书。优先用缓存（只读目录，章节按需加载）；缓存不在或过期时重新解析并写缓存。 */
     fun content(entry: BookEntry): BookContent {
         val dir = File(root, entry.id)
-        return BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources)) ?: buildCache(dir, entry.sources)
+        BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources))?.let { return it }
+        // 同一本书只许一处重建（全书架搜索和打开书可能同时触发）：两处一起写缓存、清插图目录会把对方的弄坏。
+        synchronized(buildLocks.getOrPut(dir.path) { Any() }) {
+            return BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources)) ?: buildCache(dir, entry.sources)
+        }
     }
+
+    private val buildLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
     /** 书籍目录里的文件（解出的插图、封面）。 */
     fun bookFile(id: String, name: String): File = File(File(root, id), name)
@@ -283,6 +312,31 @@ class Library(private val context: Context) {
         }
     }
 
+    /**
+     * 刷新、恢复备份做到一半进程被杀：书的旧目录可能还在临时目录的 previous 里，而书架上那本书的目录已经没了。
+     * 启动时把这样的旧目录放回原处，其余的临时文件清掉。
+     */
+    private fun recoverInterruptedSwaps() {
+        root.listFiles().orEmpty().forEach { staging ->
+            if (!staging.isDirectory) return@forEach
+            val refreshId = REFRESH_STAGE.matchEntire(staging.name)?.groupValues?.get(1)
+            val restoring = staging.name.startsWith(".restore-")
+            if (refreshId == null && !restoring) return@forEach
+            val previous = File(staging, "previous")
+            if (refreshId != null) {
+                val dir = File(root, refreshId)
+                if (previous.isDirectory && !dir.exists()) previous.renameTo(dir)
+            } else {
+                previous.listFiles().orEmpty().forEach { old ->
+                    val dir = File(root, old.name)
+                    if (old.isDirectory && !dir.exists()) old.renameTo(dir)
+                }
+            }
+            // 还没放回去的（原处已有目录）留着，不删唯一可能的旧副本；放回了就清掉整个临时目录。
+            if (previous.list().isNullOrEmpty() || (refreshId != null && !previous.exists())) staging.deleteRecursively()
+        }
+    }
+
     /** 修复进程死亡时遗留的规则目录事务；在首次读取书架前执行。 */
     private fun recoverInterruptedRules() {
         root.listFiles().orEmpty().forEach { staging ->
@@ -354,12 +408,16 @@ class Library(private val context: Context) {
             else -> null
         }
 
+        // 每份来源只读一次、解一次（插图多的 MOBI、FB2 每张图都重读整本书要读好几 GB）。
+        val resourceReaders = HashMap<String, (String) -> ByteArray?>()
+        fun resourcesOf(source: SourceRef, file: File) = resourceReaders.getOrPut(source.file) { BookParser.resources(BookParser.SourceBytes(source.name, file)) }
+
         /** 解出一张图到 img/，返回文件名。 */
         fun extract(source: SourceRef, path: String): String? = runCatching {
             val file = File(dir, source.file)
             when {
                 path.startsWith("@res/") -> {
-                    val data = BookParser.resource(BookParser.SourceBytes(source.name, file), path.removePrefix("@res/")) ?: return@runCatching null
+                    val data = resourcesOf(source, file)(path.removePrefix("@res/")) ?: return@runCatching null
                     val ext = PageBooks.imageExtension(data) ?: return@runCatching null
                     newFile(ext).also { File(dir, it).writeBytes(data) }
                 }
@@ -371,7 +429,7 @@ class Library(private val context: Context) {
                     val inner = path.removePrefix("@zip/")
                     val ext = inner.substringAfterLast('.', "").lowercase()
                     if (ext !in IMAGE_EXTENSIONS) return@runCatching null
-                    java.util.zip.ZipFile(file).use { zip ->
+                    PageBooks.openZip(file).use { zip ->
                         val entry = zip.getEntry(inner) ?: return@runCatching null
                         newFile(ext).also { name -> zip.getInputStream(entry).use { input -> File(dir, name).outputStream().use { input.copyTo(it) } } }
                     }
@@ -398,12 +456,29 @@ class Library(private val context: Context) {
         return content.copy(chapters = chapters, cover = cover)
     }
 
-    /** 从原位置重读每份文件。先在临时目录验证新书，失败时保留旧副本和缓存。 */
-    @Synchronized
+    /**
+     * 从原位置重读每份文件。先在临时目录验证新书，失败时保留旧副本和缓存。
+     * 读来源（可能要从书源下载）不占书架的锁：慢的网络不能让存进度、书签这些写书架的操作都排队等着。
+     */
     fun refresh(entry: BookEntry): RefreshResult {
+        require(File(root, entry.id).isDirectory) { "书籍文件不存在" }
+        val staging = File(root, ".refresh-${entry.id}-${UUID.randomUUID()}")
+        val downloaded = File(staging, "downloaded")
+        try {
+            val read = entry.sources.associate { s ->
+                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
+                s.file to bytes?.let { b -> File(downloaded, s.file).also { it.parentFile?.mkdirs(); it.writeBytes(b) } }
+            }
+            return synchronized(this) { refreshLocked(entry, staging, read) }
+        } finally {
+            downloaded.deleteRecursively()
+            if (staging.list().isNullOrEmpty()) staging.delete()
+        }
+    }
+
+    private fun refreshLocked(entry: BookEntry, staging: File, read: Map<String, File?>): RefreshResult {
         val dir = File(root, entry.id)
         require(dir.isDirectory) { "书籍文件不存在" }
-        val staging = File(root, ".refresh-${entry.id}-${UUID.randomUUID()}")
         val incoming = File(staging, "incoming")
         val next = File(staging, "next")
         val previous = File(staging, "previous")
@@ -412,7 +487,7 @@ class Library(private val context: Context) {
         var committed = false
         try {
             for (s in entry.sources) {
-                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
+                val bytes = read[s.file]?.readBytes()
                 if (bytes == null) {
                     failed++
                     continue
@@ -461,8 +536,12 @@ class Library(private val context: Context) {
             }
             return RefreshResult(changed, failed)
         } finally {
-            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉。
-            if (committed || !previous.exists()) staging.deleteRecursively()
+            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉（下次启动时 recoverInterrupted 会找回）。
+            if (committed || !previous.exists()) {
+                incoming.deleteRecursively()
+                next.deleteRecursively()
+                previous.deleteRecursively()
+            }
         }
     }
 
@@ -471,7 +550,10 @@ class Library(private val context: Context) {
     fun marks(id: String): Marks {
         val file = File(File(root, id), "marks.json")
         if (!file.isFile) return Marks()
-        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrDefault(Marks())
+        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrElse {
+            DurableFiles.keepDamaged(file)
+            Marks()
+        }
     }
 
     /** 本机旧版允许缺少书签文件；备份里一旦声明有书签文件，就必须能完整读回。 */
@@ -500,9 +582,7 @@ class Library(private val context: Context) {
     @Synchronized
     fun saveMarks(id: String, marks: Marks) {
         val dir = File(root, id).takeIf { it.isDirectory } ?: return
-        val tmp = File(dir, "marks.json.tmp")
-        tmp.writeText(marks.toJson().toString())
-        check(tmp.renameTo(File(dir, "marks.json"))) { "无法保存书签与批注" }
+        check(DurableFiles.write(File(dir, "marks.json"), marks.toJson().toString().toByteArray())) { "无法保存书签与批注" }
     }
 
     /** 从别的应用打开同一个文件时，找回书架上已有的那本，而不是再导入一份。 */
@@ -532,6 +612,23 @@ class Library(private val context: Context) {
      */
     // 不加锁：打包整个书架可能要几分钟，期间保存进度、改名、删书都不该排队等它。
     // 索引按改名原子替换，读到的总是完整的一份；书签批注同样先写临时文件再改名。
+    /**
+     * 备份里不留书源的下载地址：有的书源（如 Kavita）把 API 密钥写在下载链接的路径里，
+     * 备份文件常被存到云盘、发给别人。恢复后这些书不能“从原文件刷新”，从书源重新下载即可。
+     */
+    private fun withoutRemoteAddresses(indexBytes: ByteArray): ByteArray {
+        val array = runCatching { JSONArray(indexBytes.toString(Charsets.UTF_8)) }.getOrNull() ?: return indexBytes
+        for (i in 0 until array.length()) {
+            val sources = array.optJSONObject(i)?.optJSONArray("sources") ?: continue
+            for (k in 0 until sources.length()) {
+                val source = sources.optJSONObject(k) ?: continue
+                val uri = source.optString("uri")
+                if (uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)) source.put("uri", "")
+            }
+        }
+        return array.toString().toByteArray()
+    }
+
     fun backup(out: java.io.OutputStream, settings: JSONObject, data: Map<String, ByteArray> = emptyMap()): Int {
         val indexBytes = if (indexFile.isFile) indexFile.readBytes() else {
             check(root.listFiles().orEmpty().none { it.isDirectory && BACKUP_ID.matches(it.name) }) {
@@ -559,7 +656,7 @@ class Library(private val context: Context) {
             put(BACKUP_MANIFEST) {
                 it.write(JSONObject().put("format", 1).put("createdAt", System.currentTimeMillis()).put("settings", settings).toString().toByteArray())
             }
-            put("books/index.json") { it.write(indexBytes) }
+            put("books/index.json") { it.write(withoutRemoteAddresses(indexBytes)) }
             data.forEach { (name, bytes) -> put("data/$name") { it.write(bytes) } }
             entries.forEach { e ->
                 val dir = File(root, e.id)
@@ -568,7 +665,8 @@ class Library(private val context: Context) {
                     check(f.isFile) { "书籍来源文件缺失：${e.title} / ${source.name}" }
                     put("books/${e.id}/${source.file}") { o -> f.inputStream().use { it.copyTo(o) } }
                 }
-                listOf("marks.json", RULES).forEach { name ->
+                val extras = listOf("marks.json", RULES) + dir.list { _, n -> AI_BOOK_FILE.matches(n) }.orEmpty().sorted()
+                extras.forEach { name ->
                     val f = File(dir, name)
                     if (f.isFile) put("books/${e.id}/$name") { o -> f.inputStream().use { it.copyTo(o) } }
                 }
@@ -648,6 +746,11 @@ class Library(private val context: Context) {
                             }) { "来源文件为空" }
                         }
                         validateBackupMarks(next)
+                        // 备份里没有的 AI 数据（旧版备份不含这些，或备份之后才生成的）沿用本机的，不随整个目录一起被换掉。
+                        existing.listFiles { f -> f.isFile && AI_BOOK_FILE.matches(f.name) }?.forEach { f ->
+                            val target = File(next, f.name)
+                            if (!target.exists()) f.copyTo(target)
+                        }
                         val parsed = buildCache(next, e.sources)
                         require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
                         parsed
@@ -740,9 +843,7 @@ class Library(private val context: Context) {
         check(damaged == 0) { "书架索引里有 $damaged 条记录读不出，已停止写入并保留原文件" }
         val array = JSONArray()
         transform(entries).forEach { array.put(it.toJson()) }
-        val tmp = File(root, "index.json.tmp")
-        tmp.writeText(array.toString())
-        check(tmp.renameTo(indexFile)) { "无法保存书架索引" }
+        check(DurableFiles.write(indexFile, array.toString().toByteArray())) { "无法保存书架索引" }
     }
 
     private fun load(dir: File, sources: List<SourceRef>) =

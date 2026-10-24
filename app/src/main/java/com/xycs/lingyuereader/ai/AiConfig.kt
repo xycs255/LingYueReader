@@ -82,7 +82,12 @@ data class AiConfig(
     val length: AnswerLength = AnswerLength.MEDIUM,
     /** 问这本书时用的向量模型（服务商的 embeddings 接口）；为空时只按关键词检索。 */
     val embeddingModel: String = "",
+    /** AI 朗读（听书、讲书用的语音合成）。 */
+    val speech: SpeechConfig = SpeechConfig(),
 ) {
+    /** 听书用 AI 语音：AI 助手开着、AI 朗读开着且填全了。 */
+    val speechReady: Boolean get() = enabled && speech.enabled && speech.complete
+
     val apiKey: String get() = keys[preset].orEmpty()
 
     fun withKey(key: String): AiConfig = copy(keys = keys + (preset to key))
@@ -132,6 +137,17 @@ class AiStore(context: Context) {
         asks = sp.getString("asks", null)?.let(::decodeAsks) ?: QuickAsk.DEFAULTS,
         length = runCatching { AnswerLength.valueOf(sp.getString("length", null)!!) }.getOrDefault(AnswerLength.MEDIUM),
         embeddingModel = sp.getString("embeddingModel", null).orEmpty(),
+        speech = SpeechConfig().let { d ->
+            SpeechConfig(
+                enabled = sp.getBoolean("speech.enabled", false),
+                preset = sp.getString("speech.preset", null) ?: d.preset,
+                baseUrl = sp.getString("speech.baseUrl", null) ?: d.baseUrl,
+                model = sp.getString("speech.model", null) ?: d.model,
+                voice = sp.getString("speech.voice", null) ?: d.voice,
+                instructions = sp.getString("speech.instructions", null).orEmpty(),
+                keys = SpeechPresets.ALL.mapNotNull { p -> sp.getString("speech.key.${p.id}", null)?.takeIf { it.isNotEmpty() }?.let { p.id to it } }.toMap(),
+            )
+        },
     )
 
     private fun decodeAsks(raw: String): List<QuickAsk>? = runCatching {
@@ -149,6 +165,13 @@ class AiStore(context: Context) {
             putString("asks", org.json.JSONArray().apply { c.asks.forEach { put(org.json.JSONObject().put("label", it.label).put("instruction", it.instruction)) } }.toString())
             putString("length", c.length.name)
             putString("embeddingModel", c.embeddingModel.trim())
+            putBoolean("speech.enabled", c.speech.enabled)
+            putString("speech.preset", c.speech.preset)
+            putString("speech.baseUrl", c.speech.baseUrl.trim())
+            putString("speech.model", c.speech.model.trim())
+            putString("speech.voice", c.speech.voice.trim())
+            putString("speech.instructions", c.speech.instructions.trim())
+            SpeechPresets.ALL.forEach { p -> c.speech.keys[p.id]?.trim()?.takeIf { it.isNotEmpty() }?.let { putString("speech.key.${p.id}", it) } ?: remove("speech.key.${p.id}") }
             AiPresets.ALL.forEach { p -> c.keys[p.id]?.trim()?.takeIf { it.isNotEmpty() }?.let { putString("key.${p.id}", it) } ?: remove("key.${p.id}") }
         }
     }

@@ -141,4 +141,15 @@ class AutoBackupTest {
         assertFalse(backups.due())
         assertTrue(backups.run { }.isFailure)
     }
+
+    @Test
+    fun leftoverPartsFromAnInterruptedBackupAreCleanedUp() {
+        backups.setFolder("folder", "同步盘")
+        // 上次备份到一半应用被系统停掉了，留下了临时文件。
+        File(dir, "灵阅备份-20261022-0900.zip.123e4567-e89b-12d3-a456-426614174000.part").writeText("half")
+        File(dir, "别的文件.part").writeText("keep")
+        backups.run { it.write("ok".toByteArray()) }.getOrThrow()
+        assertTrue(dir.list()!!.none { it.startsWith("灵阅备份-") && it.endsWith(".part") })
+        assertTrue(File(dir, "别的文件.part").isFile)
+    }
 }

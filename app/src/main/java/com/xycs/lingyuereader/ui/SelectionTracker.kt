@@ -325,6 +325,13 @@ internal class SelectionTracker(
             if (o < 0 || o >= len) return null
             return b.top + e.layout.getLineBottom(e.layout.getLineForOffset(o))
         }
+        // 选区里没有一块在屏幕上（翻到别的页、滚走了）：不显示操作条，免得浮在不相干的文字上。
+        val height = r.size.height.toFloat()
+        val anyShown = entries.values.any { e ->
+            e.block in h.startBlock..h.endBlock && e.coords.isAttached &&
+                r.localBoundingBoxOf(e.coords, clipBounds = false).let { b -> b.right > 0f && b.left < width && b.bottom > 0f && b.top < height }
+        }
+        if (!anyShown) return null
         val top = visible(h.startBlock)?.let { (e, b) -> lineTop(e, b, h.startChar) } ?: 0f
         val bottom = visible(h.endBlock)?.let { (e, b) -> lineBottom(e, b, h.endChar) } ?: r.size.height.toFloat()
         return Rect(0f, top.coerceAtLeast(0f), width, bottom.coerceAtMost(r.size.height.toFloat()))

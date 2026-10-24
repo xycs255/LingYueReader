@@ -49,6 +49,21 @@ object BookParser {
     /**
      * 书里的资源（插图、封面），[key] 是解析时记下的“@res/…”后半段：MOBI 的“rec/记录号”、FB2 的“bin/图片id”。
      */
+    /**
+     * 取一本书里资源的方法：同一份来源要取很多张图时用它（FB2 的图一次全解出来，MOBI 的文件只读一次），
+     * 不必每张图都重读、重解整本书。
+     */
+    fun resources(source: SourceBytes): (String) -> ByteArray? {
+        val fb2 by lazy { Fb2Parser.binaries(fb2Bytes(source.bytes)) }
+        return { key ->
+            when {
+                key.startsWith("rec/") -> key.removePrefix("rec/").toIntOrNull()?.let { MobiParser.record(source.bytes, it) }
+                key.startsWith("bin/") -> fb2[key.removePrefix("bin/")]
+                else -> null
+            }
+        }
+    }
+
     fun resource(source: SourceBytes, key: String): ByteArray? = when {
         key.startsWith("rec/") -> key.removePrefix("rec/").toIntOrNull()?.let { MobiParser.record(source.bytes, it) }
         key.startsWith("bin/") -> Fb2Parser.binary(fb2Bytes(source.bytes), key.removePrefix("bin/"))
@@ -96,6 +111,22 @@ object BookParser {
      * 若每一章都有“第X章”序号，就按序号排序；同一章出现在多份文件里时，以排在后面的文件为准，
      * 这样把改过的新稿和旧稿一起导入，读到的是新稿。
      */
+    /**
+     * 各文件自己从头编号（上册、下册都从第一章起）：后面的文件又从不大于前一个文件开头的章号编起，
+     * 而重号的章章名多半不同。这时不能按章号去重（会拿下册的第一章顶掉上册的），按文件顺序接起来。
+     * 修订稿只重写其中几章（从中间某章起），或整本重来但章名大多不变，仍按章号以后面的为准。
+     */
+    private fun restartsNumbering(files: List<List<Chapter>>): Boolean {
+        val restarted = files.zipWithNext().any { (a, b) ->
+            val first = a.firstOrNull()?.number ?: return@any false
+            (b.firstOrNull()?.number ?: Int.MAX_VALUE) <= first
+        }
+        if (!restarted) return false
+        val repeated = files.flatten().groupBy { it.number to it.part }.values.filter { it.size > 1 }
+        val renamed = repeated.count { group -> group.map { it.title.trim() }.distinct().size > 1 }
+        return renamed * 2 > repeated.size
+    }
+
     fun parse(sources: List<SourceBytes>, rules: TextRules = TextRules()): BookContent {
         // 插图和封面路径前加上来源序号（“序号|书内路径”），导入时据此从对应文件里解出图片。
         val parsed = sources.withIndex()
@@ -103,7 +134,7 @@ object BookParser {
             .map { (i, source) -> tagImages(parseOne(source, rules), i) }
         if (parsed.size == 1) return parsed.single()
         val all = parsed.flatMap { it.chapters }
-        val chapters = if (all.isNotEmpty() && all.all { it.number != null }) {
+        val chapters = if (all.isNotEmpty() && all.all { it.number != null } && !restartsNumbering(parsed.map { it.chapters })) {
             val byKey = linkedMapOf<Pair<Int, Int>, Chapter>()
             all.forEach { byKey[it.number!! to it.part] = it }
             byKey.values.sortedWith(compareBy({ it.number }, { it.part }))

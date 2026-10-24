@@ -108,4 +108,19 @@ class AiStudyTranslateTest {
         // 听书只读原文。
         assertTrue(Sentences.split(blocks, 0, 0).none { it.text.contains("晴朗") })
     }
+
+    @Test
+    fun translationsOfParagraphsThatChangedAreHidden() {
+        val hashes = mapOf(0 to mapOf(1 to AiTranslate.hash(content.chapters[0].blocks[1])))
+        val t = Translations(chapters = mapOf(0 to ("Chapter 1" to mapOf(1 to "那是晴朗寒冷的一天。"))), hashes = hashes)
+        val file = File(tmp.root, "hashed.json")
+        AiTranslate.write(file, t)
+        assertEquals(t, AiTranslate.read(file))
+        assertTrue(AiTranslate.apply(content, t, content).chapters[0].blocks[1].displayText!!.contains("晴朗"))
+        // 书刷新后这一段换了内容：同一段号的译文不再显示。
+        val changed = content.copy(chapters = listOf(content.chapters[0].withBlocks(content.chapters[0].blocks.mapIndexed { i, b ->
+            if (i == 1) com.xycs.lingyuereader.data.Block.Para("A completely different paragraph.") else b
+        })) + content.chapters.drop(1))
+        assertFalse(AiTranslate.apply(changed, t, changed).chapters[0].blocks[1].displayText!!.contains("晴朗"))
+    }
 }

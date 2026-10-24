@@ -16,10 +16,11 @@ sealed interface Block {
 
     val plainText: String
         get() = when (this) {
-            is Para -> InlineText.stripNotes(text)
-            is Heading -> InlineText.stripNotes(text)
-            is Quote -> InlineText.stripNotes(text)
-            is ListItem -> InlineText.stripNotes(text)
+            // 不含对照显示的 AI 译文：统计字数、搜索、发给 AI 的原文都只按原文。
+            is Para -> InlineText.stripNotes(InlineText.stripTranslation(text))
+            is Heading -> InlineText.stripNotes(InlineText.stripTranslation(text))
+            is Quote -> InlineText.stripNotes(InlineText.stripTranslation(text))
+            is ListItem -> InlineText.stripNotes(InlineText.stripTranslation(text))
             is Table -> rows.joinToString("\n") { it.joinToString("  ") }
             is Image -> ""
             Rule, SceneBreak -> ""

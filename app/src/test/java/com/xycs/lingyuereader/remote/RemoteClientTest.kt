@@ -132,4 +132,23 @@ class RemoteClientTest {
             <d:response><d:href>/dav/%E8%BE%B9%E5%9F%8E.txt</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>9</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
             </d:multistatus>"""
     }
+
+    @Test
+    fun hugeCatalogResponsesAreRefused() = runBlocking<Unit> {
+        val big = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { ex ->
+                ex.responseHeaders.add("Content-Type", "application/atom+xml")
+                ex.sendResponseHeaders(200, 0)
+                ex.responseBody.use { out -> val chunk = ByteArray(1 shl 20) { 'x'.code.toByte() }; repeat(20) { out.write(chunk) } }
+            }
+            start()
+        }
+        try {
+            val catalog = Catalog(id = "b", kind = CatalogKind.OPDS, name = "大", url = "http://127.0.0.1:${big.address.port}/opds")
+            val error = runCatching { RemoteClient { listOf(catalog) }.page(catalog, catalog.url) }.exceptionOrNull()
+            assertTrue(error?.message.orEmpty(), error is RemoteException && "太大" in error.message!!)
+        } finally {
+            big.stop(0)
+        }
+    }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.tts.ReadAloudState
 import com.xycs.lingyuereader.tts.SleepTimer
 import top.yukonga.miuix.kmp.basic.Icon
@@ -121,6 +122,11 @@ internal fun ReadAloudSheet(
     onVoice: (String?) -> Unit = {},
     onTimer: (Int?) -> Unit = ReadAloud::setTimer,
     tint: Color = palette.accent,
+    /** 能用的朗读引擎和说明（系统语音总在；离线语音装了模型才有；AI 语音设好了才有）。 */
+    engines: List<Pair<ReadAloudEngine, String>> = emptyList(),
+    onEngine: (ReadAloudEngine) -> Unit = {},
+    /** 还没下载离线语音模型时，去下载的入口；为空不显示。 */
+    onOfflineSetup: (() -> Unit)? = null,
 ) {
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
@@ -171,9 +177,31 @@ internal fun ReadAloudSheet(
                     ) { rate = it }
                 }
             }
+            state.error?.let {
+                Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
+            }
+            if (engines.size > 1 || onOfflineSetup != null) {
+                val engine = when {
+                    state.offline -> ReadAloudEngine.OFFLINE
+                    state.aiLabel != null -> ReadAloudEngine.ONLINE
+                    else -> ReadAloudEngine.SYSTEM
+                }
+                GroupedSection(
+                    header = "朗读引擎",
+                    footer = when (engine) {
+                        ReadAloudEngine.OFFLINE -> "在手机上合成，不联网、不花钱。每句先合成再读，较慢的手机句与句之间可能停顿。"
+                        ReadAloudEngine.ONLINE -> "用「${state.aiLabel}」合成语音，按服务商的价格计费；读过的句子缓存在本机，重听、往回跳不再花钱。"
+                        ReadAloudEngine.SYSTEM -> if (onOfflineSetup != null) "离线语音在手机上用 AI 模型合成，比系统语音自然，不联网；先下载一个模型（约 150 MB）。" else null
+                    },
+                ) {
+                    engines.forEach { (e, label) -> row { CheckRow(label, e == engine) { if (e != engine) onEngine(e) } } }
+                    onOfflineSetup?.let { row { NavRow("离线语音", value = "下载模型", onClick = it) } }
+                }
+            }
             if (state.voices.size > 1) {
-                GroupedSection(header = "语音") {
-                    (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
+                GroupedSection(header = if (state.aiLabel != null) "声音" else "语音") {
+                    val options = if (state.aiLabel != null) state.voices.map { it.name to it.label } else listOf(null to "默认") + state.voices.map { it.name to it.label }
+                    options.forEach { (name, label) ->
                         val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
                         row { CheckRow(label, on) { onVoice(name) } }
                     }
@@ -188,7 +216,8 @@ internal fun ReadAloudSheet(
                 header = "定时关闭",
                 footer = listOfNotNull(
                     timerLabel(state.timer)?.let { "$it。" },
-                    "使用系统的“文字转语音”引擎。锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
+                    if (state.aiLabel != null) "锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。"
+                    else "使用系统的“文字转语音”引擎。锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
                 ).joinToString(""),
             ) {
                 listOf<Pair<Int?, String>>(null to "不定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟", 0 to "本章结束").forEach { (minutes, label) ->

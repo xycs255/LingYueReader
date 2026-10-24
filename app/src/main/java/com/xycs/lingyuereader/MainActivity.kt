@@ -34,8 +34,10 @@ class MainActivity : ComponentActivity() {
             val appearance by vm.appearance.collectAsStateWithLifecycle()
             LingYueTheme(appearance) { ThemeRevealHost { App(vm) } }
         }
-        // 只在首次启动时处理外部文件，旋转屏幕等重建时不再重复导入。
-        if (savedInstanceState == null) handleIncoming(intent)
+        // 只在首次启动时处理外部文件，旋转屏幕等重建时不再重复导入；
+        // 从最近任务里重新打开时，系统会把当初“用灵阅打开”的那个意图再给一次，也不能再导入一遍。
+        val fromHistory = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) handleIncoming(intent)
     }
 
     override fun onResume() {
@@ -61,7 +63,11 @@ class MainActivity : ComponentActivity() {
     private fun handleIncoming(intent: Intent?) {
         val uris = when (intent?.action) {
             Intent.ACTION_VIEW -> listOfNotNull(intent.data)
-            Intent.ACTION_SEND -> listOfNotNull(intent.streamExtra())
+            Intent.ACTION_SEND -> listOfNotNull(intent.streamExtra()).ifEmpty {
+                // 分享的是一段文字，不是文件。
+                intent.getStringExtra(Intent.EXTRA_TEXT)?.let { vm.openSharedText(it, intent.getStringExtra(Intent.EXTRA_SUBJECT)) }
+                emptyList()
+            }
             Intent.ACTION_SEND_MULTIPLE -> intent.streamExtras()
             else -> emptyList()
         }

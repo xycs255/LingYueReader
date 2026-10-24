@@ -37,6 +37,14 @@ object TxtParser {
         if (chapters.size <= 1 && (chapters.firstOrNull()?.charCount ?: 0) > SECTION_CHARS * 2) {
             return split(chapters.single().blocks)
         }
+        // 某一章特别长（几十万字，多半是后面的章名格式没认出来）：拆成几节，免得整章一起加载、排版。
+        val oversized = SECTION_CHARS * 20
+        if (chapters.any { it.charCount > oversized }) {
+            return chapters.flatMap { c ->
+                if (c.charCount <= oversized) listOf(c)
+                else split(c.blocks).mapIndexed { i, section -> Chapter("${c.title}（${i + 1}）", section.blocks, c.number, c.part * 1000 + i + 1) }
+            }
+        }
         return chapters
     }
 

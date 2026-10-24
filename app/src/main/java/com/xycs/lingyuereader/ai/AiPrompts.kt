@@ -122,10 +122,13 @@ object AiPrompts {
  */
 class BookIndex private constructor(
     private val passages: List<Passage>,
-    private val df: Map<String, Int>,
     private val avgLength: Double,
 ) {
-    private class Passage(val chapter: Int, val chapterTitle: String, val block: Int, val text: String, val terms: Map<String, Int>, val length: Int)
+    /**
+     * 一段原文。只存文字和词数，不存每段的词表：读到几百万字时，每段一张词表要几百 MB 内存。
+     * 问的时候只数问句里那几个词在各段出现几次。
+     */
+    private class Passage(val chapter: Int, val chapterTitle: String, val block: Int, val text: String, val length: Int)
 
     val size: Int get() = passages.size
 
@@ -142,17 +145,19 @@ class BookIndex private constructor(
         val query = all.filter { it.length >= 2 && it !in STOP }.ifEmpty { all.filter { it.length == 1 } }
         if (query.isEmpty() || passages.isEmpty()) return emptyList()
         val n = passages.size.toDouble()
-        val scored = passages.mapIndexedNotNull { i, p ->
-            var score = 0.0
-            for (t in query) {
-                val f = p.terms[t] ?: continue
-                val d = df[t] ?: continue
-                val idf = ln(1 + (n - d + 0.5) / (d + 0.5))
-                score += idf * f * (K1 + 1) / (f + K1 * (1 - B + B * p.length / avgLength))
+        val scores = DoubleArray(passages.size)
+        for (t in query) {
+            val freq = IntArray(passages.size) { count(passages[it].text, t) }
+            val d = freq.count { it > 0 }
+            if (d == 0) continue
+            val idf = ln(1 + (n - d + 0.5) / (d + 0.5))
+            for (i in passages.indices) {
+                val f = freq[i]
+                if (f == 0) continue
+                scores[i] += idf * f * (K1 + 1) / (f + K1 * (1 - B + B * passages[i].length / avgLength))
             }
-            if (score > 0) i to score else null
         }
-        return scored.sortedByDescending { it.second }.take(limit).map { it.first }
+        return scores.indices.filter { scores[it] > 0 }.sortedByDescending { scores[it] }.take(limit)
     }
 
     /** 把选出的段落按在书中的先后排好、编号从 1 起。 */
@@ -181,8 +186,7 @@ class BookIndex private constructor(
                 fun flush() {
                     if (buf.isNotBlank()) {
                         val text = buf.toString().trim()
-                        val t = terms(text)
-                        passages += Passage(ch, chapter.title, start, text, t, t.values.sum())
+                        passages += Passage(ch, chapter.title, start, text, termCount(text))
                     }
                     buf.setLength(0)
                     start = -1
@@ -197,10 +201,57 @@ class BookIndex private constructor(
                 }
                 flush()
             }
-            val df = HashMap<String, Int>()
-            passages.forEach { p -> p.terms.keys.forEach { df[it] = (df[it] ?: 0) + 1 } }
             val avg = if (passages.isEmpty()) 1.0 else passages.sumOf { it.length }.toDouble() / passages.size
-            return BookIndex(passages, df, avg.coerceAtLeast(1.0))
+            return BookIndex(passages, avg.coerceAtLeast(1.0))
+        }
+
+        private fun isHan(c: Char) = Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
+
+        /** [text] 里按 [terms] 的切法共有几个词（BM25 的段长），不建词表。 */
+        internal fun termCount(text: String): Int {
+            var n = 0
+            var prevHan = false
+            var word = 0
+            for (c in text) {
+                when {
+                    isHan(c) -> {
+                        if (word >= 2) n++
+                        word = 0
+                        n += if (prevHan) 2 else 1
+                        prevHan = true
+                    }
+                    c.isLetterOrDigit() -> {
+                        prevHan = false
+                        word++
+                    }
+                    else -> {
+                        if (word >= 2) n++
+                        word = 0
+                        prevHan = false
+                    }
+                }
+            }
+            if (word >= 2) n++
+            return n
+        }
+
+        /**
+         * 词 [t] 在 [text] 里出现几次，和 [terms] 的数法一致：汉字词数子串（单字、相邻两字），
+         * 拉丁字母和数字按整词、不分大小写。
+         */
+        internal fun count(text: String, t: String): Int {
+            if (t.isEmpty()) return 0
+            val han = isHan(t[0])
+            var n = 0
+            var i = text.indexOf(t, 0, ignoreCase = !han)
+            while (i >= 0) {
+                val end = i + t.length
+                val whole = han || ((i == 0 || !text[i - 1].isLetterOrDigit() || isHan(text[i - 1])) &&
+                    (end == text.length || !text[end].isLetterOrDigit() || isHan(text[end])))
+                if (whole) n++
+                i = text.indexOf(t, if (han) i + 1 else end, ignoreCase = !han)
+            }
+            return n
         }
 
         /** 中文按单字和相邻两字，拉丁字母和数字按整词（小写）。 */

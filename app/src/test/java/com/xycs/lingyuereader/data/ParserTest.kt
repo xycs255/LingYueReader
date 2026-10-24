@@ -406,4 +406,55 @@ class ParserTest {
         }
         return out.toByteArray()
     }
+
+    @Test
+    fun volumesThatEachStartAtChapterOneAreJoinedNotDeduplicated() {
+        fun txt(name: String, vararg chapters: String) = BookParser.SourceBytes(name, chapters.joinToString("\n") { "$it\n　　$it 的正文。" }.toByteArray())
+        val book = BookParser.parse(listOf(
+            txt("下册.txt", "第一章 重返故里", "第二章 再见"),
+            txt("上册.txt", "第一章 初入江湖", "第二章 拜师", "第三章 下山"),
+        ))
+        // 上册、下册都从第一章编号：不能拿下册的第一章顶掉上册的，按文件名顺序接起来。
+        assertEquals(listOf("第一章 初入江湖", "第二章 拜师", "第三章 下山", "第一章 重返故里", "第二章 再见"), book.chapters.map { it.title })
+    }
+
+    @Test
+    fun revisedDraftsStillReplaceTheOlderChapter() {
+        fun txt(name: String, body: String, vararg chapters: String) = BookParser.SourceBytes(name, chapters.joinToString("\n") { "$it\n　　$body" }.toByteArray())
+        val book = BookParser.parse(listOf(
+            txt("1 旧稿.txt", "旧稿。", "第一章 起", "第二章 承"),
+            txt("2 新稿.txt", "新稿。", "第二章 承", "第三章 转"),
+        ))
+        assertEquals(listOf("第一章 起", "第二章 承", "第三章 转"), book.chapters.map { it.title })
+        assertEquals(Block.Para("新稿。"), book.chapters[1].blocks.single())
+    }
+
+    @Test
+    fun big5TraditionalTextIsNotMistakenForGb18030() {
+        val text = "第一章 開端\n　　這是一個繁體中文的故事。我們在這裡讀書，他說：「明天再來。」她點了點頭，沒有說話。\n" +
+            "第二章 遠行\n　　路很長，他們走了很久，終於看見了城門。天已經黑了，城裡的燈一盞一盞亮起來。\n"
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("繁體.txt", text.toByteArray(Charset.forName("Big5")))))
+        assertEquals(listOf("第一章 開端", "第二章 遠行"), book.chapters.map { it.title })
+        // 简体 GBK 的书照旧按 GBK 读。
+        val simplified = "第一章 开端\n　　这是一个简体中文的故事。我们在这里读书，他说：“明天再来。”\n"
+        val gb = BookParser.parse(listOf(BookParser.SourceBytes("简体.txt", simplified.toByteArray(Charset.forName("GBK")))))
+        assertEquals("第一章 开端", gb.chapters.single().title)
+    }
+
+    @Test
+    fun aHugeChapterAmongOthersIsSplitIntoSections() {
+        val huge = (1..400).joinToString("\n") { "　　" + "这是很长很长的一段正文，章名格式没被认出来。".repeat(20) }
+        val text = "第一章 起\n　　开头。\n第二章 承\n$huge\n"
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("超长.txt", text.toByteArray())))
+        assertEquals("第一章 起", book.chapters[0].title)
+        assertTrue(book.chapters.size > 3)
+        assertTrue(book.chapters.drop(1).all { it.title.startsWith("第二章 承（") })
+        assertTrue(book.chapters.all { it.charCount < 20_000 })
+    }
+
+    @Test
+    fun outOfRangeNumericEntitiesDoNotBreakTheBook() {
+        assertEquals("a&#xFFFFFF;b&#2000000;c", HtmlText.decodeEntities("a&#xFFFFFF;b&#2000000;c"))
+        assertEquals("中", HtmlText.decodeEntities("&#x4E2D;"))
+    }
 }
