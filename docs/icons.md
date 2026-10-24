@@ -1,6 +1,6 @@
 # 灵阅图标系统
 
-启动图标以「月牙升起于开卷」为标志：暖纸色书页与月光落在朱砂色底上。自适应图标提供圆形、圆角方形裁切，Android 主题图标使用同一标志的独立单色轮廓。
+启动图标采用暖纸、朱砂书签与两列竖排阅读痕迹。纸纹作为满版背景，书签和阅读痕迹独立放在自适应图标安全区内；圆形、圆角方形裁切使用同一套图形。Android 主题图标只保留书签与阅读痕迹的透明单色轮廓。
 
 ![启动图标的三种呈现](assets/launcher-preview.png)
 
@@ -8,4 +8,4 @@
 
 ![界面图标总览](assets/ui-icons-preview.png)
 
-界面图标源文件为 `app/src/main/java/com/xycs/lingyuereader/ui/LingYueIcons.kt`。启动图标位于 `app/src/main/res/drawable/ic_launcher_*.xml`；听书与阅读提醒使用独立的透明单色 `ic_notification.xml`，确保通知栏在各系统主题下清晰显示。
+界面图标源文件为 `app/src/main/java/com/xycs/lingyuereader/ui/LingYueIcons.kt`。启动图标的图形位于 `app/src/main/res/drawable/ic_launcher_*.xml`，纸纹位于 `app/src/main/res/drawable-nodpi/ic_launcher_paper.webp`；听书与阅读提醒使用书签标志的透明单色 `ic_notification.xml`，确保通知栏在各系统主题下清晰显示。

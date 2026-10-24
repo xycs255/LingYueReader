@@ -1,29 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 灵阅：一弯月亮从翻开的书页上升起。图形集中在自适应图标安全区。 -->
+<!-- 灵阅：竖排阅读痕迹与朱砂书签，主体位于自适应图标安全区。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 月牙的内外弧共用轮廓，缩小后仍能清晰识别。 -->
+    <group android:translateY="3">
+    <!-- 暖纸上两列留白充足的竖排阅读节奏。 -->
     <path
-        android:fillColor="#F8CE8C"
-        android:pathData="M62,25 C53,26 47,33 47,41 C47,50 54,57 63,57 C70,57 76,53 79,47 C76,49 73,49 70,49 C62,49 56,43 56,35 C56,31 58,27 62,25 Z" />
+        android:pathData="M34,38 L34,42 M34,55 L34,59 M34,72 L34,76 M50,31 L50,35 M50,48 L50,52 M50,65 L50,69"
+        android:strokeColor="#514637"
+        android:strokeLineCap="round"
+        android:strokeWidth="6.4" />
 
-    <!-- 纸页下方的一点阴影让开卷形状在小尺寸下更稳。 -->
+    <!-- 轻微背影与边缘亮色给书签一层纸质厚度；主形仍保持完整。 -->
     <path
-        android:fillColor="#662A28"
-        android:fillAlpha="0.32"
-        android:pathData="M22,57 C34,51 46,55 54,62 C62,55 74,51 86,57 L86,79 C73,75 62,78 54,85 C46,78 35,75 22,79 Z" />
+        android:fillColor="#713028"
+        android:fillAlpha="0.18"
+        android:pathData="M60,29 C60,27.9 60.9,27 62,27 L77,27 C78.1,27 79,27.9 79,29 L79,76 L69,69 L59,76 L59,29 Z" />
+    <path
+        android:fillColor="#C4281E"
+        android:pathData="M59,28 C59,26.9 59.9,26 61,26 L77,26 C78.1,26 79,26.9 79,28 L79,75 L69,68 L59,75 Z" />
+    <path
+        android:fillColor="#F07464"
+        android:fillAlpha="0.42"
+        android:pathData="M61,29 L62,29 L62,68 L61,69 Z" />
 
-    <!-- 两页书脊向内收拢，末端组成一枚柔和的 V。 -->
+    <!-- 页面在右上角轻轻掀起，装饰细节即使被裁掉也不影响识别。 -->
     <path
-        android:fillColor="#FFF4E3"
-        android:pathData="M26,56 C35,52 45,54 52,60 L52,79 C45,74 35,73 26,76 Z" />
+        android:fillColor="#6D473A"
+        android:fillAlpha="0.20"
+        android:pathData="M71,26 C75,26 78,29 79,37 L79,40 C76,36 73,32 71,26 Z" />
     <path
-        android:fillColor="#FFF4E3"
-        android:pathData="M82,56 C73,52 63,54 56,60 L56,79 C63,74 73,73 82,76 Z" />
-    <path
-        android:fillColor="#E5AF72"
-        android:pathData="M53,61 L54,82 L55,61 L55,79 Z" />
+        android:fillColor="#F9F2E5"
+        android:pathData="M71,26 C75,27 78,30 79,37 C76,36 73,32 71,26 Z" />
+    </group>
 </vector>
