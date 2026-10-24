@@ -91,6 +91,11 @@ internal fun LookupSheet(
 ) {
     val context = LocalContext.current
     val vocab by vm.vocab.collectAsStateWithLifecycle()
+    val aiReady by vm.aiConfig.collectAsStateWithLifecycle()
+    val aiGloss by vm.aiGloss.collectAsStateWithLifecycle()
+    // 开了 AI 助手才有“AI 释义”；只显示当前这个词的。
+    val gloss = aiGloss?.takeIf { it.word == lookup.word }?.turn
+    val ai = AiGlossState(aiReady.ready, gloss, vm::glossLookup)
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         // 先是一张小卡片：词、读音、头几条释义、原句；“完整释义”再展开成整页（各本词典、微调选区、相关词语）。
@@ -106,7 +111,7 @@ internal fun LookupSheet(
             label = "lookupExpand",
         ) { expanded ->
         if (!expanded) {
-            CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, onAnnotate) { full = true }
+            CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, ai, onAnnotate) { full = true }
         } else Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("查词", back = null, action = "管理词典" to onManage) {}
             Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -137,6 +142,17 @@ internal fun LookupSheet(
                 if (lookup.range != null) ActionTile("划线·批注", LingYueIcons.Highlight, Modifier.weight(1f), onAnnotate)
             }
 
+            if (ai.enabled) {
+                GroupedSection(header = "AI 释义") {
+                    row {
+                        if (ai.turn == null) {
+                            ActionRow("用 AI 解释“${lookup.word}”", onClick = ai.request)
+                        } else {
+                            AiGlossText(ai.turn, ai.request, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                        }
+                    }
+                }
+            }
             val result = lookup.result
             if (result == null) {
                 GroupedSection { row { ValueRow("正在查……", "") } }
@@ -202,7 +218,7 @@ internal fun LookupSheet(
 
 /** 查词小卡片：照样稿，词和读音大字，右上角划线、收入生词本，下面头几条释义、原句，最底下在线查询和“完整释义”。 */
 @Composable
-private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, onAnnotate: () -> Unit, onExpand: () -> Unit) {
+private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai: AiGlossState, onAnnotate: () -> Unit, onExpand: () -> Unit) {
     val c = LocalGroupedColors.current
     val context = LocalContext.current
     val result = lookup.result
@@ -233,6 +249,15 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, on
             result.imported.isNotEmpty() -> Text("在「${result.imported.first().first.title}」里查到了，点“完整释义”看。", color = c.secondary, fontSize = 14.sp)
             else -> Text("词典里没有查到“${lookup.word}”。可以用下面的在线查询，或在完整释义里微调选区。", color = c.secondary, fontSize = 14.sp)
         }
+        if (ai.turn != null) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.tint.copy(alpha = 0.07f)).padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("AI 释义", color = c.tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                AiGlossText(ai.turn, ai.request)
+            }
+        }
         if (lookup.context.isNotBlank()) {
             Text("原句：${lookup.context.trim()}", color = c.secondary, fontSize = 12.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -240,6 +265,7 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, on
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Pill("汉典") { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) }
             Pill("百度汉语") { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") }
+            if (ai.enabled && ai.turn == null) AiPill(ai.request)
             Spacer(Modifier.weight(1f))
             Row(
                 Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onExpand).padding(horizontal = 6.dp),
@@ -249,6 +275,45 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, on
                 Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tint, modifier = Modifier.size(14.dp))
             }
         }
+    }
+}
+
+/** 查词里的 AI 释义：开没开、当前这个词的回答、点了去请求。 */
+internal class AiGlossState(val enabled: Boolean, val turn: com.xycs.lingyuereader.ai.AiTurn?, val request: () -> Unit)
+
+/** AI 释义的正文：边到边显示，等待时转圈，出错时给“重试”。 */
+@Composable
+private fun AiGlossText(turn: com.xycs.lingyuereader.ai.AiTurn, retry: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (turn.answer.isNotEmpty()) Text(turn.answer.trim(), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+        when {
+            turn.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(turn.error, color = c.destructive, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.weight(1f))
+                Text("重试", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = retry).padding(horizontal = 10.dp, vertical = 8.dp))
+            }
+            turn.loading && turn.answer.isEmpty() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 14.dp, color = c.tint)
+                Text("正在问 AI……", color = c.secondary, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+/** 小卡片底部的“AI 释义”胶囊：强调色，带星星图标。 */
+@Composable
+private fun AiPill(onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(c.tint.copy(alpha = 0.1f))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(start = 10.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
+        Text("AI 释义", color = c.tint, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
     }
 }
 

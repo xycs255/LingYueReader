@@ -200,6 +200,7 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.LibrarySearch -> LibrarySearchScreen(vm)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
+            Screen.Ai -> AiScreen(vm)
             Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }

@@ -60,6 +60,7 @@ fun MeScreen(vm: AppViewModel) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val appearance by vm.appearance.collectAsStateWithLifecycle()
     val auto by vm.autoBackup.collectAsStateWithLifecycle()
+    val ai by vm.aiConfig.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     var confirmRestore by remember { mutableStateOf<Uri?>(null) }
@@ -131,6 +132,18 @@ fun MeScreen(vm: AppViewModel) {
                                 iconBackground = Color(0xFF007AFF),
                             ) { vm.open(Screen.Theme) }
                         }
+                        iconRow {
+                            NavRow(
+                                "AI 助手",
+                                value = when {
+                                    !ai.enabled -> "未开启"
+                                    !ai.complete -> "未填密钥"
+                                    else -> ai.providerLabel
+                                },
+                                icon = LingYueIcons.Sparkle,
+                                iconBackground = Color(0xFFAF52DE),
+                            ) { vm.open(Screen.Ai) }
+                        }
                     }
                     val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
                     GroupedSection(
@@ -169,7 +182,7 @@ fun MeScreen(vm: AppViewModel) {
                             row { NavRow("现在备份一次", icon = LingYueIcons.Upload, iconBackground = Color(0xFF5856D6), enabled = !busy, onClick = vm::backupNow) }
                         }
                     }
-                    GroupedSection(header = "关于", footer = "灵阅：开源、离线、无广告。代码以 Apache-2.0 发布。") {
+                    GroupedSection(header = "关于", footer = "灵阅：开源、无广告，默认不联网（只有开启 AI 助手并使用时才联网）。代码以 Apache-2.0 发布。") {
                         row { ValueRow("版本", version, icon = LingYueIcons.Info, iconBackground = Color(0xFF8E8E93)) }
                         row { NavRow("项目主页", "GitHub", icon = LingYueIcons.Share, iconBackground = Color(0xFF636366)) { openHome() } }
                     }

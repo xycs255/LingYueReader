@@ -125,6 +125,8 @@ import com.xycs.lingyuereader.Lookup
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.ReturnPoint
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.ai.AiAssistant
+import com.xycs.lingyuereader.ai.AiSession
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.MarkColor
@@ -297,6 +299,8 @@ private fun Reader(
     palette: ReaderPalette,
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val aiSession by vm.ai.collectAsStateWithLifecycle()
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
     // 注音要读字表，后台准备好再用。
@@ -888,6 +892,18 @@ private fun Reader(
                                     autoPaused = false
                                     menuVisible = false
                                 }
+                                if (aiConfig.ready && !entry.format.imageOnly) {
+                                    LingYueMenuItem(AiAssistant.RECAP, selected = false) {
+                                        more = false
+                                        menuVisible = false
+                                        vm.startRecap(chapterIndex, pos.block.coerceAtLeast(0))
+                                    }
+                                    LingYueMenuItem("问这本书", selected = false) {
+                                        more = false
+                                        menuVisible = false
+                                        vm.startAskBook(chapterIndex, pos.block.coerceAtLeast(0))
+                                    }
+                                }
                                 LingYueMenuItem("书籍详情", selected = false) {
                                     more = false
                                     vm.open(Screen.Detail(entry.id))
@@ -958,6 +974,7 @@ private fun Reader(
                 visible = bounds != null,
                 palette = palette,
                 onLookup = vm::lookupSelection.takeIf { textSelection?.singleBlock == true },
+                onAskAi = vm::askAiAboutSelection.takeIf { aiConfig.ready },
                 // 划线：直接用黄色划上，不弹面板；要写批注、换颜色点“批注”。
                 onHighlight = { vm.annotateSelection(MarkColor.YELLOW, "") },
                 onAnnotate = {
@@ -1145,6 +1162,35 @@ private fun Reader(
     ) {
         FootnoteSheet(lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。", palette, styles.fontFamily, appTint) { footnote = null }
     }
+    // AI 面板：收起动画期间还显示原来的内容。
+    var lastAi by remember { mutableStateOf<AiSession?>(null) }
+    aiSession?.let { lastAi = it }
+    GlassSheet(
+        show = aiSession != null,
+        title = null,
+        background = readerGroupedColors(palette, appTint).background,
+        highlight = glassHighlight(palette.isDark, big = true),
+        onDismissRequest = vm::closeAi,
+    ) {
+        lastAi?.let { s ->
+            AiSheet(
+                s,
+                aiConfig,
+                palette,
+                appTint,
+                AiActions(
+                    ask = vm::askAi,
+                    askKind = vm::askAi,
+                    retry = vm::retryAi,
+                    regenerate = vm::regenerateRecap,
+                    jump = { ch, block ->
+                        vm.closeAi()
+                        jump(ch, block, true)
+                    },
+                ),
+            )
+        }
+    }
     LookupOverlay(vm, palette, appTint) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
@@ -1157,6 +1203,7 @@ private fun SelectionBar(
     visible: Boolean,
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onAskAi: (() -> Unit)?,
     onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
@@ -1172,7 +1219,7 @@ private fun SelectionBar(
             enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.9f) + fadeIn(Motion.standard(Motion.SHORT))),
             exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.92f) + fadeOut(Motion.exit())),
         ) {
-            SelectionBarRow(palette, onLookup, onHighlight, onAnnotate, onCopy, onCard)
+            SelectionBarRow(palette, onLookup, onAskAi, onHighlight, onAnnotate, onCopy, onCard)
         }
     }
 }
@@ -1181,6 +1228,7 @@ private fun SelectionBar(
 private fun SelectionBarRow(
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onAskAi: (() -> Unit)?,
     onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
@@ -1195,7 +1243,8 @@ private fun SelectionBarRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 跨段落的选区不查词。
-        val actions = listOfNotNull(onLookup?.let { "查词" to it }, "划线" to onHighlight, "批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard)
+        // 开了 AI 助手才有“问 AI”。
+        val actions = listOfNotNull(onLookup?.let { "查词" to it }, onAskAi?.let { "问 AI" to it }, "划线" to onHighlight, "批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard)
         actions.forEachIndexed { i, (label, action) ->
             if (i > 0) Box(Modifier.width(0.5.dp).height(18.dp).background(palette.background.copy(alpha = 0.25f)))
             Text(

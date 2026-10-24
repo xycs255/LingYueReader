@@ -38,6 +38,15 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.ai.AiAssistant
+import com.xycs.lingyuereader.ai.AiBook
+import com.xycs.lingyuereader.ai.AiConfig
+import com.xycs.lingyuereader.ai.AiGloss
+import com.xycs.lingyuereader.ai.AiPrompts
+import com.xycs.lingyuereader.ai.AiSession
+import com.xycs.lingyuereader.ai.AiStore
+import com.xycs.lingyuereader.ai.AskKind
+import com.xycs.lingyuereader.ai.ReadPos
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,6 +89,8 @@ sealed interface Screen {
     data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
+    /** AI 助手设置：服务商、模型、密钥。 */
+    data object Ai : Screen
     /** 主题设置（界面的深浅色、配色、玻璃效果等）。 */
     data object Theme : Screen
     data class BookRules(val bookId: String) : Screen
@@ -808,6 +819,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
 
+    // ---------- AI ----------
+
+    private val assistant = AiAssistant(viewModelScope, AiStore(app), recapFile = { id -> library.bookFile(id, "ai-recap.json") })
+    val aiConfig: StateFlow<AiConfig> = assistant.config
+    val ai: StateFlow<AiSession?> = assistant.session
+    val aiGloss: StateFlow<AiGloss?> = assistant.gloss
+
+    fun saveAiConfig(c: AiConfig) = assistant.saveConfig(c)
+
+    suspend fun testAi(c: AiConfig): String = assistant.test(c)
+
+    private fun aiBook(): AiBook? = _openBook.value?.let { AiBook(it.entry.id, it.entry.title, it.entry.author, it.content) }
+
+    /** 划选后问 AI：把选中的文字和所在段落带进面板，选区收起。 */
+    fun askAiAboutSelection() {
+        val sel = _selection.value ?: return
+        val text = selectionText()?.takeIf { it.isNotBlank() } ?: return
+        val book = aiBook() ?: return
+        val chapter = book.content.chapters.getOrNull(sel.chapterIndex)
+        // 上下文：选区所在的段落；太长时取选区前后各一截。
+        val paragraphs = (sel.start.block..sel.end.block).mapNotNull { blockText(sel.chapterIndex, it) }.joinToString("\n")
+        val context = if (paragraphs.length <= AiPrompts.CONTEXT_CHARS) {
+            paragraphs
+        } else {
+            val half = AiPrompts.CONTEXT_CHARS / 2
+            val at = sel.start.char.coerceIn(0, paragraphs.length)
+            val from = (at - half).coerceAtLeast(0)
+            paragraphs.substring(from, (from + AiPrompts.CONTEXT_CHARS).coerceAtMost(paragraphs.length))
+        }
+        _selection.value = null
+        assistant.startSelection(book, text, context, chapter?.title.orEmpty())
+    }
+
+    fun startRecap(chapterIndex: Int, block: Int) {
+        aiBook()?.let { assistant.startRecap(it, ReadPos(chapterIndex, block)) }
+    }
+
+    fun startAskBook(chapterIndex: Int, block: Int) {
+        aiBook()?.let { assistant.startAskBook(it, ReadPos(chapterIndex, block)) }
+    }
+
+    fun askAi(kind: AskKind) = assistant.ask(kind)
+
+    fun askAi(question: String) = assistant.ask(question)
+
+    fun regenerateRecap() = assistant.recap()
+
+    fun retryAi() = assistant.retry()
+
+    fun closeAi() = assistant.close()
+
+    /** 查词面板里的“AI 释义”。 */
+    fun glossLookup() {
+        val l = _lookup.value ?: return
+        assistant.gloss(aiBook(), l.word, l.context)
+    }
+
     // ---------- 查词 ----------
 
     private fun blockText(chapterIndex: Int, block: Int): String? =
@@ -961,6 +1029,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun showLookup(l: Lookup) {
+        assistant.clearGloss(keep = l.word)
         _lookup.value = l
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { dictionaries.lookup(l.word) }.getOrNull() }
@@ -1019,6 +1088,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun vocabularyMarkdown(words: List<VocabWord>): String = vocabulary.toMarkdown(words)
 
     fun closeLookup() {
+        assistant.clearGloss()
         _lookup.value = null
     }
 

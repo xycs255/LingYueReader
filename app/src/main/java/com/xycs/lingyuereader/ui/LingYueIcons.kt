@@ -544,4 +544,27 @@ object LingYueIcons {
             }
         }
     }
+
+    /** AI：四角星，右上一颗小星。 */
+    val Sparkle by lazy {
+        glyph("Sparkle") {
+            trace {
+                moveTo(11f, 4f)
+                quadTo(11.9f, 12.1f, 19f, 13f)
+                quadTo(11.9f, 13.9f, 11f, 21f)
+                quadTo(10.1f, 13.9f, 3f, 13f)
+                quadTo(10.1f, 12.1f, 11f, 4f)
+                close()
+                moveTo(18.5f, 3f); lineTo(18.5f, 7f)
+                moveTo(16.5f, 5f); lineTo(20.5f, 5f)
+            }
+        }
+    }
+
+    /** 发送：向上的箭头。 */
+    val Send by lazy {
+        glyph("Send") {
+            trace { moveTo(12f, 19f); lineTo(12f, 5f); moveTo(6f, 11f); lineTo(12f, 5f); lineTo(18f, 11f) }
+        }
+    }
 }
