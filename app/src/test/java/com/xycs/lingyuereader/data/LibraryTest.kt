@@ -809,4 +809,18 @@ class LibraryTest {
         assertFalse(packed.contains("SECRET-KEY"))
         assertTrue(packed.contains(a.id))
     }
+
+    @Test
+    fun anInterruptedRefreshIsUndoneOnTheNextStart() {
+        val a = import("刷新中断.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val dir = File(context.filesDir, "books/${a.id}")
+        // 刷新正要换上新目录时进程被杀：旧目录在临时目录里，书的目录没了。
+        val staging = File(context.filesDir, "books/.refresh-${a.id}-123e4567-e89b-12d3-a456-426614174000")
+        staging.mkdirs()
+        assertTrue(dir.renameTo(File(staging, "previous")))
+        val reopened = Library(context)
+        assertTrue(dir.isDirectory)
+        assertFalse(staging.exists())
+        assertEquals(listOf(Block.Para("正文。")), reopened.content(reopened.list().first { it.id == a.id }).chapters.single().blocks)
+    }
 }

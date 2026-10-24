@@ -94,6 +94,8 @@ class AutoBackup(
                 runCatching { folder.delete(part) }
                 throw e
             }
+            // 上次备份到一半应用被系统停掉留下的“.part”：这次备份成功了就清掉，不然会一直堆在同步文件夹里。
+            folder.list().filter { it != part && STALE_PART.matches(it) }.forEach { runCatching { folder.delete(it) } }
             folder.list().mapNotNull { file -> BACKUP_NAME.matchEntire(file)?.let { file to it } }
                 .sortedWith(compareByDescending<Pair<String, MatchResult>> { it.second.groupValues[1] }
                     .thenByDescending { it.second.groupValues[2].toLongOrNull() ?: 1L })
@@ -117,6 +119,7 @@ class AutoBackup(
         /** 留最近几份。 */
         const val KEEP = 7
         val BACKUP_NAME = Regex("""灵阅备份-(\d{8}-\d{4})(?:-(\d{4,}))?\.zip""")
+        private val STALE_PART = Regex("""灵阅备份-\d{8}-\d{4}(?:-\d{4,})?\.zip\.[0-9a-fA-F-]{36}\.part""")
     }
 }
 

@@ -88,11 +88,12 @@ object EpubParser {
             chapters += ChapterTitles.chapter(chapterTitle, blocks)
         }
         require(missing == 0 || chapters.size > missing) { "不是有效的 EPUB：正文文件都缺失" }
-        val decoded = HashMap<String, String>()
+        // 每个注释文件只解码、建一次索引。
+        val indexes = HashMap<String, HtmlText.NoteIndex>()
         val notes = noteKeys.mapNotNull { key ->
             val path = key.substringBefore('#')
-            val html = decoded.getOrPut(path) { files[path]?.let(TextDecoder::decode).orEmpty() }
-            HtmlText.noteText(html, key.substringAfter('#'))?.let { key to it }
+            val index = indexes.getOrPut(path) { HtmlText.NoteIndex(files[path]?.let(TextDecoder::decode).orEmpty()) }
+            index.text(key.substringAfter('#'))?.let { key to it }
         }.toMap()
         return BookContent(title ?: fallbackTitle, author, chapters, description, cover, notes)
     }

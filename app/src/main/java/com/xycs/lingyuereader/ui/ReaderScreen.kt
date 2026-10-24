@@ -363,13 +363,15 @@ private fun Reader(
         val start = System.currentTimeMillis()
         onPauseOrDispose { vm.addReadingTime(entry.id, System.currentTimeMillis() - start) }
     }
-    VolumeKeys(settings.volumeKeys && sheet == null) { forward -> turner.turn?.invoke(forward) }
 
     // 阅读统计：各章在全书中的起始字数，用来把位置换算成“读到第几个字”。
-    val chapterStarts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + c.charCount } }
+    // 漫画、PDF 没有文字（字数都是 0）：按章算进度，每章一份，不然全书进度永远是 0%。
+    val byChapter = remember(content) { content.chapters.all { it.charCount == 0 } }
+    fun weightOf(c: com.xycs.lingyuereader.data.Chapter): Int = if (byChapter) 1 else c.charCount
+    val chapterStarts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + weightOf(c) } }
     fun charIndexOf(p: Position): Long {
         val c = content.chapters.getOrNull(p.chapter) ?: return -1
-        return chapterStarts[p.chapter] + (p.fraction.coerceIn(0f, 1f) * c.charCount).toLong()
+        return chapterStarts[p.chapter] + (p.fraction.coerceIn(0f, 1f) * weightOf(c)).toLong()
     }
     val readTracker = remember(entry.id) { object { var last = -1L; var at = 0L } }
 
@@ -382,7 +384,7 @@ private fun Reader(
         val at = charIndexOf(pos)
         if (readTracker.last >= 0 && at > readTracker.last) {
             val moved = at - readTracker.last
-            if (moved <= (now - readTracker.at) / 1000 * 30 + 600) vm.addReadChars(moved)
+            if (!byChapter && moved <= (now - readTracker.at) / 1000 * 30 + 600) vm.addReadChars(moved)
         }
         readTracker.last = at
         readTracker.at = now
@@ -390,7 +392,7 @@ private fun Reader(
     // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
     val bookFraction = run {
         val total = chapterStarts.last().coerceAtLeast(1)
-        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * weightOf(chapter)) / total).coerceIn(0f, 1f)
     }
     val readingStats by vm.readingStats.collectAsStateWithLifecycle()
     val speed = remember(readingStats) { ReadingStats.charsPerMinute(readingStats) }
@@ -555,6 +557,10 @@ private fun Reader(
         }
     }
     val lookup by vm.lookup.collectAsStateWithLifecycle()
+    // 音量键翻页只在纯读书时：开着查词、AI、注释等面板，或者正在听书时，音量键调音量。
+    VolumeKeys(
+        settings.volumeKeys && sheet == null && lookup == null && aiSession == null && footnote == null && aiTool == null && listening?.playing != true,
+    ) { forward -> turner.turn?.invoke(forward) }
     val selected = textSelection?.takeIf { it.chapterIndex == chapterIndex }
         ?.let { Highlight(it.start.block, it.start.char, it.end.block, it.end.char, handles = !it.dragging) }
         ?: lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { Highlight(l.block, it.first, l.block, it.last, handles = false) } }
@@ -767,7 +773,7 @@ private fun Reader(
                 if (settings.pageEdges) {
                     BookEdges(
                         fraction = bookFraction,
-                        pageShare = pageTurn.chapterShare * chapter.charCount / chapterStarts.last().coerceAtLeast(1),
+                        pageShare = pageTurn.chapterShare * weightOf(chapter) / chapterStarts.last().coerceAtLeast(1),
                         turn = pageTurn,
                         mode = settings.pageMode,
                         palette = palette,

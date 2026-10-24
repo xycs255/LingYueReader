@@ -75,8 +75,20 @@ class Dictionaries(private val context: Context) {
 
     // ---------- 设置与列表 ----------
 
+    /**
+     * 读过的设置：长按选词时每个字都要问一遍“是不是词”，不能每次都重读、重解 dicts.json。
+     * 按文件的修改时间和大小认：别处（另一个界面）改了文件也能读到新的。
+     */
+    private var cached: Pair<Pair<Long, Long>, DictSettings>? = null
+
     @Synchronized
     fun settings(): DictSettings {
+        val stamp = settingsFile.lastModified() to settingsFile.length()
+        cached?.takeIf { it.first == stamp }?.let { return it.second }
+        return readSettings().also { cached = stamp to it }
+    }
+
+    private fun readSettings(): DictSettings {
         if (!settingsFile.isFile) return DictSettings()
         return runCatching {
             val o = JSONObject(settingsFile.readText())
@@ -111,6 +123,7 @@ class Dictionaries(private val context: Context) {
         val tmp = File(root, "dicts.json.tmp")
         tmp.writeText(o.toString())
         tmp.renameTo(settingsFile)
+        cached = (settingsFile.lastModified() to settingsFile.length()) to s
     }
 
     fun setBuiltinEnabled(enabled: Boolean) = save(settings().copy(builtinEnabled = enabled))

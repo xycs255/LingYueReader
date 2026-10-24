@@ -340,6 +340,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    /**
+     * 正在进行的耗时操作（导入、刷新、备份、恢复、导入词典……）有几个：一个做完不能把“忙”清掉，
+     * 不然别的还在导入时进度条就没了、“+”又能点了。只在主线程上改。
+     */
+    private var busyCount = 0
+
+    private fun beginBusy() {
+        busyCount++
+        _busy.value = true
+    }
+
+    private fun endBusy() {
+        busyCount = (busyCount - 1).coerceAtLeast(0)
+        _busy.value = busyCount > 0
+    }
     private val _importing = MutableStateFlow(false)
     val importing: StateFlow<Boolean> = _importing.asStateFlow()
     private var importJob: Job? = null
@@ -471,12 +486,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 现在听书用哪种声音（和 [startReadAloud] 的选法一致）。 */
-    fun readAloudEngine(): ReadAloudEngine = when {
-        offlineVoice() != null -> ReadAloudEngine.OFFLINE
-        aiVoice() != null -> ReadAloudEngine.ONLINE
-        else -> ReadAloudEngine.SYSTEM
-    }
 
     /** AI 朗读用的语音：AI 助手和 AI 朗读都开着、填全了才有。 */
     private fun aiVoice(): AiVoice? {
@@ -521,15 +530,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun previewSpeech(onError: (String) -> Unit) {
         val sp = aiConfig.value.speech
+        val voice = AiVoice(sp.label, emptyList(), sp.voice, fingerprint = { v -> sp.fingerprint(v) }, fetch = { v, text -> assistant.speech(text, v, sp) })
+        playPreview(voice, "你好，我是灵阅的 AI 朗读。晋太元中，武陵人捕鱼为业，缘溪行，忘路之远近。", onError)
+    }
+
+    /** 设置页的“试听”：用 [voice] 读一句，和听书走同一个播放器、同一份缓存。 */
+    private fun playPreview(voice: AiVoice, text: String, onError: (String) -> Unit) {
         preview?.release()
         preview = com.xycs.lingyuereader.tts.AiSpeaker(
-            java.io.File(getApplication<Application>().cacheDir, "tts-ai"),
-            fetch = { text, _ -> assistant.speech(text) },
-            fingerprint = sp.fingerprint(),
+            java.io.File(getApplication<Application>().cacheDir, voice.cacheName),
+            fetch = { t, _ -> voice.fetch(voice.voice, t) },
+            fingerprint = voice.fingerprint(voice.voice),
             onStart = {},
             onDone = {},
             onError = { _, message -> onError(message) },
-        ).also { it.play(listOf("preview" to "你好，我是灵阅的 AI 朗读。晋太元中，武陵人捕鱼为业，缘溪行，忘路之远近。")) }
+        ).also { it.play(listOf("preview" to text)) }
     }
 
     fun setReadAloudRate(rate: Float) {
@@ -684,7 +699,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         importJob = viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             _importing.value = true
             val groups = if (merge) listOf(files) else files.map { listOf(it) }
             val failed = mutableListOf<String>()
@@ -729,7 +744,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (error: Exception) {
                     _messages.value = "刷新书架失败：${error.message ?: "读取失败"}"
                 } finally {
-                    _busy.value = false
+                    endBusy()
                     _importing.value = false
                     importJob = null
                 }
@@ -739,11 +754,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh(entry: BookEntry) {
         viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             val result = withContext(Dispatchers.IO) { runCatching { library.refresh(entry) } }
             loadShelf()
             if (result.getOrNull()?.changed?.let { it > 0 } == true) bookContentChanged(entry.id)
-            _busy.value = false
+            endBusy()
             _messages.value = result.fold(
                 onSuccess = {
                     when {
@@ -771,11 +786,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveRules(entry: BookEntry, rules: TextRules) {
         viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             val result = withContext(Dispatchers.IO) { runCatching { library.saveRules(entry, rules) } }
             loadShelf()
             if (result.isSuccess) bookContentChanged(entry.id)
-            _busy.value = false
+            endBusy()
             _messages.value = result.fold({ "已按新规则重新整理：${it.chapters.size} 章" }, { "保存失败：${it.message}" })
             if (result.isSuccess) back()
         }
@@ -868,7 +883,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val (loaded, marks) = withContext(Dispatchers.IO) {
                     val source = library.content(entry)
                     // AI 译文（开了对照显示时）接在段落后面，原文字位不变。
-                    val content = AiTranslate.apply(converted(source, mode), AiTranslate.read(library.bookFile(entry.id, AiTranslate.FILE)))
+                    val content = AiTranslate.apply(converted(source, mode), AiTranslate.read(library.bookFile(entry.id, AiTranslate.FILE)), source)
                     val stored = library.marks(entry.id)
                     val direct = stored.resolve(source)
                     val directProgress = entry.progress?.let { TextAnchors.rebaseProgress(source, it) }
@@ -1132,8 +1147,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 听书用的离线语音：开着、选的模型装好了才有。 */
     private fun offlineVoice(): AiVoice? {
         val c = _offlineVoice.value.config
+        if (!c.enabled) return null
+        return installedOfflineVoice(c)
+    }
+
+    /** 选中的离线模型（装好了的话）对应的声音，不管开没开。 */
+    private fun installedOfflineVoice(c: OfflineVoiceConfig): AiVoice? {
         val m = c.current
-        if (!c.enabled || m.id !in _offlineVoice.value.installed) return null
+        if (m.id !in _offlineVoice.value.installed) return null
         val dir = offlineFiles.dir(m)
         return AiVoice(
             m.label,
@@ -1213,20 +1234,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 离线语音设置页的“试听”。 */
     fun previewOffline(onError: (String) -> Unit) {
-        val c = _offlineVoice.value.config
-        val m = c.current
-        if (m.id !in _offlineVoice.value.installed) return
-        val dir = offlineFiles.dir(m)
-        val sid = c.voice(m).toIntOrNull() ?: 0
-        preview?.release()
-        preview = com.xycs.lingyuereader.tts.AiSpeaker(
-            java.io.File(getApplication<Application>().cacheDir, "tts-offline"),
-            fetch = { text, _ -> OfflineEngine.synthesize(dir, m, sid, text) },
-            fingerprint = "offline|${m.id}|$sid",
-            onStart = {},
-            onDone = {},
-            onError = { _, message -> onError(message) },
-        ).also { it.play(listOf("preview" to "你好，我是灵阅的离线语音，不联网也能为你读书。晋太元中，武陵人捕鱼为业。")) }
+        val voice = installedOfflineVoice(_offlineVoice.value.config) ?: return
+        playPreview(voice, "你好，我是灵阅的离线语音，不联网也能为你读书。晋太元中，武陵人捕鱼为业。", onError)
     }
 
     // ---------- AI ----------
@@ -1616,7 +1625,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     result.putAll(AiTranslate.parse(answer, batch))
                 }
                 val current = withContext(Dispatchers.IO) { AiTranslate.read(file) }
-                val next = current.copy(show = true, target = target, chapters = current.chapters + (chapterIndex to (chapter.title to result)))
+                val hashes = result.keys.associateWith { b -> AiTranslate.hash(chapter.blocks.getOrNull(b)) }
+                val next = current.copy(
+                    show = true, target = target,
+                    chapters = current.chapters + (chapterIndex to (chapter.title to result)),
+                    hashes = current.hashes + (chapterIndex to hashes),
+                )
                 withContext(Dispatchers.IO) { AiTranslate.write(file, next) }
                 mine { it.copy(translations = next, running = null, progress = null) }
                 val missing = batches.sumOf { it.size } - result.size
@@ -1638,7 +1652,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 显示或隐藏译文（不删）。 */
     fun setShowTranslation(show: Boolean) = updateTranslations { it.copy(show = show) }
 
-    fun deleteTranslation(chapterIndex: Int) = updateTranslations { it.copy(chapters = it.chapters - chapterIndex) }
+    fun deleteTranslation(chapterIndex: Int) = updateTranslations { it.copy(chapters = it.chapters - chapterIndex, hashes = it.hashes - chapterIndex) }
 
     private fun updateTranslations(transform: (Translations) -> Translations) {
         val book = _openBook.value ?: return
@@ -2063,14 +2077,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importDictionaries(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val resolver = getApplication<Application>().contentResolver
                     dictionaries.import(library.describe(uris)) { p -> resolver.openInputStream(p.uri)!! }
                 }
             }
-            _busy.value = false
+            endBusy()
             reloadDicts()
             _messages.value = result.fold(
                 { r ->
@@ -2105,7 +2119,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun backup(uri: Uri) {
         viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             var copyingToDestination = false
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -2126,7 +2140,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            _busy.value = false
+            endBusy()
             _messages.value = result.fold(
                 { "已备份 $it 本书" },
                 { "备份失败：${it.message}${if (copyingToDestination) "；目标文件可能不完整，请删除后重试" else ""}" },
@@ -2185,7 +2199,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restore(uri: Uri) {
         viewModelScope.launch {
-            _busy.value = true
+            beginBusy()
             cancelBookLoad()
             var restoredBooks: Int? = null
             try {
@@ -2235,7 +2249,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (error: Exception) {
                     _messages.value = "刷新书架失败：${error.message ?: "读取失败"}"
                 } finally {
-                    _busy.value = false
+                    endBusy()
                 }
                 open?.let { id -> if (_shelf.value.any { it.id == id }) ensureLoaded(id) }
             }
@@ -2248,6 +2262,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 从别的应用“用灵阅打开”或分享过来的文件：导入（或找回已有的那本）并直接打开。 */
+    /**
+     * 别的应用分享过来的一段文字（不是文件）：够长的存成一本 TXT 打开（标题用分享的主题或第一行），
+     * 太短的多半只是一句话，说一声灵阅只能打开文件。
+     */
+    fun openSharedText(text: String, subject: String?) {
+        val body = text.trim()
+        if (body.length < 200) {
+            _messages.value = "灵阅只能打开书的文件；这段文字太短，没有存成书"
+            return
+        }
+        viewModelScope.launch {
+            val title = (subject?.trim()?.takeIf { it.isNotEmpty() } ?: body.lineSequence().first().trim()).take(30)
+                .replace(Regex("""[\\/:*?"<>|]"""), " ").trim().ifEmpty { "分享的文字" }
+            val file = withContext(Dispatchers.IO) {
+                java.io.File(getApplication<Application>().cacheDir, "shared").apply { mkdirs() }
+                    .let { java.io.File(it, "$title.txt") }.apply { writeText(body) }
+            }
+            openExternal(listOf(Uri.fromFile(file)))
+        }
+    }
+
     fun openExternal(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
@@ -2261,7 +2296,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _pendingImport.value = picked
                 return@launch
             }
-            _busy.value = true
+            beginBusy()
             // 先找内容相同的；再找同一来源的（原文件之后改过，比如作者追更）：打开书架上那本，提示可刷新，
             // 而不是再导入一份（导入会因为“已在书架上”被拒绝，书就打不开了）。
             var changedSource = false
@@ -2273,7 +2308,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             loadShelf()
-            _busy.value = false
+            endBusy()
             entry.onSuccess {
                 _stack.value = listOf(Screen.Shelf, Screen.Reader(it.id))
                 if (changedSource) _messages.value = "原文件有改动，打开的是书架上的版本；要更新可在书架长按这本书选“刷新”"

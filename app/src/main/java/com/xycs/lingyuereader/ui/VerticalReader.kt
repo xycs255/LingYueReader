@@ -59,7 +59,9 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
 
     data class VPage(val columns: List<List<Cell>>, val image: String? = null, val imageBlock: Int = -1) {
         private val cells get() = columns.flatten().filter { it.char >= 0 }
-        val firstBlock: Int get() = if (image != null) imageBlock else cells.firstOrNull()?.block ?: 0
+        // 整页都是表格时没有带字位的格子：取第一个属于正文块的格子，不然进度会记成第 0 段。
+        val firstBlock: Int get() = if (image != null) imageBlock else cells.firstOrNull()?.block
+            ?: columns.flatten().firstOrNull { it.block >= 0 }?.block ?: 0
         val firstChar: Int get() = if (image != null) 0 else cells.firstOrNull()?.char ?: 0
 
         /** 这一页是否含块 [block] 的第 [char] 个字。 */
@@ -98,8 +100,9 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
             }
             column += cell
         }
-        fun text(s: String, block: Int, kind: Kind) {
-            fun pos(i: Int) = if (block < 0) -1 else i
+        /** [positioned] 为假时格子记在块 [block] 下、但没有字位（表格的行不是块文字里的字）。 */
+        fun text(s: String, block: Int, kind: Kind, positioned: Boolean = true) {
+            fun pos(i: Int) = if (block < 0 || !positioned) -1 else i
             var i = 0
             while (i < s.length) {
                 val cp = s.codePointAt(i)
@@ -156,7 +159,7 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
                     startBlock()
                     block.rows.forEach { row ->
                         // 表格竖排没法对齐，每行一列，格子之间空一格。
-                        text(row.joinToString("　"), -1, Kind.TEXT)
+                        text(row.joinToString("　"), index, Kind.TEXT, positioned = false)
                         newColumn()
                     }
                 }

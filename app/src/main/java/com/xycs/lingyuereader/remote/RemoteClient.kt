@@ -1,6 +1,11 @@
 package com.xycs.lingyuereader.remote
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -75,7 +80,7 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
             check(r, url)
             val body = r.body ?: throw RemoteException("没有内容")
             if (body.contentLength() > MAX_IMAGE) throw RemoteException("图片太大")
-            body.byteStream().use { it.readNBytesCompat(MAX_IMAGE) }
+            body.byteStream().use { it.readNBytesCompat(MAX_IMAGE, "图片太大") }
         }
     }
 
@@ -100,7 +105,33 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
     private suspend fun get(url: String, accept: String): ByteArray = withContext(Dispatchers.IO) {
         call(Request.Builder().url(url).header("Accept", accept).build()).use { r ->
             check(r, url)
-            r.body?.bytes() ?: ByteArray(0)
+            readPage(r)
+        }
+    }
+
+    /**
+     * 读一页书目、一个文件夹列表：限制大小（异常大的回应不能把内存撑爆），读的过程中协程取消就关掉连接，
+     * 不再在后台接着下完（读者已经离开这一页了）。
+     */
+    private suspend fun readPage(r: Response): ByteArray = coroutineScope {
+        val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                r.close()
+            }
+        }
+        try {
+            val body = r.body ?: return@coroutineScope ByteArray(0)
+            if (body.contentLength() > MAX_PAGE) throw RemoteException("书源返回的内容太大")
+            try {
+                body.byteStream().use { it.readNBytesCompat(MAX_PAGE, "书源返回的内容太大") }
+            } catch (e: IOException) {
+                ensureActive()
+                throw e
+            }
+        } finally {
+            watcher.cancel()
         }
     }
 
@@ -109,7 +140,7 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
         call(Request.Builder().url(url).method("PROPFIND", body).header("Depth", "1").build()).use { r ->
             if (r.code == 405 || r.code == 501) throw RemoteException("这个地址不支持 WebDAV（${r.code}）")
             check(r, url)
-            r.body?.bytes() ?: ByteArray(0)
+            readPage(r)
         }
     }
 
@@ -157,19 +188,21 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
         else -> if (e.message == "Canceled") e else RemoteException("网络出错：${e.message ?: e.javaClass.simpleName}")
     }
 
-    private fun InputStream.readNBytesCompat(limit: Int): ByteArray {
+    private fun InputStream.readNBytesCompat(limit: Int, tooLarge: String): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         val buf = ByteArray(16 * 1024)
         while (true) {
             val n = read(buf)
             if (n < 0) break
             out.write(buf, 0, n)
-            if (out.size() > limit) throw RemoteException("图片太大")
+            if (out.size() > limit) throw RemoteException(tooLarge)
         }
         return out.toByteArray()
     }
 
     private companion object {
         const val MAX_IMAGE = 2 * 1024 * 1024
+        /** 一页书目、一个文件夹列表最多多大。 */
+        const val MAX_PAGE = 16 * 1024 * 1024
     }
 }

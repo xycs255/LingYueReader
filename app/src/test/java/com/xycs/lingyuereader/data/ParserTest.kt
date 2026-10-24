@@ -440,4 +440,21 @@ class ParserTest {
         val gb = BookParser.parse(listOf(BookParser.SourceBytes("简体.txt", simplified.toByteArray(Charset.forName("GBK")))))
         assertEquals("第一章 开端", gb.chapters.single().title)
     }
+
+    @Test
+    fun aHugeChapterAmongOthersIsSplitIntoSections() {
+        val huge = (1..400).joinToString("\n") { "　　" + "这是很长很长的一段正文，章名格式没被认出来。".repeat(20) }
+        val text = "第一章 起\n　　开头。\n第二章 承\n$huge\n"
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("超长.txt", text.toByteArray())))
+        assertEquals("第一章 起", book.chapters[0].title)
+        assertTrue(book.chapters.size > 3)
+        assertTrue(book.chapters.drop(1).all { it.title.startsWith("第二章 承（") })
+        assertTrue(book.chapters.all { it.charCount < 20_000 })
+    }
+
+    @Test
+    fun outOfRangeNumericEntitiesDoNotBreakTheBook() {
+        assertEquals("a&#xFFFFFF;b&#2000000;c", HtmlText.decodeEntities("a&#xFFFFFF;b&#2000000;c"))
+        assertEquals("中", HtmlText.decodeEntities("&#x4E2D;"))
+    }
 }

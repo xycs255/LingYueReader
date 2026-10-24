@@ -64,11 +64,20 @@ object Fb2Parser {
             chapters += ChapterTitles.chapter(chapterTitle ?: "第 ${chapters.size + 1} 节", blocks)
         }
         require(chapters.isNotEmpty()) { "没有读出正文" }
-        val notes = noteKeys.mapNotNull { key -> HtmlText.noteText(notesXml, key.substringAfter('#'))?.let { key to it } }.toMap()
+        val noteIndex = HtmlText.NoteIndex(notesXml)
+        val notes = noteKeys.mapNotNull { key -> noteIndex.text(key.substringAfter('#'))?.let { key to it } }.toMap()
         return BookContent(title, author, chapters, description, cover, notes)
     }
 
     /** 取出 id 为 [id] 的插图。 */
+    /** 书里所有的图（id → 原始字节）：解出插图时一次取完，不必每张图都把整本书解码、扫一遍。 */
+    fun binaries(bytes: ByteArray): Map<String, ByteArray> {
+        val xml = decode(bytes)
+        return Regex("""<binary\b[^>]*\bid\s*=\s*["']([^"']+)["'][^>]*>(.*?)</binary>""", opts).findAll(xml).mapNotNull { m ->
+            runCatching { m.groupValues[1] to Base64.getMimeDecoder().decode(m.groupValues[2].trim()) }.getOrNull()
+        }.toMap()
+    }
+
     fun binary(bytes: ByteArray, id: String): ByteArray? {
         val xml = decode(bytes)
         val data = Regex("""<binary\b[^>]*\bid\s*=\s*["']${Regex.escape(id)}["'][^>]*>(.*?)</binary>""", opts).find(xml)?.groupValues?.get(1)

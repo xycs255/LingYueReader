@@ -49,6 +49,21 @@ object BookParser {
     /**
      * 书里的资源（插图、封面），[key] 是解析时记下的“@res/…”后半段：MOBI 的“rec/记录号”、FB2 的“bin/图片id”。
      */
+    /**
+     * 取一本书里资源的方法：同一份来源要取很多张图时用它（FB2 的图一次全解出来，MOBI 的文件只读一次），
+     * 不必每张图都重读、重解整本书。
+     */
+    fun resources(source: SourceBytes): (String) -> ByteArray? {
+        val fb2 by lazy { Fb2Parser.binaries(fb2Bytes(source.bytes)) }
+        return { key ->
+            when {
+                key.startsWith("rec/") -> key.removePrefix("rec/").toIntOrNull()?.let { MobiParser.record(source.bytes, it) }
+                key.startsWith("bin/") -> fb2[key.removePrefix("bin/")]
+                else -> null
+            }
+        }
+    }
+
     fun resource(source: SourceBytes, key: String): ByteArray? = when {
         key.startsWith("rec/") -> key.removePrefix("rec/").toIntOrNull()?.let { MobiParser.record(source.bytes, it) }
         key.startsWith("bin/") -> Fb2Parser.binary(fb2Bytes(source.bytes), key.removePrefix("bin/"))

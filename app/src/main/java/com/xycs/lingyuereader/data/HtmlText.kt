@@ -118,19 +118,51 @@ object HtmlText {
      * 取 id 为 [id] 的注释正文。注释常见两种写法：整段/整个 aside 带 id；或者段首一个带 id 的小锚点
      * （`<p><a id="n1" href="#r1">[1]</a> 注释文字</p>`），这时取锚点所在的整段。去掉开头的编号和“返回”链接。
      */
-    fun noteText(html: String, id: String): String? {
-        val open = Regex("""<([a-zA-Z][\w:]*)\b[^>]*\b(?:id|name)\s*=\s*["']${Regex.escape(id)}["'][^>]*?(/?)>""").find(html) ?: return null
-        val tagName = open.groupValues[1].lowercase()
-        val fragment = if (tagName in setOf("a", "span", "sup", "sub", "b", "i", "em") || open.groupValues[2] == "/") {
-            // 小锚点：取到所在段落结束。
-            val blockStart = Regex("""<(p|li|div|aside|dd|dt|section|td|blockquote)\b[^>]*>""", RegexOption.IGNORE_CASE)
-                .findAll(html.substring(0, open.range.first)).lastOrNull()?.range?.last?.plus(1) ?: open.range.first
-            val end = Regex("""</(p|li|div|aside|dd|dt|section|td|blockquote)\s*>""", RegexOption.IGNORE_CASE)
-                .find(html, open.range.last + 1)?.range?.first ?: html.length
-            html.substring(blockStart, end)
-        } else {
-            html.substring(open.range.last + 1, closingOf(html, tagName, open.range.last + 1))
+    fun noteText(html: String, id: String): String? = NoteIndex(html).text(id)
+
+    /**
+     * 一个注释文件的索引：所有带 id（或 name）的标签、所有段落开头的位置，各扫一遍。
+     * 一本书几千条尾注都在同一个文件里时，逐条重扫整个文件要几十秒以上。
+     */
+    class NoteIndex(private val html: String) {
+        private class Open(val tag: String, val start: Int, val end: Int, val selfClosing: Boolean)
+
+        private val opens: Map<String, Open> by lazy {
+            val out = HashMap<String, Open>()
+            for (m in Regex("""<([a-zA-Z][\w:]*)\b([^>]*?)(/?)>""").findAll(html)) {
+                for (a in idAttr.findAll(m.groupValues[2])) {
+                    out.putIfAbsent(a.groupValues[1], Open(m.groupValues[1].lowercase(), m.range.first, m.range.last, m.groupValues[3] == "/"))
+                }
+            }
+            out
         }
+
+        /** 各个段落开始标签的结束位置（之后就是段落正文），从前往后。 */
+        private val blockStarts: IntArray by lazy {
+            Regex("""<(p|li|div|aside|dd|dt|section|td|blockquote)\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.range.last + 1 }.toList().toIntArray()
+        }
+
+        fun text(id: String): String? {
+            val open = opens[id] ?: return null
+            val fragment = if (open.tag in setOf("a", "span", "sup", "sub", "b", "i", "em") || open.selfClosing) {
+                // 小锚点：取到所在段落结束。
+                val i = blockStarts.binarySearch(open.start).let { if (it >= 0) it else -it - 2 }
+                val blockStart = if (i >= 0) blockStarts[i] else open.start
+                val end = Regex("""</(p|li|div|aside|dd|dt|section|td|blockquote)\s*>""", RegexOption.IGNORE_CASE)
+                    .find(html, open.end + 1)?.range?.first ?: html.length
+                html.substring(blockStart, end)
+            } else {
+                html.substring(open.end + 1, closingOf(html, open.tag, open.end + 1))
+            }
+            return cleanNote(fragment)
+        }
+
+        private companion object {
+            val idAttr = Regex("""\b(?:id|name)\s*=\s*["']([^"']+)["']""")
+        }
+    }
+
+    private fun cleanNote(fragment: String): String? {
         val text = plain(fragment.replace(Regex("""(?is)<a\b[^>]*>\s*(↩|↑|︎|返回|back)[^<]*</a>"""), ""))
             .replace(noteLeader, "")
             .trim()
@@ -165,8 +197,9 @@ object HtmlText {
         return Regex("""&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);""").replace(s) { m ->
             val e = m.groupValues[1]
             when {
-                e.startsWith("#x") || e.startsWith("#X") -> e.drop(2).toIntOrNull(16)?.let { String(Character.toChars(it)) }
-                e.startsWith("#") -> e.drop(1).toIntOrNull()?.let { String(Character.toChars(it)) }
+                // 超出 Unicode 范围的编号（坏掉的书里会有）原样留着，不能让整本书导入失败。
+                e.startsWith("#x") || e.startsWith("#X") -> e.drop(2).toIntOrNull(16)?.takeIf(Character::isValidCodePoint)?.let { String(Character.toChars(it)) }
+                e.startsWith("#") -> e.drop(1).toIntOrNull()?.takeIf(Character::isValidCodePoint)?.let { String(Character.toChars(it)) }
                 else -> named[e]
             } ?: m.value
         }

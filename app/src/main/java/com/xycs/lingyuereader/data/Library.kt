@@ -40,6 +40,7 @@ class Library(private val context: Context) {
     init {
         BookParser.pdfAspects = PdfPages::aspects
         recoverInterruptedRules()
+        recoverInterruptedSwaps()
     }
 
     private companion object {
@@ -48,6 +49,7 @@ class Library(private val context: Context) {
         const val RULES_INDEX_BEFORE = "index-before.json"
         const val RULES_COMMITTED = "committed"
         val RULES_STAGE = Regex("""\.rules-([A-Za-z0-9-]{1,64})-([0-9a-fA-F-]{36})""")
+        val REFRESH_STAGE = Regex("""\.refresh-([A-Za-z0-9-]{1,64})-[0-9a-fA-F-]{36}""")
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
@@ -310,6 +312,31 @@ class Library(private val context: Context) {
         }
     }
 
+    /**
+     * 刷新、恢复备份做到一半进程被杀：书的旧目录可能还在临时目录的 previous 里，而书架上那本书的目录已经没了。
+     * 启动时把这样的旧目录放回原处，其余的临时文件清掉。
+     */
+    private fun recoverInterruptedSwaps() {
+        root.listFiles().orEmpty().forEach { staging ->
+            if (!staging.isDirectory) return@forEach
+            val refreshId = REFRESH_STAGE.matchEntire(staging.name)?.groupValues?.get(1)
+            val restoring = staging.name.startsWith(".restore-")
+            if (refreshId == null && !restoring) return@forEach
+            val previous = File(staging, "previous")
+            if (refreshId != null) {
+                val dir = File(root, refreshId)
+                if (previous.isDirectory && !dir.exists()) previous.renameTo(dir)
+            } else {
+                previous.listFiles().orEmpty().forEach { old ->
+                    val dir = File(root, old.name)
+                    if (old.isDirectory && !dir.exists()) old.renameTo(dir)
+                }
+            }
+            // 还没放回去的（原处已有目录）留着，不删唯一可能的旧副本；放回了就清掉整个临时目录。
+            if (previous.list().isNullOrEmpty() || (refreshId != null && !previous.exists())) staging.deleteRecursively()
+        }
+    }
+
     /** 修复进程死亡时遗留的规则目录事务；在首次读取书架前执行。 */
     private fun recoverInterruptedRules() {
         root.listFiles().orEmpty().forEach { staging ->
@@ -381,12 +408,16 @@ class Library(private val context: Context) {
             else -> null
         }
 
+        // 每份来源只读一次、解一次（插图多的 MOBI、FB2 每张图都重读整本书要读好几 GB）。
+        val resourceReaders = HashMap<String, (String) -> ByteArray?>()
+        fun resourcesOf(source: SourceRef, file: File) = resourceReaders.getOrPut(source.file) { BookParser.resources(BookParser.SourceBytes(source.name, file)) }
+
         /** 解出一张图到 img/，返回文件名。 */
         fun extract(source: SourceRef, path: String): String? = runCatching {
             val file = File(dir, source.file)
             when {
                 path.startsWith("@res/") -> {
-                    val data = BookParser.resource(BookParser.SourceBytes(source.name, file), path.removePrefix("@res/")) ?: return@runCatching null
+                    val data = resourcesOf(source, file)(path.removePrefix("@res/")) ?: return@runCatching null
                     val ext = PageBooks.imageExtension(data) ?: return@runCatching null
                     newFile(ext).also { File(dir, it).writeBytes(data) }
                 }
@@ -425,12 +456,29 @@ class Library(private val context: Context) {
         return content.copy(chapters = chapters, cover = cover)
     }
 
-    /** 从原位置重读每份文件。先在临时目录验证新书，失败时保留旧副本和缓存。 */
-    @Synchronized
+    /**
+     * 从原位置重读每份文件。先在临时目录验证新书，失败时保留旧副本和缓存。
+     * 读来源（可能要从书源下载）不占书架的锁：慢的网络不能让存进度、书签这些写书架的操作都排队等着。
+     */
     fun refresh(entry: BookEntry): RefreshResult {
+        require(File(root, entry.id).isDirectory) { "书籍文件不存在" }
+        val staging = File(root, ".refresh-${entry.id}-${UUID.randomUUID()}")
+        val downloaded = File(staging, "downloaded")
+        try {
+            val read = entry.sources.associate { s ->
+                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
+                s.file to bytes?.let { b -> File(downloaded, s.file).also { it.parentFile?.mkdirs(); it.writeBytes(b) } }
+            }
+            return synchronized(this) { refreshLocked(entry, staging, read) }
+        } finally {
+            downloaded.deleteRecursively()
+            if (staging.list().isNullOrEmpty()) staging.delete()
+        }
+    }
+
+    private fun refreshLocked(entry: BookEntry, staging: File, read: Map<String, File?>): RefreshResult {
         val dir = File(root, entry.id)
         require(dir.isDirectory) { "书籍文件不存在" }
-        val staging = File(root, ".refresh-${entry.id}-${UUID.randomUUID()}")
         val incoming = File(staging, "incoming")
         val next = File(staging, "next")
         val previous = File(staging, "previous")
@@ -439,7 +487,7 @@ class Library(private val context: Context) {
         var committed = false
         try {
             for (s in entry.sources) {
-                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
+                val bytes = read[s.file]?.readBytes()
                 if (bytes == null) {
                     failed++
                     continue
@@ -488,8 +536,12 @@ class Library(private val context: Context) {
             }
             return RefreshResult(changed, failed)
         } finally {
-            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉。
-            if (committed || !previous.exists()) staging.deleteRecursively()
+            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉（下次启动时 recoverInterrupted 会找回）。
+            if (committed || !previous.exists()) {
+                incoming.deleteRecursively()
+                next.deleteRecursively()
+                previous.deleteRecursively()
+            }
         }
     }
 
