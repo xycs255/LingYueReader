@@ -254,6 +254,7 @@ fun rememberEveningWarmth(enabled: Boolean): Float {
 /** 配色变化时渐变过去（约 3 秒），不突然一闪。 */
 @Composable
 fun animatePalette(target: ReaderPalette): ReaderPalette {
+    if (Effects.noMotion) return target
     val spec = tween<Color>(3000)
     val background by animateColorAsState(target.background, spec, label = "background")
     val text by animateColorAsState(target.text, spec, label = "text")
@@ -304,7 +305,11 @@ fun BreakReminder(
             if (clock.elapsed >= intervalMs) showing = true
         }
     }
-    AnimatedVisibility(visible = showing, enter = fadeIn(tween(1500)), exit = fadeOut(tween(1200))) {
+    AnimatedVisibility(
+        visible = showing,
+        enter = Effects.enter(fadeIn(tween(1500))),
+        exit = Effects.exit(fadeOut(tween(1200))),
+    ) {
         RestScene(
             night = palette.isDark,
             restMs = restMs,
@@ -323,9 +328,22 @@ fun BreakReminder(
 @Composable
 private fun RestScene(night: Boolean, restMs: Long, onDone: () -> Unit, onSnooze: () -> Unit) {
     val progress = remember { Animatable(0f) }
+    val noMotion = Effects.noMotion
+    var remainingSeconds by remember(restMs) { mutableIntStateOf(ceil(restMs / 1000f).toInt()) }
     val done by rememberUpdatedState(onDone)
-    LaunchedEffect(Unit) {
-        progress.animateTo(1f, tween(restMs.toInt(), easing = LinearEasing))
+    LaunchedEffect(restMs, noMotion) {
+        if (noMotion) {
+            // 倒计时仍每秒更新，但圆环不做连续动画。
+            var elapsed = 0L
+            while (elapsed < restMs) {
+                val step = minOf(1_000L, restMs - elapsed)
+                delay(step)
+                elapsed += step
+                remainingSeconds = ceil((restMs - elapsed) / 1000f).toInt()
+            }
+        } else {
+            progress.animateTo(1f, tween(restMs.toInt(), easing = LinearEasing))
+        }
         done()
     }
     val ink = if (night) Color(0xFFE6DCC4) else Color(0xFF2A2F33)
@@ -348,12 +366,12 @@ private fun RestScene(night: Boolean, restMs: Long, onDone: () -> Unit, onSnooze
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 12.dp),
             )
-            val left = ceil((1f - progress.value) * restMs / 1000f).toInt()
+            val left = if (noMotion) remainingSeconds else ceil((1f - progress.value) * restMs / 1000f).toInt()
             Box(Modifier.padding(top = 28.dp).size(84.dp).semantics { contentDescription = "还剩 $left 秒" }, contentAlignment = Alignment.Center) {
                 Canvas(Modifier.fillMaxSize()) {
                     val stroke = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
                     drawArc(ink.copy(alpha = 0.15f), 0f, 360f, false, style = stroke)
-                    drawArc(ink.copy(alpha = 0.7f), -90f, 360f * (1f - progress.value), false, style = stroke)
+                    if (!noMotion) drawArc(ink.copy(alpha = 0.7f), -90f, 360f * (1f - progress.value), false, style = stroke)
                 }
                 Text("$left", color = ink, fontSize = 26.sp)
             }

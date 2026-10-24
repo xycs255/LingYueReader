@@ -1,8 +1,10 @@
 package com.xycs.lingyuereader.data
 
+import android.util.AtomicFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 
 /** 生词本里的一个词：查词时收进来，带上释义摘要和它在书里的原句。 */
 data class VocabWord(
@@ -30,9 +32,11 @@ data class VocabWord(
 }
 
 /** 生词本，存在 files/vocabulary.json。按词去重，后收的覆盖原句与释义。 */
-class Vocabulary(private val file: File) {
+class Vocabulary internal constructor(private val file: File, private val atomicFile: AtomicFile) {
+    constructor(file: File) : this(file, AtomicFile(file))
+
     @Synchronized
-    fun list(): List<VocabWord> = runCatching { parse(file.readText()) }.getOrDefault(emptyList())
+    fun list(): List<VocabWord> = runCatching { parse(atomicFile.readFully().toString(Charsets.UTF_8)) }.getOrDefault(emptyList())
 
     fun contains(word: String): Boolean = list().any { it.word == word }
 
@@ -79,7 +83,8 @@ class Vocabulary(private val file: File) {
         byWord.values.sortedByDescending { it.addedAt }
     }
 
-    fun raw(): ByteArray? = if (file.isFile) file.readBytes() else null
+    @Synchronized
+    fun raw(): ByteArray? = if (file.isFile || File(file.path + ".bak").isFile) atomicFile.readFully() else null
 
     fun toMarkdown(words: List<VocabWord> = list()): String = buildString {
         append("# 生词本\n\n")
@@ -104,12 +109,17 @@ class Vocabulary(private val file: File) {
             )
         }
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(array.toString())
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            tmp.renameTo(file)
+        val bytes = array.toString().toByteArray(Charsets.UTF_8)
+        val output: FileOutputStream = atomicFile.startWrite()
+        try {
+            output.write(bytes)
+        } catch (error: Exception) {
+            // 仅写入阶段可以回滚；旧版 Android 的 finishWrite 已删除 .bak。
+            atomicFile.failWrite(output)
+            throw error
         }
+        atomicFile.finishWrite(output)
+        check(atomicFile.readFully().contentEquals(bytes)) { "无法保存生词本" }
     }
 
     private fun parse(json: String): List<VocabWord> {

@@ -210,6 +210,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
     val query by vm.shelfQuery.collectAsStateWithLifecycle()
     val loaded by vm.shelfLoaded.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
+    val importing by vm.importing.collectAsStateWithLifecycle()
     val pending by vm.pendingImport.collectAsStateWithLifecycle()
     val message by vm.messages.collectAsStateWithLifecycle()
     val continueReading = shelf.filter { it.progress != null }.maxByOrNull { it.openedAt }
@@ -312,7 +313,17 @@ internal fun ShelfScreen(vm: AppViewModel) {
                                 }
                             }
                         }
-                        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+                        if (busy) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                LinearProgressIndicator(Modifier.weight(1f))
+                                if (importing) {
+                                    TextButton(text = "取消导入", onClick = vm::cancelImport, modifier = Modifier.heightIn(min = 48.dp))
+                                }
+                            }
+                        }
                     }
                 },
             )
@@ -832,7 +843,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
         show = true,
         title = "导入 ${files.size} 个文件",
         summary = sorted.take(5).joinToString("\n") + if (sorted.size > 5) "\n……" else "",
-        onDismissRequest = vm::cancelImport,
+        onDismissRequest = vm::dismissImport,
     ) {
         Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
             RadioButtonPreference(
@@ -856,7 +867,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
         }
-        DialogButtons(confirm = "导入", onDismiss = vm::cancelImport) {
+        DialogButtons(confirm = "导入", onDismiss = vm::dismissImport) {
             vm.importBooks(files, merge, title)
         }
     }

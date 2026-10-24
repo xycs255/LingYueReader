@@ -40,6 +40,9 @@ internal fun LingYueArrowPreference(
     endIcon: ImageVector = LingYueIcons.ChevronForward,
     onClick: () -> Unit,
 ) {
+    val trailingTint = MiuixTheme.colorScheme.onSurfaceVariantSummary.let { color ->
+        if (enabled) color else color.copy(alpha = color.alpha * 0.3f)
+    }
     ArrowPreference(
         title = title,
         summary = summary,
@@ -49,7 +52,7 @@ internal fun LingYueArrowPreference(
             if (trailingText != null) {
                 Text(
                     trailingText,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    color = trailingTint,
                     style = MiuixTheme.textStyles.body2,
                 )
                 Spacer(Modifier.width(8.dp))
@@ -57,7 +60,7 @@ internal fun LingYueArrowPreference(
             Icon(
                 endIcon,
                 contentDescription = null,
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                tint = trailingTint,
                 modifier = Modifier.size(20.dp),
             )
         },

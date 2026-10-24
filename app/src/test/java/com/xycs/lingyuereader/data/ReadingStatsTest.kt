@@ -1,12 +1,22 @@
 package com.xycs.lingyuereader.data
 
+import android.util.AtomicFile
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.time.LocalDate
 
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
 class ReadingStatsTest {
     @get:Rule val tmp = TemporaryFolder()
     private val today = LocalDate.of(2026, 10, 23)
@@ -54,5 +64,67 @@ class ReadingStatsTest {
         b.merge(backup)
         assertEquals(10 * 60_000L, b.days()[today]!!.millis)
         assertEquals(3 * 60_000L, b.days()[today.minusDays(1)]!!.millis)
+    }
+
+    @Test
+    fun failedWriteKeepsThePreviousReadingStatsBytes() {
+        val file = File(tmp.root, "s.json")
+        val s = ReadingStats(file)
+        s.addTime("b1", 60_000, today)
+        val original = file.readBytes()
+        // 阻断 AtomicFile 的新文件：更新失败时旧统计仍应完整可读。
+        val blocker = File(tmp.root, "s.json.new")
+        assertTrue(blocker.mkdir())
+        File(blocker, "keep").writeText("阻止清理")
+
+        assertTrue(runCatching { s.addChars(100, today) }.exceptionOrNull() is IOException)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, s.raw())
+        assertEquals(60_000L, s.days()[today]!!.millis)
+        assertEquals(0L, s.days()[today]!!.chars)
+
+        assertTrue(blocker.deleteRecursively())
+        s.addChars(100, today)
+        assertEquals(100L, s.days()[today]!!.chars)
+    }
+
+    @Test
+    @Config(sdk = [26, 28, 29, 36])
+    fun readFailureAfterCommitNeverRollsBackReadingStats() {
+        val file = File(tmp.root, "s.json")
+        ReadingStats(file).addTime("b1", 60_000, today)
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            var committed = false
+            var failWrites = 0
+
+            override fun finishWrite(str: FileOutputStream?) {
+                super.finishWrite(str)
+                committed = true
+            }
+
+            override fun readFully(): ByteArray {
+                if (committed) {
+                    committed = false
+                    throw IOException("injected readFully after finishWrite")
+                }
+                return super.readFully()
+            }
+
+            override fun failWrite(str: FileOutputStream?) {
+                failWrites++
+                super.failWrite(str)
+            }
+        }
+
+        val error = runCatching { ReadingStats(file, injected).addChars(100, today) }.exceptionOrNull()
+
+        assertTrue(error is IOException && error.message == "injected readFully after finishWrite")
+        assertEquals(0, injected.failWrites)
+        assertTrue(file.isFile)
+        assertTrue(!original.contentEquals(file.readBytes()))
+        val saved = ReadingStats(file).days().getValue(today)
+        assertEquals(60_000L, saved.millis)
+        assertEquals(100L, saved.chars)
     }
 }

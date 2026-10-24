@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -109,5 +110,23 @@ class ThemeUiTest {
         compose.onNodeWithText("淡入淡出").performClick()
         compose.waitForIdle()
         assertEquals(PageTransition.FADE, Prefs(context).appearance().transition)
+    }
+
+    @Test
+    fun accentChoicesHaveAccessibleTargetsAndSelectedState() {
+        openThemePage()
+        val default = compose.onNodeWithContentDescription("默认强调色").performScrollTo().fetchSemanticsNode()
+        val minSizePx = context.resources.displayMetrics.density * 48f - 1f
+        assertTrue(default.boundsInRoot.width >= minSizePx)
+        assertTrue(default.boundsInRoot.height >= minSizePx)
+        assertTrue(default.config[SemanticsProperties.Selected])
+
+        compose.onNodeWithContentDescription("强调色 #D49A57").performScrollTo().performClick()
+        compose.mainClock.advanceTimeBy(1_000)
+        val amber = compose.onNodeWithContentDescription("强调色 #D49A57").performScrollTo().fetchSemanticsNode()
+        assertTrue(amber.boundsInRoot.width >= minSizePx)
+        assertTrue(amber.boundsInRoot.height >= minSizePx)
+        assertTrue(amber.config[SemanticsProperties.Selected])
+        assertFalse(compose.onNodeWithContentDescription("默认强调色").performScrollTo().fetchSemanticsNode().config[SemanticsProperties.Selected])
     }
 }

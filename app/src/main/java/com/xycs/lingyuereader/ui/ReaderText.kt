@@ -261,7 +261,7 @@ internal fun BlockView(
     val palette = styles.palette
     val gap = styles.gap
     val selected = highlight?.rangeIn(blockIndex, block.displayText?.length ?: 0)
-    val text = remember(block, notes, speaking, selected) {
+    val text = remember(block, notes, speaking, selected, styles.settings.indent, palette.accent) {
         blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text

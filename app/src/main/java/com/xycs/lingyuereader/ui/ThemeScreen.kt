@@ -264,18 +264,28 @@ private fun AccentRow(accent: Int, onPick: (Int) -> Unit) {
                 val ring by animateDpAsState(if (on) 3.dp else 0.dp, Motion.pop(), label = "ring")
                 Box(
                     Modifier
-                        .size(34.dp)
+                        .size(48.dp)
                         .pressScale(press, 0.88f)
                         .clip(CircleShape)
-                        .background(if (on || ring > 0.dp) c.onSurface else Color.Transparent)
-                        .padding(ring.coerceAtLeast(0.dp))
-                        .clip(CircleShape)
-                        .background(if (color == 0) c.surfaceContainer else Color(color))
                         .clickable(press, LocalIndication.current) { onPick(color) }
-                        .semantics { contentDescription = if (color == 0) "默认强调色" else "强调色 #%06X".format(color and 0xFFFFFF) },
+                        .semantics {
+                            contentDescription = if (color == 0) "默认强调色" else "强调色 #%06X".format(color and 0xFFFFFF)
+                            selected = on
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (color == 0) Text("默认", color = c.onSurface, fontSize = 10.sp)
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(if (on || ring > 0.dp) c.onSurface else Color.Transparent)
+                            .padding(ring.coerceAtLeast(0.dp))
+                            .clip(CircleShape)
+                            .background(if (color == 0) c.surfaceContainer else Color(color)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (color == 0) Text("默认", color = c.onSurface, fontSize = 10.sp)
+                    }
                 }
             }
         }

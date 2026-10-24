@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.graphics.Color
 import com.xycs.lingyuereader.data.ReaderTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -98,6 +99,38 @@ class EyeCareTest {
                     val ratio = contrastRatio(p.text, p.background)
                     assertTrue("$theme dim=$dim warmth=$warmth ratio=$ratio", ratio >= 7f)
                 }
+            }
+        }
+    }
+
+    @Test
+    fun secondaryLabelsStayReadableOnPagesAndPanels() {
+        for (theme in ReaderTheme.entries) {
+            for (dim in listOf(1f, 0.9f)) {
+                for (warmth in listOf(0f, 0.5f, 1f)) {
+                    val palette = theme.palette().adjusted(dim, warmth)
+                    for (surface in listOf(palette.background, palette.bar)) {
+                        val ratio = contrastRatio(palette.secondary, surface)
+                        assertTrue("$theme dim=$dim warmth=$warmth ratio=$ratio", ratio >= 4.5f)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun customSecondaryRemainsReadableEvenWhenChosenTextIsTooPale() {
+        val pairs = listOf(
+            Color.Black to Color.White,
+            Color(0xFFF2E6CC) to Color(0xFF3E3222),
+            Color(0xFF808080) to Color(0xFF888888),
+            Color(0xFF151413) to Color(0xFFC4B48E),
+        )
+        for ((background, text) in pairs) {
+            val palette = customPalette(background, text)
+            for (surface in listOf(palette.background, palette.bar)) {
+                val ratio = contrastRatio(palette.secondary, surface)
+                assertTrue("background=$background text=$text ratio=$ratio", ratio >= 4.5f)
             }
         }
     }

@@ -71,9 +71,102 @@ class MarksTest {
     @Test
     fun jsonRoundTrip() {
         val m = Marks(
-            bookmarks = listOf(Bookmark("b", 1, "第二章", 3, 5, "摘录", 9)),
+            bookmarks = listOf(Bookmark("b", 1, "第二章", 3, 5, "摘录", 9, TextAnchor("附近原文", 2))),
             notes = listOf(note(0, "第一章", 2, "原文", 1).copy(color = MarkColor.BLUE)),
         )
         assertEquals(m, Marks.fromJson(JSONObject(m.toJson().toString())))
+    }
+
+    @Test
+    fun anchorFollowsTextAfterParagraphInsertion() {
+        val original = book("第一章" to listOf("开头。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        val char = 18
+        val anchor = TextAnchors.capture(original.chapters[0], 1, char)
+        val revised = book("第一章" to listOf("开头。", "新加入的段落。", "田槐走到打谷场，看见门边那盏旧灯仍然亮着。"))
+        assertEquals(TextLocation(2, char), TextAnchors.resolve(revised.chapters[0], 1, char, anchor))
+
+        val bookmark = Bookmark("b", 0, "第一章", 2, char, "田槐走到打谷场", 1, anchor)
+        val moved = Marks(bookmarks = listOf(bookmark)).resolve(revised).bookmarks.single()
+        assertEquals(3, moved.itemIndex)
+        assertEquals(char, moved.charOffset)
+        assertFalse(moved.lost)
+    }
+
+    @Test
+    fun repeatedAnchorChoosesNearestOldLocation() {
+        val chapter = book("第一章" to listOf("重复句。", "别的。", "重复句。", "别的。", "重复句。", "别的。", "重复句。"))
+            .chapters.single()
+        assertEquals(TextLocation(4, 2), TextAnchors.resolve(chapter, 5, 2, TextAnchor("重复句。", 2)))
+    }
+
+    @Test
+    fun unmatchedBookmarkIsRetainedAndMarkedLost() {
+        val old = book("旧章" to listOf("已经删除的原文。"))
+        val anchor = TextAnchors.capture(old.chapters.single(), 0, 4)
+        val bookmark = Bookmark("b", 0, "旧章", 1, 4, "已经删除", 1, anchor)
+        val revised = book("新章" to listOf("完全不同的正文。"))
+        val restored = Marks(bookmarks = listOf(bookmark)).resolve(revised)
+        assertEquals("b", restored.bookmarks.single().id)
+        assertTrue(restored.bookmarks.single().lost)
+        assertEquals(restored, Marks.fromJson(JSONObject(restored.toJson().toString())))
+    }
+
+    @Test
+    fun oldTraditionalDisplayAnchorRebasesToSimplifiedSourceAndSurvivesRestart() {
+        val source = book("第一章 开端" to listOf("她的头发很长，后来又走远了。"))
+        val toTraditional = ChineseConverter("开端\t開端\n头发\t頭髮\n后来\t後來\n".byteInputStream())
+        val traditional = toTraditional.convert(source)
+        val chapter = traditional.chapters.single()
+        val old = Bookmark("b", 0, chapter.title, 1, 2, "頭髮", 1, TextAnchors.capture(chapter, 0, 2))
+
+        val rebased = Marks(bookmarks = listOf(old)).resolve(source, listOf(traditional)).bookmarks.single()
+
+        assertFalse(rebased.lost)
+        assertEquals("第一章 开端", rebased.chapterTitle)
+        assertEquals(2, rebased.charOffset)
+        assertTrue(rebased.anchor.text.contains("头发"))
+        val reopened = Marks.fromJson(JSONObject(Marks(bookmarks = listOf(rebased)).toJson().toString())).resolve(source)
+        assertFalse(reopened.bookmarks.single().lost)
+
+        val deleted = book("第一章 开端" to listOf("她已经搬走，再无原句。"))
+        assertTrue(Marks(bookmarks = listOf(old)).resolve(deleted, listOf(toTraditional.convert(deleted))).bookmarks.single().lost)
+    }
+
+    @Test
+    fun oldSimplifiedDisplayAnchorRebasesToTraditionalSource() {
+        val source = book("第一章 開端" to listOf("她的頭髮很長，後來又走遠了。"))
+        val toSimplified = ChineseConverter("開端\t开端\n頭髮\t头发\n後來\t后来\n".byteInputStream())
+        val simplified = toSimplified.convert(source)
+        val chapter = simplified.chapters.single()
+        val old = Bookmark("b", 0, chapter.title, 1, 2, "头发", 1, TextAnchors.capture(chapter, 0, 2))
+
+        val rebased = Marks(bookmarks = listOf(old)).resolve(source, listOf(simplified)).bookmarks.single()
+
+        assertFalse(rebased.lost)
+        assertEquals("第一章 開端", rebased.chapterTitle)
+        assertEquals(2, rebased.charOffset)
+        assertTrue(rebased.anchor.text.contains("頭髮"))
+    }
+
+    @Test
+    fun convertedLegacyProgressRebasesToSourceChapterAndCharacter() {
+        val source = book(
+            "第一章 开端" to listOf("先走一段。"),
+            "第二章 头发" to listOf("长长的开头。", "她的头发很长，后来又走远了。"),
+        )
+        val toTraditional = ChineseConverter("开端\t開端\n头发\t頭髮\n后来\t後來\n".byteInputStream())
+        val traditional = toTraditional.convert(source)
+        val chapter = traditional.chapters[1]
+        val old = ReadingProgress(1, chapter.title, 2, 0, 2, TextAnchors.capture(chapter, 1, 2))
+
+        val direct = TextAnchors.rebaseProgress(source, old)
+        val rebased = TextAnchors.rebaseProgress(source, old, listOf(traditional))
+
+        assertEquals(null, direct)
+        assertEquals(1, rebased?.chapterIndex)
+        assertEquals("第二章 头发", rebased?.chapterTitle)
+        assertEquals(2, rebased?.itemIndex)
+        assertEquals(2, rebased?.charOffset)
+        assertTrue(rebased?.anchor?.text.orEmpty().contains("头发"))
     }
 }

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.xycs.lingyuereader.data.layoutKey
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
@@ -93,7 +94,7 @@ internal fun PagedReader(
         val imageMaxHeight = maxHeight - topInset - bottomInset - styles.gap
         val images = LocalBookImages.current
         // 配色随环境渐变时不必重新分页；注音的字表读好后行高变了，要重新分。
-        val paginator = remember(styles.settings, styles.pinyin != null, density, images) {
+        val paginator = remember(styles.settings.layoutKey, styles.pinyin != null, density, images) {
             Paginator(ComposeTextFitter(measurer), styles, density) { src -> images?.aspect(src) }
         }
 

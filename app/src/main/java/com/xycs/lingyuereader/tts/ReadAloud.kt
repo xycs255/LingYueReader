@@ -66,6 +66,8 @@ object ReadAloud {
     private var queue: List<Utterance> = emptyList()
     private var index = 0
     private var pendingStart: (() -> Unit)? = null
+    /** 每次重新排队或中断朗读都换代；旧引擎即使继续回调，也不能改变新位置。 */
+    private var utteranceGeneration = 0L
 
     /** 从某本书的某个位置开始读；已在读的话先停下。 */
     fun start(
@@ -79,6 +81,7 @@ object ReadAloud {
         rate: Float,
         voice: String? = null,
     ) {
+        invalidateUtterances()
         appContext = context.applicationContext
         this.content = content
         val previous = _state.value
@@ -89,22 +92,30 @@ object ReadAloud {
         )
         loadChapter(chapterIndex, block, char)
         ensureEngine {
-            tts?.setSpeechRate(rate)
-            applyVoice(voice)
+            val current = _state.value ?: return@ensureEngine
+            tts?.setSpeechRate(current.rate)
+            applyVoice(current.voice)
             speakFrom(index)
         }
         ContextCompat.startForegroundService(context, Intent(context, ReadAloudService::class.java))
     }
 
     fun pause() {
+        invalidateUtterances()
         _state.update { it?.copy(playing = false) }
         tts?.stop()
     }
 
     fun resume() {
         val s = _state.value ?: return
-        _state.value = s.copy(playing = true)
-        ensureEngine { speakFrom(index) }
+        invalidateUtterances()
+        _state.value = s.copy(playing = true, error = null)
+        ensureEngine {
+            val current = _state.value ?: return@ensureEngine
+            tts?.setSpeechRate(current.rate)
+            applyVoice(current.voice)
+            speakFrom(index)
+        }
     }
 
     fun toggle() {
@@ -112,6 +123,7 @@ object ReadAloud {
     }
 
     fun stop() {
+        invalidateUtterances()
         main.removeCallbacks(sleepRunnable)
         tts?.stop()
         _state.value = null
@@ -126,6 +138,7 @@ object ReadAloud {
         _state.value = s.copy(rate = rate)
         tts?.setSpeechRate(rate)
         if (s.playing) {
+            invalidateUtterances()
             tts?.stop()
             speakFrom(index)
         }
@@ -137,6 +150,7 @@ object ReadAloud {
         _state.value = s.copy(voice = name)
         applyVoice(name)
         if (s.playing) {
+            invalidateUtterances()
             tts?.stop()
             speakFrom(index)
         }
@@ -159,6 +173,7 @@ object ReadAloud {
 
     private fun jump(to: Int) {
         val s = _state.value ?: return
+        invalidateUtterances()
         if (to >= queue.size) {
             tts?.stop()
             nextChapter()
@@ -195,6 +210,8 @@ object ReadAloud {
 
     /** 把本章从第 [from] 句起全部排进语音队列。 */
     private fun speakFrom(from: Int) {
+        invalidateUtterances()
+        if (!ready) return
         val engine = tts ?: return
         val s = _state.value ?: return
         if (!s.playing) return
@@ -204,7 +221,7 @@ object ReadAloud {
         }
         engine.stop()
         for (i in from until queue.size) {
-            engine.speak(queue[i].text, TextToSpeech.QUEUE_ADD, null, "${s.chapterIndex}:$i")
+            engine.speak(queue[i].text, TextToSpeech.QUEUE_ADD, null, activeUtteranceId(i))
         }
     }
 
@@ -221,22 +238,36 @@ object ReadAloud {
 
     /** 语音引擎回调（在引擎的线程上）：切回主线程处理。也供测试直接调用。 */
     internal fun onUtteranceStart(id: String) = main.post {
-        val (chapter, i) = parseId(id) ?: return@post
+        val (generation, chapter, i) = parseId(id) ?: return@post
         val s = _state.value ?: return@post
-        if (chapter != s.chapterIndex) return@post
+        if (generation != utteranceGeneration || chapter != s.chapterIndex || !s.playing || i !in queue.indices || i < index) return@post
         index = i
         _state.value = s.copy(current = queue.getOrNull(i), sentence = i, sentences = queue.size)
     }
 
     internal fun onUtteranceDone(id: String) = main.post {
-        val (chapter, i) = parseId(id) ?: return@post
+        val (generation, chapter, i) = parseId(id) ?: return@post
         val s = _state.value ?: return@post
-        if (chapter != s.chapterIndex || !s.playing) return@post
+        if (generation != utteranceGeneration || chapter != s.chapterIndex || !s.playing || i != index || i !in queue.indices) return@post
         if (i == queue.lastIndex) nextChapter() else index = i + 1
+    }
+
+    /** 朗读失败时停在出错的句子，避免把失败回调当成“读完”而跳到下一章。 */
+    internal fun onUtteranceError(id: String) = main.post {
+        val (generation, chapter, i) = parseId(id) ?: return@post
+        val s = _state.value ?: return@post
+        if (generation != utteranceGeneration || chapter != s.chapterIndex || !s.playing || i != index || i !in queue.indices) return@post
+        invalidateUtterances()
+        tts?.stop()
+        _state.value = s.copy(
+            current = queue[i], sentence = i, playing = false,
+            error = "语音引擎朗读失败，请切换语音或检查系统语音设置后继续",
+        )
     }
 
     /** 测试之间清掉进程级的状态。 */
     internal fun resetForTest() {
+        invalidateUtterances()
         main.removeCallbacksAndMessages(null)
         tts?.shutdown()
         tts = null
@@ -270,11 +301,23 @@ object ReadAloud {
         }
     }
 
-    private fun parseId(id: String): Pair<Int, Int>? {
+    private data class UtteranceId(val generation: Long, val chapter: Int, val sentence: Int)
+
+    private fun invalidateUtterances() {
+        utteranceGeneration++
+    }
+
+    /** 同一章节重复朗读也有不同的身份，供回调判断是否属于当前队列。 */
+    internal fun activeUtteranceId(sentence: Int): String =
+        "$utteranceGeneration:${_state.value?.chapterIndex}:$sentence"
+
+    private fun parseId(id: String): UtteranceId? {
         val parts = id.split(':')
-        val c = parts.getOrNull(0)?.toIntOrNull() ?: return null
-        val i = parts.getOrNull(1)?.toIntOrNull() ?: return null
-        return c to i
+        if (parts.size != 3) return null
+        val generation = parts[0].toLongOrNull() ?: return null
+        val chapter = parts[1].toIntOrNull() ?: return null
+        val sentence = parts[2].toIntOrNull() ?: return null
+        return UtteranceId(generation, chapter, sentence)
     }
 
     private fun ensureEngine(then: () -> Unit) {
@@ -314,7 +357,11 @@ object ReadAloud {
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String) {
-                        onUtteranceDone(utteranceId)
+                        onUtteranceError(utteranceId)
+                    }
+
+                    override fun onError(utteranceId: String, errorCode: Int) {
+                        onUtteranceError(utteranceId)
                     }
                 })
                 ready = true

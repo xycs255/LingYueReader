@@ -45,8 +45,18 @@ jobs:
           LINGYUE_KEYSTORE_PASSWORD: ${{ secrets.LINGYUE_KEYSTORE_PASSWORD }}
           LINGYUE_KEY_ALIAS: ${{ secrets.LINGYUE_KEY_ALIAS }}
           LINGYUE_KEY_PASSWORD: ${{ secrets.LINGYUE_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lint :app:assembleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-apk
           path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+      - name: Verify night UI screenshots
+        run: test -s app/build/outputs/ui-check/night-catalog.png && test -s app/build/outputs/ui-check/night-typography.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LingYueReader-night-ui
+          path: |
+            app/build/outputs/ui-check/night-catalog.png
+            app/build/outputs/ui-check/night-typography.png
+          if-no-files-found: error
