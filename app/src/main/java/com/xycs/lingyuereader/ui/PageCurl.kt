@@ -15,12 +15,15 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -29,6 +32,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.createBitmap
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
 
@@ -290,8 +294,13 @@ internal fun Modifier.pageCurl(
     paper: Color,
     spine: Float = 0f,
     backside: () -> ImageBitmap? = { null },
-): Modifier =
-    if (curlShaderSupported) curlShader(progress, touch, paper, spine, backside) else curlFlat(progress, touch, paper, spine, backside)
+): Modifier = when {
+    // 单页：经典仿真（弧边、镜像背面、渐变阴影）。
+    spine <= 0f -> curlBezier(progress, touch, paper)
+    // 双页：纸绕书脊卷过去。
+    curlShaderSupported -> curlShader(progress, touch, paper, spine, backside)
+    else -> curlFlat(progress, touch, paper, spine, backside)
+}
 
 /** 上一帧的卷纸效果：纸没动（手指按住不动、卡在半路）时不重建。 */
 private class CurlEffectCache {
@@ -389,4 +398,202 @@ private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Co
         }
     }
     drawPath(g.lifted.map(g::reflect).toPath(), Color.Black.copy(alpha = 0.12f), style = Stroke(1.dp.toPx()))
+}
+
+/**
+ * 经典的书页仿真（国内阅读器常见的那种）：手指拉着纸角（[f]）到 [a]，折痕是 a、f 连线的垂直平分线，
+ * 翻起的那块是一块弧边的纸，背面朝上盖在这一页上，掀开的地方露出下一页。
+ *
+ * - [e]、[h]：折痕和下边（或上边）、右边的交点，也是两条弧边的控制点；
+ * - [c]、[j]：两条弧边在页边上的起点；[b]、[k]：弧边和 a 到 e、a 到 h 两条纸边的交点；
+ * - [d]、[i]：两条弧的中点，d 到 i 是翻过去的纸和露出的下一页之间那条线。
+ *
+ * 当前页去掉 c→e→b→a→k→h→j→f 围起的一块（[turned]）；这块里，c、d、i、j、f 那边露出下一页（[revealed]），
+ * 其余是翻过来的背面（[back]）。背面是当前页沿 e、h 连线镜像过去的。
+ */
+internal data class CurlPoints(
+    val a: Offset,
+    val f: Offset,
+    val e: Offset,
+    val h: Offset,
+    val c: Offset,
+    val j: Offset,
+    val b: Offset,
+    val k: Offset,
+    val d: Offset,
+    val i: Offset,
+) {
+    fun turned(): Path = Path().apply {
+        moveTo(c.x, c.y)
+        quadraticTo(e.x, e.y, b.x, b.y)
+        lineTo(a.x, a.y)
+        lineTo(k.x, k.y)
+        quadraticTo(h.x, h.y, j.x, j.y)
+        lineTo(f.x, f.y)
+        close()
+    }
+
+    private fun revealSide(): Path = Path().apply {
+        moveTo(c.x, c.y)
+        lineTo(d.x, d.y)
+        lineTo(i.x, i.y)
+        lineTo(j.x, j.y)
+        lineTo(f.x, f.y)
+        close()
+    }
+
+    fun revealed(): Path = Path().apply { op(turned(), revealSide(), PathOperation.Intersect) }
+
+    fun back(): Path = Path().apply { op(turned(), revealSide(), PathOperation.Difference) }
+
+    /** 沿 e、h 连线（折痕）的镜像：纸角 f 落到 a。 */
+    val mirror: Matrix
+        get() {
+            val dx = h.x - e.x
+            val dy = h.y - e.y
+            val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1e-3f)
+            val ux = dx / len
+            val uy = dy / len
+            // 反射矩阵 R = 2uuᵀ − I，绕 e 点。
+            val r00 = 2 * ux * ux - 1
+            val r01 = 2 * ux * uy
+            val r11 = 2 * uy * uy - 1
+            val tx = e.x - (r00 * e.x + r01 * e.y)
+            val ty = e.y - (r01 * e.x + r11 * e.y)
+            return Matrix(
+                floatArrayOf(
+                    r00, r01, 0f, 0f,
+                    r01, r11, 0f, 0f,
+                    0f, 0f, 1f, 0f,
+                    tx, ty, 0f, 1f,
+                ),
+            )
+        }
+
+    companion object {
+        /**
+         * 纸角拉到哪：横向走 [progress] × 两倍页宽，竖向跟手指（[curlCorner]）。中间三分之一按下时按下边的角算，
+         * 手指几乎贴着下边，折痕近乎竖直，整页往左翻。手指还在页内时，翻起的纸边不能伸出页面左边（伸出去就把纸角往回收）。
+         */
+        fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float): CurlPoints? {
+            if (width <= 0f || height <= 0f || progress <= 0.002f) return null
+            val (corner, dragged) = curlCorner(width, height, progress, pressY, fingerY)
+            val bottom = corner.y >= height / 2
+            val f = Offset(width, if (bottom) height else 0f)
+            val middle = corner.y != 0f && corner.y != height
+            var ax = dragged.x.coerceAtMost(width - 0.5f)
+            var ay = if (middle) f.y + (if (bottom) -1f else 1f) else dragged.y
+            if (abs(ay - f.y) < 1f) ay = f.y + if (bottom) -1f else 1f
+            var p = compute(Offset(ax, ay), f)
+            if (ax > 0f && ax < width && (p.c.x < 0f || p.c.x > width)) {
+                val cx = if (p.c.x < 0f) width - p.c.x else p.c.x
+                val w1 = abs(f.x - ax)
+                val w2 = width * w1 / cx
+                ax = abs(f.x - w2)
+                val h2 = abs(f.x - ax) * abs(f.y - ay) / w1
+                ay = if (bottom) f.y - h2 else f.y + h2
+                if (abs(ay - f.y) < 1f) ay = f.y + if (bottom) -1f else 1f
+                p = compute(Offset(ax, ay), f)
+            }
+            return p
+        }
+
+        private fun compute(a: Offset, f: Offset): CurlPoints {
+            val g = (a + f) / 2f
+            val e = Offset(g.x - (f.y - g.y) * (f.y - g.y) / (f.x - g.x), f.y)
+            val h = Offset(f.x, g.y - (f.x - g.x) * (f.x - g.x) / (f.y - g.y))
+            val c = Offset(e.x - (f.x - e.x) / 2f, f.y)
+            val j = Offset(f.x, h.y - (f.y - h.y) / 2f)
+            val b = cross(a, e, c, j)
+            val k = cross(a, h, c, j)
+            val d = Offset((c.x + 2 * e.x + b.x) / 4f, (2 * e.y + c.y + b.y) / 4f)
+            val i = Offset((j.x + 2 * h.x + k.x) / 4f, (2 * h.y + j.y + k.y) / 4f)
+            return CurlPoints(a, f, e, h, c, j, b, k, d, i)
+        }
+
+        /** 直线 p1p2 和 p3p4 的交点；平行时取 p2。 */
+        private fun cross(p1: Offset, p2: Offset, p3: Offset, p4: Offset): Offset {
+            val d1 = p2 - p1
+            val d2 = p4 - p3
+            val den = d1.x * d2.y - d1.y * d2.x
+            if (abs(den) < 1e-6f) return p2
+            val t = ((p3.x - p1.x) * d2.y - (p3.y - p1.y) * d2.x) / den
+            return p1 + d1 * t
+        }
+    }
+}
+
+/**
+ * 画一页经典仿真：当前页去掉翻起的那块；掀开处透出底下的下一页（下一页由翻页器垫在下面），贴着折痕一道阴影；
+ * 翻起的纸边在当前页上投一道窄影；最上面是翻过来的背面——当前页镜像过去，蒙一层纸色，隐约透出反着的字，靠折痕处暗一些。
+ * [shade] 在翻完前的最后一段淡到 0，翻完那一下不留影子。
+ */
+internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, drawPage: DrawScope.() -> Unit) {
+    val turned = p.turned()
+    val reach = (p.f - p.a).getDistance()
+    val n = (p.f - p.a) / reach.coerceAtLeast(1f)
+    val fold = (p.d + p.i) / 2f
+    // 1. 当前页，去掉翻起的那块。
+    clipPath(turned, ClipOp.Difference) { drawPage() }
+    // 2. 翻起的纸边投在当前页上的影子：沿 a→e、a→h 两条纸边各一条窄带，往纸外面淡掉。
+    val edgeShadow = (reach / 10f).coerceIn(4.dp.toPx(), 18.dp.toPx())
+    val inner = (p.a + p.d + p.i) / 3f
+    clipPath(turned, ClipOp.Difference) {
+        for (end in listOf(p.e, p.h)) {
+            val dir = end - p.a
+            val len = dir.getDistance().coerceAtLeast(1f)
+            var out = Offset(-dir.y / len, dir.x / len)
+            if (dot(out, inner - p.a) > 0f) out = -out
+            val band = Path().apply {
+                moveTo(p.a.x, p.a.y)
+                lineTo(end.x, end.y)
+                lineTo(end.x + out.x * edgeShadow, end.y + out.y * edgeShadow)
+                lineTo(p.a.x + out.x * edgeShadow, p.a.y + out.y * edgeShadow)
+                close()
+            }
+            drawPath(band, Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.16f * shade), Color.Transparent), start = p.a, end = p.a + out * edgeShadow))
+        }
+    }
+    // 3. 掀开处的下一页上，贴着折痕一道阴影，往纸角那边淡掉。
+    val revealShadow = (reach / 4f).coerceIn(8.dp.toPx(), 36.dp.toPx())
+    clipPath(p.revealed()) {
+        drawRect(
+            Brush.linearGradient(
+                0f to Color.Black.copy(alpha = 0.30f * shade),
+                0.35f to Color.Black.copy(alpha = 0.10f * shade),
+                1f to Color.Transparent,
+                start = fold,
+                end = fold + n * revealShadow,
+            ),
+        )
+    }
+    // 4. 翻过来的背面。
+    val back = p.back()
+    clipPath(back) {
+        withTransform({ transform(p.mirror) }) { drawPage() }
+        drawRect(paper.copy(alpha = 0.9f))
+        // 靠折痕处弯着，暗一些；往纸角渐亮。
+        val depth = (dot(p.a - fold, -n)).coerceAtLeast(1f)
+        drawRect(
+            Brush.linearGradient(
+                0f to Color.Black.copy(alpha = 0.16f),
+                0.3f to Color.Black.copy(alpha = 0.03f),
+                1f to Color.Transparent,
+                start = fold,
+                end = fold - n * depth,
+            ),
+        )
+    }
+}
+
+/** 单页仿真：所有版本都用 [drawPageCurl]，不需要着色器。 */
+private fun Modifier.curlBezier(progress: () -> Float, touch: CurlTouch, paper: Color): Modifier = drawWithContent {
+    val t = progress()
+    val p = CurlPoints.of(size.width, size.height, t, touch.pressY, touch.fingerY)
+    if (p == null) {
+        drawContent()
+        return@drawWithContent
+    }
+    val shade = ((1f - t) * 4f).coerceIn(0f, 1f)
+    drawPageCurl(p, paper, shade) { this@drawWithContent.drawContent() }
 }
