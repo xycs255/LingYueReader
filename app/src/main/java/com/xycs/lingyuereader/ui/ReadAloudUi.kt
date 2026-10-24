@@ -121,6 +121,9 @@ internal fun ReadAloudSheet(
     onVoice: (String?) -> Unit = {},
     onTimer: (Int?) -> Unit = ReadAloud::setTimer,
     tint: Color = palette.accent,
+    /** 设好了 AI 朗读时是服务商名，可以切到 AI 语音；为空不显示开关。 */
+    aiOption: String? = null,
+    onAi: (Boolean) -> Unit = {},
 ) {
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
@@ -171,9 +174,21 @@ internal fun ReadAloudSheet(
                     ) { rate = it }
                 }
             }
+            state.error?.let {
+                Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
+            }
+            if (aiOption != null) {
+                GroupedSection(
+                    footer = if (state.aiLabel != null) "用「${state.aiLabel}」合成语音，按服务商的价格计费；读过的句子缓存在本机，重听、往回跳不再花钱。"
+                    else "AI 语音更自然，要联网，按服务商的价格计费。",
+                ) {
+                    row { ToggleRow("AI 语音 · $aiOption", state.aiLabel != null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE), onChange = onAi) }
+                }
+            }
             if (state.voices.size > 1) {
-                GroupedSection(header = "语音") {
-                    (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
+                GroupedSection(header = if (state.aiLabel != null) "声音" else "语音") {
+                    val options = if (state.aiLabel != null) state.voices.map { it.name to it.label } else listOf(null to "默认") + state.voices.map { it.name to it.label }
+                    options.forEach { (name, label) ->
                         val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
                         row { CheckRow(label, on) { onVoice(name) } }
                     }
@@ -188,7 +203,8 @@ internal fun ReadAloudSheet(
                 header = "定时关闭",
                 footer = listOfNotNull(
                     timerLabel(state.timer)?.let { "$it。" },
-                    "使用系统的“文字转语音”引擎。锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
+                    if (state.aiLabel != null) "锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。"
+                    else "使用系统的“文字转语音”引擎。锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
                 ).joinToString(""),
             ) {
                 listOf<Pair<Int?, String>>(null to "不定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟", 0 to "本章结束").forEach { (minutes, label) ->

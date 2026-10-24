@@ -88,6 +88,12 @@ class AiAssistant(
 
     val currentConfig: AiConfig get() = _config.value
 
+    /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
+    suspend fun speech(text: String, voice: String? = null): ByteArray {
+        val sp = _config.value.speech
+        return client.speech(sp, text, voice ?: sp.voice)
+    }
+
     private val _config = MutableStateFlow(store?.load() ?: AiConfig())
     val config: StateFlow<AiConfig> = _config.asStateFlow()
 

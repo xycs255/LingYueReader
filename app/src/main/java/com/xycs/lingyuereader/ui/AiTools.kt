@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,11 +17,13 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,7 +48,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ai.AiHistoryItem
+import com.xycs.lingyuereader.ai.AiTalk
 import com.xycs.lingyuereader.ai.BookCharacter
+import com.xycs.lingyuereader.ai.TalkScope
+import com.xycs.lingyuereader.ai.TalkStyle
 import com.xycs.lingyuereader.ai.TranslateTarget
 import com.xycs.lingyuereader.ui.glass.GlassSheet
 import com.xycs.lingyuereader.ui.glass.glassHighlight
@@ -58,6 +64,7 @@ import top.yukonga.miuix.kmp.basic.Text
 internal enum class AiMenuItem(val label: String) {
     RECAP("前情提要"),
     COMPANION("本章伴读"),
+    TALK("AI 讲书"),
     ASK_BOOK("问这本书"),
     CHARACTERS("人物表"),
     NOTES("读书笔记"),
@@ -66,7 +73,7 @@ internal enum class AiMenuItem(val label: String) {
 }
 
 /** AI 菜单打开的面板。 */
-internal enum class AiTool { HISTORY, CHARACTERS, NOTES, TRANSLATE, COMPANION }
+internal enum class AiTool { HISTORY, CHARACTERS, NOTES, TRANSLATE, COMPANION, TALK }
 
 @Composable
 internal fun AiMenuItems(onPick: (AiMenuItem) -> Unit) {
@@ -78,6 +85,8 @@ internal fun AiMenuItems(onPick: (AiMenuItem) -> Unit) {
 internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalette, tint: Color, chapter: Int, block: Int, onClose: () -> Unit) {
     var last by remember { mutableStateOf<AiTool?>(null) }
     tool?.let { last = it }
+    // 讲书面板关了就停（收起动画期间面板内容可能还在）。
+    LaunchedEffect(tool) { if (tool != AiTool.TALK) vm.stopTalk() }
     GlassSheet(
         show = tool != null,
         title = null,
@@ -96,6 +105,7 @@ internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalett
                     AiTool.CHARACTERS -> CharacterSheet(vm, chapter, block)
                     AiTool.NOTES -> NotesSheet(vm)
                     AiTool.TRANSLATE -> TranslateSheet(vm, chapter, onClose)
+                    AiTool.TALK -> TalkSheet(vm, chapter, block)
                     AiTool.COMPANION -> CompanionSheet(vm, chapter, onDiscuss = { q ->
                         onClose()
                         vm.discuss(q)
@@ -498,5 +508,81 @@ private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -
             }
         }
         state.error?.takeIf { state.chapter == chapter }?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+    }
+}
+
+/**
+ * AI 讲书：选讲本章还是读过的部分、一人讲解还是两人对谈，让 AI 写成讲书稿，再一句句读出来；
+ * 正在读的句子高亮，点哪句从哪句读。关掉面板就停。
+ */
+@Composable
+private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int) {
+    val c = LocalGroupedColors.current
+    val state by vm.talk.collectAsStateWithLifecycle()
+    val player by vm.talkPlayer.collectAsStateWithLifecycle()
+    val config by vm.aiConfig.collectAsStateWithLifecycle()
+    var scope by remember { mutableStateOf(TalkScope.CHAPTER) }
+    var style by remember { mutableStateOf(TalkStyle.DUO) }
+    DisposableEffect(Unit) { onDispose { vm.stopTalk() } }
+    LaunchedEffect(scope, style) {
+        // 换了范围或形式：有存过的稿子就直接打开，没有就等读者点“生成”。
+        if (state.talk != null || state.key.isNotEmpty()) vm.openTalk(chapter, block, scope, style)
+    }
+    val talk = state.talk
+    SheetNavBar("AI 讲书", back = null, action = if (talk != null && !state.loading) "重新生成" to { vm.openTalk(chapter, block, scope, style, regenerate = true) } else null) {}
+    GroupedSection {
+        row { SegmentedRow(TalkScope.entries.map { it to it.label }, scope) { scope = it } }
+        row { SegmentedRow(TalkStyle.entries.map { it to it.label }, style) { style = it } }
+    }
+    val voice = if (config.enabled && config.speech.complete) "AI 语音 · ${config.speech.label}" else "系统语音（在 AI 助手设置里可以换成 AI 语音）"
+    Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        when {
+            state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Text("正在写讲书稿……", color = c.secondary, fontSize = 14.sp)
+            }
+            talk == null -> {
+                Text("把${if (scope == TalkScope.CHAPTER) "这一章" else "读过的部分"}讲成一段${if (style == TalkStyle.DUO) "两人对谈的播客" else "讲书节目"}，约 1500 字，再用$voice 读出来。只讲读过的，不剧透。", color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp)
+                PrimaryButton("生成讲书稿") { vm.openTalk(chapter, block, scope, style) }
+            }
+        }
+        state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+    }
+    if (talk != null) {
+        val playback = player?.state?.collectAsStateWithLifecycle()?.value
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(talk.title, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(voice, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box(
+                Modifier.size(52.dp).clip(androidx.compose.foundation.shape.CircleShape).background(c.tint).clickable(role = Role.Button) { vm.playTalk() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(if (playback?.playing == true) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = if (playback?.playing == true) "暂停" else "播放", tint = Color.White, modifier = Modifier.size(26.dp))
+            }
+        }
+        playback?.error?.let { Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp)) }
+        val list = androidx.compose.foundation.lazy.rememberLazyListState()
+        val current = playback?.line ?: 0
+        LaunchedEffect(current, playback?.playing) { if (playback?.playing == true) list.animateScrollToItem((current - 1).coerceAtLeast(0)) }
+        androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), state = list, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 24.dp)) {
+            itemsIndexed(talk.lines) { i, line ->
+                val now = playback?.playing == true && i == current
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (now) c.tint.copy(alpha = 0.1f) else Color.Transparent)
+                        .clickable(role = Role.Button) { vm.playTalk(i) }
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                ) {
+                    if (style == TalkStyle.DUO || talk.lines.any { it.speaker == 1 }) {
+                        Text(AiTalk.NAMES[line.speaker], color = if (line.speaker == 0) c.tint else c.secondary, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.width(40.dp).padding(top = 2.dp))
+                    }
+                    Text(line.text, color = if (now) c.label else c.label.copy(alpha = 0.85f), fontSize = 15.sp, lineHeight = 23.sp)
+                }
+            }
+        }
     }
 }

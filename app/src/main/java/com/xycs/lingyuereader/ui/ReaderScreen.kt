@@ -904,6 +904,7 @@ private fun Reader(
                                                 AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
                                                 AiMenuItem.NOTES -> aiTool = AiTool.NOTES
                                                 AiMenuItem.COMPANION -> aiTool = AiTool.COMPANION
+                                                AiMenuItem.TALK -> aiTool = AiTool.TALK
                                                 AiMenuItem.TRANSLATE -> aiTool = AiTool.TRANSLATE
                                             }
                                         },
@@ -1125,7 +1126,13 @@ private fun Reader(
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
-        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint) }
+        aloud?.let { a ->
+            ReadAloudSheet(
+                a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint,
+                aiOption = aiConfig.speech.label.takeIf { aiConfig.enabled && aiConfig.speech.complete },
+                onAi = vm::setReadAloudAi,
+            )
+        }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }

@@ -38,6 +38,8 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.tts.AiVoice
+import com.xycs.lingyuereader.tts.VoiceOption
 import com.xycs.lingyuereader.remote.Catalog
 import com.xycs.lingyuereader.remote.CatalogKind
 import com.xycs.lingyuereader.remote.CatalogStore
@@ -50,6 +52,11 @@ import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiBook
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiGloss
+import com.xycs.lingyuereader.ai.AiTalk
+import com.xycs.lingyuereader.ai.Talk
+import com.xycs.lingyuereader.ai.TalkScope
+import com.xycs.lingyuereader.ai.TalkStyle
+import com.xycs.lingyuereader.tts.TalkPlayer
 import com.xycs.lingyuereader.ai.AiSummaries
 import com.xycs.lingyuereader.ai.AiCompanion
 import com.xycs.lingyuereader.ai.ChapterCompanion
@@ -429,19 +436,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 从当前阅读位置开始听书。 */
+    /** 从当前阅读位置开始听书：设了 AI 朗读就用服务商的语音。 */
     fun startReadAloud(chapterIndex: Int, block: Int, char: Int) {
         val book = _openBook.value ?: return
         ReadAloud.start(
             getApplication(), book.entry.id, book.entry.title, book.content,
             chapterIndex, block.coerceAtLeast(0), char, _settings.value.ttsRate,
             _settings.value.ttsVoice.ifEmpty { null },
+            ai = aiVoice(),
+        )
+    }
+
+    /** AI 朗读用的语音：AI 助手和 AI 朗读都开着、填全了才有。 */
+    private fun aiVoice(): AiVoice? {
+        val c = aiConfig.value
+        if (!c.speechReady) return null
+        val sp = c.speech
+        return AiVoice(
+            sp.label,
+            sp.voices.map { VoiceOption(it.first, it.second) },
+            sp.voice,
+            fingerprint = { v -> sp.fingerprint(v) },
+            fetch = { v, text -> assistant.speech(text, v) },
         )
     }
 
     fun setReadAloudVoice(name: String?) {
-        updateSettings { it.copy(ttsVoice = name.orEmpty()) }
+        if (ReadAloud.state.value?.aiLabel != null) {
+            // AI 语音：记进 AI 朗读的设置。
+            if (name != null) saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(voice = name)) })
+        } else {
+            updateSettings { it.copy(ttsVoice = name.orEmpty()) }
+        }
         ReadAloud.setVoice(name)
+    }
+
+    /** 听书时在 AI 语音和系统语音之间切换：从当前这句接着读。 */
+    fun setReadAloudAi(on: Boolean) {
+        saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(enabled = on)) })
+        val s = ReadAloud.state.value ?: return
+        if (_openBook.value?.entry?.id != s.bookId) return
+        val at = s.current
+        startReadAloud(s.chapterIndex, at?.block ?: 0, at?.start ?: 0)
+        if (!s.playing) ReadAloud.pause()
+    }
+
+    /** 设置页的“试听”：用当前的 AI 朗读设置读一句。 */
+    private var preview: com.xycs.lingyuereader.tts.AiSpeaker? = null
+
+    fun previewSpeech(onError: (String) -> Unit) {
+        val sp = aiConfig.value.speech
+        preview?.release()
+        preview = com.xycs.lingyuereader.tts.AiSpeaker(
+            java.io.File(getApplication<Application>().cacheDir, "tts-ai"),
+            fetch = { text, _ -> assistant.speech(text) },
+            fingerprint = sp.fingerprint(),
+            onStart = {},
+            onDone = {},
+            onError = { _, message -> onError(message) },
+        ).also { it.play(listOf("preview" to "你好，我是灵阅的 AI 朗读。晋太元中，武陵人捕鱼为业，缘溪行，忘路之远近。")) }
     }
 
     fun setReadAloudRate(rate: Float) {
@@ -1145,6 +1198,85 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         summaryJob?.cancel()
     }
 
+    // ---------- AI 讲书 ----------
+
+    /** 讲书：讲哪部分、什么形式、稿子（没生成时为空）、生成中、出错。 */
+    data class TalkState(
+        val bookId: String? = null,
+        val key: String = "",
+        val talk: Talk? = null,
+        val loading: Boolean = false,
+        val error: String? = null,
+    )
+
+    private val _talk = MutableStateFlow(TalkState())
+    val talk: StateFlow<TalkState> = _talk.asStateFlow()
+    private val _talkPlayer = MutableStateFlow<TalkPlayer?>(null)
+    val talkPlayer: StateFlow<TalkPlayer?> = _talkPlayer.asStateFlow()
+    private var talkJob: Job? = null
+
+    /** 打开讲书稿：存过的直接用，没有（或要重新生成）就让 AI 写。 */
+    fun openTalk(chapterIndex: Int, block: Int, scope: TalkScope, style: TalkStyle, regenerate: Boolean = false) {
+        val book = _openBook.value ?: return
+        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val aiBook = aiBook() ?: return
+        val key = AiTalk.key(scope, style, chapterIndex, chapter.title)
+        if (!regenerate && _talk.value.key == key && _talk.value.bookId == book.entry.id && (_talk.value.talk != null || _talk.value.loading)) return
+        talkJob?.cancel()
+        stopTalk()
+        _talk.value = TalkState(book.entry.id, key, loading = true)
+        talkJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiTalk.FILE)
+            try {
+                val cached = if (regenerate) null else withContext(Dispatchers.IO) { AiTalk.read(file)[key] }
+                val talk = cached ?: run {
+                    val text = withContext(Dispatchers.IO) {
+                        if (scope == TalkScope.CHAPTER) chapterExcerpt(chapter, AiTalk.LIMIT)
+                        else AiPrompts.recentText(book.content, ReadPos(chapterIndex, block), AiTalk.LIMIT)
+                    }
+                    if (text.isBlank()) throw AiException("还没读到正文")
+                    val answer = assistant.complete(aiBook, AiTalk.prompt(style, scope, chapter.title, text), AnswerLength.LONG)
+                    val parsed = AiTalk.parse(answer, style)?.copy(at = System.currentTimeMillis()) ?: throw AiException("AI 没有按格式写稿，请重试")
+                    withContext(Dispatchers.IO) { AiTalk.write(file, AiTalk.read(file) + (key to parsed)) }
+                    parsed
+                }
+                _talk.update { it.copy(talk = talk, loading = false) }
+                _talkPlayer.value = TalkPlayer(getApplication(), talkVoices(style)).also { p -> p.load(talk.lines.map { it.speaker to it.text }) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _talk.update { it.copy(loading = false, error = (e as? AiException)?.message ?: "生成失败：${e.message}") }
+            }
+        }
+    }
+
+    /** 讲书用的声音：AI 朗读设好了就用（对谈时搭档换一个，尽量男女搭配），否则系统语音。 */
+    private fun talkVoices(style: TalkStyle): TalkPlayer.Ai? {
+        val c = aiConfig.value
+        if (!(c.enabled && c.speech.complete)) return null
+        val sp = c.speech
+        val main = sp.voice
+        val mainLabel = sp.voices.firstOrNull { it.first == main }?.second.orEmpty()
+        val second = if (style == TalkStyle.DUO) {
+            val others = sp.voices.filter { it.first != main }
+            val female = "女" in mainLabel
+            (others.firstOrNull { if (female) "男" in it.second else "女" in it.second } ?: others.firstOrNull())?.first ?: main
+        } else main
+        return TalkPlayer.Ai(listOf(main, second), sp.fingerprint(""), fetch = { text, voice -> assistant.speech(text, voice) })
+    }
+
+    /** 讲书开始播放：先停下听书，免得两个声音一起响。 */
+    fun playTalk(from: Int? = null) {
+        val player = _talkPlayer.value ?: return
+        ReadAloud.state.value?.takeIf { it.playing }?.let { ReadAloud.pause() }
+        if (from != null) player.play(from) else player.toggle()
+    }
+
+    fun stopTalk() {
+        _talkPlayer.value?.release()
+        _talkPlayer.value = null
+    }
+
     // ---------- AI 伴读 ----------
 
     /** 伴读：哪一章、要点和思考题（没生成时为空）、生成中、出错。 */
@@ -1441,6 +1573,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun retryAi() = assistant.retry()
 
     fun closeAi() = assistant.close()
+
+    override fun onCleared() {
+        preview?.release()
+        _talkPlayer.value?.release()
+        super.onCleared()
+    }
 
     /** 查词面板里的“AI 释义”。 */
     fun glossLookup() {

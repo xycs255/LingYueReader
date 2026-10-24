@@ -274,6 +274,50 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
         }
     }
 
+    /**
+     * 语音合成（OpenAI 兼容的 /audio/speech）：返回 mp3。AI 朗读、AI 讲书用。
+     * 明文 http 只给局域网里的服务（Kokoro 等）。
+     */
+    suspend fun speech(config: SpeechConfig, text: String, voice: String = config.voice): ByteArray = withContext(Dispatchers.IO) {
+        val base = config.baseUrl.trim().trimEnd('/')
+        val endpoint = if (base.endsWith("/audio/speech")) base else "$base/audio/speech"
+        val url = runCatching { URL(endpoint) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
+            ?: throw AiException("语音接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
+        val conn = try { open(url) } catch (e: IOException) { throw AiException(networkError(e, url)) }
+        val handle = coroutineContext.job.invokeOnCompletion { if (it != null) conn.disconnect() }
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 60_000
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (config.apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer ${config.apiKey.trim()}")
+            val body = JSONObject().put("model", config.model.trim()).put("input", text).put("voice", voice).put("response_format", "mp3")
+            if (config.instructions.isNotBlank() && SpeechPresets.of(config.preset).instructions) body.put("instructions", config.instructions.trim())
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                throw AiException("语音合成：" + AiWire.error(code, err))
+            }
+            if (conn.contentType.orEmpty().contains("json")) {
+                val o = runCatching { JSONObject(conn.inputStream.bufferedReader().use { it.readText() }) }.getOrNull()
+                throw AiException("语音合成：" + (o?.optJSONObject("error")?.optString("message") ?: o?.optString("message") ?: "服务商没有返回音频").take(160))
+            }
+            val bytes = conn.inputStream.use { it.readBytes() }
+            if (bytes.size < 64) throw AiException("语音合成：服务商没有返回音频")
+            bytes
+        } catch (e: AiException) {
+            throw e
+        } catch (e: IOException) {
+            coroutineContext.ensureActive()
+            throw AiException(networkError(e, url))
+        } finally {
+            handle.dispose()
+            conn.disconnect()
+        }
+    }
+
     private fun networkError(e: IOException, url: URL): String = when {
         e is UnknownHostException -> "连不上 ${url.host}：检查网络或接口地址"
         e is SocketTimeoutException -> "等太久没有回应，稍后再试"

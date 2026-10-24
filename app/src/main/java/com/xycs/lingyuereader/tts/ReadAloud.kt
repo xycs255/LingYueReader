@@ -27,6 +27,18 @@ sealed interface SleepTimer {
 /** 可选的语音。[label] 是给人看的说明，[name] 是引擎里的名字。 */
 data class VoiceOption(val name: String, val label: String)
 
+/**
+ * 用 AI 语音朗读：服务商名、可选的声音、选用的声音，以及合成一句的函数。
+ * [fingerprint] 区分服务商、模型、声音，缓存音频用。
+ */
+class AiVoice(
+    val label: String,
+    val voices: List<VoiceOption>,
+    val voice: String,
+    val fingerprint: (voice: String) -> String,
+    val fetch: suspend (voice: String, text: String) -> ByteArray,
+)
+
 data class ReadAloudState(
     val bookId: String,
     val bookTitle: String,
@@ -46,6 +58,8 @@ data class ReadAloudState(
     val voices: List<VoiceOption> = emptyList(),
     /** 选用的语音名；为空用引擎默认。 */
     val voice: String? = null,
+    /** 用 AI 语音读时是服务商名（如“硅基流动 CosyVoice”）；用系统语音时为空。 */
+    val aiLabel: String? = null,
 )
 
 /**
@@ -66,6 +80,9 @@ object ReadAloud {
     private var queue: List<Utterance> = emptyList()
     private var index = 0
     private var pendingStart: (() -> Unit)? = null
+    /** AI 语音：设了就不用系统的文字转语音。 */
+    private var ai: AiVoice? = null
+    private var speaker: AiSpeaker? = null
     /** 每次重新排队或中断朗读都换代；旧引擎即使继续回调，也不能改变新位置。 */
     private var utteranceGeneration = 0L
 
@@ -80,15 +97,20 @@ object ReadAloud {
         char: Int,
         rate: Float,
         voice: String? = null,
+        ai: AiVoice? = null,
     ) {
         invalidateUtterances()
+        haltEngine()
         appContext = context.applicationContext
         this.content = content
+        setAi(ai)
         val previous = _state.value
         val previousTimer = previous?.takeIf { it.bookId == bookId }?.timer ?: SleepTimer.Off
         _state.value = ReadAloudState(
             bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, true, rate, previousTimer,
-            voices = previous?.voices.orEmpty(), voice = voice,
+            voices = if (ai != null) ai.voices else previous?.voices?.takeIf { previous.aiLabel == null }.orEmpty(),
+            voice = ai?.voice ?: voice,
+            aiLabel = ai?.label,
         )
         loadChapter(chapterIndex, block, char)
         ensureEngine {
@@ -103,7 +125,31 @@ object ReadAloud {
     fun pause() {
         invalidateUtterances()
         _state.update { it?.copy(playing = false) }
+        haltEngine()
+    }
+
+    /** 停下正在读的（系统语音或 AI 语音）。 */
+    private fun haltEngine() {
         tts?.stop()
+        speaker?.stop()
+    }
+
+    /** 换用 AI 语音或系统语音；AI 语音的播放器按声音建一个。 */
+    private fun setAi(next: AiVoice?) {
+        speaker?.release()
+        speaker = null
+        ai = next
+        val context = appContext ?: return
+        if (next != null) {
+            speaker = AiSpeaker(
+                java.io.File(context.cacheDir, "tts-ai"),
+                fetch = { text, _ -> next.fetch(next.voice, text) },
+                fingerprint = next.fingerprint(next.voice),
+                onStart = ::onUtteranceStart,
+                onDone = ::onUtteranceDone,
+                onError = { id, message -> onUtteranceError(id, message) },
+            ).also { it.speed = _state.value?.rate ?: 1f }
+        }
     }
 
     fun resume() {
@@ -125,7 +171,10 @@ object ReadAloud {
     fun stop() {
         invalidateUtterances()
         main.removeCallbacks(sleepRunnable)
-        tts?.stop()
+        haltEngine()
+        speaker?.release()
+        speaker = null
+        ai = null
         _state.value = null
         content = null
         queue = emptyList()
@@ -137,6 +186,11 @@ object ReadAloud {
         val s = _state.value ?: return
         _state.value = s.copy(rate = rate)
         tts?.setSpeechRate(rate)
+        speaker?.let {
+            // AI 语音直接改播放速度，不用重读这一句。
+            it.speed = rate
+            return
+        }
         if (s.playing) {
             invalidateUtterances()
             tts?.stop()
@@ -148,6 +202,12 @@ object ReadAloud {
     fun setVoice(name: String?) {
         val s = _state.value ?: return
         _state.value = s.copy(voice = name)
+        ai?.let { a ->
+            invalidateUtterances()
+            setAi(AiVoice(a.label, a.voices, name ?: a.voice, a.fingerprint, a.fetch))
+            if (s.playing) speakFrom(index)
+            return
+        }
         applyVoice(name)
         if (s.playing) {
             invalidateUtterances()
@@ -175,7 +235,7 @@ object ReadAloud {
         val s = _state.value ?: return
         invalidateUtterances()
         if (to >= queue.size) {
-            tts?.stop()
+            haltEngine()
             nextChapter()
             return
         }
@@ -211,6 +271,16 @@ object ReadAloud {
     /** 把本章从第 [from] 句起全部排进语音队列。 */
     private fun speakFrom(from: Int) {
         invalidateUtterances()
+        speaker?.let { sp ->
+            val s = _state.value ?: return
+            if (!s.playing) return
+            if (from >= queue.size) {
+                nextChapter()
+                return
+            }
+            sp.play((from until queue.size).map { activeUtteranceId(it) to queue[it].text })
+            return
+        }
         if (!ready) return
         val engine = tts ?: return
         val s = _state.value ?: return
@@ -253,21 +323,24 @@ object ReadAloud {
     }
 
     /** 朗读失败时停在出错的句子，避免把失败回调当成“读完”而跳到下一章。 */
-    internal fun onUtteranceError(id: String) = main.post {
+    internal fun onUtteranceError(id: String, message: String? = null) = main.post {
         val (generation, chapter, i) = parseId(id) ?: return@post
         val s = _state.value ?: return@post
         if (generation != utteranceGeneration || chapter != s.chapterIndex || !s.playing || i != index || i !in queue.indices) return@post
         invalidateUtterances()
-        tts?.stop()
+        haltEngine()
         _state.value = s.copy(
             current = queue[i], sentence = i, playing = false,
-            error = "语音引擎朗读失败，请切换语音或检查系统语音设置后继续",
+            error = message ?: "语音引擎朗读失败，请切换语音或检查系统语音设置后继续",
         )
     }
 
     /** 测试之间清掉进程级的状态。 */
     internal fun resetForTest() {
         invalidateUtterances()
+        speaker?.release()
+        speaker = null
+        ai = null
         main.removeCallbacksAndMessages(null)
         tts?.shutdown()
         tts = null
@@ -321,6 +394,11 @@ object ReadAloud {
     }
 
     private fun ensureEngine(then: () -> Unit) {
+        // AI 语音不用系统引擎，马上可以读。
+        if (speaker != null) {
+            then()
+            return
+        }
         if (ready && tts != null) {
             then()
             return
