@@ -195,11 +195,14 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
         }
     }
 
-    fun jump(issue: ReviewIssue) {
+    fun jump(issue: ReviewIssue, instruction: String? = null) {
         if (issue.quote.isBlank()) return
-        vm.writing.jump.value = chapterId to issue.quote
+        vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote, instruction)
         vm.back()
     }
+    var acting by remember { mutableStateOf<Pair<ReviewGate, ReviewIssue>?>(null) }
+    var showSent by remember { mutableStateOf(false) }
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
 
     WritingPage(vm, "三道审稿", content = {
         item {
@@ -228,33 +231,77 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     if (running != null) ActionRow("停止", destructive = true) { vm.writingAi.stopReview() }
                     else ActionRow(if (review == null) "开始审稿" else "重新审稿") { start() }
                 }
+                if (sent != null && sent?.label in setOf("事实关", "写法关")) {
+                    row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" }) { showSent = true } }
+                }
             }
             ReviewGate.entries.forEachIndexed { i, gate ->
                 val result = review?.gate(gate)
+                val open = result?.issues.orEmpty().count { it.open }
                 val status = when {
                     result != null && result.error != null -> if ("跳过" in result.error) "跳过" else "出错"
-                    result != null -> if (result.issues.isEmpty()) "没发现问题" else "${result.issues.size} 处"
+                    result != null -> when {
+                        result.issues.isEmpty() -> "没发现问题"
+                        open == 0 -> "都处理了"
+                        open == result.issues.size -> "$open 处"
+                        else -> "$open 处没处理"
+                    }
                     running == gate -> "审稿中……"
                     else -> null
                 }
                 GroupedSection(header = "${"一二三"[i]}、${gate.label}" + (status?.let { " · $it" } ?: ""), footer = gate.hint) {
                     if (result?.error != null) row { Text(result.error, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
-                    result?.issues?.forEach { issue ->
+                    result?.issues?.sortedBy { !it.open }?.forEach { issue ->
                         row {
-                            GroupedRow(onClick = if (issue.quote.isNotBlank()) ({ jump(issue) }) else null) {
+                            GroupedRow(onClick = { acting = gate to issue }) {
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(issue.problem, color = c.label, fontSize = 15.sp, lineHeight = 21.sp)
+                                    if (!issue.open) Text(if (issue.state == ReviewIssue.FIXED) "已改" else "不改", color = c.tertiary, fontSize = 12.sp)
+                                    Text(issue.problem, color = if (issue.open) c.label else c.secondary, fontSize = 15.sp, lineHeight = 21.sp)
                                     if (issue.quote.isNotBlank()) Text("「${issue.quote}」", color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                     if (issue.fix.isNotBlank()) Text("改：${issue.fix}", color = c.tint, fontSize = 13.sp, lineHeight = 18.sp)
                                 }
-                                if (issue.quote.isNotBlank()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 6.dp))
+                                Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 6.dp))
                             }
                         }
                     }
                 }
             }
         }
-    })
+    }) {
+        acting?.let { (gate, issue) ->
+            GlassDialog(show = true, title = issue.problem, summary = if (issue.quote.isNotBlank()) "「${issue.quote}」" else null, onDismissRequest = { acting = null }) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (issue.quote.isNotBlank()) {
+                        TextButton(text = "去原文", onClick = { acting = null; jump(issue) }, modifier = Modifier.fillMaxWidth())
+                        if (gate != ReviewGate.RULES && chapter?.locked != true) {
+                            TextButton(
+                                text = "按这条让 AI 改",
+                                onClick = {
+                                    acting = null
+                                    vm.writingAi.markIssue(workId, chapterId, gate, issue, ReviewIssue.FIXED)
+                                    jump(issue, listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。")
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.textButtonColorsPrimary(),
+                            )
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(text = if (issue.state == ReviewIssue.FIXED) "改回没处理" else "已改", onClick = {
+                            acting = null
+                            vm.writingAi.markIssue(workId, chapterId, gate, issue, if (issue.state == ReviewIssue.FIXED) "" else ReviewIssue.FIXED)
+                        }, modifier = Modifier.weight(1f))
+                        TextButton(text = if (issue.state == ReviewIssue.IGNORED) "改回没处理" else "不改", onClick = {
+                            acting = null
+                            vm.writingAi.markIssue(workId, chapterId, gate, issue, if (issue.state == ReviewIssue.IGNORED) "" else ReviewIssue.IGNORED)
+                        }, modifier = Modifier.weight(1f))
+                    }
+                    TextButton(text = "取消", onClick = { acting = null }, modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+        if (showSent) sent?.let { SentDialog(it) { showSent = false } }
+    }
 }
 
 /**

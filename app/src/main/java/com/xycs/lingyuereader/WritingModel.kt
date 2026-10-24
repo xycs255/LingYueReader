@@ -22,7 +22,7 @@ import com.xycs.lingyuereader.data.WorkExport
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WritingStats
 import com.xycs.lingyuereader.data.brief
-import com.xycs.lingyuereader.data.chapterNumber
+import com.xycs.lingyuereader.data.chapterNo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -381,14 +381,14 @@ class WritingModel(
     /** 存盘的正文（排在还没写完的保存后面读）。 */
     suspend fun savedText(workId: String, chapterId: String): String = withContext(disk) { store.text(workId, chapterId) }
 
-    /** 从审稿页点了一处问题：回到编辑器，选中原文里的这一句（章 id、原文）。编辑器用掉后清空。 */
-    val jump = MutableStateFlow<Pair<String, String>?>(null)
+    /** 从审稿页点了一处问题：回到编辑器，选中原文里的这一句；带了 [Jump.instruction] 时接着按它让 AI 改。编辑器用掉后清空。 */
+    val jump = MutableStateFlow<Jump?>(null)
 
     /** 伏笔表里的伏笔（[Foreshadow.doc] 是文档 id），以及写到了第几章（有字的章里最大的章号）。 */
     suspend fun foreshadows(workId: String): Pair<List<Foreshadow>, Int> = withContext(disk) {
         val docs = store.pack(workId).filter { it.kind == PackKind.FORESHADOW }.map { it.id to store.packText(workId, it.id) }
         val work = store.get(workId)
-        val latest = work?.chapters?.filter { it.words > 0 }?.mapNotNull { work.chapterNumber(it.id) }?.maxOrNull() ?: 0
+        val latest = work?.chapters?.filter { it.words > 0 }?.mapNotNull { store.chapterNo(work, it.id) }?.maxOrNull() ?: 0
         ChapterBriefs.foreshadows(docs) to latest
     }
 
@@ -488,3 +488,6 @@ class WritingModel(
         const val SNAPSHOT_EVERY = 10 * 60_000L
     }
 }
+
+/** 回到编辑器要选中的一句：哪一章、原文、要不要按一条意见让 AI 改。 */
+data class Jump(val chapterId: String, val quote: String, val instruction: String? = null)

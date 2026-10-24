@@ -7,6 +7,8 @@ import androidx.core.content.edit
 enum class AiProtocol(val label: String) {
     OPENAI("OpenAI 兼容"),
     ANTHROPIC("Anthropic"),
+    /** 在这台手机上跑的模型（[DeviceModels]），不联网。 */
+    DEVICE("本机"),
 }
 
 /** 常用服务商：选了自动填好地址和模型名，读者只需填自己的密钥。模型名可以改。 */
@@ -23,6 +25,7 @@ data class AiPreset(
 object AiPresets {
     const val CUSTOM = "custom"
     const val LOCAL = "local"
+    const val DEVICE = "device"
 
     val ALL = listOf(
         AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com"),
@@ -31,6 +34,7 @@ object AiPresets {
         AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn"),
         AiPreset("claude", "Claude", AiProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-opus-5-5", "console.anthropic.com"),
         AiPreset(LOCAL, "局域网模型", AiProtocol.OPENAI, "http://192.168.1.2:11434/v1", "qwen3:8b", ""),
+        AiPreset(DEVICE, "本机模型（离线）", AiProtocol.DEVICE, "", "", ""),
         AiPreset(CUSTOM, "自定义", AiProtocol.OPENAI, "", "", ""),
     )
 
@@ -96,14 +100,17 @@ data class AiConfig(
     val lan: Boolean get() = isLanHost(runCatching { java.net.URI(baseUrl.trim()).host }.getOrNull())
 
     /** 地址、模型、密钥都填了（局域网里的模型可以不要密钥）。 */
-    val complete: Boolean get() = baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+    val complete: Boolean get() = if (onDevice) model.isNotBlank() else baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+
+    /** 用本机模型：不联网，上下文短。 */
+    val onDevice: Boolean get() = protocol == AiProtocol.DEVICE
 
     /** 打开了且填全了：阅读界面里才出现 AI 的入口。 */
     val ready: Boolean get() = enabled && complete
 
     /** 设置页、回答下面显示的服务商名。 */
     val providerLabel: String
-        get() = AiPresets.of(preset).takeIf { it.id != AiPresets.CUSTOM }?.label
+        get() = if (onDevice) "本机" else AiPresets.of(preset).takeIf { it.id != AiPresets.CUSTOM }?.label
             ?: runCatching { java.net.URI(baseUrl.trim()).host }.getOrNull()?.removePrefix("api.")
             ?: "自定义"
 

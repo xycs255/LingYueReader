@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,11 +30,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.DeviceModelState
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiException
 import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.AiProtocol
 import com.xycs.lingyuereader.ai.AnswerLength
+import com.xycs.lingyuereader.ai.DeviceModels
 import com.xycs.lingyuereader.ai.QuickAsk
 import com.xycs.lingyuereader.ai.SpeechConfig
 import com.xycs.lingyuereader.ai.SpeechPresets
@@ -67,6 +72,9 @@ fun AiScreen(vm: AppViewModel) {
     var showKey by remember { mutableStateOf(false) }
     // 正在编辑第几个快捷问题；等于列表长度时是新加的。
     var editing by remember { mutableStateOf<Int?>(null) }
+    val device by vm.deviceModels.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.refreshDeviceModels() }
+    val importModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { vm.importDeviceModel(it) } }
 
     ProvideGroupedColors {
         val c = LocalGroupedColors.current
@@ -112,8 +120,10 @@ fun AiScreen(vm: AppViewModel) {
                                     subtitle = when (p.id) {
                                         AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务"
                                         AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等"
+                                        AiPresets.DEVICE -> if (DeviceModels.supported) "在这台手机上算，不联网" else "这台手机用不了（要 64 位的手机）"
                                         else -> p.model
                                     },
+                                    enabled = p.id != AiPresets.DEVICE || DeviceModels.supported,
                                 ) {
                                     update(config.withPreset(p))
                                     result = null
@@ -124,7 +134,8 @@ fun AiScreen(vm: AppViewModel) {
                     val custom = config.preset == AiPresets.CUSTOM
                     val editableUrl = custom || config.preset == AiPresets.LOCAL
                     val preset = AiPresets.of(config.preset)
-                    GroupedSection(
+                    if (config.onDevice) DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) }
+                    if (!config.onDevice) GroupedSection(
                         header = "接口",
                         footer = when {
                             config.baseUrl.trim().startsWith("http://") && !config.lan -> "公网地址只支持 https://：密钥不能明文传输。局域网地址（192.168.x.x、10.x.x.x、xxx.local 等）可以用 http://。"
@@ -135,7 +146,7 @@ fun AiScreen(vm: AppViewModel) {
                         },
                     ) {
                         if (custom) {
-                            row { SegmentedRow(AiProtocol.entries.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
+                            row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
                         }
                         row {
                             TextField(
@@ -381,4 +392,53 @@ private fun SpeechSection(
             }
         }
     }
+}
+
+/**
+ * 本机模型：可下载的模型（大小、说明、下载进度）、导入的模型、选用哪个。只在读者点了下载时联网。
+ */
+@Composable
+private fun DeviceModelSection(config: AiConfig, state: DeviceModelState, vm: AppViewModel, importModel: () -> Unit, select: (String) -> Unit) {
+    val c = LocalGroupedColors.current
+    val task = state.task
+    GroupedSection(
+        header = "本机模型",
+        footer = state.error ?: ("在这台手机上算，不联网（下载模型时除外），也不花钱。比联网的大模型慢、写得差一些，手机会发热；" +
+            "上下文短，写作 AI 会少带一些设定资料。模型是 Qwen2.5（Apache-2.0 许可），从 Hugging Face 下载；也可以用电脑下好 .task 文件再导入。"),
+    ) {
+        DeviceModels.ALL.forEach { m ->
+            val installed = m.id in state.installed
+            val busy = task?.model == m.id
+            row {
+                CheckRow(
+                    m.label,
+                    selected = installed && config.model == m.id,
+                    subtitle = when {
+                        busy -> "${task!!.phase.label} " + if (task.total > 0) "${task.done * 100 / task.total}%" else ""
+                        installed -> "已下载 · " + m.note
+                        else -> m.note
+                    },
+                    enabled = installed,
+                ) { select(m.id) }
+            }
+            row {
+                when {
+                    busy -> ActionRow("取消下载", destructive = true) { vm.cancelDeviceTask() }
+                    installed -> ActionRow("删除「${m.label}」", destructive = true) { vm.deleteDeviceModel(m.id) }
+                    else -> ActionRow("下载「${m.label}」（约 ${m.bytes / 1_000_000} MB）", enabled = task == null) { vm.downloadDeviceModel(m) }
+                }
+            }
+        }
+        state.installed.filter { it.startsWith(DeviceModels.FILE) }.forEach { id ->
+            row {
+                CheckRow(DeviceModels.label(id), selected = config.model == id, subtitle = "导入的模型 · ${(state.sizes[id] ?: 0) / 1_000_000} MB") { select(id) }
+            }
+            row { ActionRow("删除「${DeviceModels.label(id)}」", destructive = true) { vm.deleteDeviceModel(id) } }
+        }
+        row {
+            if (task != null && task.model == null) ActionRow("取消导入（${task.done / 1_000_000} MB）", destructive = true) { vm.cancelDeviceTask() }
+            else ActionRow("从文件导入 .task 模型", enabled = task == null) { importModel() }
+        }
+    }
+    if (config.model.isBlank()) Text("先下载或导入一个模型。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp, bottom = 12.dp))
 }

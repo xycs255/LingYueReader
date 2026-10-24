@@ -40,6 +40,8 @@ data class ChapterCard(
     val threads: String = "",
     /** 写完以后的本章摘要（发生了什么、结果、留下什么）：写后面的章时当前情带给 AI。 */
     val summary: String = "",
+    /** 细纲章号：发布章号顺延（比如大场面拆成上下章）以后，设定里的“第几章”按它算。空着按章名、目录顺序。 */
+    val plan: String = "",
 ) {
     /** 细纲（写之前的六项）是不是空的；摘要不算。 */
     val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
@@ -105,10 +107,16 @@ data class WorkAssist(
     val entries: List<BibleEntry> = emptyList(),
     val accepted: List<StyleExample> = emptyList(),
     val rejected: Int = 0,
+    /** 作者没采纳的修改（最近 [KEEP_REJECTED] 条）：再改时告诉 AI 别这样改。 */
+    val declined: List<StyleExample> = emptyList(),
+    /** 本章资料最多带多少字（上下文长的模型可以放宽）。 */
+    val briefLimit: Int = 12_000,
 ) {
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
+        const val KEEP_REJECTED = 10
+        val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
     }
 }
 
@@ -340,6 +348,35 @@ class WorkStore(private val root: File) {
             ChapterCard()
         }
     }
+
+    // ---------- 写作 AI 记录 ----------
+
+    private fun logFile(workId: String) = File(dir(workId), "ailog.json")
+
+    /** 写作 AI 的记录，新的在前。 */
+    @Synchronized
+    fun aiLog(workId: String): List<WriteRecord> {
+        val file = logFile(workId)
+        if (!file.isFile) return emptyList()
+        return runCatching {
+            val a = JSONArray(file.readText())
+            (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(WriteRecord::fromJson) }
+        }.getOrDefault(emptyList()).sortedByDescending { it.at }
+    }
+
+    private fun writeLog(workId: String, list: List<WriteRecord>) {
+        require(File(dir(workId), WORK).isFile) { "作品不在了" }
+        check(DurableFiles.write(logFile(workId), JSONArray().apply { list.take(WriteRecord.KEEP).forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存记录" }
+    }
+
+    @Synchronized
+    fun addAiLog(workId: String, record: WriteRecord) = writeLog(workId, listOf(record) + aiLog(workId))
+
+    @Synchronized
+    fun rateAiLog(workId: String, id: String, rating: Int) = writeLog(workId, aiLog(workId).map { if (it.id == id) it.copy(rating = rating) else it })
+
+    @Synchronized
+    fun deleteAiLog(workId: String, id: String) = writeLog(workId, aiLog(workId).filterNot { it.id == id })
 
     private fun draftFile(workId: String, chapterId: String): File {
         require(ID.matches(chapterId)) { "章节 id 无效" }
@@ -796,10 +833,10 @@ class WorkStore(private val root: File) {
 
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
-            .put("summary", summary)
+            .put("summary", summary).put("plan", plan)
 
         private fun JSONObject.toCard() =
-            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"))
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
@@ -825,6 +862,8 @@ class WorkStore(private val root: File) {
             .put("realtime", realtime).put("style", style).put("rejected", rejected)
             .put("entries", JSONArray().apply { entries.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("name", e.name).put("text", e.text)) } })
             .put("accepted", JSONArray().apply { accepted.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
+            .put("declined", JSONArray().apply { declined.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
+            .put("briefLimit", briefLimit)
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -842,6 +881,13 @@ class WorkStore(private val root: File) {
                     val e = ac.optJSONObject(i) ?: return@mapNotNull null
                     StyleExample(e.optString("action"), e.optString("before"), e.optString("after"), e.optLong("at"))
                 },
+                declined = (optJSONArray("declined") ?: JSONArray()).let { dc ->
+                    (0 until dc.length()).mapNotNull { i ->
+                        val e = dc.optJSONObject(i) ?: return@mapNotNull null
+                        StyleExample(e.optString("action"), e.optString("before"), e.optString("after"), e.optLong("at"))
+                    }
+                },
+                briefLimit = optInt("briefLimit", 12_000),
             )
         }
 

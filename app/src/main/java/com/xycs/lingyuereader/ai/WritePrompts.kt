@@ -61,6 +61,11 @@ object WritePrompts {
                 append("\n作者以前采纳过的修改（照这个分寸来改）：\n")
                 picked.forEach { e -> append("原文：").append(e.before).append("\n改为：").append(e.after).append('\n') }
             }
+            val declined = assist.declined.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(2)
+            if (declined.isNotEmpty()) {
+                append("\n作者没有采纳的改法（不要这样改）：\n")
+                declined.forEach { e -> append("原文：").append(e.before).append("\n没采纳的改法：").append(e.after).append('\n') }
+            }
         }
     }
 

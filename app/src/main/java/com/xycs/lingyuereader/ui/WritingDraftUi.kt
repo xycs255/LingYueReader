@@ -70,6 +70,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
     val snackbar = rememberWritingMessages(vm)
     val locked = chapter?.locked == true
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
+    var showSent by remember { mutableStateOf(false) }
 
     ProvideGroupedColors {
         val c = LocalGroupedColors.current
@@ -122,6 +124,9 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         if (text.isNotBlank() && !loading) {
                             row { ActionRow("接着写", enabled = aiConfig.ready && !locked) { vm.writingAi.writeDraft(workId, chapterId, more = true) } }
                         }
+                        if (sent != null && sent?.label in setOf("写本章", "接着写")) {
+                            row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
+                        }
                     }
                     if (text.isNotBlank() || loading || draft?.error != null) {
                         GroupedSection(
@@ -154,6 +159,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
             }
+            if (showSent) sent?.let { SentDialog(it) { showSent = false } }
             if (placing) {
                 val empty = (chapter?.words ?: 0) == 0
                 GlassDialog(

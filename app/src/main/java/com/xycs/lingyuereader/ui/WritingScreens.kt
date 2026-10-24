@@ -907,16 +907,18 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 if (current != null) {
                     LaunchedEffect(current) {
                         vm.writing.jump.collect { j ->
-                            if (j == null || j.first != chapterId) return@collect
+                            if (j == null || j.chapterId != chapterId) return@collect
                             vm.writing.jump.value = null
                             val text = current.text.toString()
-                            val quote = j.second
+                            val quote = j.quote
                             val at = text.indexOf(quote).takeIf { it >= 0 } ?: text.indexOf(quote.take(12)).takeIf { quote.length > 12 && it >= 0 }
                             if (at == null) {
                                 vm.showMessage("正文里没找到这一句，可能已经改过了")
                             } else {
                                 current.edit { selection = TextRange(at, at + minOf(quote.length, text.length - at)) }
                                 runCatching { focus.requestFocus() }
+                                // “按这条改”：选中的这句交给 AI 按意见改，结果照常先看对比再采纳。
+                                j.instruction?.let { runEdit(WriteAction.CUSTOM, it) }
                             }
                         }
                     }

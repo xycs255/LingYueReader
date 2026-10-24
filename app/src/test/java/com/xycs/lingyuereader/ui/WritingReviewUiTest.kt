@@ -143,6 +143,7 @@ class WritingReviewUiTest {
 
         // 点事实关的问题：回到编辑器，选中那一句。
         compose.onNodeWithText("察觉表里林月第五章才知道玉佩来历").performScrollTo().performClick()
+        compose.onNodeWithText("去原文").performClick()
         waitFor {
             runCatching { compose.onNodeWithContentDescription("正文").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange] }.getOrNull() == TextRange(0, 11)
         }
