@@ -406,4 +406,26 @@ class ParserTest {
         }
         return out.toByteArray()
     }
+
+    @Test
+    fun volumesThatEachStartAtChapterOneAreJoinedNotDeduplicated() {
+        fun txt(name: String, vararg chapters: String) = BookParser.SourceBytes(name, chapters.joinToString("\n") { "$it\n　　$it 的正文。" }.toByteArray())
+        val book = BookParser.parse(listOf(
+            txt("下册.txt", "第一章 重返故里", "第二章 再见"),
+            txt("上册.txt", "第一章 初入江湖", "第二章 拜师", "第三章 下山"),
+        ))
+        // 上册、下册都从第一章编号：不能拿下册的第一章顶掉上册的，按文件名顺序接起来。
+        assertEquals(listOf("第一章 初入江湖", "第二章 拜师", "第三章 下山", "第一章 重返故里", "第二章 再见"), book.chapters.map { it.title })
+    }
+
+    @Test
+    fun revisedDraftsStillReplaceTheOlderChapter() {
+        fun txt(name: String, body: String, vararg chapters: String) = BookParser.SourceBytes(name, chapters.joinToString("\n") { "$it\n　　$body" }.toByteArray())
+        val book = BookParser.parse(listOf(
+            txt("1 旧稿.txt", "旧稿。", "第一章 起", "第二章 承"),
+            txt("2 新稿.txt", "新稿。", "第二章 承", "第三章 转"),
+        ))
+        assertEquals(listOf("第一章 起", "第二章 承", "第三章 转"), book.chapters.map { it.title })
+        assertEquals(Block.Para("新稿。"), book.chapters[1].blocks.single())
+    }
 }

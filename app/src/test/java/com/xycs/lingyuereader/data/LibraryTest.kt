@@ -750,4 +750,31 @@ class LibraryTest {
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
         )
     }
+
+    @Test
+    fun backupCarriesAiDataAndRestoreKeepsWhatTheBackupLacks() {
+        val a = import("带笔记.txt", "第一章 起\n　　正文。\n".toByteArray())
+        library.bookFile(a.id, "ai-notes.md").writeText("# 读书笔记")
+        val out = ByteArrayOutputStream()
+        library.backup(out, org.json.JSONObject())
+        val names = java.util.zip.ZipInputStream(out.toByteArray().inputStream()).use { z -> generateSequence { z.nextEntry?.name }.toList() }
+        assertTrue(names.contains("books/${a.id}/ai-notes.md"))
+
+        // 备份之后又生成了翻译：恢复旧备份不能把它删掉，备份里有的笔记照常恢复。
+        library.bookFile(a.id, "ai-translation.json").writeText("{}")
+        library.bookFile(a.id, "ai-notes.md").writeText("# 改过的笔记")
+        assertEquals(1, library.restore(out.toByteArray().inputStream()).books)
+        assertEquals("{}", library.bookFile(a.id, "ai-translation.json").readText())
+        assertEquals("# 读书笔记", library.bookFile(a.id, "ai-notes.md").readText())
+    }
+
+    @Test
+    fun unreadableMarksAreKeptAsideInsteadOfOverwritten() {
+        val a = import("坏书签.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val file = library.bookFile(a.id, "marks.json")
+        file.writeText("{\"bookmarks\": [")
+        assertTrue(library.marks(a.id).bookmarks.isEmpty())
+        library.saveMarks(a.id, Marks())
+        assertEquals("{\"bookmarks\": [", library.bookFile(a.id, "marks.json.damaged").readText())
+    }
 }

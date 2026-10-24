@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.DisposableEffect
@@ -235,8 +235,12 @@ internal fun VerticalReader(
         val lead = if (prev != null) 1 else 0
         val count = lead + pages.size + if (next != null) 1 else 0
 
+        // 最近停在哪一页的开头：重新排版时按它找回所在的页（见 PagedReader）。
+        val settledAt = remember { arrayOfNulls<Pair<Int, Int>>(1) }
         val startPage = remember(pages, start) {
+            val at = settledAt[0]
             when {
+                at != null -> pages.indexOfLast { p -> p.firstBlock < at.first || (p.firstBlock == at.first && p.firstChar <= at.second) }.coerceAtLeast(0)
                 start.fromEnd -> pages.lastIndex
                 start.block == null -> 0
                 else -> pages.indexOfLast { p ->
@@ -244,7 +248,8 @@ internal fun VerticalReader(
                 }.coerceAtLeast(0)
             }
         }
-        val pager = rememberPagerState(initialPage = lead + startPage) { count }
+        val pageCount by rememberUpdatedState(count)
+        val pager = remember(pages) { PagerState(lead + startPage) { pageCount } }
         val scope = rememberCoroutineScope()
         DisposableEffect(pager) {
             registerTurner { forward ->
@@ -274,6 +279,7 @@ internal fun VerticalReader(
                     next != null && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
                     else -> {
                         val i = (p - lead).coerceIn(pages.indices)
+                        settledAt[0] = pages[i].firstBlock to pages[i].firstChar
                         onPosition(pages[i].firstBlock, pages[i].firstChar, (i + 1f) / pages.size, "${i + 1}/${pages.size} 页")
                     }
                 }

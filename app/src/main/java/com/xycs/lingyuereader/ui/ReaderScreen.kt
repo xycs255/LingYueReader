@@ -248,9 +248,13 @@ private data class Position(
     val block: Int get() = item - HEADER_ITEMS
 }
 
-/** 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。 */
-private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: BookContent): Position {
-    screen.chapterIndex?.let { index ->
+/**
+ * 打开阅读页时从哪读起：刚跳过去（目录、书签、换章）时用跳转的目标；已经在那里读过、存过进度
+ * （[landed]）之后再重建阅读页（返回、旋转屏幕、换繁简），就用存下的进度，不再回到跳转的地方。
+ * 进度里的章序与章名对不上时（文稿刷新后增删了章），按章名找回。
+ */
+private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: BookContent, landed: Boolean): Position {
+    if (!landed || entry.progress == null) screen.chapterIndex?.let { index ->
         val c = index.coerceIn(sourceContent.chapters.indices)
         return Position(c, screen.blockIndex?.let { it + HEADER_ITEMS } ?: 0, screen.offset, screen.char)
     }
@@ -319,7 +323,7 @@ private fun Reader(
     val pageCache = remember(content) { PageCache() }
     // 正在翻的那一页翻到哪：书页厚度跟着它走。
     val pageTurn = remember(content) { PageTurn() }
-    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
+    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent, vm.landedOn(screen)) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
     val chapter = content.chapters[chapterIndex]
@@ -701,7 +705,10 @@ private fun Reader(
             } else {
                 // 书页夹在两摞纸中间（书页厚度），翻页时两摞跟着换。
                 val turnedReader: @Composable () -> Unit = {
-                    if (settings.pageMode == PageMode.VERTICAL) {
+                    // 注音的字表在后台读：读好之前不分页，免得先按没有拼音分一次、字表到了再分一次，页码对不上。
+                    if (settings.pinyin && annotator == null) {
+                        Unit
+                    } else if (settings.pageMode == PageMode.VERTICAL) {
                         key(screen, content, settings.layoutKey) {
                             val start = remember { pos }
                             val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }

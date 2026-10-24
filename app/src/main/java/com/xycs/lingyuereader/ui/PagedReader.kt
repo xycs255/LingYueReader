@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
@@ -21,6 +21,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -169,14 +170,21 @@ internal fun PagedReader(
         val lead = if (hasPrev) 1 else 0
         val count = lead + spreads.size + if (hasNext) 1 else 0
 
+        // 最近停在哪一页的开头（块、字）：同一章重新分页（窗口大小变了）时按它找回所在的页，不按页码。
+        val settledAt = remember { arrayOfNulls<Pair<Int, Int>>(1) }
         val startPage = remember(pages, start) {
+            val at = settledAt[0]
             when {
+                at != null -> pages.indexOfFirst { it.contains(at.first, at.second) }.coerceAtLeast(0)
                 start.fromEnd -> pages.lastIndex
                 start.block == null -> 0
                 else -> pages.indexOfFirst { it.contains(start.block, start.char) }.coerceAtLeast(0)
             }
         }
-        val pager = key(per) { rememberPagerState(initialPage = lead + startPage / per) { count } }
+        // 不用 rememberPagerState：它会在旋转屏幕后恢复旧的页码，而新的排版里那一页已是别的内容。
+        // 分页一变就按位置重新定页。
+        val pageCount by rememberUpdatedState(count)
+        val pager = remember(per, pages) { PagerState(lead + startPage / per) { pageCount } }
         val scope = rememberCoroutineScope()
 
         LaunchedEffect(chapterIndex, content, paginator, widthPx, heightPx) {
@@ -278,6 +286,7 @@ internal fun PagedReader(
                         val i = ((p - lead) * per).coerceIn(pages.indices)
                         val last = (i + per - 1).coerceAtMost(pages.lastIndex)
                         val label = if (last > i) "${i + 1}-${last + 1}/${pages.size} 页" else "${i + 1}/${pages.size} 页"
+                        settledAt[0] = pages[i].firstBlock to pages[i].firstChar
                         onPosition(pages[i].firstBlock, pages[i].firstChar, (last + 1f) / pages.size, label)
                     }
                 }

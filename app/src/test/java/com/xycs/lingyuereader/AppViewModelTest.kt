@@ -219,4 +219,28 @@ class AppViewModelTest {
         assertTrue(vm.messages.value.orEmpty().contains("原文件有改动"))
         assertEquals(1, vm.shelf.value.size)
     }
+
+    @Test
+    fun readerRebuiltAfterLandingStartsFromProgressNotTheJumpTarget() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = Library(app)
+        val source = File(app.cacheDir, "landing.txt").apply { writeText("第一章 起\n　　一。\n第二章 承\n　　二。\n　　三。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+
+        // 翻进第二章：栈顶记的是“第二章开头”。在那里读了一阵、存过进度之后，重建阅读页要用进度。
+        val jump = Screen.Reader(entry.id, 1, null)
+        vm.open(jump)
+        assertFalse(vm.landedOn(jump))
+        vm.saveProgress(1, 2, 0, 0)
+        assertTrue(vm.landedOn(jump))
+        // 再跳一次同样的目标是新的一页：还没到达。
+        val again = Screen.Reader(entry.id, 1, null)
+        assertFalse(again == jump)
+        assertFalse(vm.landedOn(again))
+    }
 }

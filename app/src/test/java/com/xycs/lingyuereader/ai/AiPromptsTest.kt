@@ -63,4 +63,14 @@ class AiPromptsTest {
         assertTrue(p.endsWith(QuickAsk.DEFAULTS[1].instruction))
         assertTrue(AiPrompts.system("书", "作者").contains("剧透") || AiPrompts.system("书", "作者").contains("没读到"))
     }
+
+    @Test
+    fun countingTermsInTextMatchesTheTermTable() {
+        // 不存词表以后，段长和词频改成现数，结果要和按词表数的一样。
+        val text = "林舟从江南来，带着一封旧信。iPhone 和 iphone、phone 不同；He said hello, HELLO again. 2024年"
+        val table = BookIndex.terms(text)
+        assertEquals(table.values.sum(), BookIndex.termCount(text))
+        for ((term, n) in table) assertEquals(term, n, BookIndex.count(text, term))
+        assertEquals(0, BookIndex.count(text, "phon"))
+    }
 }

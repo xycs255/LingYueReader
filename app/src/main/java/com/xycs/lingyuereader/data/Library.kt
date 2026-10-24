@@ -14,9 +14,27 @@ import java.util.UUID
  * 书架。每本书一个目录，存导入文件的副本，离线也能读；同时记下来源地址，
  * 原文件（如云盘里的文稿）改过之后可以“刷新”。
  */
+/**
+ * 整个应用共用一个书架实例：写书架索引的锁在实例上，两个实例同时写会互相覆盖。
+ * 听书在界面关掉后还会存进度，用的必须是同一个实例。
+ */
+object SharedLibrary {
+    @Volatile
+    private var library: Library? = null
+
+    @Synchronized
+    fun get(context: Context): Library {
+        val root = File(context.filesDir, "books").path
+        val app = context.applicationContext
+        return library?.takeIf { it.rootPath == root && it.appContext === app } ?: Library(app).also { library = it }
+    }
+}
+
 class Library(private val context: Context) {
 
     private val root = File(context.filesDir, "books").apply { mkdirs() }
+    internal val rootPath: String get() = root.path
+    internal val appContext: Context get() = context
     private val indexFile = File(root, "index.json")
 
     init {
@@ -35,7 +53,10 @@ class Library(private val context: Context) {
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
         /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
         val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
-        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json)""")
+        val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json|ai-[a-z0-9-]{1,40}\.(json|md|bin))""")
+
+        /** 每本书的 AI 数据（读书笔记、整章翻译、讲书稿、人物表等）：备份时打包，恢复时保留本机已有的。 */
+        val AI_BOOK_FILE = Regex("""ai-[a-z0-9-]{1,40}\.(json|md|bin)""")
         val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp")
     }
 
@@ -471,7 +492,10 @@ class Library(private val context: Context) {
     fun marks(id: String): Marks {
         val file = File(File(root, id), "marks.json")
         if (!file.isFile) return Marks()
-        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrDefault(Marks())
+        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrElse {
+            DurableFiles.keepDamaged(file)
+            Marks()
+        }
     }
 
     /** 本机旧版允许缺少书签文件；备份里一旦声明有书签文件，就必须能完整读回。 */
@@ -500,9 +524,7 @@ class Library(private val context: Context) {
     @Synchronized
     fun saveMarks(id: String, marks: Marks) {
         val dir = File(root, id).takeIf { it.isDirectory } ?: return
-        val tmp = File(dir, "marks.json.tmp")
-        tmp.writeText(marks.toJson().toString())
-        check(tmp.renameTo(File(dir, "marks.json"))) { "无法保存书签与批注" }
+        check(DurableFiles.write(File(dir, "marks.json"), marks.toJson().toString().toByteArray())) { "无法保存书签与批注" }
     }
 
     /** 从别的应用打开同一个文件时，找回书架上已有的那本，而不是再导入一份。 */
@@ -568,7 +590,8 @@ class Library(private val context: Context) {
                     check(f.isFile) { "书籍来源文件缺失：${e.title} / ${source.name}" }
                     put("books/${e.id}/${source.file}") { o -> f.inputStream().use { it.copyTo(o) } }
                 }
-                listOf("marks.json", RULES).forEach { name ->
+                val extras = listOf("marks.json", RULES) + dir.list { _, n -> AI_BOOK_FILE.matches(n) }.orEmpty().sorted()
+                extras.forEach { name ->
                     val f = File(dir, name)
                     if (f.isFile) put("books/${e.id}/$name") { o -> f.inputStream().use { it.copyTo(o) } }
                 }
@@ -648,6 +671,11 @@ class Library(private val context: Context) {
                             }) { "来源文件为空" }
                         }
                         validateBackupMarks(next)
+                        // 备份里没有的 AI 数据（旧版备份不含这些，或备份之后才生成的）沿用本机的，不随整个目录一起被换掉。
+                        existing.listFiles { f -> f.isFile && AI_BOOK_FILE.matches(f.name) }?.forEach { f ->
+                            val target = File(next, f.name)
+                            if (!target.exists()) f.copyTo(target)
+                        }
                         val parsed = buildCache(next, e.sources)
                         require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
                         parsed
@@ -740,9 +768,7 @@ class Library(private val context: Context) {
         check(damaged == 0) { "书架索引里有 $damaged 条记录读不出，已停止写入并保留原文件" }
         val array = JSONArray()
         transform(entries).forEach { array.put(it.toJson()) }
-        val tmp = File(root, "index.json.tmp")
-        tmp.writeText(array.toString())
-        check(tmp.renameTo(indexFile)) { "无法保存书架索引" }
+        check(DurableFiles.write(indexFile, array.toString().toByteArray())) { "无法保存书架索引" }
     }
 
     private fun load(dir: File, sources: List<SourceRef>) =

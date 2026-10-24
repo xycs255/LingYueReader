@@ -9,12 +9,17 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.content.ContextCompat
 import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.ReadingProgress
 import com.xycs.lingyuereader.data.Sentences
 import com.xycs.lingyuereader.data.Utterance
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 /** 定时关闭：到点停，或读完本章停。 */
@@ -94,6 +99,17 @@ object ReadAloud {
     /** AI 语音：设了就不用系统的文字转语音。 */
     private var ai: AiVoice? = null
     private var speaker: AiSpeaker? = null
+    /**
+     * 把听到哪存成阅读进度：由打开听书的界面给出（按原文取锚点、写书架）。在这里存而不是在界面里存，
+     * 是因为界面关了（从最近任务划掉、去看别的书）听书还在继续。每 5 秒最多存一次，暂停、停止时马上存。
+     */
+    private var persist: ((chapterIndex: Int, block: Int, char: Int) -> ReadingProgress?)? = null
+    private val saver = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private var lastSavedAt = 0L
+    private val _saved = MutableStateFlow<Pair<String, ReadingProgress>?>(null)
+    /** 刚存下的听书进度（书、进度）：界面据此更新书架上的进度，不再另写一次。 */
+    val saved: StateFlow<Pair<String, ReadingProgress>?> = _saved.asStateFlow()
+
     /** 每次重新排队或中断朗读都换代；旧引擎即使继续回调，也不能改变新位置。 */
     private var utteranceGeneration = 0L
 
@@ -109,9 +125,13 @@ object ReadAloud {
         rate: Float,
         voice: String? = null,
         ai: AiVoice? = null,
+        saveProgress: ((chapterIndex: Int, block: Int, char: Int) -> ReadingProgress?)? = null,
     ) {
         invalidateUtterances()
         haltEngine()
+        // 换书前把上一本听到的地方存下。
+        persistNow(force = true)
+        persist = saveProgress
         appContext = context.applicationContext
         this.content = content
         setAi(ai)
@@ -138,6 +158,21 @@ object ReadAloud {
         invalidateUtterances()
         _state.update { it?.copy(playing = false) }
         haltEngine()
+        persistNow(force = true)
+    }
+
+    /** 存下听到的位置（见 [persist]）。 */
+    private fun persistNow(force: Boolean) {
+        val s = _state.value ?: return
+        val u = s.current ?: return
+        val save = persist ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!force && now - lastSavedAt < 5_000) return
+        lastSavedAt = now
+        saver.launch {
+            val progress = runCatching { save(s.chapterIndex, u.block, u.start) }.getOrNull() ?: return@launch
+            _saved.value = s.bookId to progress
+        }
     }
 
     /** 停下正在读的（系统语音或 AI 语音）。 */
@@ -181,6 +216,8 @@ object ReadAloud {
     }
 
     fun stop() {
+        persistNow(force = true)
+        persist = null
         invalidateUtterances()
         main.removeCallbacks(sleepRunnable)
         haltEngine()
@@ -325,6 +362,7 @@ object ReadAloud {
         if (generation != utteranceGeneration || chapter != s.chapterIndex || !s.playing || i !in queue.indices || i < index) return@post
         index = i
         _state.value = s.copy(current = queue.getOrNull(i), sentence = i, sentences = queue.size)
+        persistNow(force = false)
     }
 
     internal fun onUtteranceDone(id: String) = main.post {
@@ -349,6 +387,8 @@ object ReadAloud {
 
     /** 测试之间清掉进程级的状态。 */
     internal fun resetForTest() {
+        persist = null
+        _saved.value = null
         invalidateUtterances()
         speaker?.release()
         speaker = null

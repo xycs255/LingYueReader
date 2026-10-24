@@ -110,6 +110,8 @@ import java.util.UUID
 /** 首页底部导航的四个标签。 */
 enum class HomeTab(val label: String) { Shelf("书架"), Vocabulary("生词本"), Stats("统计"), Me("我的") }
 
+private val readerSeq = java.util.concurrent.atomic.AtomicLong()
+
 sealed interface Screen {
     /** 首页：书架、生词本、统计、我的，由底部导航切换。 */
     data object Shelf : Screen
@@ -125,6 +127,8 @@ sealed interface Screen {
         val char: Int = 0,
         /** 跳到的那一段亮一下，告诉读者落在哪（书签、批注、搜索结果、回到刚才）。 */
         val highlight: Boolean = false,
+        /** 每次跳转都不同：再跳一次同样的目标（比如在目录里点本章，回到章首）也算新的一页，会真的跳过去。 */
+        val seq: Long = readerSeq.incrementAndGet(),
     ) : Screen
     data class Search(val bookId: String) : Screen
     /** 在书架上所有书的正文里搜索。 */
@@ -223,7 +227,7 @@ data class OpenBook(val entry: BookEntry, val content: BookContent, val sourceCo
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val library = Library(app)
+    private val library = com.xycs.lingyuereader.data.SharedLibrary.get(app)
     /**
      * 书签、批注、进度、分组的写盘排成一队，一个写完再写下一个。各开一个 IO 协程并行写时，
      * 先拍的旧快照可能最后落盘，把刚加的批注盖掉（跨段划线一次加好几条时就会丢）。
@@ -435,14 +439,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         reloadVocabulary()
         reloadStats()
-        // 听书时跟着朗读位置记进度，锁屏听完再打开也能接着读。
+        // 听书存下的进度（由 ReadAloud 写盘，界面关了也照存）：这里只更新内存里的书架，打开书时从那里读起。
         viewModelScope.launch {
-            ReadAloud.state.collect { s ->
-                val u = s?.current ?: return@collect
-                val book = _openBook.value?.takeIf { it.entry.id == s.bookId } ?: return@collect
-                if (book.content.chapters.getOrNull(s.chapterIndex)?.blocks?.getOrNull(u.block) != null) {
-                    saveProgress(s.chapterIndex, u.block + 1, 0, u.start)
-                }
+            ReadAloud.saved.collect { saved ->
+                val (id, progress) = saved ?: return@collect
+                _shelf.update { list -> list.map { if (it.id == id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
+                _openBook.update { b -> if (b?.entry?.id == id) b.copy(entry = b.entry.copy(progress = progress)) else b }
             }
         }
     }
@@ -455,7 +457,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             chapterIndex, block.coerceAtLeast(0), char, _settings.value.ttsRate,
             _settings.value.ttsVoice.ifEmpty { null },
             ai = offlineVoice() ?: aiVoice(),
+            saveProgress = listeningSaver(book.entry.id, book.sourceContent),
         )
+    }
+
+    /** 听书存进度的方法：按原文取锚点，写进书架（在 ReadAloud 的后台线程里调用）。 */
+    private fun listeningSaver(id: String, source: com.xycs.lingyuereader.data.BookContent): (Int, Int, Int) -> ReadingProgress? {
+        val lib = library
+        return { chapterIndex, block, char ->
+            source.chapters.getOrNull(chapterIndex)?.takeIf { it.blocks.getOrNull(block) != null }?.let { chapter ->
+                ReadingProgress(chapterIndex, chapter.title, block + 1, 0, char, TextAnchors.capture(chapter, block, char)).also { lib.saveProgress(id, it) }
+            }
+        }
     }
 
     /** 现在听书用哪种声音（和 [startReadAloud] 的选法一致）。 */
@@ -871,11 +884,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         replaceTop(Screen.Reader(p.bookId, p.chapterIndex, p.block, offset = p.offset, char = p.char, highlight = true))
     }
 
+    /** 最近一次已经到达、存过进度的阅读页（按实例比较：同样的跳转再来一次是新的一页）。 */
+    private var landed: Screen.Reader? = null
+
+    fun landedOn(screen: Screen.Reader): Boolean = landed === screen
+
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
         val book = _openBook.value ?: return
         val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
         val anchor = TextAnchors.capture(chapter, itemIndex - 1, charOffset)
         val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset, anchor)
+        // 跳转的目标已经到了、存过进度：之后重建阅读页就从进度读起（见 ReaderScreen 的 startOf）。
+        (_stack.value.lastOrNull() as? Screen.Reader)?.takeIf { it.bookId == book.entry.id && it.chapterIndex == chapterIndex }?.let { landed = it }
         if (book.entry.progress == progress) return
         movesSinceJump++
         _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
