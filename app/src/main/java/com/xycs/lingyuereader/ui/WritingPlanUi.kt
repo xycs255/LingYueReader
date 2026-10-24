@@ -77,7 +77,7 @@ internal fun StatusLabel(status: ChapterStatus) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun StatusDialog(chapter: WorkChapter, onDismiss: () -> Unit, onConfirm: (ChapterStatus, String, Boolean) -> Unit) {
+internal fun StatusDialog(chapter: WorkChapter, ruleHits: Int? = null, onDismiss: () -> Unit, onConfirm: (ChapterStatus, String, Boolean) -> Unit) {
     // 定稿的章打开这里多半是要解锁：先选好“修订”。
     var status by remember { mutableStateOf(if (chapter.locked) ChapterStatus.REVISION else chapter.status) }
     var reason by remember { mutableStateOf("") }
@@ -106,6 +106,10 @@ internal fun StatusDialog(chapter: WorkChapter, onDismiss: () -> Unit, onConfirm
                 fontSize = 13.sp,
                 lineHeight = 19.sp,
             )
+            // 定稿前提醒一句检查规则的结果，不拦着。
+            if (status == ChapterStatus.FINAL && !chapter.locked && (ruleHits ?: 0) > 0) {
+                Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = Color(0xFFFF9500), fontSize = 13.sp, lineHeight = 19.sp)
+            }
             if (unlocking) {
                 TextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

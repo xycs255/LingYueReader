@@ -4,11 +4,14 @@ import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PackImportItem
 import com.xycs.lingyuereader.data.PackImportResult
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.RuleReport
+import com.xycs.lingyuereader.data.RuleSet
 import com.xycs.lingyuereader.data.Snapshot
 import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
@@ -363,6 +366,46 @@ class WritingModel(
 
     suspend fun exportPack(workId: String, out: java.io.OutputStream) = withContext(disk) {
         PackImport.writeZip(store.pack(workId).map { it to store.packText(workId, it.id) }, out)
+    }
+
+    // ---------- 检查规则 ----------
+
+    /** 设定包里各份“检查规则”文档的规则，合在一起。 */
+    suspend fun rules(workId: String): RuleSet = withContext(disk) { readRules(workId) }
+
+    private fun readRules(workId: String): RuleSet =
+        store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+
+    /** 按规则检查一章（存盘的正文）。没有规则时返回 null。 */
+    suspend fun checkChapter(workId: String, chapterId: String): RuleReport? {
+        val (rules, text) = withContext(disk) { readRules(workId) to store.text(workId, chapterId) }
+        if (rules.isEmpty) return null
+        return withContext(Dispatchers.Default) { CheckRules.check(text, rules) }
+    }
+
+    /** 按规则检查全书（存盘的正文），按目录顺序。正文在写盘队列里读，检查放到后台算，不耽误保存。 */
+    suspend fun checkAll(workId: String): List<Pair<WorkChapter, RuleReport>> {
+        val (rules, texts) = withContext(disk) {
+            val work = store.get(workId) ?: return@withContext RuleSet() to emptyList()
+            readRules(workId) to work.chapters.map { it to store.text(workId, it.id) }
+        }
+        if (rules.isEmpty) return emptyList()
+        return withContext(Dispatchers.Default) { texts.map { (c, t) -> c to CheckRules.check(t, rules) } }
+    }
+
+    /** 存规则（AI 整理、作者看过的）：写进第一份“检查规则”文档，没有就新建一份；原来的文字先存一版。 */
+    fun saveRules(workId: String, text: String, then: (PackDoc) -> Unit = {}) {
+        var saved: PackDoc? = null
+        changePack(workId, "保存规则失败", {
+            val doc = store.pack(workId).firstOrNull { it.kind == PackKind.RULES }
+            saved = if (doc == null) {
+                store.addPackDoc(workId, PackKind.RULES, PackKind.RULES.label, text)
+            } else {
+                val old = store.packText(workId, doc.id)
+                if (old.isNotBlank()) store.snapshot(workId, store.docKey(doc.id), old)
+                store.savePackText(workId, doc.id, text)
+            }
+        }) { saved?.let(then) }
     }
 
     // ---------- 导出、预览、备份 ----------

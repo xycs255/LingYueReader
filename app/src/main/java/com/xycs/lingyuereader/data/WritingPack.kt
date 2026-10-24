@@ -22,6 +22,7 @@ enum class PackKind(val label: String, val priority: Int, val always: Boolean, v
     AWARENESS("察觉表", 4, false, "谁从第几章起知道什么、消息从哪来"),
     STYLE("写作规范", 5, true, "怎么把事实写成小说：篇幅、对白、旁白、禁用词"),
     VOICE("称谓与语气", 5, false, "称谓边界、各人物说话的腔调"),
+    RULES("检查规则", 5, false, "灵阅在本机逐章检查：篇幅、口头禅次数、禁用词和句式、段落长短"),
     TECHNIQUE("技法参考", 6, false, "学来的写法，只取方法不抄原文"),
     REFERENCE("资料", 7, false, "其他参考资料、体检报告、说明"),
 }
@@ -58,6 +59,7 @@ object PackImport {
     fun isText(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in setOf("md", "markdown", "txt", "text")
 
     private val rules: List<Pair<Regex, PackKind>> = listOf(
+        Regex("检查规则|自查清单|口癖清单") to PackKind.RULES,
         Regex("不变量") to PackKind.INVARIANT,
         Regex("察觉|知情") to PackKind.AWARENESS,
         // 称谓、语气放在人物前面：“对白与人物语气”是语气规范，不是人物档案。
@@ -178,13 +180,14 @@ object PackImport {
         }.sortedBy { it.fileName }
     }
 
-    /** 新建文档时的模板：人物档案给人物卡的五问，写作规范给常用的几条，其余空着。 */
+    /** 新建文档时的模板：人物档案给人物卡的五问，写作规范给常用的几条，检查规则给写法示例，其余空着。 */
     fun template(kind: PackKind): String = when (kind) {
         PackKind.CHARACTER -> "## 人物名\n想要：\n害怕：\n怎么说话：\n标志物：\n怎么变：\n"
         PackKind.STYLE -> "## 篇幅\n\n## 对白\n\n## 旁白\n\n## 禁用词与口癖\n"
         PackKind.INVARIANT -> "## 硬数字\n\n## 生死与身份\n\n## 要回收的原话与物件\n\n## 允许改动的范围\n"
         PackKind.AWARENESS -> "| 人物 | 知道什么 | 从第几章起 | 消息从哪来 |\n| --- | --- | --- | --- |\n"
         PackKind.OUTLINE -> "## 一句话\n\n## 主线\n\n## 结局\n"
+        PackKind.RULES -> CheckRules.TEMPLATE
         else -> ""
     }
 }

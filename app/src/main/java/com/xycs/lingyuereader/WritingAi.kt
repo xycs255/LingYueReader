@@ -280,6 +280,22 @@ class WritingAi(
         return WritePrompts.parseProposals(answer, names)
     }
 
+    /** 让 AI 从写作规范、称谓与语气文档里整理出检查规则，返回规则文本（作者看过、改过再存）。 */
+    suspend fun draftRules(workId: String): String {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        val (title, docs) = withContext(Dispatchers.IO) {
+            val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
+            val text = store.pack(workId).filter { it.kind == PackKind.STYLE || it.kind == PackKind.VOICE }
+                .map { "【${it.title}】\n" + store.packText(workId, it.id).trim() }
+                .filter { it.lines().size > 1 && it.substringAfter('\n').isNotBlank() }
+                .joinToString("\n\n")
+            work.title to text.take(RULE_SOURCE_CHARS)
+        }
+        if (docs.isBlank()) throw IllegalStateException("设定包里还没有写作规范或称谓与语气文档")
+        val answer = ai.ask(WritePrompts.system(title, assistOf(workId)), WritePrompts.rules(docs), whole = true)
+        return WritePrompts.cleanRules(answer)
+    }
+
     private fun characterDocs(workId: String) = store.pack(workId).filter { it.kind == PackKind.CHARACTER }
 
     private fun characterNames(workId: String): List<String> =
@@ -316,5 +332,8 @@ class WritingAi(
         /** 太短的段（一两个字、一句短对话）不查。 */
         const val MIN_PARAGRAPH = 8
         const val EXTRACT_CHARS = 15_000
+
+        /** 整理检查规则时最多带多少字的规范。 */
+        const val RULE_SOURCE_CHARS = 30_000
     }
 }

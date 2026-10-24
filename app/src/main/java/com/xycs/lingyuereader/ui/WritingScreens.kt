@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextIndent
@@ -72,6 +73,9 @@ import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.RuleReport
+import com.xycs.lingyuereader.data.RuleSet
 import com.xycs.lingyuereader.data.Snapshot
 import com.xycs.lingyuereader.data.Volume
 import com.xycs.lingyuereader.data.WordCount
@@ -81,9 +85,12 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -324,6 +331,11 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var statusFor by remember { mutableStateOf<WorkChapter?>(null) }
     val allChanges by vm.writing.changes.collectAsStateWithLifecycle()
     val pendingChanges = allChanges[workId].orEmpty().count { it.pending }
+    // 检查规则有几条（设定包改过就重读）；改状态时顺便看看这一章合不合规则。
+    var ruleCount by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
+    var statusHits by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(statusFor) { statusHits = statusFor?.let { ch -> vm.writing.checkChapter(workId, ch.id)?.hits?.size } }
 
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
@@ -429,6 +441,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 iconBackground = Color(0xFF8E8E93),
                             ) { vm.open(Screen.WorkChanges(workId)) }
                         }
+                        row {
+                            NavRow(
+                                "检查规则",
+                                value = ruleCount?.let { if (it == 0) "未设" else "$it 条" },
+                                icon = LingYueIcons.Check,
+                                iconBackground = Color(0xFF30B0C7),
+                            ) { vm.open(Screen.WorkRules(workId)) }
+                        }
                     }
                     work.volumes.forEach { v ->
                         GroupedSection {
@@ -498,7 +518,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                 )
             }
             statusFor?.let { ch ->
-                StatusDialog(ch, onDismiss = { statusFor = null }) { st, reason, canon ->
+                StatusDialog(ch, ruleHits = statusHits, onDismiss = { statusFor = null }) { st, reason, canon ->
                     statusFor = null
                     vm.writing.setStatus(workId, ch.id, st, reason, canon)
                 }
@@ -661,7 +681,7 @@ private val QUICK_INSERTS = listOf("「」", "“”", "『』", "……", "—�
  */
 @OptIn(FlowPreview::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
+fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boolean = false) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val work = works.firstOrNull { it.id == workId }
     val chapter = work?.chapter(chapterId)
@@ -681,6 +701,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val locked = chapter?.locked == true
     var statusDialog by remember { mutableStateOf(false) }
+    // 规则检查：规则从设定包读（文档改过就重读），正文停笔 0.4 秒重新检查，都在本机算。
+    var rulesOpen by remember(workId, chapterId) { mutableStateOf(check) }
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    var ruleSet by remember(workId) { mutableStateOf<RuleSet?>(null) }
+    LaunchedEffect(workId) { vm.writing.loadPack(workId) }
+    LaunchedEffect(workId, packs[workId]) { ruleSet = vm.writing.rules(workId) }
+    var report by remember(workId, chapterId) { mutableStateOf<RuleReport?>(null) }
+    // 点同一条，依次选中它在正文里的下一处。
+    var lastJump by remember { mutableStateOf<Pair<String, Int>?>(null) }
     // 定稿的章不做实时检查（反正不能改）。
     val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
@@ -706,6 +735,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
             snapshotFlow { current.text.toString() }.debounce(3_000).collect { text ->
                 vm.writingAi.checkRealtime(workId, chapterId, text)
             }
+        }
+    }
+    val rules = ruleSet
+    LaunchedEffect(current, rules) {
+        if (current == null || rules == null || rules.isEmpty) {
+            report = null
+            return@LaunchedEffect
+        }
+        snapshotFlow { current.text.toString() }.debounce(400).collectLatest { text ->
+            report = withContext(Dispatchers.Default) { CheckRules.check(text, rules) }
         }
     }
     val latest by rememberUpdatedState(current)
@@ -779,6 +818,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         Text(
                             (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · " +
                                 (if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
+                                (report?.hits?.size?.takeIf { it > 0 }?.let { " · $it 条不合规则" } ?: "") +
                                 if (realtimeOn) " · 实时检查已开" else "",
                             color = c.secondary,
                             fontSize = 12.sp,
@@ -806,6 +846,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                             vm.open(Screen.WorkHistory(workId, chapterId))
                                         })
                                         add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
+                                        add("规则检查" to { rulesOpen = true })
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
                                         add("改章名" to { renaming = true })
                                         chapters.getOrNull(index - 1)?.let { p -> add("上一章" to { vm.replaceTop(Screen.Editor(workId, p.id)) }) }
@@ -900,6 +941,20 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         onIgnore = { vm.writingAi.dismissIssue(it) },
                         onClose = { issuesOpen = false },
                     )
+                } else if (rulesOpen && current != null) {
+                    RulesPanel(
+                        report,
+                        hasRules = rules?.isEmpty == false,
+                        onJump = { hit ->
+                            val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
+                            val r = hit.ranges[i % hit.ranges.size]
+                            lastJump = hit.key to i
+                            current.edit { selection = TextRange(r.first, r.last + 1) }
+                            runCatching { focus.requestFocus() }
+                        },
+                        onOpenRules = { vm.open(Screen.WorkRules(workId)) },
+                        onClose = { rulesOpen = false },
+                    )
                 } else if (realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null) && realtime.chapterId == chapterId) {
                     Row(
                         Modifier.fillMaxWidth().background(c.background).combinedClickableCompat { if (realtime.issues.isNotEmpty()) issuesOpen = true }
@@ -977,7 +1032,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }
             }
             if (statusDialog && chapter != null) {
-                StatusDialog(chapter, onDismiss = { statusDialog = false }) { st, reason, canon ->
+                StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
                     vm.writing.setStatus(workId, chapterId, st, reason, canon)
                 }

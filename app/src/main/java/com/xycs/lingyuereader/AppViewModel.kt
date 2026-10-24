@@ -155,7 +155,8 @@ sealed interface Screen {
     /** 一部作品：卷章目录、作品信息、导出与预览。 */
     data class Work(val workId: String) : Screen
     /** 写一章。 */
-    data class Editor(val workId: String, val chapterId: String) : Screen
+    /** [check] 为真时打开就展开规则检查（从全书检查点进来）。 */
+    data class Editor(val workId: String, val chapterId: String, val check: Boolean = false) : Screen
     /** 一章的历史版本。 */
     /** 一章（或设定包里一份文档，[docId] 不为空时）的历史版本。 */
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
@@ -169,6 +170,8 @@ sealed interface Screen {
     data class ChapterCard(val workId: String, val chapterId: String) : Screen
     /** 一部作品的变更登记。 */
     data class WorkChanges(val workId: String) : Screen
+
+    data class WorkRules(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */

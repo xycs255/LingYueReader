@@ -149,6 +149,30 @@ object WritePrompts {
         append("只输出 JSON：{\"entries\":[{\"name\":\"\",\"text\":\"\"}]}")
     }
 
+    /** 从写作规范里挑出能逐章数出来的硬规则，改写成灵阅的检查规则格式（见 [com.xycs.lingyuereader.data.CheckRules]）。 */
+    fun rules(docs: String): String = buildString {
+        append("下面是作者的写作规范：\n\n").append(docs).append("\n\n")
+        append("请从中挑出能逐章机械检查的硬性规则：篇幅字数、某些说法每章至多或至少几次、禁用的词、称谓和句式、短段长段、对白占比。")
+        append("按下面的格式改写，每行一条：\n")
+        append("字数：3000-6000（只数汉字时写“汉字：3500-6000”）\n")
+        append("至多 1：词甲、词乙（每个词各自计数）\n")
+        append("合计至多 1：词甲、词乙（几个词加起来计数）\n")
+        append("至少 1：词甲\n")
+        append("禁用：词甲、词乙\n")
+        append("句式：不是……而是……\n")
+        append("短段：12 字以内至多 5 处\n")
+        append("长段：300 字以上至多 2 处\n")
+        append("对白占比：20%-40%\n\n")
+        append("写法：词里的“……”代表一句之内中间的几个字，“某人”代表一个称呼，例如“看了某人一眼”；同一个词的几种写法用“／”连起来，例如“顿了顿／一顿”；")
+        append("有不算的情况写在词后的括号里，例如“大概（除外：大概在今天）”；只限对白或只限叙述的规则，在前面加“对白”或“叙述”，例如“对白禁用：词甲”。\n")
+        append("规范前后冲突时，以后写的、写明以它为准的为准。只收数得出来的规则，审美建议和写法要求不收；不要编规范里没有的规则。")
+        append("可以用“#”开头的行简短注明出处。只输出规则文本，不要别的解释。")
+    }
+
+    /** 去掉模型回答里的 ``` 包裹和前后空行。 */
+    fun cleanRules(answer: String): String =
+        answer.trim().removePrefix("```text").removePrefix("```markdown").removePrefix("```").removeSuffix("```").trim() + "\n"
+
     /** 人物档案里已有的人名：整行只有名字的二级以下标题（“## 林月”；一级标题是文档名）、“- 林月：”这样的条目，或表格的第一列。 */
     fun characterNames(text: String): List<String> {
         val name = """([\p{IsHan}A-Za-z·]{1,8})"""
