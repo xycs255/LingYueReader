@@ -20,7 +20,7 @@ class ParserTest {
 
         ## 第十六章 车轮之外
 
-        　　田槐是天亮前回来的，裤腿湿到膝盖。
+        　　老周是天亮前回来的，裤腿湿到膝盖。
 
         　　“往西北走了十来里，过了一道干渠。”他蹲下来，拿草棍在地上划了几道。
 
@@ -50,7 +50,7 @@ class ParserTest {
         assertEquals(listOf(0, 1, 3, 0), chapters.map { it.part })
         assertEquals(
             listOf(
-                Block.Para("田槐是天亮前回来的，裤腿湿到膝盖。"),
+                Block.Para("老周是天亮前回来的，裤腿湿到膝盖。"),
                 Block.Para("“往西北走了十来里，过了一道干渠。”他蹲下来，拿草棍在地上划了几道。"),
                 Block.SceneBreak,
                 Block.Para("晌午前后，车队走到一片开阔地上。"),
@@ -81,22 +81,22 @@ class ParserTest {
             """
             # 人物设定档案
             > 说明
-            ## 韩临安
-            - 字沐平
+            ## 沈默
+            - 字子静
             | 项 | 内容 |
             | --- | --- |
             | 籍贯 | 待考 |
-            ## 田槐
-            缺指头的老卒。
+            ## 老周
+            缺指头的门房。
             """.trimIndent(),
             "人物设定档案",
         )
-        assertEquals(listOf("人物设定档案", "韩临安", "田槐"), chapters.map { it.title })
+        assertEquals(listOf("人物设定档案", "沈默", "老周"), chapters.map { it.title })
         assertEquals(
-            listOf(Block.ListItem("•", "字沐平"), Block.Table(listOf(listOf("项", "内容"), listOf("籍贯", "待考")))),
+            listOf(Block.ListItem("•", "字子静"), Block.Table(listOf(listOf("项", "内容"), listOf("籍贯", "待考")))),
             chapters[1].blocks,
         )
-        assertEquals(listOf(Block.Para("缺指头的老卒。", prose = false)), chapters[2].blocks)
+        assertEquals(listOf(Block.Para("缺指头的门房。", prose = false)), chapters[2].blocks)
     }
 
     @Test

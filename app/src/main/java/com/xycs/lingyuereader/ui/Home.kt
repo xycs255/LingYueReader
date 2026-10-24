@@ -40,6 +40,7 @@ val LocalTabBarInset = compositionLocalOf { 0.dp }
 private val HomeTab.icon
     get() = when (this) {
         HomeTab.Shelf -> LingYueIcons.Notes
+        HomeTab.Write -> LingYueIcons.Write
         HomeTab.Vocabulary -> LingYueIcons.Translate
         HomeTab.Stats -> LingYueIcons.Months
         HomeTab.Me -> LingYueIcons.ContactsCircle
@@ -54,7 +55,7 @@ private fun tabBarInset(floating: Boolean): Dp {
     return 64.dp + if (nav != 0.dp) 8.dp + nav else 36.dp
 }
 
-/** 首页：书架、生词本、统计、我的四页，底部是可以按住左右拖动切换的液态玻璃导航栏。 */
+/** 首页：书架、写作、生词本、统计、我的五页，底部是可以按住左右拖动切换的液态玻璃导航栏。 */
 @Composable
 fun HomeScreen(vm: AppViewModel) {
     val tab by vm.homeTab.collectAsStateWithLifecycle()
@@ -69,7 +70,7 @@ fun HomeScreen(vm: AppViewModel) {
         }
     }
 
-    // 四页一起记录成玻璃的取样源：导航栏，以及各页弹出的对话框、面板、菜单都从这里取样。
+    // 五页一起记录成玻璃的取样源：导航栏，以及各页弹出的对话框、面板、菜单都从这里取样。
     val backdrop = rememberGlassBackdrop(MiuixTheme.colorScheme.surface)
 
     // 外层 Scaffold：各页里弹出的对话框、菜单都挂到最外层 Scaffold 上，画在导航栏之上，不会被它挡住按钮。
@@ -114,6 +115,7 @@ fun HomeScreen(vm: AppViewModel) {
             ) { page ->
                 when (HomeTab.entries[page]) {
                     HomeTab.Shelf -> ShelfScreen(vm)
+                    HomeTab.Write -> WritingHomeScreen(vm)
                     HomeTab.Vocabulary -> VocabularyScreen(vm)
                     HomeTab.Stats -> StatsScreen(vm)
                     HomeTab.Me -> MeScreen(vm)

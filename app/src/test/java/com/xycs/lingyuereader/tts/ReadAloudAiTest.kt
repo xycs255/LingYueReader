@@ -64,4 +64,35 @@ class ReadAloudAiTest {
         assertTrue(asked.contains("v-b" to "甲一。"))
         assertTrue(asked.all { it.first == "v-b" })
     }
+
+    @Test
+    fun aPrefetchFailingFirstStillReportsTheCurrentSentence() {
+        // 预取的第二句先失败，不能把整个朗读悄悄停掉：仍要等第一句的结果，并说出原因。
+        val second = java.util.concurrent.CountDownLatch(1)
+        val ai = AiVoice(
+            "服务商",
+            listOf(VoiceOption("v-a", "女声")),
+            "v-a",
+            fingerprint = { it },
+            fetch = { _, text ->
+                if (text == "甲二。") {
+                    second.countDown()
+                    throw AiException("语音合成：第二句失败")
+                }
+                second.await()
+                Thread.sleep(200)
+                throw AiException("语音合成：账户余额不足")
+            },
+        )
+        ReadAloud.start(context, "b", "书", book, 0, 0, 0, 1f, ai = ai)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (ReadAloud.state.value?.error == null && System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(20)
+        }
+        val s = ReadAloud.state.value!!
+        assertEquals("语音合成：账户余额不足", s.error)
+        assertFalse(s.playing)
+        assertEquals(0, s.sentence)
+    }
 }

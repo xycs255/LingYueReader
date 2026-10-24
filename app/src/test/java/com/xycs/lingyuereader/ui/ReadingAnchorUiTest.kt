@@ -58,7 +58,7 @@ class ReadingAnchorUiTest {
             val paragraphs = (1..90).map { number ->
                 when (number) {
                     61 -> "　　第六十一段。" + "风吹过院墙，旧灯仍然亮着。".repeat(12) +
-                        "$marker，田槐终于找到了回家的路。" + "夜色渐渐退开。".repeat(12)
+                        "$marker，老周终于找到了回家的路。" + "夜色渐渐退开。".repeat(12)
                     else -> "　　第${number}段。" + "院墙边的桂花带着淡淡香气。".repeat(20)
                 }
             }

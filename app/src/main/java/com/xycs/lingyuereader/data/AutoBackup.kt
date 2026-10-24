@@ -194,3 +194,31 @@ class FileFolder(private val dir: File) : BackupFolder {
         File(dir, name).delete()
     }
 }
+
+/**
+ * 读者选的文件夹里的文本和压缩包（导入设定包用）：往下找几层子文件夹，返回（相对路径，文档地址）。
+ * 只看 .md、.txt、.zip，别的文件不读。
+ */
+object SafTree {
+    fun files(context: Context, tree: Uri, maxDepth: Int = 4): List<Pair<String, Uri>> {
+        val out = mutableListOf<Pair<String, Uri>>()
+        val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE)
+        fun walk(docId: String, path: String, depth: Int) {
+            val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+            context.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0)
+                    val name = c.getString(1) ?: continue
+                    val rel = if (path.isEmpty()) name else "$path/$name"
+                    if (c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        if (depth < maxDepth) walk(id, rel, depth + 1)
+                    } else if (PackImport.isText(name) || name.endsWith(".zip", ignoreCase = true)) {
+                        out += rel to DocumentsContract.buildDocumentUriUsingTree(tree, id)
+                    }
+                }
+            }
+        }
+        walk(DocumentsContract.getTreeDocumentId(tree), "", 0)
+        return out
+    }
+}

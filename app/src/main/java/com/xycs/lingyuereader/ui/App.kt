@@ -207,6 +207,18 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.CatalogBrowse -> CatalogBrowseScreen(vm, screen)
             Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
+            is Screen.Work -> WorkScreen(vm, screen.workId)
+            is Screen.Editor -> EditorScreen(vm, screen.workId, screen.chapterId, screen.check)
+            is Screen.WorkHistory -> WorkHistoryScreen(vm, screen.workId, screen.chapterId, screen.docId)
+            is Screen.WorkAi -> WorkAiScreen(vm, screen.workId)
+            is Screen.WorkPack -> WorkPackScreen(vm, screen.workId)
+            is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId)
+            is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
+            is Screen.WorkRules -> WorkRulesScreen(vm, screen.workId)
+            is Screen.ChapterBrief -> ChapterBriefScreen(vm, screen.workId, screen.chapterId)
+            is Screen.ChapterReview -> ChapterReviewScreen(vm, screen.workId, screen.chapterId)
+            is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
         }
     }
 }

@@ -44,7 +44,7 @@ private fun seedBook(pageMode: String) {
     val files = context.filesDir
     File(files, "books").deleteRecursively()
     val dir = File(files, "books/b1").apply { mkdirs() }
-    val longChapter = (1..40).joinToString("\n") { "　　第${it}段，田槐是天亮前回来的，裤腿湿到膝盖，鞋底糊着一层黄泥，进了打谷场先找水喝。" }
+    val longChapter = (1..40).joinToString("\n") { "　　第${it}段，老周是天亮前回来的，裤腿湿到膝盖，鞋底糊着一层黄泥，进了打谷场先找水喝。" }
     File(dir, "s0.txt").writeText("第一章 开端\n$longChapter\n第二章 路上\n　　正文二。\n")
     val entry = JSONObject()
         .put("id", "b1").put("title", "测试书").put("author", "").put("format", "TXT")
