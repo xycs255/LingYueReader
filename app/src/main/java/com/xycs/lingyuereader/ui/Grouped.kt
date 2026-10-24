@@ -49,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -137,6 +138,61 @@ private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
 internal fun groupedColors(dark: Boolean, tint: Color, elevated: Boolean = false): GroupedColors =
     (if (dark) darkColorScheme() else lightColorScheme()).grouped(tint, dark)
 
+/**
+ * 阅读页面板的配色：从书页配色调出来，不用 miuix 的冷灰和纯黑——纸白页上的面板是暖白，墨夜页上是深褐。
+ * 面板底比书页稍亮一点（浮在页面上），卡片再亮一点；文字用书页的字色和次要色。
+ */
+internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedColors {
+    val dark = palette.background.luminance() < 0.5f
+    val bg = palette.background
+    fun up(c: Color, f: Float) = lerp(c, Color.White, f)
+    return if (dark) {
+        val sheet = up(bg, 0.05f)
+        val cell = up(bg, 0.10f)
+        GroupedColors(
+            background = sheet,
+            cell = cell,
+            pressed = up(cell, 0.07f),
+            separator = palette.text.copy(alpha = 0.10f),
+            label = palette.text,
+            // 深底上次要字再提亮一点，小字也够 4.5:1。
+            secondary = lerp(palette.secondary, palette.text, 0.3f),
+            tertiary = palette.text.copy(alpha = 0.38f),
+            fill = up(bg, 0.08f),
+            segment = up(bg, 0.20f),
+            tint = tint,
+            destructive = Color(0xFFF15B4F),
+            switchOn = tint,
+            dark = true,
+        )
+    } else {
+        val sheet = up(bg, 0.45f)
+        val cell = up(bg, 0.88f)
+        GroupedColors(
+            background = sheet,
+            cell = cell,
+            pressed = lerp(cell, palette.text, 0.06f),
+            separator = palette.text.copy(alpha = 0.10f),
+            label = palette.text,
+            secondary = palette.secondary,
+            tertiary = palette.text.copy(alpha = 0.36f),
+            fill = lerp(sheet, palette.text, 0.06f),
+            segment = cell,
+            tint = tint,
+            destructive = Color(0xFFD9412F),
+            switchOn = tint,
+            dark = false,
+        )
+    }
+}
+
+/** 阅读页里的面板用 [readerGroupedColors]。 */
+@Composable
+internal fun ProvideReaderColors(palette: ReaderPalette, tint: Color, content: @Composable () -> Unit) {
+    val colors = remember(palette, tint) { readerGroupedColors(palette, tint) }
+    CompositionLocalProvider(LocalGroupedColors provides colors, content = content)
+}
+
 internal val LocalGroupedColors = staticCompositionLocalOf { groupedColors(dark = false, tint = Color(0xFF3482FF)) }
 
 /**
@@ -180,10 +236,11 @@ internal fun GroupedSection(
     val c = LocalGroupedColors.current
     val scope = GroupedSectionScope().apply(content)
     Column(modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-        if (header != null) SmallTitle(header)
+        // 组名用灰色小字，不用强调色：组名是标签，不该比里面的内容还抢眼。
+        if (header != null) SmallTitle(header, textColor = c.secondary)
         if (scope.rows.isNotEmpty()) {
             Card(
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
                 colors = CardDefaults.defaultColors(color = c.cell),
             ) {
                 scope.rows.forEach { it() }
@@ -414,9 +471,10 @@ internal fun <T> PickerRow(
 
 /** 只显示的一行：名字和值。 */
 @Composable
-internal fun ValueRow(title: String, value: String) {
+internal fun ValueRow(title: String, value: String, icon: ImageVector? = null, iconBackground: Color = Color.Unspecified) {
     val c = LocalGroupedColors.current
     GroupedRow {
+        if (icon != null) RowIcon(icon, iconBackground)
         Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f).widthIn(min = 16.dp))
         // 值靠右；太长（比如几个来源文件）就在右边折行。
@@ -542,13 +600,14 @@ internal fun <T> SegmentedControl(
     options: List<Pair<T, String>>,
     selected: T?,
     modifier: Modifier = Modifier,
+    height: Dp = 40.dp,
     onSelect: (T) -> Unit,
 ) {
     val c = LocalGroupedColors.current
     val index = options.indexOfFirst { it.first == selected }
     val position by animateFloatAsState(index.coerceAtLeast(0).toFloat(), Motion.settle(), label = "segment")
     BoxWithConstraints(
-        modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(14.dp)).background(c.fill).padding(3.dp),
+        modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height * 0.35f)).background(c.fill).padding(3.dp),
     ) {
         val cell = maxWidth / options.size
         if (index >= 0) {
@@ -557,7 +616,7 @@ internal fun <T> SegmentedControl(
                     .offset { IntOffset((cell * position).roundToPx(), 0) }
                     .width(cell)
                     .fillMaxHeight()
-                    .clip(RoundedCornerShape(11.dp))
+                    .clip(RoundedCornerShape(height * 0.35f - 3.dp))
                     .background(c.segment),
             )
         }
@@ -610,3 +669,46 @@ internal fun pressHighlight(pressed: Boolean): Color {
 
 /** 读屏时把一组子元素合成一个节点。 */
 internal fun Modifier.groupedSemantics(text: String): Modifier = clearAndSetSemantics { contentDescription = text }
+
+/**
+ * 空状态：页面中间偏上一个圆底图标、一句标题、一两句说明，可带一个按钮。
+ * 用在书架、生词本、搜索这些“还什么都没有”的地方，不只丢一行灰字在左上角。
+ */
+@Composable
+internal fun EmptyState(
+    icon: ImageVector,
+    title: String,
+    body: String?,
+    modifier: Modifier = Modifier,
+    action: Pair<String, () -> Unit>? = null,
+) {
+    val scheme = MiuixTheme.colorScheme
+    Column(
+        modifier.fillMaxWidth().padding(start = 40.dp, end = 40.dp, top = 72.dp, bottom = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.size(72.dp).clip(CircleShape).background(scheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = scheme.onSurfaceVariantSummary, modifier = Modifier.size(34.dp))
+        }
+        Text(title, color = scheme.onSurface, fontSize = 17.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 16.dp))
+        if (body != null) {
+            Text(
+                body,
+                color = scheme.onSurfaceVariantSummary,
+                fontSize = 14.sp,
+                lineHeight = 21.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp).widthIn(max = 300.dp),
+            )
+        }
+        if (action != null) {
+            top.yukonga.miuix.kmp.basic.Button(
+                onClick = action.second,
+                colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.buttonColorsPrimary(),
+                modifier = Modifier.padding(top = 20.dp).widthIn(min = 160.dp),
+            ) {
+                Text(action.first, color = scheme.onPrimary, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}

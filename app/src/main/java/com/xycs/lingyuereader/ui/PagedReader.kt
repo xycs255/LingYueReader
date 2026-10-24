@@ -395,8 +395,8 @@ internal fun PagedReader(
                             .semantics { contentDescription = "本页有书签" },
                     )
                 }
-                // 页眉：每页顶上一行小字写章名，跟着书页一起翻。
-                if (topInset > PAGE_HEADER) {
+                // 页眉：每页顶上一行小字写章名，跟着书页一起翻。章首页下面就是大字章名，不再重复。
+                if (topInset > PAGE_HEADER && spread.none { page -> PageItem.Title in page.items }) {
                     Text(
                         content.chapters[pageChapter].title,
                         color = styles.palette.secondary,

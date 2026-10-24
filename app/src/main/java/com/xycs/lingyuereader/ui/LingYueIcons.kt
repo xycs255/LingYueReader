@@ -480,4 +480,68 @@ object LingYueIcons {
             }
         }
     }
+
+    /** 文件夹：自动备份的位置。 */
+    val Folder by lazy {
+        glyph("Folder") {
+            trace {
+                moveTo(4f, 7.5f); lineTo(4f, 17.5f)
+                quadTo(4f, 19f, 5.5f, 19f); lineTo(18.5f, 19f)
+                quadTo(20f, 19f, 20f, 17.5f); lineTo(20f, 9.8f)
+                quadTo(20f, 8.3f, 18.5f, 8.3f); lineTo(12.2f, 8.3f)
+                lineTo(10.4f, 6f); lineTo(5.5f, 6f)
+                quadTo(4f, 6f, 4f, 7.5f)
+            }
+        }
+    }
+
+    /** 往上的箭头进托盘：备份出去。 */
+    val Upload by lazy {
+        glyph("Upload") {
+            trace {
+                moveTo(12f, 15f); lineTo(12f, 4.5f)
+                moveTo(7.8f, 8.7f); lineTo(12f, 4.5f); lineTo(16.2f, 8.7f)
+                moveTo(4.5f, 14.5f); lineTo(4.5f, 17.8f); quadTo(4.5f, 19.5f, 6.2f, 19.5f); lineTo(17.8f, 19.5f); quadTo(19.5f, 19.5f, 19.5f, 17.8f); lineTo(19.5f, 14.5f)
+            }
+        }
+    }
+
+    /** 往下的箭头进托盘：从备份恢复。 */
+    val Download by lazy {
+        glyph("Download") {
+            trace {
+                moveTo(12f, 4.5f); lineTo(12f, 15f)
+                moveTo(7.8f, 10.8f); lineTo(12f, 15f); lineTo(16.2f, 10.8f)
+                moveTo(4.5f, 14.5f); lineTo(4.5f, 17.8f); quadTo(4.5f, 19.5f, 6.2f, 19.5f); lineTo(17.8f, 19.5f); quadTo(19.5f, 19.5f, 19.5f, 17.8f); lineTo(19.5f, 14.5f)
+            }
+        }
+    }
+
+    /** 圆里一个 i：关于。 */
+    val Info by lazy {
+        glyph("Info") {
+            trace {
+                moveTo(12f, 3.8f)
+                arcTo(8.2f, 8.2f, 0f, true, true, 11.99f, 3.8f)
+                moveTo(12f, 11f); lineTo(12f, 16.5f)
+            }
+            solid {
+                moveTo(12f, 7.1f)
+                arcTo(1.1f, 1.1f, 0f, true, true, 11.99f, 7.1f)
+                close()
+            }
+        }
+    }
+
+    /** 一本合着的书：书架空着时用。 */
+    val Book by lazy {
+        glyph("Book") {
+            trace {
+                moveTo(6f, 4.5f); lineTo(17.5f, 4.5f); quadTo(18.5f, 4.5f, 18.5f, 5.5f); lineTo(18.5f, 19.5f); lineTo(7.5f, 19.5f)
+                quadTo(5.5f, 19.5f, 5.5f, 17.5f); lineTo(5.5f, 5f); quadTo(5.5f, 4.5f, 6f, 4.5f)
+                moveTo(5.5f, 17.5f); quadTo(5.5f, 15.5f, 7.5f, 15.5f); lineTo(18.5f, 15.5f)
+                moveTo(9.5f, 8.5f); lineTo(14.5f, 8.5f)
+            }
+        }
+    }
 }

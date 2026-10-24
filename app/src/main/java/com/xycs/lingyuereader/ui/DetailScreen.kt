@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,7 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 书籍详情，照 Apple Books 的样子：居中的大封面、书名作者、整宽的“继续阅读”，下面是简介、信息和操作三组。 */
+/** 书籍详情：左封面右书名作者进度，下面整宽的“继续阅读”，再下面是简介、信息和操作几组。 */
 @Composable
 fun DetailScreen(vm: AppViewModel, bookId: String) {
     val shelf by vm.shelf.collectAsStateWithLifecycle()
@@ -82,7 +83,6 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                 }
                 item {
                     GroupedSection(header = "信息") {
-                        row { ValueRow("篇幅", "${entry.chapterCount} 章 · 约 ${wordCount(entry.charCount)}") }
                         row { ValueRow("累计阅读", durationLabel(entry.readMillis)) }
                         row { ValueRow("添加于", dateLabel(entry.addedAt)) }
                         if (entry.openedAt > 0) row { ValueRow("最近阅读", dateLabel(entry.openedAt)) }
@@ -110,26 +110,38 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
 @Composable
 private fun Header(entry: BookEntry, vm: AppViewModel) {
     val c = LocalGroupedColors.current
-    Column(Modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 12.dp, bottom = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.width(132.dp)) {
-            BookCover(entry.title, entry.format.label, cover = entry.cover?.let { vm.bookFile(entry.id, it) })
+    Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 20.dp)) {
+        // 封面在左、书名作者进度在右：一眼看全，不用把一张大封面摆在正中占掉半屏。
+        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(96.dp)) {
+                BookCover(entry.title, entry.author.orEmpty(), cover = entry.cover?.let { vm.bookFile(entry.id, it) })
+            }
+            Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                Text(entry.title, color = c.label, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                entry.author?.let { Text(it, color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
+                Text(
+                    "${entry.format.label} · ${entry.chapterCount} 章 · 约 ${wordCount(entry.charCount)}",
+                    color = c.secondary,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Text(
+                    entry.progress?.let { "${progressLabel(entry)} · ${it.chapterTitle}" } ?: "还没开始读",
+                    color = if (entry.progress != null) c.tint else c.secondary,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
-        Text(entry.title, color = c.label, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp))
-        entry.author?.let { Text(it, color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
-        Text(
-            entry.progress?.let { "${progressLabel(entry)} · ${it.chapterTitle}" } ?: progressLabel(entry),
-            color = c.secondary,
-            fontSize = 13.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp),
-        )
+        // 主按钮和下面的卡片左右对齐。
         Box(
             Modifier
-                .padding(top = 18.dp)
+                .padding(top = 20.dp)
                 .fillMaxWidth()
                 .heightIn(min = 50.dp)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(16.dp))
                 .background(c.tint)
                 .clickable(role = Role.Button) { vm.open(Screen.Reader(entry.id)) },
             contentAlignment = Alignment.Center,

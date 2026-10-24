@@ -122,7 +122,7 @@ internal fun ReadAloudSheet(
     onTimer: (Int?) -> Unit = ReadAloud::setTimer,
     tint: Color = palette.accent,
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var rate by remember(state.bookId) { mutableStateOf(state.rate) }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {

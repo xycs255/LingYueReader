@@ -115,7 +115,7 @@ class AutoPageUiTest {
     fun turnsPagesOnATimer() {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithContentDescription("更多").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("自动翻页").fetchSemanticsNodes().isNotEmpty() }
@@ -125,10 +125,10 @@ class AutoPageUiTest {
         compose.onNodeWithText("自动翻页").assertExists()
         // 每分钟 60 行，一页十几行：二十多秒内至少翻一页。
         compose.mainClock.advanceTimeBy(25_000)
-        // 状态行“1/2 · N/12 页”：页码前进了。
+        // 状态行“第 N/12 页 · 本章余 …”：页码前进了。
         val status = compose.onAllNodesWithText(" 页 · ", substring = true).fetchSemanticsNodes()
             .joinToString { it.config.toString() }
-        val page = Regex("""· (\d+)/\d+ 页""").find(status)?.groupValues?.get(1)?.toInt() ?: 0
+        val page = Regex("""第 (\d+)/\d+ 页""").find(status)?.groupValues?.get(1)?.toInt() ?: 0
         assertTrue(status, page >= 2)
         compose.onNodeWithContentDescription("停止自动滚动").performClick()
         compose.mainClock.advanceTimeBy(1_000)

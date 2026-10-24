@@ -79,14 +79,14 @@ class PagedModeUiTest {
     @Test
     fun tapRightAndVolumeKeysTurnPages() {
         openBook()
-        // 状态栏显示“1/2 · 1/N 页”
-        waitForText("· 1/")
+        // 状态栏显示“第 1/N 页”
+        waitForText("第 1/")
         compose.onRoot().performTouchInput { click(centerRight.copy(x = width * 0.9f)) }
-        waitForText("· 2/")
+        waitForText("第 2/")
         compose.activity.onKeyDown(KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN))
-        waitForText("· 3/")
+        waitForText("第 3/")
         compose.activity.onKeyDown(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP))
-        waitForText("· 2/")
+        waitForText("第 2/")
     }
 
     @Test
@@ -97,7 +97,8 @@ class PagedModeUiTest {
         waitForText("目录 2")
         compose.onAllNodesWithText("第二章 路上")[0].performClick()
         waitForText("正文二。")
-        waitForText("2/2 · 1/1 页")
+        // 页脚左边是章名，右边“第 1/1 页”。
+        waitForText("第 1/1 页")
     }
 }
 
@@ -265,14 +266,15 @@ class ShelfUiTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("备份书架").fetchSemanticsNodes().isEmpty() }
         waitForText("测试书")
         // 按住导航栏从“书架”拖到“统计”，松手就换到统计页。
-        val from = compose.onNodeWithText("书架").fetchSemanticsNode().boundsInRoot.center
+        // 书架页的大标题也叫“书架”，取最下面那个（底栏的标签）。
+        val from = compose.onAllNodesWithText("书架").fetchSemanticsNodes().maxBy { it.boundsInRoot.center.y }.boundsInRoot.center
         val to = compose.onNodeWithText("统计").fetchSemanticsNode().boundsInRoot.center
         compose.onRoot().performTouchInput {
             down(from)
             for (i in 1..10) moveTo(from + (to - from) * (i / 10f))
             up()
         }
-        waitForText("阅读统计")
+        waitForText("本周")
     }
 
     @Test

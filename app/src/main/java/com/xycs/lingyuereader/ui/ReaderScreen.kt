@@ -77,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
@@ -97,9 +98,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -755,11 +760,14 @@ private fun Reader(
             }
         }
 
+        // 菜单的底栏盖在页脚上时，页脚淡掉，不在底栏下面露出半行字。
+        val footerAlpha by animateFloatAsState(if (menuVisible) 0f else 1f, Motion.standard(Motion.SHORT), label = "footer")
         StatusLine(
             chapter.title,
-            listOfNotNull("${chapterIndex + 1}/${content.chapters.size}", pos.label, chapterLeft).joinToString(" · "),
+            // 左边已经写了章名，右边只写本章第几页和还剩多久（不再写“第几章 / 共几章”，免得和页码挤成“1/3 · 1/3 页”）。
+            listOfNotNull(pos.label.ifEmpty { null }?.let { "第 $it" }, chapterLeft).joinToString(" · "),
             palette,
-            Modifier.align(Alignment.BottomCenter),
+            Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = footerAlpha },
             bookFraction,
             // 系统状态栏藏起来时，页脚补上时间和电量。
             clock = settings.fullscreen,
@@ -1002,7 +1010,7 @@ private fun Reader(
     GlassSheet(
         show = sheet == ReaderSheet.Catalog,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1040,7 +1048,7 @@ private fun Reader(
     GlassSheet(
         show = sheet is ReaderSheet.Settings,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1057,7 +1065,7 @@ private fun Reader(
     GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1068,7 +1076,7 @@ private fun Reader(
     GlassSheet(
         show = paragraph != null && paragraphText != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1098,7 +1106,7 @@ private fun Reader(
     GlassSheet(
         show = sheet == ReaderSheet.MultiNote,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1113,7 +1121,7 @@ private fun Reader(
     GlassSheet(
         show = sheet is ReaderSheet.Card,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1128,7 +1136,7 @@ private fun Reader(
     GlassSheet(
         show = footnote != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { footnote = null },
     ) {
@@ -1210,7 +1218,7 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, tint: Color,
     GlassSheet(
         show = lookup != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, tint, elevated = true).background,
+        background = readerGroupedColors(palette, tint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = vm::closeLookup,
     ) {
@@ -1269,30 +1277,88 @@ private fun BookProgress(
             )
             ChapterStep("下一章", LingYueIcons.ChevronForward, before = false, enabled = chapter < count - 1, palette, onNext)
         }
-        ProvideGroupedColors(dark = palette.isDark, tint = palette.accent) {
-            LingYueSlider(
-                value = value,
-                onValueChange = { dragging = it },
-                valueRange = 0f..count.toFloat(),
-                label = "全书进度",
-                valueText = "全书 ${percent.coerceIn(0, 100)}%",
-                onValueChangeFinished = {
-                    dragging?.let { v ->
-                        val ch = v.toInt().coerceIn(0, count - 1)
-                        val blocks = content.chapters[ch].blocks.size
-                        val within = v - ch
-                        onJump(ch, if (within < 0.01f || blocks == 0) null else (within * blocks).toInt().coerceIn(0, blocks - 1))
-                    }
-                    dragging = null
-                },
-                modifier = Modifier.padding(horizontal = 6.dp),
-            )
-        }
+        // 细线进度条：读书时的菜单里它只是个位置指示，不用设置页那种粗滑块。
+        ThinSlider(
+            value = value,
+            onValueChange = { dragging = it },
+            valueRange = 0f..count.toFloat(),
+            label = "全书进度",
+            valueText = "全书 ${percent.coerceIn(0, 100)}%",
+            palette = palette,
+            onValueChangeFinished = {
+                dragging?.let { v ->
+                    val ch = v.toInt().coerceIn(0, count - 1)
+                    val blocks = content.chapters[ch].blocks.size
+                    val within = v - ch
+                    onJump(ch, if (within < 0.01f || blocks == 0) null else (within * blocks).toInt().coerceIn(0, blocks - 1))
+                }
+                dragging = null
+            },
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
         Row(Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 4.dp)) {
             Text("全书 ${percent.coerceIn(0, 100)}%", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
             if (pageLabel != null) Text("本章 $pageLabel", color = palette.secondary, fontSize = 11.sp)
         }
     }
+}
+
+/** 细线滑块：3dp 的轨道、强调色的已读段、白色圆钮；整条 32dp 高都能按、能拖。读屏能读值、能调。 */
+@Composable
+private fun ThinSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    label: String,
+    valueText: String,
+    palette: ReaderPalette,
+    onValueChangeFinished: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val change by rememberUpdatedState(onValueChange)
+    val finish by rememberUpdatedState(onValueChangeFinished)
+    val span = valueRange.endInclusive - valueRange.start
+    val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+    val thumb = 18.dp
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .semantics {
+                contentDescription = label
+                stateDescription = valueText
+                progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange)
+                setProgress { target -> change(target.coerceIn(valueRange.start, valueRange.endInclusive)); finish(); true }
+            }
+            .pointerInput(valueRange) {
+                val r = thumb.toPx() / 2
+                fun at(x: Float) = valueRange.start + ((x - r) / (size.width - 2 * r)).coerceIn(0f, 1f) * span
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    change(at(down.position.x))
+                    down.consume()
+                    while (true) {
+                        val e = awaitPointerEvent()
+                        val p = e.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!p.pressed) break
+                        change(at(p.position.x))
+                        p.consume()
+                    }
+                    finish()
+                }
+            }
+            .drawBehind {
+                val r = thumb.toPx() / 2
+                val y = size.height / 2
+                val track = 3.dp.toPx()
+                val x = r + fraction * (size.width - 2 * r)
+                drawRoundRect(palette.text.copy(alpha = 0.14f), Offset(r, y - track / 2), Size(size.width - 2 * r, track), CornerRadius(track / 2))
+                drawRoundRect(palette.accent, Offset(r, y - track / 2), Size(x - r, track), CornerRadius(track / 2))
+                // 圆钮：白底、一圈淡影，深色书页上也看得清。
+                drawCircle(Color.Black.copy(alpha = 0.18f), r + 1.dp.toPx(), Offset(x, y + 1.dp.toPx()))
+                drawCircle(if (palette.isDark) palette.text else Color.White, r, Offset(x, y))
+            },
+    )
 }
 
 /** 菜单里的“‹ 上一章”“下一章 ›”：强调色小字，到头了变灰。 */

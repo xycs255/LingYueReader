@@ -87,8 +87,8 @@ class NightReaderSheetUiTest {
         val image = compose.onRoot().captureToImage()
         saveScreenshot(name, image)
         val pixels = image.toPixelMap()
-        // 标题行左边空着（右边是“完成”），在那里取底色。
-        val background = pixels[(pixels.width * 0.12f).toInt(), title.center.y.toInt()].luminance()
+        // 在标题那一行、面板最左边的空白处取底色（再往右是目录的小书封、外观的返回钮）。
+        val background = pixels[(pixels.width * 0.02f).toInt(), title.center.y.toInt()].luminance()
         assertTrue("$name 面板底色亮度 $background", background < 0.2f)
 
         fun checkText(label: String, bounds: Rect) {

@@ -83,7 +83,7 @@ internal fun CatalogSheet(
     charsPerMinute: Float = 400f,
     onClose: () -> Unit = {},
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var tab by remember { mutableIntStateOf(0) }
         Column {
@@ -327,7 +327,7 @@ internal fun ParagraphSheet(
     initialSelection: IntRange? = null,
     tint: Color = palette.accent,
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var selection by remember(text, initialSelection) {
             mutableStateOf(TextFieldValue(text, initialSelection?.let { TextRange(it.first, it.last + 1) } ?: TextRange(text.length)))
@@ -400,7 +400,7 @@ private fun NoteRow(quote: String, note: String?, color: Color, onDelete: () -> 
 /** 跨段落划线：选颜色、写批注（记在最后一段上），每段各存一条划线。 */
 @Composable
 internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color = palette.accent, onSave: (MarkColor, String) -> Unit) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var note by remember { mutableStateOf("") }
         var color by remember { mutableStateOf(MarkColor.YELLOW) }
@@ -431,7 +431,7 @@ internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color =
 /** 注释面板：标题栏“注释”、右边“完成”，正文用书里的字体放在一张卡片里。 */
 @Composable
 internal fun FootnoteSheet(text: String, palette: ReaderPalette, fontFamily: FontFamily, tint: Color, onDone: () -> Unit) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             SheetNavBar("注释", back = null, action = "完成" to onDone) {}

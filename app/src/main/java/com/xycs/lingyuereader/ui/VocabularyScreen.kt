@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -60,10 +62,12 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.text.SimpleDateFormat
@@ -84,12 +88,15 @@ fun VocabularyScreen(vm: AppViewModel) {
     val due = learning.filter { it.isDue(now) }.sortedWith(compareBy({ it.due }, { it.addedAt }))
     val shown = words.filter { it.mastered == mastered }
 
+    // 和书架、统计、我的一样用大标题，往上滚时收成小标题。
+    val scrollBehavior = MiuixScrollBehavior()
     GlassScaffold(
         topBar = {
-            SmallTopAppBar(
+            TopAppBar(
                 color = Color.Transparent,
                 modifier = Modifier.glassBar(),
                 title = if (reviewing) "复习生词" else "生词本",
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (reviewing) {
                         IconButton(onClick = { reviewing = false }, modifier = Modifier.padding(start = 12.dp)) {
@@ -115,14 +122,20 @@ fun VocabularyScreen(vm: AppViewModel) {
             return@GlassScaffold
         }
         LazyColumn(
-            Modifier.fillMaxSize().overScrollVertical(),
+            Modifier.fillMaxSize().overScrollVertical().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
             overscrollEffect = null,
         ) {
             item {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Tab("学习中 ${learning.size}", !mastered) { mastered = false }
-                    Tab("已掌握 ${words.size - learning.size}", mastered) { mastered = true }
+                    ProvideGroupedColors {
+                        SegmentedControl(
+                            listOf(false to "学习中 ${learning.size}", true to "已掌握 ${words.size - learning.size}"),
+                            mastered,
+                            Modifier.width(220.dp),
+                            height = 36.dp,
+                        ) { mastered = it }
+                    }
                     Spacer(Modifier.weight(1f))
                     if (due.isNotEmpty()) {
                         TextButton("复习 ${due.size}", onClick = { reviewing = true }, colors = ButtonDefaults.textButtonColorsPrimary())
@@ -138,12 +151,11 @@ fun VocabularyScreen(vm: AppViewModel) {
             }
             if (shown.isEmpty()) {
                 item {
-                    Text(
-                        if (words.isEmpty()) "还没有生词。读书时长按选词，在查词面板里点“收入生词本”。" else "这里还没有词。",
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
-                    )
+                    when {
+                        words.isEmpty() -> EmptyState(LingYueIcons.Star, "还没有生词", "读书时长按一个词，在查词面板里点星号，就收进来了。")
+                        mastered -> EmptyState(LingYueIcons.Check, "还没有掌握的词", "复习时点“记得”，记牢的词会挪到这里。")
+                        else -> EmptyState(LingYueIcons.Check, "都掌握了", "学习中的词都记住了。")
+                    }
                 }
             }
             items(shown, key = { it.word }) { w ->
@@ -157,21 +169,6 @@ fun VocabularyScreen(vm: AppViewModel) {
             }
         }
     }
-}
-
-@Composable
-private fun Tab(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        label,
-        fontSize = 15.sp,
-        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-        color = if (selected) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (selected) MiuixTheme.colorScheme.secondaryContainer else MiuixTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-    )
 }
 
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)

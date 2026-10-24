@@ -48,7 +48,7 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
- * “我的”，照苹果“设置”的样子：顶上一张灵阅名片，下面是分组列表——阅读（词典、主题设置）、数据（备份恢复）、关于。
+ * “我的”，照 HyperOS 设置的样子：分组列表——阅读（词典、主题设置）、备份、关于，每行一个彩色图标。
  * 每行一个短名字，状态写在右边灰字或组下面的小字里。
  */
 @Composable
@@ -113,10 +113,8 @@ fun MeScreen(vm: AppViewModel) {
             ) {
                 item {
                     if (busy) LinearProgressIndicator(Modifier.padding(horizontal = 32.dp, vertical = 4.dp))
-                    GroupedSection {
-                        row { AppCard(shelf.size, onClick = openHome) }
-                    }
-                    GroupedSection {
+                    // 每一行都带图标，按用途分三组：阅读、备份、关于。
+                    GroupedSection(header = "阅读") {
                         iconRow {
                             NavRow(
                                 "词典",
@@ -136,7 +134,7 @@ fun MeScreen(vm: AppViewModel) {
                     }
                     val stamp = remember { java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.ROOT) }
                     GroupedSection(
-                        header = "数据",
+                        header = "备份",
                         footer = if (auto.enabled) {
                             buildString {
                                 append("每天一份，存到「${auto.label}」，留最近 ${com.xycs.lingyuereader.data.AutoBackup.KEEP} 份")
@@ -152,26 +150,28 @@ fun MeScreen(vm: AppViewModel) {
                         },
                     ) {
                         row {
-                            ToggleRow("自动备份到文件夹", auto.enabled, enabled = !busy) { on ->
-                                if (on) folderLauncher.launch(null) else vm.disableAutoBackup()
-                            }
-                        }
-                        if (auto.enabled) {
-                            row { NavRow("备份位置", auto.label) { folderLauncher.launch(null) } }
-                            row { ActionRow("现在备份一次", enabled = !busy, onClick = vm::backupNow) }
-                        }
-                        row {
-                            NavRow("备份书架", "${shelf.size} 本", enabled = !busy) {
+                            NavRow("备份书架", "${shelf.size} 本", icon = LingYueIcons.Upload, iconBackground = Color(0xFF34C759), enabled = !busy) {
                                 backupLauncher.launch("灵阅备份-${stamp.format(java.util.Date())}.zip")
                             }
                         }
                         row {
-                            NavRow("从备份恢复", enabled = !busy) { restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream")) }
+                            NavRow("从备份恢复", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7), enabled = !busy) {
+                                restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                            }
+                        }
+                        row {
+                            ToggleRow("自动备份到文件夹", auto.enabled, enabled = !busy, icon = LingYueIcons.Timer, iconBackground = Color(0xFF5856D6)) { on ->
+                                if (on) folderLauncher.launch(null) else vm.disableAutoBackup()
+                            }
+                        }
+                        if (auto.enabled) {
+                            row { NavRow("备份位置", auto.label, icon = LingYueIcons.Folder, iconBackground = Color(0xFF8E8E93)) { folderLauncher.launch(null) } }
+                            row { NavRow("现在备份一次", icon = LingYueIcons.Upload, iconBackground = Color(0xFF5856D6), enabled = !busy, onClick = vm::backupNow) }
                         }
                     }
-                    GroupedSection(header = "关于", footer = "开源、离线、无广告。代码以 Apache-2.0 发布。") {
-                        row { NavRow("版本", version) { openHome() } }
-                        row { NavRow("项目主页", "GitHub") { openHome() } }
+                    GroupedSection(header = "关于", footer = "灵阅：开源、离线、无广告。代码以 Apache-2.0 发布。") {
+                        row { ValueRow("版本", version, icon = LingYueIcons.Info, iconBackground = Color(0xFF8E8E93)) }
+                        row { NavRow("项目主页", "GitHub", icon = LingYueIcons.Share, iconBackground = Color(0xFF636366)) { openHome() } }
                     }
                 }
             }
@@ -189,26 +189,5 @@ fun MeScreen(vm: AppViewModel) {
                 }
             }
         }
-    }
-}
-
-/** 顶上的名片：应用图标、名字、书架上几本书。像苹果“设置”顶上的账户卡片。 */
-@Composable
-private fun AppCard(books: Int, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    GroupedRow(onClick = onClick) {
-        Box(Modifier.size(58.dp).clip(RoundedCornerShape(13.dp))) {
-            Image(painterResource(R.drawable.ic_launcher_paper), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            Image(
-                painterResource(R.drawable.ic_launcher_foreground),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.5f; scaleY = 1.5f },
-            )
-        }
-        Column(Modifier.weight(1f).padding(start = 14.dp)) {
-            Text("灵阅", color = c.label, fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
-            Text("书架上 $books 本书 · 离线阅读", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
-        }
-        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(18.dp))
     }
 }

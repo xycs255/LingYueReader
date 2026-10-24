@@ -91,7 +91,7 @@ internal fun LookupSheet(
 ) {
     val context = LocalContext.current
     val vocab by vm.vocab.collectAsStateWithLifecycle()
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         // 先是一张小卡片：词、读音、头几条释义、原句；“完整释义”再展开成整页（各本词典、微调选区、相关词语）。
         // 微调选区时词会变，展开了就一直展开；换一段再查才回到小卡片。

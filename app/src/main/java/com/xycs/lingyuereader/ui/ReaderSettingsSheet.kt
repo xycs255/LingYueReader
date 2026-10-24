@@ -108,16 +108,16 @@ internal fun SettingsSheet(
     /** 首页右上角“完成”。 */
     onDone: () -> Unit = {},
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         // 导航栈：点进去压一页，返回弹一页，回到起始页后再返回就关面板。
         var stack by rememberSaveable { mutableStateOf(listOf(if (startWithMore) SettingsPage.MORE else SettingsPage.MAIN)) }
         val page = stack.last()
         fun open(p: SettingsPage) { stack = stack + p }
         fun back() { stack = stack.dropLast(1) }
         BackHandler(enabled = stack.size > 1) { back() }
-        // 面板固定高度，换页时不忽高忽低；内容多的页在里面滚动。
-        val height = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.78f).toDp() }
-        Column(Modifier.fillMaxWidth().height(height)) {
+        // 面板跟着内容高矮，最高到屏幕的 85%，内容多的页在里面滚动；换页时高度渐变过去，不跳。
+        val maxHeight = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.85f).toDp() }
+        Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
             // 标题跟着页一起换：新标题从翻页的方向滑进来、旧的淡出，不和内容脱节。
             AnimatedContent(
                 targetState = stack,
@@ -144,9 +144,9 @@ internal fun SettingsSheet(
                         .togetherWith(slideOutHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) -it / 3 else it } + fadeOut(Motion.exit()))
                 },
                 label = "settingsPage",
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f, fill = false),
             ) { st ->
-                Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 16.dp)) {
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 12.dp)) {
                     when (st.last()) {
                         SettingsPage.MAIN -> MainPage(settings, update, fonts, ::open)
                         SettingsPage.MORE -> MorePage(settings, fonts, ::open)
@@ -169,7 +169,7 @@ internal fun SettingsSheet(
 @Composable
 internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -> Unit>? = null, onBack: () -> Unit) {
     val c = LocalGroupedColors.current
-    Box(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 12.dp)) {
+    Box(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp)) {
         if (back != null) {
             Box(
                 Modifier
@@ -207,15 +207,18 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
 
 @Composable
 private fun MainPage(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit, fonts: List<String>, open: (SettingsPage) -> Unit) {
-    Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        FontSizeCard(settings.fontSize) { size -> update { it.copy(fontSize = size) } }
-        BrightnessRow(settings.brightness) { b -> update { it.copy(brightness = b) } }
-        ThemeCircles(settings) { theme -> update { it.copy(theme = theme) } }
-        FontSegment(settings, fonts, update) { open(SettingsPage.FONT) }
-        LayoutSegment(settings, update)
+    // 一张卡片一件事：亮度；书页背景；文字（字号、字体、排版）；翻页和其余设置。每行左边写着是什么，右边是控件。
+    GroupedSection {
+        row { Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) { BrightnessRow(settings.brightness) { b -> update { it.copy(brightness = b) } } } }
     }
-    if (settings.theme == ReaderTheme.CUSTOM) {
-        GroupedSection { row { NavRow("自定义配色", onClick = { open(SettingsPage.COLORS) }) } }
+    GroupedSection(header = "背景") {
+        row { Box(Modifier.padding(horizontal = 12.dp, vertical = 14.dp)) { ThemeCircles(settings) { theme -> update { it.copy(theme = theme) } } } }
+        if (settings.theme == ReaderTheme.CUSTOM) row { NavRow("自定义配色", onClick = { open(SettingsPage.COLORS) }) }
+    }
+    GroupedSection(header = "文字") {
+        row { FontSizeRow(settings.fontSize) { size -> update { it.copy(fontSize = size) } } }
+        row { NavRow("字体", fontLabel(settings, fonts)) { open(SettingsPage.FONT) } }
+        row { LabeledRow("排版") { LayoutSegment(settings, update, Modifier.width(192.dp)) } }
     }
     GroupedSection {
         row { NavRow("翻页方式", settings.pageMode.label) { open(SettingsPage.PAGING) } }
@@ -246,35 +249,52 @@ private fun MorePage(settings: ReaderSettings, fonts: List<String>, open: (Setti
     }
 }
 
-/** 字号：一张卡片，左“小 A”、右“大 A”，中间用正文字体写一个“永”和当前字号。 */
+/** 字号：左边写“字号”，右边一个步进器——小“A”、当前字号、大“A”。 */
 @Composable
-private fun FontSizeCard(size: Float, onChange: (Float) -> Unit) {
+private fun FontSizeRow(size: Float, onChange: (Float) -> Unit) {
     val c = LocalGroupedColors.current
-    Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(c.cell), verticalAlignment = Alignment.CenterVertically) {
-        @Composable
-        fun Step(textSize: Int, enabled: Boolean, description: String, delta: Float) {
-            val source = remember { MutableInteractionSource() }
-            val pressed by source.collectIsPressedAsState()
-            Box(
-                Modifier
-                    .width(76.dp)
-                    .fillMaxHeight()
-                    .background(pressHighlight(pressed))
-                    .clickable(enabled = enabled, interactionSource = source, indication = null) { onChange((size + delta).coerceIn(14f, 30f)) }
-                    .semantics { contentDescription = description; role = Role.Button },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("A", color = if (enabled) c.label else c.tertiary, fontSize = textSize.sp, fontFamily = FontFamily.Serif, modifier = Modifier.pressScale(source, 0.85f))
+    LabeledRow("字号") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            @Composable
+            fun Step(textSize: Int, enabled: Boolean, description: String, delta: Float) {
+                val source = remember { MutableInteractionSource() }
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .pressScale(source, 0.88f)
+                        .clickable(enabled = enabled, interactionSource = source, indication = null) { onChange((size + delta).coerceIn(14f, 30f)) }
+                        .semantics { contentDescription = description; role = Role.Button },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(36.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+                        Text("A", color = if (enabled) c.label else c.tertiary, fontSize = textSize.sp, fontFamily = FontFamily.Serif)
+                    }
+                }
             }
+            Step(13, size > 14f, "字号减小", -1f)
+            Text(
+                "${size.toInt()}",
+                color = c.label,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(44.dp),
+            )
+            Step(19, size < 30f, "字号增大", 1f)
         }
-        Step(15, size > 14f, "字号减小", -1f)
-        Box(Modifier.width(0.5.dp).height(28.dp).background(c.separator))
-        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            Text("永", color = c.label, fontSize = 22.sp, fontFamily = FontFamily.Serif)
-            Text("${size.toInt()}", color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(start = 8.dp))
-        }
-        Box(Modifier.width(0.5.dp).height(28.dp).background(c.separator))
-        Step(24, size < 30f, "字号增大", 1f)
+    }
+}
+
+/** 一行：左边名字，右边控件。 */
+@Composable
+internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        control()
     }
 }
 
@@ -361,31 +381,10 @@ private fun ThemeCircles(settings: ReaderSettings, onPick: (ReaderTheme) -> Unit
     }
 }
 
-/** 字体：宋体 / 黑体 / 导入的字体（没选导入的时写“更多字体”，点了进字体页）。 */
-@Composable
-private fun FontSegment(settings: ReaderSettings, fonts: List<String>, update: ((ReaderSettings) -> ReaderSettings) -> Unit, more: () -> Unit) {
-    val imported = settings.font.takeIf { it in fonts }
-    val selected = when {
-        imported != null -> "more"
-        settings.serif -> "serif"
-        else -> "sans"
-    }
-    SegmentedControl(
-        listOf("serif" to "宋体", "sans" to "黑体", "more" to (imported?.let(FontStore::label) ?: "更多字体")),
-        selected,
-    ) { key ->
-        when (key) {
-            "serif" -> update { it.copy(serif = true, font = "") }
-            "sans" -> update { it.copy(serif = false, font = "") }
-            else -> more()
-        }
-    }
-}
-
 /** 排版预设：紧凑 / 标准 / 宽松，手动调过就都不选。 */
 @Composable
-private fun LayoutSegment(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
-    SegmentedControl(LayoutPreset.entries.map { it to it.label }, LayoutPreset.entries.firstOrNull { it.matches(settings) }) { p -> update(p::apply) }
+private fun LayoutSegment(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit, modifier: Modifier = Modifier) {
+    SegmentedControl(LayoutPreset.entries.map { it to it.label }, LayoutPreset.entries.firstOrNull { it.matches(settings) }, modifier, height = 36.dp) { p -> update(p::apply) }
 }
 
 private fun fontLabel(settings: ReaderSettings, fonts: List<String>): String =

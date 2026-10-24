@@ -35,7 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
@@ -361,6 +363,8 @@ fun GlassSheet(
             ),
             backgroundColor = if (active) Color.Transparent else background,
             cornerRadius = radius,
+            // 面板里的卡片自己左右留 12dp，面板只留 4dp：卡片离屏幕边 16dp，和应用里的页面一致。
+            insideMargin = DpSize(4.dp, 0.dp),
             onDismissRequest = onDismissRequest,
         ) {
             if (title != null) {
@@ -373,9 +377,17 @@ fun GlassSheet(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
                 )
             }
-            content()
+            // miuix 在拖动条下面给（这里没用的）内置标题留了 18dp，往上收回来，标题栏紧贴拖动条。
+            Box(Modifier.pullUp(18.dp)) { content() }
         }
     }
+}
+
+/** 往上挪 [by]，并且不占那段高度。 */
+private fun Modifier.pullUp(by: Dp): Modifier = layout { measurable, constraints ->
+    val pull = by.roundToPx()
+    val placeable = measurable.measure(constraints)
+    layout(placeable.width, (placeable.height - pull).coerceAtLeast(0)) { placeable.place(0, -pull) }
 }
 
 /** 卡片玻璃：半透明底色加高光描边。 */
@@ -478,7 +490,7 @@ private fun StillSheet(
                     .background(background)
                     .clickable(interactionSource = null, indication = null) {}
                     .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 16.dp),
+                    .padding(start = 4.dp, end = 4.dp, top = 16.dp, bottom = 16.dp),
             ) { content() }
         }
     }

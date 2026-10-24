@@ -152,7 +152,7 @@ internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, pale
         }
     }
     // 标题栏右边“分享”；预览下面选配色，再下面“保存图片”。
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("书摘卡片", back = null, action = "分享" to { shareCard(context, bitmap) }) {}
