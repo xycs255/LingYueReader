@@ -52,18 +52,25 @@ class AiSpeaker(
         stop()
         if (items.isEmpty()) return
         job = scope.launch {
-            val pending = HashMap<Int, Deferred<File>>()
+            // 预取的句子出错只记在它自己的结果里：后面的句子先失败时不能连带取消整个朗读，轮到它时再报。
+            val pending = HashMap<Int, Deferred<Result<File>>>()
             fun prefetch(i: Int) {
-                if (i in items.indices && i !in pending) pending[i] = async(Dispatchers.IO) { audio(items[i].text, items[i].voice) }
+                if (i in items.indices && i !in pending) {
+                    pending[i] = async(Dispatchers.IO) {
+                        try {
+                            Result.success(audio(items[i].text, items[i].voice))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                    }
+                }
             }
             for (i in items.indices) {
                 for (k in i..i + AHEAD) prefetch(k)
                 val id = items[i].id
-                val file = try {
-                    pending.remove(i)!!.await()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
+                val file = pending.remove(i)!!.await().getOrElse { e ->
                     onError(id, e.message ?: "语音合成失败")
                     return@launch
                 }
