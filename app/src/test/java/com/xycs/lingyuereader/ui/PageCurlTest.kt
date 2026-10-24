@@ -67,8 +67,8 @@ class PageCurlTest {
         val start = CurlCylinder.of(400f, 800f, 0.01f, 400f, 400f)!!
         assertTrue(start.radius <= 8f / Math.PI.toFloat() + 0.01f)
         assertTrue(start.fold.x > 390f)
-        // 翻到一半：半径到顶（短边的 1/8）。
-        assertEquals(50f, CurlCylinder.of(400f, 800f, 0.5f, 400f, 400f)!!.radius, 0.01f)
+        // 翻到一半：半径到顶（短边的 1/5）。
+        assertEquals(80f, CurlCylinder.of(400f, 800f, 0.5f, 400f, 400f)!!.radius, 0.01f)
         // 翻完：圆柱和翻过去的背面都在屏幕左边以外。
         listOf(400f, 780f, 20f).forEach { y ->
             val done = CurlCylinder.of(400f, 800f, 1f, y, y)!!
