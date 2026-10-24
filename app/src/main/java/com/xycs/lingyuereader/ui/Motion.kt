@@ -41,6 +41,23 @@ object Motion {
      * 阅读任务里 300 毫秒的动画最好，出错率最多降低 54%——眼睛能跟住文字移到了哪里。
      */
     const val TURN = 300
+    /**
+     * 仿真翻页点按 / 按键翻一页：纸要卷起来、翻过去、落下，300 毫秒只够“啪”一下。
+     * 用长一些的时长和先慢后快再慢的曲线（[Curl]），看得出纸是被掀起来的。
+     */
+    const val CURL_TURN = 440
+
+    /** 书页配色随环境光、日落变暖渐变（读者亲手换配色用 [MEDIUM]）。 */
+    const val PALETTE = 3000
+    /** 远眺提醒的远景淡入、淡出。 */
+    const val REST_FADE_IN = 1500
+    const val REST_FADE_OUT = 1200
+    /** 滚动模式翻一屏后，原来底边那道短线先停 [MARKER_HOLD] 再用 [MARKER_FADE] 褪掉。 */
+    const val MARKER_HOLD = 500
+    const val MARKER_FADE = 1400
+    /** 跳转落点那一段的淡强调色：停 [LANDING_HOLD] 再用 [LANDING_FADE] 褪掉。 */
+    const val LANDING_HOLD = 700
+    const val LANDING_FADE = 1600
 
     /** 标准：起步快、收尾柔，屏幕内的移动都用它。 */
     val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -48,6 +65,8 @@ object Motion {
     val Emphasized = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
     /** 离场：慢慢起步、加速离开。 */
     val Exit = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+    /** 仿真翻页：纸先被慢慢掀起，中间翻得快，落下时再放慢。 */
+    val Curl = CubicBezierEasing(0.45f, 0f, 0.25f, 1f)
 
     private val reduced get() = Effects.noMotion
 

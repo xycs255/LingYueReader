@@ -1,31 +1,11 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.ui.text.style.TextAlign
-
-import top.yukonga.miuix.kmp.theme.lightColorScheme
-
-import top.yukonga.miuix.kmp.theme.darkColorScheme
-
-import top.yukonga.miuix.kmp.theme.Colors
-
-import top.yukonga.miuix.kmp.basic.SliderDefaults
-
-import top.yukonga.miuix.kmp.basic.Slider
-
-import top.yukonga.miuix.kmp.basic.SwitchDefaults
-
-import top.yukonga.miuix.kmp.basic.Switch
-
-import top.yukonga.miuix.kmp.basic.SmallTitle
-
-import top.yukonga.miuix.kmp.basic.CardDefaults
-
-import top.yukonga.miuix.kmp.basic.Card
-
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.getValue
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -57,15 +37,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -80,18 +63,29 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ui.glass.GlassMenu
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
-import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Switch
+import top.yukonga.miuix.kmp.basic.SwitchDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import top.yukonga.miuix.kmp.theme.Colors
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.darkColorScheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme
 import kotlin.math.roundToInt
 
 /*
@@ -228,7 +222,7 @@ internal fun GroupedRow(
         modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .background(if (pressed) c.pressed else Color.Transparent)
+            .background(pressHighlight(pressed))
             .then(clickable)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -353,7 +347,7 @@ internal fun CheckRow(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .background(if (pressed) c.pressed else Color.Transparent)
+            .background(pressHighlight(pressed))
             .semantics { this.selected = selected }
             .combinedClickable(
                 interactionSource = source,
@@ -366,8 +360,16 @@ internal fun CheckRow(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RowTitle(title, if (selected) c.tint else c.label, enabled, subtitle)
-        if (selected) Icon(LingYueIcons.Check, contentDescription = null, tint = c.tint, modifier = Modifier.padding(start = 12.dp).size(20.dp))
+        val titleColor by animateColorAsState(if (selected) c.tint else c.label, Motion.standard(Motion.SHORT), label = "checkTitle")
+        RowTitle(title, titleColor, enabled, subtitle)
+        // 勾从小弹出来，取消时淡掉。
+        AnimatedVisibility(
+            visible = selected,
+            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.6f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(fadeOut(Motion.exit())),
+        ) {
+            Icon(LingYueIcons.Check, contentDescription = null, tint = c.tint, modifier = Modifier.padding(start = 12.dp).size(20.dp))
+        }
     }
 }
 
@@ -472,6 +474,26 @@ internal fun LabeledSliderRow(
 @Composable
 internal fun LingYueSwitch(checked: Boolean, enabled: Boolean = true) {
     val c = LocalGroupedColors.current
+    if (Effects.noMotion) {
+        // miuix 的开关滑块总要滑过去；关了动画时画一个不动的，大小、配色照 miuix。
+        val track = when {
+            checked -> c.switchOn
+            c.dark -> Color(0xFF474747)
+            else -> Color(0xFFE6E6E6)
+        }
+        Box(
+            Modifier
+                .size(width = 49.dp, height = 28.dp)
+                .graphicsLayer { alpha = if (enabled) 1f else 0.5f }
+                .clip(CircleShape)
+                .background(track)
+                .padding(4.dp),
+            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+        ) {
+            Box(Modifier.size(20.dp).clip(CircleShape).background(Color.White))
+        }
+        return
+    }
     Switch(
         checked = checked,
         onCheckedChange = null,
@@ -541,16 +563,19 @@ internal fun <T> SegmentedControl(
         }
         Row(Modifier.fillMaxWidth().fillMaxHeight()) {
             options.forEachIndexed { i, (value, label) ->
+                val source = remember { MutableInteractionSource() }
+                val color by animateColorAsState(if (i == index) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "segmentText")
                 Box(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .selectable(selected = i == index, role = Role.Tab, interactionSource = null, indication = null) { onSelect(value) },
+                        .pressScale(source, 0.95f)
+                        .selectable(selected = i == index, role = Role.Tab, interactionSource = source, indication = null) { onSelect(value) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         label,
-                        color = if (i == index) c.tint else c.secondary,
+                        color = color,
                         fontSize = 14.sp,
                         fontWeight = if (i == index) FontWeight.Medium else FontWeight.Normal,
                         maxLines = 1,
@@ -574,6 +599,13 @@ internal fun <T> SegmentedRow(options: List<Pair<T, String>>, selected: T?, onSe
 internal fun GroupedColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalGroupedColors.current
     Column(modifier.fillMaxWidth().background(c.background), content = content)
+}
+
+/** 行按下时的灰底：按下 / 松开都在 [Motion.SHORT] 里渐变，不是一闪。 */
+@Composable
+internal fun pressHighlight(pressed: Boolean): Color {
+    val c = LocalGroupedColors.current
+    return animateColorAsState(if (pressed) c.pressed else c.pressed.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "press").value
 }
 
 /** 读屏时把一组子元素合成一个节点。 */

@@ -7,6 +7,7 @@ package com.xycs.lingyuereader.ui.glass
 // 灵阅：取自 miuix 0.9.4 示例应用，只改了包名。
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.MutatorMutex
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -26,6 +27,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.util.fastFirstOrNull
+import com.xycs.lingyuereader.ui.Effects
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -48,11 +50,12 @@ internal class DampedDragAnimation(
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
 ) {
 
-    private val valueAnimationSpec = spring(1f, 1000f, visibilityThreshold)
-    private val velocityAnimationSpec = spring(0.5f, 300f, visibilityThreshold * 10f)
-    private val pressProgressAnimationSpec = spring(1f, 1000f, 0.001f)
-    private val scaleXAnimationSpec = spring(0.6f, 250f, 0.001f)
-    private val scaleYAnimationSpec = spring(0.7f, 250f, 0.001f)
+    // 关了动画时这些都直接跳到位。
+    private val valueAnimationSpec get() = if (Effects.noMotion) snap() else spring(1f, 1000f, visibilityThreshold)
+    private val velocityAnimationSpec get() = if (Effects.noMotion) snap() else spring(0.5f, 300f, visibilityThreshold * 10f)
+    private val pressProgressAnimationSpec get() = if (Effects.noMotion) snap() else spring(1f, 1000f, 0.001f)
+    private val scaleXAnimationSpec get() = if (Effects.noMotion) snap() else spring(0.6f, 250f, 0.001f)
+    private val scaleYAnimationSpec get() = if (Effects.noMotion) snap() else spring(0.7f, 250f, 0.001f)
 
     private val valueAnimation = Animatable(initialValue, visibilityThreshold)
     private val velocityAnimation = Animatable(0f, 5f)

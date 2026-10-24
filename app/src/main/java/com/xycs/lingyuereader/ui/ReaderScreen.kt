@@ -1,131 +1,115 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.getValue
-import com.xycs.lingyuereader.ui.glass.GlassSheet
-import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
-import com.xycs.lingyuereader.ui.glass.glassHighlight
-import com.xycs.lingyuereader.ui.glass.readerGlass
-import com.xycs.lingyuereader.ui.glass.recordGlass
-import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
-import com.xycs.lingyuereader.tts.ReadAloud
-import androidx.core.content.ContextCompat
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.rememberLauncherForActivityResult
-import android.os.Build
-import android.content.pm.ActivityInfo
-import android.content.pm.PackageManager
 import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.os.Build
 import android.view.WindowManager
 import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.ui.geometry.isSpecified
-import androidx.compose.ui.unit.DpSize
-import androidx.compose.foundation.magnifier
-import androidx.compose.ui.unit.Dp
-import androidx.compose.foundation.Canvas
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.animation.core.Animatable
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
-import com.xycs.lingyuereader.data.TapZones
-import com.xycs.lingyuereader.data.ReadingOrientation
-import com.xycs.lingyuereader.data.TapAction
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import com.xycs.lingyuereader.ReturnPoint
-import top.yukonga.miuix.kmp.blur.Backdrop
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.magnifier
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.runtime.withFrameMillis
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerEventPass
-import kotlin.math.roundToInt
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.width
-import com.xycs.lingyuereader.data.MarkColor
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import com.xycs.lingyuereader.ui.glass.GlassMenu
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
-import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -134,27 +118,47 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Lookup
 import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.ReturnPoint
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BookContent
-import com.xycs.lingyuereader.data.ReadingStats
 import com.xycs.lingyuereader.data.BookEntry
+import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
-import com.xycs.lingyuereader.data.layoutKey
-import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.ReadingOrientation
+import com.xycs.lingyuereader.data.ReadingStats
+import com.xycs.lingyuereader.data.TapAction
+import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.TextAnchors
+import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.layoutKey
+import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.ui.glass.GlassMenu
+import com.xycs.lingyuereader.ui.glass.GlassSheet
+import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
+import com.xycs.lingyuereader.ui.glass.glassHighlight
+import com.xycs.lingyuereader.ui.glass.readerGlass
+import com.xycs.lingyuereader.ui.glass.recordGlass
+import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
+import top.yukonga.miuix.kmp.basic.ListPopupColumn
+import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
-import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
@@ -176,7 +180,9 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
         else -> settings.theme
     }
     val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f
-    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(settings.paletteOf(theme).adjusted(dim, warmth))
+    // 亲手换的配色（主题、自定义颜色）快速过渡；环境光、变暖慢慢来。
+    val chosenPalette = Triple(settings.theme, settings.customBackground, settings.customText)
+    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(settings.paletteOf(theme).adjusted(dim, warmth), chosenPalette)
 
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -303,6 +309,8 @@ private fun Reader(
     val chapter = content.chapters[chapterIndex]
     var menuVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<ReaderSheet?>(null) }
+    // 面板一打开，菜单就收起：不然菜单的玻璃条压在面板后面，关掉面板时还挂在那儿。
+    LaunchedEffect(sheet) { if (sheet != null) menuVisible = false }
     val turner = remember { Turner() }
     val context = LocalContext.current
 
@@ -401,7 +409,7 @@ private fun Reader(
             delay(2000)
             landing.snapTo(0f)
         } else {
-            landing.animateTo(0f, tween(1600, delayMillis = 700, easing = Motion.Standard))
+            landing.animateTo(0f, tween(Motion.LANDING_FADE, delayMillis = Motion.LANDING_HOLD, easing = Motion.Standard))
         }
     }
     val returnPoint by vm.returnPoint.collectAsStateWithLifecycle()
@@ -931,9 +939,14 @@ private fun Reader(
         }
         // 操作条贴着选区：优先放在首行上方，放不下就放在末行（和把手）下方。放在最后，盖在其他浮层之上。
         val bounds = selected?.takeIf { textSelection?.dragging == false }?.let(tracker::bounds)
-        if (bounds != null) {
+        // 选区没了时操作条还留在原处淡出，不一下子消失。
+        var lastBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+        if (bounds != null) lastBounds = bounds
+        val barBounds = bounds ?: lastBounds
+        if (barBounds != null) {
             SelectionBar(
-                palette,
+                visible = bounds != null,
+                palette = palette,
                 onLookup = vm::lookupSelection.takeIf { textSelection?.singleBlock == true },
                 // 划线：直接用黄色划上，不弹面板；要写批注、换颜色点“批注”。
                 onHighlight = { vm.annotateSelection(MarkColor.YELLOW, "") },
@@ -964,8 +977,8 @@ private fun Reader(
                     val handle = with(density) { 22.dp.toPx() }
                     val minTop = with(density) { topInset.toPx() }
                     val maxBottom = constraints.maxHeight - with(density) { bottomInset.toPx() }
-                    val above = bounds.top - gap - bar.height
-                    val below = bounds.bottom + handle + gap
+                    val above = barBounds.top - gap - bar.height
+                    val below = barBounds.bottom + handle + gap
                     val y = when {
                         above >= minTop -> above
                         below + bar.height <= maxBottom -> below
@@ -1127,9 +1140,10 @@ private fun Reader(
     }
 }
 
-/** 划选后的操作条：一颗深色胶囊（墨色底、纸色字），点书页别处就收起。 */
+/** 划选后的操作条：一颗深色胶囊（墨色底、纸色字），点书页别处就收起；出现时从 0.9 倍弹出，收起时缩小淡出。 */
 @Composable
 private fun SelectionBar(
+    visible: Boolean,
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
     onHighlight: () -> Unit,
@@ -1138,18 +1152,17 @@ private fun SelectionBar(
     onCard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 出现时从 0.9 倍弹到原大小。
-    val appear = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
-    LaunchedEffect(Unit) { appear.animateTo(1f, Motion.pop()) }
-    Box(
-        modifier.graphicsLayer {
-            alpha = appear.value.coerceIn(0f, 1f)
-            val s = 0.9f + 0.1f * appear.value
-            scaleX = s
-            scaleY = s
-        },
-    ) {
-        SelectionBarRow(palette, onLookup, onHighlight, onAnnotate, onCopy, onCard)
+    // 第一次出现也要弹出来（AnimatedVisibility 初始可见时不做进场动画），所以从“不可见”开始。
+    val state = remember { MutableTransitionState(false) }
+    state.targetState = visible
+    Box(modifier) {
+        AnimatedVisibility(
+            visibleState = state,
+            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.9f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.92f) + fadeOut(Motion.exit())),
+        ) {
+            SelectionBarRow(palette, onLookup, onHighlight, onAnnotate, onCopy, onCard)
+        }
     }
 }
 
@@ -1335,7 +1348,7 @@ private class PressRing {
         job = scope.launch {
             progress.snapTo(1f)
             burst.snapTo(0f)
-            burst.animateTo(1f, tween(280, easing = Motion.Standard))
+            burst.animateTo(1f, tween(Motion.MEDIUM, easing = Motion.Standard))
             at = Offset.Unspecified
             burst.snapTo(0f)
             progress.snapTo(0f)
@@ -1406,8 +1419,16 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
 
 @Composable
 private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f, clock: Boolean = false) {
-    // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳。
-    val shown by animateFloatAsState(bookFraction, Motion.standard(Motion.MEDIUM), label = "book")
+    // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳：滚动时一小步一小步来，匀速跟上、不拖尾；跳章这种大步才缓动过去。
+    val shown = remember { Animatable(bookFraction) }
+    LaunchedEffect(bookFraction) {
+        val step = abs(bookFraction - shown.value)
+        when {
+            Effects.noMotion || step < 0.0005f -> shown.snapTo(bookFraction)
+            step < 0.02f -> shown.animateTo(bookFraction, tween(Motion.SHORT, easing = LinearEasing))
+            else -> shown.animateTo(bookFraction, Motion.standard(Motion.MEDIUM))
+        }
+    }
     // 页脚：一根全书进度细线，下面一行小字——左边章名，右边页码和本章还剩多久。
     Column(
         modifier
@@ -1421,7 +1442,7 @@ private fun StatusLine(title: String, label: String, palette: ReaderPalette, mod
         Box(
             Modifier.fillMaxWidth().height(1.dp).drawBehind {
                 drawRect(palette.text.copy(alpha = 0.12f))
-                drawRect(palette.accent, size = Size(size.width * shown, size.height))
+                drawRect(palette.accent, size = Size(size.width * shown.value, size.height))
             },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1484,18 +1505,22 @@ private fun BarButton(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val color = when {
+    val target = when {
         !enabled -> palette.text.copy(alpha = 0.3f)
         active -> palette.accent
         else -> palette.text
     }
+    val color by animateColorAsState(target, Motion.standard(Motion.SHORT), label = "barButton")
+    val fill by animateColorAsState(palette.accent.copy(alpha = if (active) 0.1f else 0f), Motion.standard(Motion.SHORT), label = "barButtonFill")
+    val source = remember { MutableInteractionSource() }
     // 一格：上面图标（“外观”是衬线的 Aa），下面小字；开着的那项底下铺一层淡强调色。
     Column(
         modifier
             .height(60.dp)
+            .pressScale(source, 0.94f)
             .clip(RoundedCornerShape(16.dp))
-            .background(if (active) palette.accent.copy(alpha = 0.1f) else Color.Transparent)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .background(fill)
+            .clickable(enabled = enabled, role = Role.Button, interactionSource = source, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {

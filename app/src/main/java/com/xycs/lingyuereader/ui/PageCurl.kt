@@ -1,7 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import android.graphics.BitmapShader
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
@@ -14,14 +16,18 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.createBitmap
 import kotlin.math.PI
 import kotlin.math.min
 import kotlin.math.sin
@@ -48,13 +54,14 @@ internal class CurlTouch {
  * - 没有手指（点按、按键）：从右下角翻。
  *
  * 角横向走 [progress] × 两倍页宽：翻完时正好落在左边一页宽之外，这页整个离开屏幕。
+ * 双页时这页纸从 [left]（书脊）到 [width]，翻完时绕书脊翻到左边，正好盖住左页。
  * 翻到头和尾，角都回到原来的高度，免得翻完那一下跳一跳。
  */
-internal fun curlCorner(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float): Pair<Offset, Offset> {
+internal fun curlCorner(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float, left: Float = 0f): Pair<Offset, Offset> {
     val t = progress.coerceIn(0f, 1f)
     val y0 = if (pressY < 0f) height * 0.9f else pressY
     val fy = if (fingerY < 0f) y0 else fingerY
-    val x = width - 2 * width * t
+    val x = width - 2 * (width - left) * t
     if (y0 > height / 3 && y0 < height * 2 / 3) return Offset(width, y0) to Offset(x, y0)
     val cornerY = if (y0 >= height / 2) height else 0f
     val bump = sin(PI.toFloat() * t).let { 1 - (1 - it) * (1 - it) }
@@ -95,15 +102,15 @@ internal class CurlGeometry(
         }
 
     companion object {
-        fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float = -1f): CurlGeometry? {
-            if (width <= 0f || height <= 0f || progress <= 0.002f) return null
-            val (corner, dragged) = curlCorner(width, height, progress, pressY, fingerY)
+        fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float = -1f, left: Float = 0f): CurlGeometry? {
+            if (width - left <= 0f || height <= 0f || progress <= 0.002f) return null
+            val (corner, dragged) = curlCorner(width, height, progress, pressY, fingerY, left)
             val d = corner - dragged
             val len = d.getDistance()
             if (len < 0.5f) return null
             val normal = d / len
             val fold = (corner + dragged) / 2f
-            val page = listOf(Offset(0f, 0f), Offset(width, 0f), Offset(width, height), Offset(0f, height))
+            val page = listOf(Offset(left, 0f), Offset(width, 0f), Offset(width, height), Offset(left, height))
             return CurlGeometry(fold, normal, clip(page, fold, normal, keepLifted = false), clip(page, fold, normal, keepLifted = true))
         }
 
@@ -135,8 +142,9 @@ private fun dot(a: Offset, b: Offset) = a.x * b.x + a.y * b.y
  *
  * 被拉着的角在 [curlCorner] 给的位置，所以折痕要从那里往回推：角离原位 L，绕过半圈多走 πR，折痕在离原角 (L + πR) / 2 处。
  * 刚开始拉时 L 很小，半径跟着缩小（R ≤ L / π），角不会一按下就跳开。
+ * 双页时纸钉在书脊（[curlCorner] 的 left）上：最后四分之一半径收到 0，纸正好平平地落在左页上，换成下一面时不跳。
  */
-internal class CurlCylinder(
+internal data class CurlCylinder(
     val fold: Offset,
     val normal: Offset,
     val radius: Float,
@@ -144,14 +152,16 @@ internal class CurlCylinder(
     val shade: Float,
 ) {
     companion object {
-        fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float): CurlCylinder? {
-            if (width <= 0f || height <= 0f || progress <= 0.002f) return null
-            val (corner, dragged) = curlCorner(width, height, progress, pressY, fingerY)
+        fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float, left: Float = 0f): CurlCylinder? {
+            val page = width - left
+            if (page <= 0f || height <= 0f || progress <= 0.002f) return null
+            val (corner, dragged) = curlCorner(width, height, progress, pressY, fingerY, left)
             val d = corner - dragged
             val len = d.getDistance()
             if (len < 0.5f) return null
             val normal = d / len
-            val radius = min(min(width, height) / 8f, len / PI.toFloat())
+            val landing = if (left > 0f) (1f - progress.coerceIn(0f, 1f)) * page / 2f else Float.MAX_VALUE
+            val radius = minOf(min(page, height) / 8f, len / PI.toFloat(), landing)
             val fromCorner = (len + PI.toFloat() * radius) / 2f
             val shade = ((1f - progress) * 4f).coerceIn(0f, 1f)
             return CurlCylinder(corner - normal * fromCorner, normal, radius, shade)
@@ -169,19 +179,30 @@ uniform float radius;
 uniform float shadow;
 uniform float shade;
 uniform half4 paper;
+// 翻的这页纸的左边：单页是 0；双页是书脊，左边那页一直平放着不动。
+uniform float left;
+// 双页时纸的背面就是下一面的左页（hasBack = 1）；没有时用纸色。
+uniform shader backside;
+uniform float hasBack;
 
 const float PI = 3.14159265;
 
 // 纸上这点还在页内多深（像素）；在页外是负的。用来给纸边抗锯齿。
 float inside(float2 q) {
-    return min(min(q.x, size.x - q.x), min(q.y, size.y - q.y));
+    return min(min(q.x - left, size.x - q.x), min(q.y, size.y - q.y));
 }
 
 half4 back(float2 q, float light) {
-    half4 c = content.eval(q);
-    // 背面是纸色，隐约透出反着的字。
-    half3 rgb = mix(c.rgb, paper.rgb, 0.86) * light;
-    return half4(rgb, 1.0);
+    half3 rgb;
+    if (hasBack > 0.5) {
+        // 翻平以后正好绕书脊落到左边，所以按书脊对称去取下一面左页上的字。
+        half4 b = backside.eval(float2(2.0 * left - q.x, q.y));
+        rgb = mix(paper.rgb, b.rgb, b.a);
+    } else {
+        // 背面是纸色，隐约透出反着的字。
+        rgb = mix(content.eval(q).rgb, paper.rgb, 0.86);
+    }
+    return half4(rgb * light, 1.0);
 }
 
 half4 front(float2 q, float light) {
@@ -197,11 +218,11 @@ half4 main(float2 p) {
     float d = dot(p - fold, normal);
     float r = max(radius, 0.5);
     if (d <= 0.0) {
-        // 平铺的正面；翻过来的背面压在上面，边上投一道淡影。
+        // 平铺的正面（双页时还有书脊左边那页）；翻过来的背面压在上面，边上投一道淡影。
         half4 base = content.eval(p);
         float s = PI * r - d;
         float2 q = p + normal * (s - d);
-        float2 outside = max(max(-q, q - size), 0.0);
+        float2 outside = max(max(float2(left, 0.0) - q, q - size), 0.0);
         float gap = length(outside);
         if (gap > 0.0) {
             float a = shade * 0.22 * pow(1.0 - clamp(gap / shadow, 0.0, 1.0), 2.0);
@@ -211,7 +232,13 @@ half4 main(float2 p) {
     }
     // 圆柱外：空出来的地方，靠近圆柱的阴影最深。
     float fade = clamp((d - r) / shadow, 0.0, 1.0);
-    half4 result = half4(0.0, 0.0, 0.0, half(shade * 0.38 * (1.0 - fade) * (1.0 - fade)));
+    float dark = shade * 0.38 * (1.0 - fade) * (1.0 - fade);
+    half4 result = half4(0.0, 0.0, 0.0, half(dark));
+    if (p.x < left) {
+        // 双页：纸已经翻过书脊，底下是不动的左页，阴影落在它上面。
+        half4 under = content.eval(p);
+        result = half4(under.rgb * half(1.0 - dark), under.a);
+    }
     if (d < r) {
         float a = asin(d / r);
         // 正面：从平铺处往上转，越转越侧向，越暗。
@@ -232,24 +259,63 @@ internal val curlShaderSupported: Boolean
 /**
  * 画正在被翻走的一页。[progress] 为 0 时原样画，不额外开离屏缓冲。
  * Android 13 起纸是卷着的（[CurlCylinder]），以下版本是平折（[CurlGeometry]）。
+ *
+ * 双页时 [spine] 是书脊在宽度上的位置（0.5）：只有右页翻起，绕书脊翻到左边；[backside] 是下一面的样子，
+ * 翻起来的纸背面印的就是它的左页。单页时 [spine] 为 0，背面是纸色。
  */
-internal fun Modifier.pageCurl(progress: () -> Float, touch: CurlTouch, paper: Color): Modifier =
-    if (curlShaderSupported) curlShader(progress, touch, paper) else curlFlat(progress, touch, paper)
+internal fun Modifier.pageCurl(
+    progress: () -> Float,
+    touch: CurlTouch,
+    paper: Color,
+    spine: Float = 0f,
+    backside: () -> ImageBitmap? = { null },
+): Modifier =
+    if (curlShaderSupported) curlShader(progress, touch, paper, spine, backside) else curlFlat(progress, touch, paper, spine, backside)
+
+/** 上一帧的卷纸效果：纸没动（手指按住不动、卡在半路）时不重建。 */
+private class CurlEffectCache {
+    var key: Any? = null
+    var effect: androidx.compose.ui.graphics.RenderEffect? = null
+    var image: ImageBitmap? = null
+    var imageShader: Shader? = null
+}
+
+private data class CurlKey(val width: Float, val height: Float, val cylinder: CurlCylinder, val left: Float, val paper: Color, val back: ImageBitmap?)
+
+/** 没有背面图时给着色器的占位：一像素透明。 */
+private val emptyBackside: Shader by lazy {
+    BitmapShader(createBitmap(1, 1), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+}
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-private fun Modifier.curlShader(progress: () -> Float, touch: CurlTouch, paper: Color): Modifier = composed {
+private fun Modifier.curlShader(progress: () -> Float, touch: CurlTouch, paper: Color, spine: Float, backside: () -> ImageBitmap?): Modifier = composed {
     val shader = remember { RuntimeShader(CURL_SHADER) }
+    val cache = remember { CurlEffectCache() }
     graphicsLayer {
-        val c = CurlCylinder.of(size.width, size.height, progress(), touch.pressY, touch.fingerY)
+        val left = size.width * spine
+        val c = CurlCylinder.of(size.width, size.height, progress(), touch.pressY, touch.fingerY, left)
         renderEffect = c?.let {
-            shader.setFloatUniform("size", size.width, size.height)
-            shader.setFloatUniform("fold", it.fold.x, it.fold.y)
-            shader.setFloatUniform("normal", it.normal.x, it.normal.y)
-            shader.setFloatUniform("radius", it.radius)
-            shader.setFloatUniform("shadow", 28.dp.toPx())
-            shader.setFloatUniform("shade", it.shade)
-            shader.setFloatUniform("paper", paper.red, paper.green, paper.blue, 1f)
-            RenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()
+            val back = backside()
+            val key = CurlKey(size.width, size.height, it, left, paper, back)
+            if (key != cache.key) {
+                if (back !== cache.image) {
+                    cache.image = back
+                    cache.imageShader = back?.let { img -> BitmapShader(img.asAndroidBitmap(), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
+                }
+                shader.setFloatUniform("size", size.width, size.height)
+                shader.setFloatUniform("fold", it.fold.x, it.fold.y)
+                shader.setFloatUniform("normal", it.normal.x, it.normal.y)
+                shader.setFloatUniform("radius", it.radius)
+                shader.setFloatUniform("shadow", 28.dp.toPx())
+                shader.setFloatUniform("shade", it.shade)
+                shader.setFloatUniform("paper", paper.red, paper.green, paper.blue, 1f)
+                shader.setFloatUniform("left", left)
+                shader.setFloatUniform("hasBack", if (cache.imageShader != null) 1f else 0f)
+                shader.setInputShader("backside", cache.imageShader ?: emptyBackside)
+                cache.effect = RenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()
+                cache.key = key
+            }
+            cache.effect
         }
     }
 }
@@ -260,12 +326,15 @@ private fun List<Offset>.toPath() = Path().also { path ->
 }
 
 /** 平折：平铺的部分照常画，翻起的部分镜像过来、蒙一层纸色当作背面（隐约透出反着的字），折痕处加阴影。 */
-private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Color): Modifier = drawWithContent {
-    val g = CurlGeometry.of(size.width, size.height, progress(), touch.pressY, touch.fingerY)
+private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Color, spine: Float, backside: () -> ImageBitmap?): Modifier = drawWithContent {
+    val left = size.width * spine
+    val g = CurlGeometry.of(size.width, size.height, progress(), touch.pressY, touch.fingerY, left)
     if (g == null) {
         drawContent()
         return@drawWithContent
     }
+    // 双页：书脊左边那页不动。
+    if (left > 0f) clipRect(right = left) { this@drawWithContent.drawContent() }
     if (g.flat.size >= 3) clipPath(g.flat.toPath()) { this@drawWithContent.drawContent() }
     if (g.lifted.size < 3) return@drawWithContent
     val lifted = g.lifted.toPath()
@@ -275,10 +344,17 @@ private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Co
     }
     // 翻过来的背面。
     val depth = g.lifted.maxOf { dot(it - g.fold, g.normal) }.coerceAtLeast(1f)
+    val back = backside()
     withTransform({ transform(g.matrix) }) {
         clipPath(lifted) {
-            this@drawWithContent.drawContent()
-            drawRect(paper.copy(alpha = 0.86f))
+            if (back != null) {
+                // 双页：背面是下一面的左页，按书脊对称印在纸上。
+                drawRect(paper)
+                withTransform({ scale(-1f, 1f, pivot = Offset(left, 0f)) }) { drawImage(back) }
+            } else {
+                this@drawWithContent.drawContent()
+                drawRect(paper.copy(alpha = 0.86f))
+            }
             // 靠折痕处弯着，暗一些；往外渐亮。
             drawRect(
                 Brush.linearGradient(

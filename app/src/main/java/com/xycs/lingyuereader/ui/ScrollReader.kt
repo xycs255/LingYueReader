@@ -168,7 +168,7 @@ internal fun ScrollReader(
                     val viewport = listState.layoutInfo.viewportSize.height.toFloat()
                     markerY = viewport - bottomPx - distance
                     marker.snapTo(1f)
-                    marker.animateTo(0f, tween(1400, delayMillis = 500, easing = Motion.Standard))
+                    marker.animateTo(0f, tween(Motion.MARKER_FADE, delayMillis = Motion.MARKER_HOLD, easing = Motion.Standard))
                 }
             }
         }
@@ -183,7 +183,9 @@ internal fun ScrollReader(
         val fullyVisible = visible.any {
             it.index == item && it.offset >= 0 && it.offset + it.size <= listState.layoutInfo.viewportEndOffset
         }
-        if (!fullyVisible) listState.animateScrollToItem(item)
+        if (!fullyVisible) {
+            if (Effects.noMotion) listState.scrollToItem(item) else listState.animateScrollToItem(item)
+        }
     }
 
     LaunchedEffect(listState, startItem, startChar) {

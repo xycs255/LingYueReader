@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.activity.compose.BackHandler
@@ -42,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -113,24 +118,36 @@ internal fun SettingsSheet(
         // 面板固定高度，换页时不忽高忽低；内容多的页在里面滚动。
         val height = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.78f).toDp() }
         Column(Modifier.fillMaxWidth().height(height)) {
-            SheetNavBar(
-                page.title,
-                back = stack.getOrNull(stack.size - 2)?.title,
-                action = ("完成" to onDone).takeIf { stack.size == 1 },
-            ) { back() }
+            // 标题跟着页一起换：新标题从翻页的方向滑进来、旧的淡出，不和内容脱节。
             AnimatedContent(
-                targetState = page,
+                targetState = stack,
                 transitionSpec = {
-                    // 进下一页从右推入，返回从左回来，像苹果的导航栈。
-                    val forward = targetState.ordinal > initialState.ordinal
+                    val forward = targetState.size > initialState.size
+                    (slideInHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) it / 4 else -it / 4 } + fadeIn(Motion.standard(Motion.SHORT)))
+                        .togetherWith(fadeOut(Motion.exit()))
+                },
+                label = "settingsTitle",
+            ) { s ->
+                SheetNavBar(
+                    s.last().title,
+                    back = s.getOrNull(s.size - 2)?.title,
+                    action = ("完成" to onDone).takeIf { s.size == 1 },
+                ) { back() }
+            }
+            AnimatedContent(
+                targetState = stack,
+                contentKey = { it.last() },
+                transitionSpec = {
+                    // 进下一页从右推入，返回从左回来（导航栈变深是进，变浅是退）。
+                    val forward = targetState.size > initialState.size
                     (slideInHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) it else -it / 3 } + fadeIn(Motion.standard(Motion.SHORT)))
                         .togetherWith(slideOutHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) -it / 3 else it } + fadeOut(Motion.exit()))
                 },
                 label = "settingsPage",
                 modifier = Modifier.weight(1f),
-            ) { p ->
+            ) { st ->
                 Column(Modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 16.dp)) {
-                    when (p) {
+                    when (st.last()) {
                         SettingsPage.MAIN -> MainPage(settings, update, fonts, ::open)
                         SettingsPage.MORE -> MorePage(settings, fonts, ::open)
                         SettingsPage.FONT -> FontPage(settings, fonts, update, onImportFonts, onDeleteFont)
@@ -236,15 +253,18 @@ private fun FontSizeCard(size: Float, onChange: (Float) -> Unit) {
     Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(c.cell), verticalAlignment = Alignment.CenterVertically) {
         @Composable
         fun Step(textSize: Int, enabled: Boolean, description: String, delta: Float) {
+            val source = remember { MutableInteractionSource() }
+            val pressed by source.collectIsPressedAsState()
             Box(
                 Modifier
                     .width(76.dp)
                     .fillMaxHeight()
-                    .clickable(enabled = enabled) { onChange((size + delta).coerceIn(14f, 30f)) }
+                    .background(pressHighlight(pressed))
+                    .clickable(enabled = enabled, interactionSource = source, indication = null) { onChange((size + delta).coerceIn(14f, 30f)) }
                     .semantics { contentDescription = description; role = Role.Button },
                 contentAlignment = Alignment.Center,
             ) {
-                Text("A", color = if (enabled) c.label else c.tertiary, fontSize = textSize.sp, fontFamily = FontFamily.Serif)
+                Text("A", color = if (enabled) c.label else c.tertiary, fontSize = textSize.sp, fontFamily = FontFamily.Serif, modifier = Modifier.pressScale(source, 0.85f))
             }
         }
         Step(15, size > 14f, "字号减小", -1f)
@@ -292,7 +312,7 @@ private fun BrightnessRow(brightness: Float, onChange: (Float) -> Unit) {
     }
 }
 
-/** 书页配色：一排圆，圆里用该配色写一个“文”，选中的外面套一圈强调色。 */
+/** 书页配色：一排圆，圆里用该配色写一个“文”；选中的外面套一圈强调色，圈从小弹出来；按下时圆缩一点。 */
 @Composable
 private fun ThemeCircles(settings: ReaderSettings, onPick: (ReaderTheme) -> Unit) {
     val c = LocalGroupedColors.current
@@ -300,27 +320,42 @@ private fun ThemeCircles(settings: ReaderSettings, onPick: (ReaderTheme) -> Unit
         ReaderTheme.entries.forEach { theme ->
             val p = settings.paletteOf(theme)
             val on = settings.theme == theme
+            val source = remember { MutableInteractionSource() }
+            val ring by animateFloatAsState(if (on) 1f else 0f, Motion.pop(), label = "ring")
+            val labelColor by animateColorAsState(if (on) c.label else c.secondary, Motion.standard(Motion.SHORT), label = "themeLabel")
             Column(
                 Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .selectable(selected = on, role = Role.RadioButton) { onPick(theme) }
+                    .selectable(selected = on, role = Role.RadioButton, interactionSource = source, indication = null) { onPick(theme) }
                     .semantics { contentDescription = "${theme.label}背景" }
                     .padding(vertical = 2.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Box(
-                    Modifier
-                        .size(52.dp)
-                        .border(2.dp, if (on) c.tint else Color.Transparent, CircleShape)
-                        .padding(4.dp)
-                        .clip(CircleShape)
-                        .background(p.background)
-                        .border(0.5.dp, c.separator, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(if (theme == ReaderTheme.CUSTOM) "＋" else "文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 17.sp)
+                Box(Modifier.size(52.dp).pressScale(source, 0.9f), contentAlignment = Alignment.Center) {
+                    // 选中圈：从 0.8 倍弹到原大小、渐显。
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .graphicsLayer {
+                                alpha = ring.coerceIn(0f, 1f)
+                                val s = 0.8f + 0.2f * ring
+                                scaleX = s
+                                scaleY = s
+                            }
+                            .border(2.dp, c.tint, CircleShape),
+                    )
+                    Box(
+                        Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(p.background)
+                            .border(0.5.dp, c.separator, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(if (theme == ReaderTheme.CUSTOM) "＋" else "文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 17.sp)
+                    }
                 }
-                Text(theme.label, color = if (on) c.label else c.secondary, fontSize = 12.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, modifier = Modifier.padding(top = 4.dp))
+                Text(theme.label, color = labelColor, fontSize = 12.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, modifier = Modifier.padding(top = 4.dp))
             }
         }
     }

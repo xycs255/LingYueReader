@@ -39,10 +39,15 @@ class CurlShaderTest {
         c.drawRect(0f, 0f, 120f, 120f, Paint().apply { color = Color.RED })
     }
 
-    private fun render(progress: Float, pressY: Float): Bitmap {
-        val g = CurlCylinder.of(w.toFloat(), h.toFloat(), progress, pressY, pressY)!!
+    private fun render(progress: Float, pressY: Float): Bitmap = render(w, page(), progress, pressY, 0f, null)
+
+    private fun render(w: Int, content: Bitmap, progress: Float, pressY: Float, left: Float, backside: Bitmap?): Bitmap {
+        val g = CurlCylinder.of(w.toFloat(), h.toFloat(), progress, pressY, pressY, left)!!
         val shader = RuntimeShader(CURL_SHADER).apply {
-            setInputShader("content", BitmapShader(page(), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+            setInputShader("content", BitmapShader(content, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+            setInputShader("backside", BitmapShader(backside ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+            setFloatUniform("left", left)
+            setFloatUniform("hasBack", if (backside != null) 1f else 0f)
             setFloatUniform("size", w.toFloat(), h.toFloat())
             setFloatUniform("fold", g.fold.x, g.fold.y)
             setFloatUniform("normal", g.normal.x, g.normal.y)
@@ -74,7 +79,7 @@ class CurlShaderTest {
         reader.close()
         System.getenv("CURL_SHOTS")?.let { dir ->
             File(dir).mkdirs()
-            File(dir, "curl-$progress-$pressY.png").outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            File(dir, "curl-$w-$progress-$pressY.png").outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         return out
     }
@@ -107,5 +112,47 @@ class CurlShaderTest {
         // 翻完：整页离开，露出的下一页上没有残留的阴影。
         val done = render(0.999f, 780f)
         for (x in 0 until w step 20) assertEquals(Color.BLUE, done.getPixel(x, h / 2))
+    }
+
+    /** 双页：左页红、右页绿；下一面左页黄、右页蓝（垫在底下）。 */
+    @Test
+    fun twoPageCurlTurnsTheRightPageAroundTheSpine() {
+        val sw = 800
+        fun spread(l: Int, rgt: Int) = Bitmap.createBitmap(sw, h, Bitmap.Config.ARGB_8888).also {
+            val c = Canvas(it)
+            c.drawRect(0f, 0f, sw / 2f, h.toFloat(), Paint().apply { color = l })
+            c.drawRect(sw / 2f, 0f, sw.toFloat(), h.toFloat(), Paint().apply { color = rgt })
+        }
+        val current = spread(Color.RED, Color.GREEN)
+        val next = spread(Color.YELLOW, Color.BLUE)
+        val spine = sw / 2f
+        fun Int.isRed() = Color.red(this) > 200 && Color.green(this) < 60 && Color.blue(this) < 60
+        fun Int.isYellowish() = Color.red(this) > 180 && Color.green(this) > 180 && Color.blue(this) < 100
+
+        // 刚掀起：左页原样不动，右页右边露出下一面的右页（蓝）。
+        val early = render(sw, current, 0.2f, 400f, spine, next)
+        assertTrue(early.getPixel(20, 400).isRed())
+        assertTrue(early.getPixel(spine.toInt() - 4, 400).isRed())
+        assertTrue(early.getPixel(sw - 4, 400).isBlue())
+
+        // 翻到一大半：纸翻过书脊，盖在左页上的是背面，印着下一面的左页（黄）；左页最左边还露着。
+        val g = CurlCylinder.of(sw.toFloat(), h.toFloat(), 0.7f, 400f, 400f, spine)!!
+        val half = render(sw, current, 0.7f, 400f, spine, next)
+        assertTrue(half.getPixel(4, 400).isRed())
+        assertTrue(half.getPixel(spine.toInt() - 40, 400).isYellowish())
+        val back = half.getPixel((g.fold.x - 10).toInt(), 400)
+        assertTrue(Integer.toHexString(back), back.isYellowish())
+        // 圆柱右边是下一面的右页；当前的右页（绿）一点不剩。
+        assertTrue(half.getPixel(sw - 4, 400).isBlue())
+        assertTrue(half.getPixel((g.fold.x + g.radius + 30).toInt(), 400).isBlue())
+        for (x in 0 until sw step 10) assertTrue(Color.green(half.getPixel(x, 400)).let { it < 200 || Color.red(half.getPixel(x, 400)) > 150 })
+
+        // 翻完：纸平平落在左页上，左半边全是下一面的左页，右半边是下一面的右页——和换过去之后一样，不跳。
+        val done = render(sw, current, 0.999f, 780f, spine, next)
+        for (x in 8 until sw step 40) {
+            val px = done.getPixel(x, 400)
+            if (x < spine - 8) assertTrue("$x ${Integer.toHexString(px)}", px.isYellowish())
+            if (x > spine + 8) assertTrue("$x ${Integer.toHexString(px)}", px.isBlue())
+        }
     }
 }

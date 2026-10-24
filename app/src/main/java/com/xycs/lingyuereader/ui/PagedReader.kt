@@ -16,21 +16,31 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -51,8 +61,13 @@ import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
+import kotlin.math.floor
 
 /** 书签丝带：长条，下端剪一个燕尾。 */
 private val RibbonShape = GenericShape { size, _ ->
@@ -140,15 +155,19 @@ internal fun PagedReader(
 
         val chapter = content.chapters[chapterIndex]
         val pages = remember(chapter, paginator, widthPx, heightPx) { pagesOf(chapterIndex)!! }
-        val prev = remember(chapterIndex, content, paginator, widthPx, heightPx) { pagesOf(chapterIndex - 1) }
-        val next = remember(chapterIndex, content, paginator, widthPx, heightPx) { pagesOf(chapterIndex + 1) }
+        // 相邻两章：分过的直接拿；没分过的等这一章先画出来、书页停着时再分（见下面），打开书、换章那一下不用一口气分三章。
+        val hasPrev = chapterIndex > 0
+        val hasNext = chapterIndex < content.chapters.lastIndex
+        var prev by remember(chapterIndex, content, paginator, widthPx, heightPx) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex - 1)) }
+        var next by remember(chapterIndex, content, paginator, widthPx, heightPx) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex + 1)) }
         // 双页时两页一组翻。
         val spreads = remember(pages, per) { pages.chunked(per) }
         val prevSpread = remember(prev, per) { prev?.chunked(per)?.last() }
         val nextSpread = remember(next, per) { next?.chunked(per)?.first() }
         // 两端各多放一页，显示相邻章节的末页/首页；翻到那里就切换章节，看起来是连着翻过去的。
-        val lead = if (prev != null) 1 else 0
-        val count = lead + spreads.size + if (next != null) 1 else 0
+        // 位置先占好，相邻章分好之前那一页只有纸和章名，页数不会因为分好了而变、当前页不会被挤开。
+        val lead = if (hasPrev) 1 else 0
+        val count = lead + spreads.size + if (hasNext) 1 else 0
 
         val startPage = remember(pages, start) {
             when {
@@ -160,9 +179,25 @@ internal fun PagedReader(
         val pager = key(per) { rememberPagerState(initialPage = lead + startPage / per) { count } }
         val scope = rememberCoroutineScope()
 
+        LaunchedEffect(chapterIndex, content, paginator, widthPx, heightPx) {
+            if ((!hasNext || next != null) && (!hasPrev || prev != null)) return@LaunchedEffect
+            // 先让这一章画出来（打开书的放大动画就在这几帧），再趁书页停着时分；往后翻的多，先分下一章。
+            repeat(2) { withFrameNanos { } }
+            snapshotFlow { pager.isScrollInProgress }.first { !it }
+            if (next == null) next = pagesOf(chapterIndex + 1)
+            withFrameNanos { }
+            snapshotFlow { pager.isScrollInProgress }.first { !it }
+            if (prev == null) prev = pagesOf(chapterIndex - 1)
+        }
+
         // 墨水屏上、选了“无动画”时翻页直接换过去，免得一页页地闪。
         suspend fun turnTo(target: Int) {
-            if (Effects.noMotion || mode == PageMode.NONE) pager.scrollToPage(target) else pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
+            when {
+                Effects.noMotion || mode == PageMode.NONE -> pager.scrollToPage(target)
+                // 仿真：纸要卷起、翻过、落下，比平移覆盖慢一些，曲线先慢后快再慢。
+                mode == PageMode.CURL -> pager.animateScrollToPage(target, animationSpec = tween(Motion.CURL_TURN, easing = Motion.Curl))
+                else -> pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
+            }
         }
 
         DisposableEffect(pager) {
@@ -172,6 +207,16 @@ internal fun PagedReader(
                 scope.launch { turnTo((pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)) }
             }
             onDispose { }
+        }
+
+        // 无动画：书页拖着不动，跨过一半（松手就会换页）时轻轻一震，免得以为没拖上。
+        if (mode == PageMode.NONE) {
+            val haptic = LocalHapticFeedback.current
+            LaunchedEffect(pager) {
+                snapshotFlow { pager.currentPage }.drop(1).collect {
+                    if (pager.isScrollInProgress) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+            }
         }
 
         // 听书：读到下一页时自动翻过去。
@@ -186,6 +231,36 @@ internal fun PagedReader(
             }
         }
 
+        // 双页仿真：翻起的右页背面就是下一面的左页。每面边画边录一份，翻页开始时把下一面拍成图给着色器。
+        val curlSpreads = twoUp && mode == PageMode.CURL
+        val spreadLayers = remember { HashMap<Int, GraphicsLayer>() }
+        var backside by remember { mutableStateOf<Pair<Int, ImageBitmap>?>(null) }
+        if (curlSpreads) {
+            LaunchedEffect(pager) {
+                snapshotFlow {
+                    val pos = pager.currentPage + pager.currentPageOffsetFraction
+                    val k = floor(pos).toInt()
+                    if (pos - k > 0.001f) k else null
+                }.distinctUntilChanged().collectLatest { k ->
+                    // 停稳了就丢掉，下次翻页重拍：书页的配色、划线可能变了。
+                    if (k == null) {
+                        backside = null
+                        return@collectLatest
+                    }
+                    if (backside?.first == k) return@collectLatest
+                    // 下一面可能这一帧才开始画，等几帧。
+                    repeat(4) {
+                        val layer = spreadLayers[k + 1]
+                        if (layer != null && layer.size.width > 0 && layer.size.height > 0) {
+                            runCatching { layer.toImageBitmap() }.getOrNull()?.let { backside = k to it }
+                            return@collectLatest
+                        }
+                        withFrameNanos { }
+                    }
+                }
+            }
+        }
+
         if (turn != null) {
             LaunchedEffect(pager, spreads) {
                 turn.chapterShare = 1f / spreads.size
@@ -197,8 +272,8 @@ internal fun PagedReader(
         LaunchedEffect(pager, pages) {
             snapshotFlow { pager.settledPage }.collect { p ->
                 when {
-                    prev != null && p == 0 -> onChapterChange(chapterIndex - 1, true)
-                    next != null && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
+                    hasPrev && p == 0 -> onChapterChange(chapterIndex - 1, true)
+                    hasNext && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
                     else -> {
                         val i = ((p - lead) * per).coerceIn(pages.indices)
                         val last = (i + per - 1).coerceAtMost(pages.lastIndex)
@@ -212,14 +287,24 @@ internal fun PagedReader(
         HorizontalPager(
             state = pager,
             beyondViewportPageCount = 1,
-            modifier = Modifier.fillMaxSize().clipToBook(inset),
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBook(inset)
+                .then(if (mode == PageMode.NONE) Modifier.dragHint(pager, styles.palette.accent) else Modifier),
         ) { p ->
             val (pageChapter, spread) = when {
-                prevSpread != null && p == 0 -> chapterIndex - 1 to prevSpread
-                nextSpread != null && p == count - 1 -> chapterIndex + 1 to nextSpread
+                hasPrev && p == 0 -> chapterIndex - 1 to (prevSpread ?: emptyList())
+                hasNext && p == count - 1 -> chapterIndex + 1 to (nextSpread ?: emptyList())
                 else -> chapterIndex to spreads[p - lead]
             }
             fun offset() = p - (pager.currentPage + pager.currentPageOffsetFraction)
+            val spreadLayer = rememberGraphicsLayer()
+            if (curlSpreads) {
+                DisposableEffect(p, spreadLayer) {
+                    spreadLayers[p] = spreadLayer
+                    onDispose { spreadLayers.remove(p, spreadLayer) }
+                }
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -242,7 +327,23 @@ internal fun PagedReader(
                     .bookPage(inset)
                     .then(
                         if (mode == PageMode.CURL) {
-                            Modifier.pageCurl({ offset().let { if (it < 0f && it > -1f) -it else 0f } }, touch, styles.palette.background)
+                            Modifier.pageCurl(
+                                progress = { offset().let { if (it < 0f && it > -1f) -it else 0f } },
+                                touch = touch,
+                                paper = styles.palette.background,
+                                spine = if (twoUp) 0.5f else 0f,
+                                backside = { backside?.takeIf { it.first == p }?.second },
+                            )
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .then(
+                        if (curlSpreads) {
+                            Modifier.drawWithContent {
+                                spreadLayer.record { this@drawWithContent.drawContent() }
+                                drawLayer(spreadLayer)
+                            }
                         } else {
                             Modifier
                         },
@@ -379,4 +480,28 @@ private fun PageContent(
             }
         }
     }
+}
+
+/**
+ * 无动画翻页的拖动提示：书页不动，往哪边拖，那一侧边缘就亮起一道强调色的光，拖得越远越亮；
+ * 过了一半（松手会换页）最亮。松手停稳就消失。
+ */
+private fun Modifier.dragHint(pager: androidx.compose.foundation.pager.PagerState, color: Color): Modifier = drawWithContent {
+    drawContent()
+    if (!pager.isScrollInProgress) return@drawWithContent
+    val f = pager.currentPage + pager.currentPageOffsetFraction - pager.settledPage
+    val strength = (kotlin.math.abs(f) * 1.6f).coerceIn(0f, 0.55f)
+    if (strength < 0.01f) return@drawWithContent
+    val w = 22.dp.toPx()
+    val forward = f > 0f
+    val x0 = if (forward) size.width - w else 0f
+    drawRect(
+        Brush.horizontalGradient(
+            if (forward) listOf(Color.Transparent, color.copy(alpha = strength)) else listOf(color.copy(alpha = strength), Color.Transparent),
+            startX = x0,
+            endX = x0 + w,
+        ),
+        topLeft = Offset(x0, 0f),
+        size = Size(w, size.height),
+    )
 }

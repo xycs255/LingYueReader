@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -251,11 +252,17 @@ fun rememberEveningWarmth(enabled: Boolean): Float {
     return if (enabled) warmth else 0f
 }
 
-/** 配色变化时渐变过去（约 3 秒），不突然一闪。 */
+/**
+ * 配色变化时渐变过去，不突然一闪：环境光、日落变暖这类自己发生的变化慢慢来（[Motion.PALETTE]，约 3 秒）；
+ * 读者在外观里亲手换配色（[choice] 变了）就快些（[Motion.MEDIUM]），点了马上看到。
+ */
 @Composable
-fun animatePalette(target: ReaderPalette): ReaderPalette {
+fun animatePalette(target: ReaderPalette, choice: Any? = null): ReaderPalette {
     if (Effects.noMotion) return target
-    val spec = tween<Color>(3000)
+    var lastChoice by remember { mutableStateOf(choice) }
+    val chosen = choice != lastChoice
+    SideEffect { lastChoice = choice }
+    val spec = tween<Color>(if (chosen) Motion.MEDIUM else Motion.PALETTE, easing = Motion.Standard)
     val background by animateColorAsState(target.background, spec, label = "background")
     val text by animateColorAsState(target.text, spec, label = "text")
     val secondary by animateColorAsState(target.secondary, spec, label = "secondary")
@@ -307,8 +314,8 @@ fun BreakReminder(
     }
     AnimatedVisibility(
         visible = showing,
-        enter = Effects.enter(fadeIn(tween(1500))),
-        exit = Effects.exit(fadeOut(tween(1200))),
+        enter = Effects.enter(fadeIn(tween(Motion.REST_FADE_IN))),
+        exit = Effects.exit(fadeOut(tween(Motion.REST_FADE_OUT))),
     ) {
         RestScene(
             night = palette.isDark,

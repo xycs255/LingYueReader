@@ -9,6 +9,7 @@ package com.xycs.lingyuereader.ui.glass
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -18,6 +19,7 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import com.xycs.lingyuereader.ui.Effects
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.blur.RuntimeShader
@@ -29,8 +31,9 @@ internal class InteractiveHighlight(
     private val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset },
 ) {
 
-    private val pressProgressAnimationSpec = spring(0.5f, 300f, 0.001f)
-    private val positionAnimationSpec = spring(0.5f, 300f, Offset.VisibilityThreshold)
+    // 关了动画时这些都直接跳到位。
+    private val pressProgressAnimationSpec get() = if (Effects.noMotion) snap() else spring(0.5f, 300f, 0.001f)
+    private val positionAnimationSpec get() = if (Effects.noMotion) snap() else spring(0.5f, 300f, Offset.VisibilityThreshold)
 
     private val pressProgressAnimation = Animatable(0f, 0.001f)
     private val positionAnimation = Animatable(Offset.Zero, Offset.VectorConverter, Offset.VisibilityThreshold)

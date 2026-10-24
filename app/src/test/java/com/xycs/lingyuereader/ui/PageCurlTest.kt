@@ -75,4 +75,21 @@ class PageCurlTest {
             assertTrue("$y: ${done.fold}", done.fold.x + done.radius <= 0.01f)
         }
     }
+
+    @Test
+    fun twoPageCurlLandsFlatOnTheLeftPage() {
+        // 书脊在 400：角从右边走到最左，纸钉在书脊上。
+        val (_, end) = curlCorner(800f, 800f, 1f, 700f, 700f, left = 400f)
+        assertEquals(0f, end.x, 0.01f)
+        // 翻完：半径收到 0，折痕正好在书脊上，纸平平落在左页上。
+        val done = CurlCylinder.of(800f, 800f, 1f, 700f, 700f, left = 400f)!!
+        assertEquals(0f, done.radius, 0.01f)
+        assertEquals(400f, done.fold.x, 0.5f)
+        // 平折：翻起的那块只在右页，翻完时镜像正好盖住左页。
+        val g = CurlGeometry.of(800f, 800f, 0.5f, 400f, left = 400f)!!
+        assertTrue(g.lifted.all { it.x >= 400f - 0.01f })
+        assertTrue(g.flat.all { it.x >= 400f - 0.01f })
+        val flatDone = CurlGeometry.of(800f, 800f, 1f, 400f, left = 400f)!!
+        flatDone.lifted.map(flatDone::reflect).forEach { assertTrue("$it", it.x <= 400.01f) }
+    }
 }

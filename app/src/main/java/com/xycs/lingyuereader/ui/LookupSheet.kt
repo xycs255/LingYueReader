@@ -8,6 +8,11 @@ import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.produceState
@@ -91,11 +96,18 @@ internal fun LookupSheet(
         // 先是一张小卡片：词、读音、头几条释义、原句；“完整释义”再展开成整页（各本词典、微调选区、相关词语）。
         // 微调选区时词会变，展开了就一直展开；换一段再查才回到小卡片。
         var full by remember(lookup.chapterIndex, lookup.block) { mutableStateOf(false) }
-        if (!full) {
+        // 展开时面板高度顺着长上去，新内容淡入，不一下子跳高。
+        AnimatedContent(
+            targetState = full,
+            transitionSpec = {
+                (fadeIn(Motion.standard(Motion.MEDIUM, delay = Motion.SHORT / 2)) togetherWith fadeOut(Motion.exit()))
+                    .using(SizeTransform(clip = true) { _, _ -> Motion.standard(Motion.MEDIUM) })
+            },
+            label = "lookupExpand",
+        ) { expanded ->
+        if (!expanded) {
             CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, onAnnotate) { full = true }
-            return@ProvideGroupedColors
-        }
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+        } else Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("查词", back = null, action = "管理词典" to onManage) {}
             Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (lookup.range != null) {
@@ -183,6 +195,7 @@ internal fun LookupSheet(
                 row { NavRow("百度汉语") { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") } }
                 row { NavRow("其他词典 App") { sendToApps(context, lookup.word) } }
             }
+        }
         }
     }
 }

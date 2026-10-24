@@ -5,6 +5,7 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -132,6 +133,10 @@ class ReadingAnchorUiTest {
         chooseRelaxedLayout() // 同时改变字号和行距，触发重新分页。
         waitForText(marker)
         compose.waitUntil(10_000) { savedProgress().getInt("item") == targetBlock + 1 }
+        // 打开面板时菜单已收起，再点一下叫出来。
+        if (compose.onAllNodesWithContentDescription("返回书架").fetchSemanticsNodes().isEmpty()) {
+            compose.onRoot().performTouchInput { click(center) }
+        }
         compose.onNodeWithContentDescription("返回书架").performClick()
         waitForText("长篇测试书")
         compose.onAllNodesWithText("长篇测试书")[0].performClick()

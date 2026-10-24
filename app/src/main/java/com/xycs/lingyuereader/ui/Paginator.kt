@@ -151,6 +151,9 @@ internal class PageCache(private val keep: Int = 5) {
     private var key: Any? = null
     private val pages = LinkedHashMap<Int, List<Page>>()
 
+    /** 已经分好的就给，没分过的不分。 */
+    fun peek(key: Any, chapter: Int): List<Page>? = if (key == this.key) pages[chapter] else null
+
     fun get(key: Any, chapter: Int, paginate: () -> List<Page>?): List<Page>? {
         if (key != this.key) {
             pages.clear()
