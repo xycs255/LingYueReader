@@ -1257,7 +1257,7 @@ private fun BookProgress(
             ChapterStep("下一章", LingYueIcons.ChevronForward, before = false, enabled = chapter < count - 1, palette, onNext)
         }
         ProvideGroupedColors(dark = palette.isDark, tint = palette.accent) {
-            IosSlider(
+            LingYueSlider(
                 value = value,
                 onValueChange = { dragging = it },
                 valueRange = 0f..count.toFloat(),

@@ -247,7 +247,7 @@ private fun RuleRow(rule: ReplaceRule, matches: String, samples: List<String>, o
             Icon(LingYueIcons.Delete, contentDescription = "删除这条", tint = c.destructive)
         }
         Box(Modifier.toggleable(value = rule.enabled, role = androidx.compose.ui.semantics.Role.Switch, onValueChange = onToggle).padding(4.dp)) {
-            IosSwitch(rule.enabled)
+            LingYueSwitch(rule.enabled)
         }
     }
 }

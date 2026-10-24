@@ -148,39 +148,39 @@ internal fun SettingsSheet(
     }
 }
 
-/** 面板顶上的标题栏：二级页左边有“‹ 返回”；[action] 是右边的主操作（强调色半粗字，像苹果的“完成”）。 */
+/** 面板顶上的标题栏（HyperOS 底部面板的写法）：左边圆形返回钮，中间标题，右边强调色的主操作（“完成”“划线”）。 */
 @Composable
 internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -> Unit>? = null, onBack: () -> Unit) {
     val c = LocalGroupedColors.current
-    Box(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp)) {
+    Box(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 12.dp)) {
         if (back != null) {
-            Row(
+            Box(
                 Modifier
                     .align(Alignment.CenterStart)
-                    .heightIn(min = 44.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(44.dp)
+                    .clip(CircleShape)
                     .clickable(onClick = onBack)
-                    .padding(end = 8.dp)
-                    .semantics { contentDescription = "返回$back" },
-                verticalAlignment = Alignment.CenterVertically,
+                    .semantics { contentDescription = "返回$back"; role = Role.Button },
+                contentAlignment = Alignment.Center,
             ) {
-                Icon(LingYueIcons.ChevronBackward, contentDescription = null, tint = c.tint, modifier = Modifier.size(24.dp))
-                Text(back, color = c.tint, fontSize = 17.sp)
+                Box(Modifier.size(36.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+                    Icon(LingYueIcons.ChevronBackward, contentDescription = null, tint = c.label, modifier = Modifier.size(20.dp))
+                }
             }
         }
-        Text(title, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.Center))
+        Text(title, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.align(Alignment.Center))
         if (action != null) {
             Text(
                 action.first,
                 color = c.tint,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .heightIn(min = 44.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(22.dp))
                     .clickable(role = Role.Button, onClick = action.second)
-                    .padding(horizontal = 10.dp, vertical = 11.dp),
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
             )
         }
     }
@@ -190,7 +190,7 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
 
 @Composable
 private fun MainPage(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit, fonts: List<String>, open: (SettingsPage) -> Unit) {
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         FontSizeCard(settings.fontSize) { size -> update { it.copy(fontSize = size) } }
         BrightnessRow(settings.brightness) { b -> update { it.copy(brightness = b) } }
         ThemeCircles(settings) { theme -> update { it.copy(theme = theme) } }
@@ -233,7 +233,7 @@ private fun MorePage(settings: ReaderSettings, fonts: List<String>, open: (Setti
 @Composable
 private fun FontSizeCard(size: Float, onChange: (Float) -> Unit) {
     val c = LocalGroupedColors.current
-    Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(18.dp)).background(c.cell), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(16.dp)).background(c.cell), verticalAlignment = Alignment.CenterVertically) {
         @Composable
         fun Step(textSize: Int, enabled: Boolean, description: String, delta: Float) {
             Box(
@@ -265,9 +265,9 @@ private fun BrightnessRow(brightness: Float, onChange: (Float) -> Unit) {
     val auto = brightness < 0
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(LingYueIcons.Brightness, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
-        // 亮度条用墨色，不用强调色：它不是“选中”，只是一个量。
-        CompositionLocalProvider(LocalGroupedColors provides c.copy(tint = c.label)) {
-            IosSlider(
+        // 亮度条用灰色，不用强调色：它不是“选中”，只是一个量。
+        CompositionLocalProvider(LocalGroupedColors provides c.copy(tint = c.secondary)) {
+            LingYueSlider(
                 value = if (auto) 0.5f else brightness,
                 onValueChange = { v -> onChange(v.coerceAtLeast(0.02f)) },
                 valueRange = 0f..1f,

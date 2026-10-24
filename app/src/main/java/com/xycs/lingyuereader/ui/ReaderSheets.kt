@@ -115,7 +115,7 @@ internal fun CatalogSheet(
                     }
                 }
             }
-            Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 SegmentedControl(
                     listOf(0 to "目录 ${chapters.size}", 1 to "书签 ${marks.bookmarks.size}", 2 to "批注 ${marks.notes.size}"),
                     tab,
@@ -219,17 +219,17 @@ internal fun CatalogSheet(
 
 /** 长列表里的一格：同一组的格子连成一张圆角卡片（首尾圆角、中间细线），像分组列表但可以懒加载。 */
 @Composable
-private fun GroupedListCell(index: Int, count: Int, separatorStart: Dp = 16.dp, content: @Composable () -> Unit) {
+private fun GroupedListCell(index: Int, count: Int, @Suppress("UNUSED_PARAMETER") separatorStart: Dp = 0.dp, content: @Composable () -> Unit) {
     val c = LocalGroupedColors.current
-    val r = 12.dp
+    val r = 16.dp
     val shape = RoundedCornerShape(
         topStart = if (index == 0) r else 0.dp,
         topEnd = if (index == 0) r else 0.dp,
         bottomStart = if (index == count - 1) r else 0.dp,
         bottomEnd = if (index == count - 1) r else 0.dp,
     )
-    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(shape).background(c.cell)) {
-        if (index > 0) Box(Modifier.padding(start = separatorStart).fillMaxWidth().height(0.5.dp).background(c.separator))
+    // miuix 卡片里不画分隔线，一行行靠留白分开。
+    Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
         content()
     }
 }
