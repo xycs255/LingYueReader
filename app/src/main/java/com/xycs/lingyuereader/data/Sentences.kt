@@ -15,7 +15,7 @@ object Sentences {
     fun split(blocks: List<Block>, fromBlock: Int = 0, fromChar: Int = 0): List<Utterance> {
         val out = mutableListOf<Utterance>()
         for (b in fromBlock.coerceAtLeast(0) until blocks.size) {
-            val text = blocks[b].displayText ?: continue
+            val text = blocks[b].spokenText ?: continue
             var start = if (b == fromBlock) fromChar.coerceIn(0, text.length) else 0
             // 从句子中间开始时，退回到这句开头。
             if (start > 0) start = sentenceStart(text, start)

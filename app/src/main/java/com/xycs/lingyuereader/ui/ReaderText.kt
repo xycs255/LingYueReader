@@ -212,6 +212,7 @@ internal fun blockText(
     selectedColor: Color = Color.Unspecified,
     indent: Boolean = true,
     footnoteColor: Color = Color.Unspecified,
+    translationColor: Color = Color.Unspecified,
 ): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
@@ -226,6 +227,8 @@ internal fun blockText(
         if (shift > 0) append(INDENT)
         append(parsed.text)
         parsed.bold.forEach { addStyle(SpanStyle(fontWeight = FontWeight.Bold), it.first + shift, it.last + 1 + shift) }
+        // AI 译文：小一号、淡一些，接在原文下面。分页时按同样的字号算。
+        parsed.translation.forEach { addStyle(SpanStyle(fontSize = 0.88.em, color = translationColor), it.first + shift, it.last + 1 + shift) }
         // 注释角标：小号上标、强调色；点它弹出注释。
         parsed.footnotes.forEach { (r, key) ->
             val start = r.first + shift
@@ -288,7 +291,7 @@ internal fun BlockView(
     val gap = styles.gap
     val selected = highlight?.rangeIn(blockIndex, block.displayText?.length ?: 0)
     val text = remember(block, notes, speaking, selected, styles.settings.indent, palette.accent) {
-        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent)
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent, palette.secondary)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     val tap by rememberUpdatedState(onTap)

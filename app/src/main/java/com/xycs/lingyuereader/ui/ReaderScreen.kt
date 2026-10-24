@@ -890,7 +890,7 @@ private fun Reader(
                             GlassMenu {
                                 ListPopupColumn {
                                     val block = pos.block.coerceAtLeast(0)
-                                    aiMenuItems(
+                                    AiMenuItems(
                                         onPick = { item ->
                                             aiMenu = false
                                             menuVisible = false
@@ -899,6 +899,8 @@ private fun Reader(
                                                 AiMenuItem.ASK_BOOK -> vm.startAskBook(chapterIndex, block)
                                                 AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
                                                 AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
+                                                AiMenuItem.NOTES -> aiTool = AiTool.NOTES
+                                                AiMenuItem.TRANSLATE -> aiTool = AiTool.TRANSLATE
                                             }
                                         },
                                     )

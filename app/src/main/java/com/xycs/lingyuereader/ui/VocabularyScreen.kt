@@ -82,6 +82,17 @@ import java.util.Locale
 @Composable
 fun VocabularyScreen(vm: AppViewModel) {
     val words by vm.vocab.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val vocabAi by vm.vocabAi.collectAsStateWithLifecycle()
+    val filling by vm.vocabFilling.collectAsStateWithLifecycle()
+    val message by vm.messages.collectAsStateWithLifecycle()
+    val snackbar = remember { top.yukonga.miuix.kmp.basic.SnackbarHostState() }
+    LaunchedEffect(message) {
+        message?.let {
+            vm.consumeMessage()
+            snackbar.showSnackbar(it)
+        }
+    }
     var mastered by rememberSaveable { mutableStateOf(false) }
     var reviewing by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
@@ -109,6 +120,16 @@ fun VocabularyScreen(vm: AppViewModel) {
                     }
                 },
                 actions = {
+                    // 开了 AI 助手、有词还没释义时：一键补上中文释义。
+                    if (!reviewing && aiConfig.ready && words.any { DictGloss.clean(it.gloss).isBlank() }) {
+                        if (filling) {
+                            top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 20.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                        } else {
+                            IconButton(onClick = vm::fillVocabGlosses) {
+                                Icon(LingYueIcons.Sparkle, contentDescription = "AI 补释义")
+                            }
+                        }
+                    }
                     if (!reviewing && words.isNotEmpty()) {
                         IconButton(
                             onClick = { shareText(context, "生词本", vm.vocabularyMarkdown(words)) },
@@ -120,6 +141,7 @@ fun VocabularyScreen(vm: AppViewModel) {
                 },
             )
         },
+        snackbarHost = { top.yukonga.miuix.kmp.basic.SnackbarHost(snackbar, modifier = Modifier.padding(bottom = LocalTabBarInset.current)) },
     ) { padding ->
         if (reviewing) {
             Review(due, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.reviewWord(w.word, known) }, onDone = { reviewing = false })
@@ -181,6 +203,8 @@ fun VocabularyScreen(vm: AppViewModel) {
                     modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()),
                     onToggleMastered = { vm.setMastered(w.word, !w.mastered) },
                     onRemove = { vm.removeFromVocabulary(w.word) },
+                    ai = vocabAi[w.word],
+                    onAi = { vm.vocabExample(w.word) }.takeIf { aiConfig.ready },
                 )
             }
         }
@@ -194,7 +218,16 @@ private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
  * 下面释义、书里的原句（左边一道竖线，像引文），最后一行灰色小字写出处和下次复习。
  */
 @Composable
-private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
+private fun WordCard(
+    w: VocabWord,
+    modifier: Modifier = Modifier,
+    onToggleMastered: () -> Unit,
+    onRemove: () -> Unit,
+    /** 正在生成的 AI 例句。 */
+    ai: com.xycs.lingyuereader.ai.AiTurn? = null,
+    /** 开了 AI 助手时：生成例句和用法。 */
+    onAi: (() -> Unit)? = null,
+) {
     val scheme = MiuixTheme.colorScheme
     GlassCard(modifier.padding(horizontal = 12.dp, vertical = 6.dp), insideMargin = PaddingValues(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -203,6 +236,7 @@ private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMaster
                 Text(w.reading, color = scheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp))
             }
             Spacer(Modifier.weight(1f))
+            if (onAi != null && ai == null) CardAction(LingYueIcons.Sparkle, if (w.example.isBlank()) "AI 例句" else "重新生成例句", onAi)
             CardAction(if (w.mastered) LingYueIcons.Timer else LingYueIcons.Check, if (w.mastered) "重新学习" else "已掌握", onToggleMastered)
             CardAction(LingYueIcons.Delete, "删除", onRemove)
         }
@@ -222,6 +256,20 @@ private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMaster
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(start = 10.dp),
                     )
+                }
+            }
+            // AI 例句：生成中边出边显示，存下的直接显示。
+            val example = ai?.answer?.takeIf { it.isNotBlank() } ?: w.example.takeIf { it.isNotBlank() }
+            if (example != null || ai != null) {
+                Column(
+                    Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(scheme.primary.copy(alpha = 0.07f)).padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Text("AI 例句", color = scheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    when {
+                        ai?.error != null -> Text(ai.error, color = scheme.error, fontSize = 13.sp)
+                        example != null -> Text(example.trim(), fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 2.dp))
+                        else -> Text("正在生成……", color = scheme.onSurfaceVariantSummary, fontSize = 13.sp)
+                    }
                 }
             }
             Text(
@@ -384,6 +432,9 @@ private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
             if (back) {
                 if (w.reading.isNotBlank()) Text(w.reading, color = c.primary, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
                 Text(w.gloss.ifBlank { "（没有记下释义）" }, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+                if (w.example.isNotBlank()) {
+                    Text(w.example.trim(), color = c.onSurfaceVariantSummary, fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 14.dp))
+                }
             } else if (w.context.isNotBlank()) {
                 Text(
                     highlighted(w.context, w.word),

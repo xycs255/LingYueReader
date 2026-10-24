@@ -24,6 +24,8 @@ data class VocabWord(
     val reviewedAt: Long = 0,
     /** 复习间隔（天）：0 表示刚收进来或上次没记住。 */
     val interval: Int = 0,
+    /** AI 给的例句和用法（可能为空）。 */
+    val example: String = "",
     /** 下次该复习的时间；0 表示随时。 */
     val due: Long = 0,
 ) {
@@ -51,6 +53,17 @@ class Vocabulary internal constructor(private val file: File, private val atomic
     }
 
     /** 已收入的词又查了一次。 */
+    /** AI 补的释义、读音、例句：给了的才改，原有的读音不覆盖。 */
+    fun annotate(word: String, gloss: String? = null, reading: String? = null, example: String? = null) = update { list ->
+        list.map { w ->
+            if (w.word != word) w else w.copy(
+                gloss = gloss?.takeIf { it.isNotBlank() } ?: w.gloss,
+                reading = w.reading.ifBlank { reading.orEmpty() },
+                example = example ?: w.example,
+            )
+        }
+    }
+
     fun touch(word: String) = update { list -> list.map { if (it.word == word) it.copy(lookups = it.lookups + 1) else it } }
 
     fun remove(word: String) = update { list -> list.filterNot { it.word == word } }
@@ -105,7 +118,7 @@ class Vocabulary internal constructor(private val file: File, private val atomic
                 JSONObject().put("word", w.word).put("reading", w.reading).put("gloss", w.gloss).put("context", w.context)
                     .put("bookId", w.bookId).put("bookTitle", w.bookTitle).put("addedAt", w.addedAt)
                     .put("lookups", w.lookups).put("mastered", w.mastered).put("reviewedAt", w.reviewedAt)
-                    .put("interval", w.interval).put("due", w.due),
+                    .put("interval", w.interval).put("due", w.due).put("example", w.example),
             )
         }
         file.parentFile?.mkdirs()
@@ -140,6 +153,7 @@ class Vocabulary internal constructor(private val file: File, private val atomic
                 reviewedAt = o.optLong("reviewedAt"),
                 interval = o.optInt("interval"),
                 due = o.optLong("due"),
+                example = o.optString("example"),
             )
         }
     }

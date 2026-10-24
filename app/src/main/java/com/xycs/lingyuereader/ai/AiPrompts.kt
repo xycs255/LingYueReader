@@ -16,9 +16,13 @@ object AiPrompts {
     const val CONTEXT_CHARS = 600
 
     fun system(title: String, author: String?, length: AnswerLength = AnswerLength.MEDIUM): String = buildString {
-        append("你是阅读软件“灵阅”里的读书助手。读者正在读《").append(title).append("》")
-        if (!author.isNullOrBlank()) append("（").append(author).append("）")
-        append("。\n")
+        append("你是阅读软件“灵阅”里的读书助手。")
+        if (title.isNotBlank()) {
+            append("读者正在读《").append(title).append("》")
+            if (!author.isNullOrBlank()) append("（").append(author).append("）")
+            append("。")
+        }
+        append("\n")
         append("- 用简体中文回答，清楚、简洁，不说客套话；用纯文本，不用 Markdown 标题和表格。\n")
         append("- 只依据给出的原文和常识回答。即使你知道这本书，也绝不透露读者还没读到的情节、人物结局或谜底。\n")
         append("- 不确定时直说不确定，不要编造。\n")
