@@ -55,6 +55,11 @@ class AiEnhanceTest {
         assertEquals(1, history.list().size)
         history.save(AiSession(AiTask.Recap(ReadPos(0, 0), "")))
         assertEquals(1, history.list().size)
+        // 同一毫秒里连存几段，也按存的先后排（新的在前）。
+        history.clear()
+        val titles = (1..8).map { "第$it 段" }
+        titles.forEach { t -> history.save(AiSession(AiTask.Selection(t, "", ""), listOf(AiTurn("解释", "答", loading = false)))) }
+        assertEquals(titles.reversed(), history.list().map { it.title })
         dir.deleteRecursively()
     }
 

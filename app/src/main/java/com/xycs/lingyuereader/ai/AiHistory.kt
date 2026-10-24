@@ -25,8 +25,11 @@ class AiHistory(private val file: () -> File?) {
         if (session.task is AiTask.Recap) return
         val done = session.turns.filter { !it.loading && it.error == null }
         if (done.isEmpty()) return
-        val all = read().filterNot { it.optString("id") == session.id } + encode(session.copy(turns = done))
-        write(all.sortedByDescending { it.optLong("updatedAt") }.take(LIMIT))
+        val others = read().filterNot { it.optString("id") == session.id }
+        // 刚存的排最前：同一毫秒里连存两段时，时间往后挪一毫秒，不和上一段并列。
+        val latest = others.maxOfOrNull { it.optLong("updatedAt") } ?: 0L
+        val saved = encode(session.copy(turns = done)).let { o -> o.put("updatedAt", maxOf(o.optLong("updatedAt"), latest + 1)) }
+        write((others + saved).sortedByDescending { it.optLong("updatedAt") }.take(LIMIT))
     }
 
     fun remove(id: String) = write(read().filterNot { it.optString("id") == id })
