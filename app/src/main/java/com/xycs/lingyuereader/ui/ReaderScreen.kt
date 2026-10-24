@@ -279,6 +279,8 @@ private fun Reader(
     val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
     // 翻页模式分好的页：换章时阅读区重建，这份留着，前后章不必重分。
     val pageCache = remember(content) { PageCache() }
+    // 正在翻的那一页翻到哪：书页厚度跟着它走。
+    val pageTurn = remember(content) { PageTurn() }
     val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
@@ -611,6 +613,11 @@ private fun Reader(
                 }
             },
     ) {
+        // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
+        val bookFraction = run {
+            val total = chapterStarts.last().coerceAtLeast(1)
+            ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+        }
         // 书页（正文和状态行）记录成玻璃的取样源，菜单栏、控制条、操作条和底部面板都透出它。
         Box(Modifier.fillMaxSize().recordGlass(glassBackdrop)) {
         val landingBlock = screen.blockIndex ?: -1
@@ -648,68 +655,81 @@ private fun Reader(
                         speaking = speaking,
                     )
                 }
-            } else if (settings.pageMode == PageMode.VERTICAL) {
-                key(screen, content, settings.layoutKey) {
-                    val start = remember { pos }
-                    val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
-                    VerticalReader(
-                        content = content,
-                        chapterIndex = chapterIndex,
-                        start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
-                        styles = styles,
-                        typeface = typeface,
-                        marks = marks,
-                        topInset = topInset,
-                        bottomInset = bottomInset,
-                        onTap = onTap,
-                        onLongPress = { block, char -> vm.lookupAt(chapterIndex, block, char) },
-                        onPosition = { block, char, fraction, label ->
-                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
-                        },
-                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
-                        registerTurner = { turner.turn = it },
-                        speaking = speaking,
-                        selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
-                    )
-                }
             } else {
-                // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
-                // 只在排版设置变化时重新分页；配色随环境渐变时不必。
-                key(screen, content, settings.layoutKey) {
-                    val start = remember { pos }
-                    PagedReader(
-                        content = content,
-                        chapterIndex = chapterIndex,
-                        start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
-                        styles = styles,
+                // 书页夹在两摞纸中间（书页厚度），翻页时两摞跟着换。
+                val turnedReader: @Composable () -> Unit = {
+                    if (settings.pageMode == PageMode.VERTICAL) {
+                        key(screen, content, settings.layoutKey) {
+                            val start = remember { pos }
+                            val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
+                            VerticalReader(
+                                content = content,
+                                chapterIndex = chapterIndex,
+                                start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                                styles = styles,
+                                typeface = typeface,
+                                marks = marks,
+                                topInset = topInset,
+                                bottomInset = bottomInset,
+                                onTap = onTap,
+                                onLongPress = { block, char -> vm.lookupAt(chapterIndex, block, char) },
+                                onPosition = { block, char, fraction, label ->
+                                    pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
+                                },
+                                onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                                registerTurner = { turner.turn = it },
+                                speaking = speaking,
+                                turn = pageTurn,
+                                selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
+                            )
+                        }
+                    } else {
+                        // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
+                        // 只在排版设置变化时重新分页；配色随环境渐变时不必。
+                        key(screen, content, settings.layoutKey) {
+                            val start = remember { pos }
+                            PagedReader(
+                                content = content,
+                                chapterIndex = chapterIndex,
+                                start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
+                                styles = styles,
+                                mode = settings.pageMode,
+                                marks = marks,
+                                topInset = topInset,
+                                bottomInset = bottomInset,
+                                onTap = onTap,
+                                selector = tracker,
+                                onFootnote = { footnote = it },
+                                selected = selected,
+                                onPosition = { block, char, fraction, label ->
+                                    pos = Position(chapterIndex, block + HEADER_ITEMS, 0, pageSourceChar(chapter, block, char, settings.indent), fraction, label)
+                                },
+                                onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                                registerTurner = { turner.turn = it },
+                                speaking = speaking,
+                                pageCache = pageCache,
+                                turn = pageTurn,
+                            )
+                        }
+                    }
+                }
+                if (settings.pageEdges) {
+                    BookEdges(
+                        fraction = bookFraction,
+                        pageShare = pageTurn.chapterShare * chapter.charCount / chapterStarts.last().coerceAtLeast(1),
+                        turn = pageTurn,
                         mode = settings.pageMode,
-                        marks = marks,
-                        topInset = topInset,
-                        bottomInset = bottomInset,
-                        onTap = onTap,
-                        selector = tracker,
-                        onFootnote = { footnote = it },
-                        selected = selected,
-                        onPosition = { block, char, fraction, label ->
-                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, pageSourceChar(chapter, block, char, settings.indent), fraction, label)
-                        },
-                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
-                        registerTurner = { turner.turn = it },
-                        speaking = speaking,
-                        pageCache = pageCache,
+                        palette = palette,
+                        rightToLeft = settings.pageMode == PageMode.VERTICAL,
+                        thickness = remember(content) { bookThickness(chapterStarts.last()) },
+                        content = turnedReader,
                     )
+                } else {
+                    turnedReader()
                 }
             }
         }
 
-        // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
-        val bookFraction = run {
-            val total = chapterStarts.last().coerceAtLeast(1)
-            ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
-        }
-        if (settings.pageEdges && settings.pageMode != PageMode.SCROLL) {
-            PageEdges(bookFraction, palette, rightToLeft = settings.pageMode == PageMode.VERTICAL, topInset, bottomInset)
-        }
         StatusLine(
             chapter.title,
             listOfNotNull("${chapterIndex + 1}/${content.chapters.size}", pos.label, chapterLeft).joinToString(" · "),
@@ -1227,33 +1247,6 @@ private fun PressRingOverlay(ring: PressRing, color: Color) {
             size = Size(r * 2, r * 2),
             style = Stroke(stroke, cap = StrokeCap.Round),
         )
-    }
-}
-
-/**
- * 书页厚度：屏幕两侧画几道细线，左边是读过的、右边是还没读的（竖排反过来），
- * 读得越多左边越厚。纸书拿在手里就能感到这个，电子书读者恰恰在“情节先后”上记得更差（Mangen 等 2019）。
- */
-@Composable
-private fun PageEdges(fraction: Float, palette: ReaderPalette, rightToLeft: Boolean, topInset: Dp, bottomInset: Dp) {
-    val shown by animateFloatAsState(fraction, Motion.standard(Motion.MEDIUM), label = "edges")
-    Canvas(Modifier.fillMaxSize()) {
-        val lines = 6
-        // 读满一份才多一道，刚翻开时左边没有。
-        val read = (shown * lines).toInt().coerceIn(0, lines)
-        val gap = 2.dp.toPx()
-        val stroke = 1.dp.toPx()
-        val top = topInset.toPx() + 12.dp.toPx()
-        val bottom = size.height - bottomInset.toPx() - 12.dp.toPx()
-        fun side(count: Int, fromLeft: Boolean) {
-            for (i in 0 until count) {
-                val x = if (fromLeft) gap + i * gap else size.width - gap - i * gap
-                // 越靠外越淡，像纸页一层层叠着。
-                drawLine(palette.secondary.copy(alpha = 0.32f - i * 0.04f), Offset(x, top + i * 1.5f), Offset(x, bottom - i * 1.5f), stroke)
-            }
-        }
-        side(if (rightToLeft) lines - read else read, fromLeft = true)
-        side(if (rightToLeft) read else lines - read, fromLeft = false)
     }
 }
 

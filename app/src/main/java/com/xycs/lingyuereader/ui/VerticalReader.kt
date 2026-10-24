@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.Chapter
@@ -206,6 +207,8 @@ internal fun VerticalReader(
     onChapterChange: (index: Int, fromEnd: Boolean) -> Unit,
     registerTurner: ((Boolean) -> Unit) -> Unit,
     speaking: Utterance? = null,
+    /** 翻到哪了，书页厚度跟着走。 */
+    turn: PageTurn? = null,
     /** 正在查的词：块和范围。 */
     selected: Pair<Int, IntRange>? = null,
 ) {
@@ -216,7 +219,9 @@ internal fun VerticalReader(
         val colW = fontPx * styles.settings.lineHeight
         val paddingPx = with(density) { styles.horizontalPadding.toPx() }
         val topPx = with(density) { topInset.toPx() }
-        val widthPx = with(density) { maxWidth.toPx() } - paddingPx * 2
+        // 书页厚度：书页夹在两摞纸中间，按两摞之间的宽度排版。
+        val inset = LocalBookInset.current
+        val widthPx = with(density) { (maxWidth - (inset?.total ?: 0.dp)).toPx() } - paddingPx * 2
         val heightPx = with(density) { (maxHeight - topInset - bottomInset).toPx() }
         val rows = (heightPx / cellH).toInt().coerceAtLeast(4) - 1 // 留一格给悬挂的标点
         val columns = (widthPx / colW).toInt().coerceAtLeast(2)
@@ -255,6 +260,13 @@ internal fun VerticalReader(
             val target = pages.indexOfFirst { it.contains(u.block, u.start) }
             if (target >= 0 && pager.currentPage != lead + target && !pager.isScrollInProgress) pager.scrollToPage(lead + target)
         }
+        if (turn != null) {
+            LaunchedEffect(pager, pages) {
+                turn.chapterShare = 1f / pages.size
+                snapshotFlow { pager.currentPage + pager.currentPageOffsetFraction - pager.settledPage }
+                    .collect { turn.progress = it.coerceIn(-1f, 1f) }
+            }
+        }
         LaunchedEffect(pager, pages) {
             snapshotFlow { pager.settledPage }.collect { p ->
                 when {
@@ -286,7 +298,7 @@ internal fun VerticalReader(
         val press by rememberUpdatedState(onLongPress)
 
         // 下一页在左边：倒过来排。
-        HorizontalPager(state = pager, reverseLayout = true, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize()) { p ->
+        HorizontalPager(state = pager, reverseLayout = true, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize().clipToBook(inset)) { p ->
             val (pageChapter, page) = when {
                 prev != null && p == 0 -> chapterIndex - 1 to prev.last()
                 next != null && p == count - 1 -> chapterIndex + 1 to next.first()
@@ -301,6 +313,7 @@ internal fun VerticalReader(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .bookPage(inset)
                     .background(styles.palette.background)
                     .semantics { contentDescription = "竖排正文" }
                     .pointerInput(page) {

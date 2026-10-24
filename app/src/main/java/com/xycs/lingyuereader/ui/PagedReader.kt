@@ -69,6 +69,8 @@ internal fun PagedReader(
     selected: Highlight? = null,
     /** 分好的页；放在阅读区外面，换章重建阅读区时还在。 */
     pageCache: PageCache = remember { PageCache() },
+    /** 翻到哪了，书页厚度跟着走。 */
+    turn: PageTurn? = null,
 ) {
     // 仿真翻页：按下的高度决定掀哪个角，之后角跟着手指上下走。
     val touch = remember { CurlTouch() }
@@ -94,7 +96,10 @@ internal fun PagedReader(
         // 横屏且够宽：一次两页，像摊开的书。
         val twoUp = styles.settings.twoPage && maxWidth > maxHeight && maxWidth >= 560.dp
         val per = if (twoUp) 2 else 1
-        val pageWidth = if (twoUp) maxWidth / 2 else maxWidth
+        // 书页厚度：书页夹在两摞纸中间，按两摞之间的宽度排版。
+        val inset = LocalBookInset.current
+        val bookWidth = maxWidth - (inset?.total ?: 0.dp)
+        val pageWidth = if (twoUp) bookWidth / 2 else bookWidth
         val widthPx = with(density) { (pageWidth - styles.horizontalPadding * 2).roundToPx() }
         val heightPx = with(density) { (maxHeight - topInset - bottomInset).roundToPx() }
         val imageMaxHeight = maxHeight - topInset - bottomInset - styles.gap
@@ -158,6 +163,14 @@ internal fun PagedReader(
             }
         }
 
+        if (turn != null) {
+            LaunchedEffect(pager, spreads) {
+                turn.chapterShare = 1f / spreads.size
+                snapshotFlow { pager.currentPage + pager.currentPageOffsetFraction - pager.settledPage }
+                    .collect { turn.progress = it.coerceIn(-1f, 1f) }
+            }
+        }
+
         LaunchedEffect(pager, pages) {
             snapshotFlow { pager.settledPage }.collect { p ->
                 when {
@@ -176,7 +189,7 @@ internal fun PagedReader(
         HorizontalPager(
             state = pager,
             beyondViewportPageCount = 1,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().clipToBook(inset),
         ) { p ->
             val (pageChapter, spread) = when {
                 prevSpread != null && p == 0 -> chapterIndex - 1 to prevSpread
@@ -203,6 +216,7 @@ internal fun PagedReader(
                             else -> {}
                         }
                     }
+                    .bookPage(inset)
                     .then(
                         if (mode == PageMode.CURL) {
                             Modifier.pageCurl({ offset().let { if (it < 0f && it > -1f) -it else 0f } }, touch, styles.palette.background)
