@@ -16,7 +16,7 @@ import java.util.Locale
 data class TalkPlayback(val line: Int = 0, val playing: Boolean = false, val error: String? = null)
 
 /**
- * 讲书的播放器：一句句读讲书稿。设了 AI 朗读就用 AI 语音（两人对谈时各用一个声音），
+ * 讲书的播放器：一句句读讲书稿。设了离线语音或 AI 朗读就用它们（两人对谈时各用一个声音），
  * 否则用系统的文字转语音（搭档的音调高一点，听得出是两个人）。
  */
 class TalkPlayer(
@@ -24,7 +24,7 @@ class TalkPlayer(
     /** AI 语音：主讲、搭档的声音和合成函数；为空用系统语音。 */
     private val ai: Ai?,
 ) {
-    class Ai(val voices: List<String>, val fingerprint: String, val fetch: suspend (text: String, voice: String?) -> ByteArray)
+    class Ai(val voices: List<String>, val fingerprint: String, val fetch: suspend (text: String, voice: String?) -> ByteArray, val cacheName: String = "tts-ai")
 
     private val _state = MutableStateFlow(TalkPlayback())
     val state: StateFlow<TalkPlayback> = _state.asStateFlow()
@@ -89,7 +89,7 @@ class TalkPlayer(
 
     private fun playAi(from: Int) {
         val a = ai ?: return
-        val sp = speaker ?: AiSpeaker(java.io.File(context.cacheDir, "tts-ai"), a.fetch, a.fingerprint, ::started, ::done, ::failed).also { speaker = it }
+        val sp = speaker ?: AiSpeaker(java.io.File(context.cacheDir, a.cacheName), a.fetch, a.fingerprint, ::started, ::done, ::failed).also { speaker = it }
         sp.playItems((from..lines.lastIndex).map { i -> AiSpeaker.Item(id(i), lines[i].second, a.voices.getOrNull(lines[i].first) ?: a.voices.firstOrNull()) })
     }
 

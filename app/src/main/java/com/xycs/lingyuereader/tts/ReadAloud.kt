@@ -24,12 +24,15 @@ sealed interface SleepTimer {
     data object EndOfChapter : SleepTimer
 }
 
+/** 听书用哪种声音：系统的文字转语音、手机上的离线语音、服务商的 AI 语音。 */
+enum class ReadAloudEngine { SYSTEM, OFFLINE, ONLINE }
+
 /** 可选的语音。[label] 是给人看的说明，[name] 是引擎里的名字。 */
 data class VoiceOption(val name: String, val label: String)
 
 /**
- * 用 AI 语音朗读：服务商名、可选的声音、选用的声音，以及合成一句的函数。
- * [fingerprint] 区分服务商、模型、声音，缓存音频用。
+ * 用 AI 语音朗读：服务商名（或离线模型名）、可选的声音、选用的声音，以及合成一句的函数。
+ * [fingerprint] 区分服务商、模型、声音，缓存音频用。[offline] 为真时是手机上的离线语音，不联网、不计费。
  */
 class AiVoice(
     val label: String,
@@ -37,7 +40,13 @@ class AiVoice(
     val voice: String,
     val fingerprint: (voice: String) -> String,
     val fetch: suspend (voice: String, text: String) -> ByteArray,
-)
+    val offline: Boolean = false,
+) {
+    fun withVoice(name: String): AiVoice = AiVoice(label, voices, name, fingerprint, fetch, offline)
+
+    /** 缓存目录：离线语音是 WAV、个头大，和花钱买来的服务商音频分开放，免得把它们挤掉。 */
+    val cacheName: String get() = if (offline) "tts-offline" else "tts-ai"
+}
 
 data class ReadAloudState(
     val bookId: String,
@@ -58,8 +67,10 @@ data class ReadAloudState(
     val voices: List<VoiceOption> = emptyList(),
     /** 选用的语音名；为空用引擎默认。 */
     val voice: String? = null,
-    /** 用 AI 语音读时是服务商名（如“硅基流动 CosyVoice”）；用系统语音时为空。 */
+    /** 用 AI 语音读时是服务商名（如“硅基流动 CosyVoice”）或离线模型名；用系统语音时为空。 */
     val aiLabel: String? = null,
+    /** 用的是手机上的离线语音。 */
+    val offline: Boolean = false,
 )
 
 /**
@@ -111,6 +122,7 @@ object ReadAloud {
             voices = if (ai != null) ai.voices else previous?.voices?.takeIf { previous.aiLabel == null }.orEmpty(),
             voice = ai?.voice ?: voice,
             aiLabel = ai?.label,
+            offline = ai?.offline == true,
         )
         loadChapter(chapterIndex, block, char)
         ensureEngine {
@@ -142,7 +154,7 @@ object ReadAloud {
         val context = appContext ?: return
         if (next != null) {
             speaker = AiSpeaker(
-                java.io.File(context.cacheDir, "tts-ai"),
+                java.io.File(context.cacheDir, next.cacheName),
                 fetch = { text, _ -> next.fetch(next.voice, text) },
                 fingerprint = next.fingerprint(next.voice),
                 onStart = ::onUtteranceStart,
@@ -204,7 +216,7 @@ object ReadAloud {
         _state.value = s.copy(voice = name)
         ai?.let { a ->
             invalidateUtterances()
-            setAi(AiVoice(a.label, a.voices, name ?: a.voice, a.fingerprint, a.fetch))
+            setAi(a.withVoice(name ?: a.voice))
             if (s.playing) speakFrom(index)
             return
         }

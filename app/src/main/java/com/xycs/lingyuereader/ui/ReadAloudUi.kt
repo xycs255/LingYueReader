@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.tts.ReadAloudState
 import com.xycs.lingyuereader.tts.SleepTimer
 import top.yukonga.miuix.kmp.basic.Icon
@@ -121,9 +122,11 @@ internal fun ReadAloudSheet(
     onVoice: (String?) -> Unit = {},
     onTimer: (Int?) -> Unit = ReadAloud::setTimer,
     tint: Color = palette.accent,
-    /** 设好了 AI 朗读时是服务商名，可以切到 AI 语音；为空不显示开关。 */
-    aiOption: String? = null,
-    onAi: (Boolean) -> Unit = {},
+    /** 能用的朗读引擎和说明（系统语音总在；离线语音装了模型才有；AI 语音设好了才有）。 */
+    engines: List<Pair<ReadAloudEngine, String>> = emptyList(),
+    onEngine: (ReadAloudEngine) -> Unit = {},
+    /** 还没下载离线语音模型时，去下载的入口；为空不显示。 */
+    onOfflineSetup: (() -> Unit)? = null,
 ) {
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
@@ -177,12 +180,22 @@ internal fun ReadAloudSheet(
             state.error?.let {
                 Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
             }
-            if (aiOption != null) {
+            if (engines.size > 1 || onOfflineSetup != null) {
+                val engine = when {
+                    state.offline -> ReadAloudEngine.OFFLINE
+                    state.aiLabel != null -> ReadAloudEngine.ONLINE
+                    else -> ReadAloudEngine.SYSTEM
+                }
                 GroupedSection(
-                    footer = if (state.aiLabel != null) "用「${state.aiLabel}」合成语音，按服务商的价格计费；读过的句子缓存在本机，重听、往回跳不再花钱。"
-                    else "AI 语音更自然，要联网，按服务商的价格计费。",
+                    header = "朗读引擎",
+                    footer = when (engine) {
+                        ReadAloudEngine.OFFLINE -> "在手机上合成，不联网、不花钱。每句先合成再读，较慢的手机句与句之间可能停顿。"
+                        ReadAloudEngine.ONLINE -> "用「${state.aiLabel}」合成语音，按服务商的价格计费；读过的句子缓存在本机，重听、往回跳不再花钱。"
+                        ReadAloudEngine.SYSTEM -> if (onOfflineSetup != null) "离线语音在手机上用 AI 模型合成，比系统语音自然，不联网；先下载一个模型（约 150 MB）。" else null
+                    },
                 ) {
-                    row { ToggleRow("AI 语音 · $aiOption", state.aiLabel != null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE), onChange = onAi) }
+                    engines.forEach { (e, label) -> row { CheckRow(label, e == engine) { if (e != engine) onEngine(e) } } }
+                    onOfflineSetup?.let { row { NavRow("离线语音", value = "下载模型", onClick = it) } }
                 }
             }
             if (state.voices.size > 1) {

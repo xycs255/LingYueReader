@@ -314,7 +314,13 @@ private fun SpeechSection(
             else -> "听书、讲书用的语音：任何兼容 OpenAI /audio/speech 接口的服务。"
         },
     ) {
-        row { ToggleRow("听书用 AI 语音", sp.enabled, icon = LingYueIcons.VolumeUp, iconBackground = Color(0xFFFF2D55)) { setSpeech(sp.copy(enabled = it)) } }
+        row {
+            ToggleRow("听书用 AI 语音", sp.enabled, icon = LingYueIcons.VolumeUp, iconBackground = Color(0xFFFF2D55)) {
+                setSpeech(sp.copy(enabled = it))
+                // 和离线语音只能用一样。
+                if (it) vm.saveOfflineConfig(vm.offlineVoiceState.value.config.copy(enabled = false))
+            }
+        }
         row { PickerRow("服务商", SpeechPresets.ALL.map { it.id to it.label }, sp.preset) { id -> setSpeech(sp.withPreset(SpeechPresets.of(id))) } }
         row {
             TextField(

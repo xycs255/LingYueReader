@@ -201,6 +201,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
             Screen.Ai -> AiScreen(vm)
+            Screen.OfflineVoice -> OfflineVoiceScreen(vm)
             Screen.Catalogs -> CatalogsScreen(vm)
             is Screen.CatalogEdit -> CatalogEditScreen(vm, screen.catalogId)
             is Screen.CatalogBrowse -> CatalogBrowseScreen(vm, screen)

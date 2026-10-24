@@ -142,6 +142,7 @@ import com.xycs.lingyuereader.data.TextAnchors
 import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.data.layoutKey
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassSheet
 import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
@@ -301,6 +302,7 @@ private fun Reader(
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val offline by vm.offlineVoiceState.collectAsStateWithLifecycle()
     val aiSession by vm.ai.collectAsStateWithLifecycle()
     // 人物表在本机：打开书时读进来，查词时认人名。
     LaunchedEffect(entry.id) { vm.loadCharacters() }
@@ -1129,8 +1131,16 @@ private fun Reader(
         aloud?.let { a ->
             ReadAloudSheet(
                 a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint,
-                aiOption = aiConfig.speech.label.takeIf { aiConfig.enabled && aiConfig.speech.complete },
-                onAi = vm::setReadAloudAi,
+                engines = buildList {
+                    add(ReadAloudEngine.SYSTEM to "系统语音")
+                    offline.config.current.takeIf { it.id in offline.installed }?.let { add(ReadAloudEngine.OFFLINE to "离线语音 · ${it.label}") }
+                    if (aiConfig.enabled && aiConfig.speech.complete) add(ReadAloudEngine.ONLINE to "AI 语音 · ${aiConfig.speech.label}")
+                },
+                onEngine = vm::setReadAloudEngine,
+                onOfflineSetup = {
+                    sheet = null
+                    vm.open(Screen.OfflineVoice)
+                }.takeIf { offline.installed.isEmpty() },
             )
         }
     }

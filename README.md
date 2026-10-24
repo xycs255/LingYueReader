@@ -113,6 +113,12 @@
   - 生词本：每个词可以要“AI 例句”（例句、用法、近义词辨析，复习卡背面也显示）；没有释义的词一键“AI 补释义”。
   
   没读到的内容不会发出去，提示词也要求不剧透。
+- **离线语音**（我的 → 离线语音）：听书和 AI 讲书可以用手机上的 AI 语音模型合成，不联网、不花钱，
+  比系统语音自然。引擎是 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，打包在应用里；模型不打包，读者选一个下载（只需一次）：
+  Kokoro 中英（下载 147 MB，女声、男声各 8 个，最自然，合成较慢，适合较新的手机）或 MeloTTS 中英（下载 167 MB，一个女声，合成快）。
+  下载中断了下次接着下，下完核对 SHA-256；下载不了时可以用电脑从 sherpa-onnx 的发布页下好 `.tar.bz2` 再“从文件导入”。
+  听书面板里在系统语音、离线语音、AI 语音之间切换；模型闲置几分钟后自动释放内存。
+  只收许可证允许随意使用的模型：训练数据仅限非商业使用（如标贝）或来源不明的中文模型没有收。
 - **书签与批注**：顶栏一键加书签；长按选词或划选后点“划线·批注”，可选中一部分划线（四种颜色）、写批注、复制；
   目录面板里集中查看书签和批注，批注可导出为 Markdown。原文件改稿后，批注会按原文重新找回位置。
 - **听书**：用系统的文字转语音逐句朗读，正在读的句子高亮并自动翻页、换章；锁屏继续，通知栏可暂停；
@@ -198,7 +204,9 @@
 | `data/Library.kt` | 书架存储与刷新 |
 | `data/Marks.kt` | 书签、批注、改稿后重新定位与导出 |
 | `data/BookCache.kt` | 解析结果缓存、章节按需加载 |
-| `tts/` | 听书：按句朗读与前台服务 |
+| `tts/` | 听书：按句朗读与前台服务；AI 语音的播放与缓存（`AiSpeaker`） |
+| `tts/OfflineVoice.kt`、`OfflineEngine.kt`、`OfflineModelFiles.kt` | 离线语音：模型清单与设置、sherpa-onnx 合成、模型下载（断点续传、校验）与解压 |
+| `ui/OfflineVoiceScreen.kt` | 离线语音设置页 |
 | `reminder/` | 每日目标的晚间提醒 |
 | `dict/Builtin.kt` | 内置字典词典查询、长按选词的分词 |
 | `dict/Mdict.kt`、`MdictDictionary.kt` | MDict（.mdx/.mdd）读取，含 LZO、zlib 与加密索引 |
@@ -250,5 +258,12 @@
 `app/src/main/java/com/xycs/lingyuereader/ui/glass/` 下的液态玻璃导航栏（`Glass.kt` 以外的文件）取自
 [miuix](https://github.com/compose-miuix-ui/miuix) 0.9.4 的示例应用（© compose-miuix-ui contributors），其中部分改编自
 [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass)，均为 Apache License 2.0，文件头保留了原版权声明。
+
+离线语音引擎随安装包分发：[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 1.13.8 的 Android 库（© Xiaomi Corporation 等，
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)），其中带有 [ONNX Runtime](https://github.com/microsoft/onnxruntime)
+（© Microsoft，[MIT](https://github.com/microsoft/onnxruntime/blob/main/LICENSE)）；解压模型包用
+[Apache Commons Compress](https://commons.apache.org/proper/commons-compress/)（Apache License 2.0）。
+语音模型不随安装包分发，由读者从 sherpa-onnx 的发布页下载：Kokoro-82M v1.1-zh（© hexgrad，Apache License 2.0）、
+MeloTTS（© MyShell.ai，MIT）。
 
 导入的 MDict 词典归其原作者所有，灵阅只在本机读取，不做分发。

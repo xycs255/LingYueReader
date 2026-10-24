@@ -37,8 +37,17 @@ import com.xycs.lingyuereader.data.TextAnchors
 import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
+import com.xycs.lingyuereader.tts.OfflineEngine
+import com.xycs.lingyuereader.tts.OfflineModel
+import com.xycs.lingyuereader.tts.OfflineModelFiles
+import com.xycs.lingyuereader.tts.OfflineModels
+import com.xycs.lingyuereader.tts.OfflinePhase
+import com.xycs.lingyuereader.tts.OfflineVoiceConfig
+import com.xycs.lingyuereader.tts.OfflineVoiceException
+import com.xycs.lingyuereader.tts.OfflineVoiceStore
 import com.xycs.lingyuereader.tts.ReadAloud
 import com.xycs.lingyuereader.tts.AiVoice
+import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.tts.VoiceOption
 import com.xycs.lingyuereader.remote.Catalog
 import com.xycs.lingyuereader.remote.CatalogKind
@@ -124,6 +133,8 @@ sealed interface Screen {
     data object Dictionaries : Screen
     /** AI 助手设置：服务商、模型、密钥。 */
     data object Ai : Screen
+    /** 离线语音：下载模型、选声音。 */
+    data object OfflineVoice : Screen
     /** 书源列表：OPDS 书目、WebDAV 文件夹。 */
     data object Catalogs : Screen
     /** 浏览一个书源的某一页（[url] 为空时是书源的首页）。 */
@@ -436,15 +447,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 从当前阅读位置开始听书：设了 AI 朗读就用服务商的语音。 */
+    /** 从当前阅读位置开始听书：开了离线语音就用手机上的模型，设了 AI 朗读就用服务商的语音，否则系统语音。 */
     fun startReadAloud(chapterIndex: Int, block: Int, char: Int) {
         val book = _openBook.value ?: return
         ReadAloud.start(
             getApplication(), book.entry.id, book.entry.title, book.content,
             chapterIndex, block.coerceAtLeast(0), char, _settings.value.ttsRate,
             _settings.value.ttsVoice.ifEmpty { null },
-            ai = aiVoice(),
+            ai = offlineVoice() ?: aiVoice(),
         )
+    }
+
+    /** 现在听书用哪种声音（和 [startReadAloud] 的选法一致）。 */
+    fun readAloudEngine(): ReadAloudEngine = when {
+        offlineVoice() != null -> ReadAloudEngine.OFFLINE
+        aiVoice() != null -> ReadAloudEngine.ONLINE
+        else -> ReadAloudEngine.SYSTEM
     }
 
     /** AI 朗读用的语音：AI 助手和 AI 朗读都开着、填全了才有。 */
@@ -462,7 +480,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setReadAloudVoice(name: String?) {
-        if (ReadAloud.state.value?.aiLabel != null) {
+        if (ReadAloud.state.value?.offline == true) {
+            if (name != null) saveOfflineConfig(_offlineVoice.value.config.withVoice(name))
+        } else if (ReadAloud.state.value?.aiLabel != null) {
             // AI 语音：记进 AI 朗读的设置。
             if (name != null) saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(voice = name)) })
         } else {
@@ -471,9 +491,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ReadAloud.setVoice(name)
     }
 
-    /** 听书时在 AI 语音和系统语音之间切换：从当前这句接着读。 */
-    fun setReadAloudAi(on: Boolean) {
-        saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(enabled = on)) })
+    /** 听书时换声音（系统、离线、AI）：从当前这句接着读。 */
+    fun setReadAloudEngine(engine: ReadAloudEngine) {
+        setOfflineEnabled(engine == ReadAloudEngine.OFFLINE)
+        if (engine != ReadAloudEngine.OFFLINE) saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(enabled = engine == ReadAloudEngine.ONLINE)) })
         val s = ReadAloud.state.value ?: return
         if (_openBook.value?.entry?.id != s.bookId) return
         val at = s.current
@@ -998,6 +1019,136 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (job == null) _downloading.value = null
     }
 
+    // ---------- 离线语音 ----------
+
+    /** 离线语音：设置、装好的模型、正在下载或导入的进度、出错说明。 */
+    data class OfflineVoiceState(
+        val config: OfflineVoiceConfig = OfflineVoiceConfig(),
+        val installed: Set<String> = emptySet(),
+        /** 正在装的模型、阶段、已完成和总量。 */
+        val task: OfflineTask? = null,
+        val error: String? = null,
+        /** 装好的模型各占多少空间（字节）。 */
+        val sizes: Map<String, Long> = emptyMap(),
+    )
+
+    data class OfflineTask(val model: String?, val phase: OfflinePhase, val done: Long = 0, val total: Long = 0) {
+        val fraction: Float get() = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f
+    }
+
+    private val offlineStore = OfflineVoiceStore(app)
+    private val offlineFiles = OfflineModelFiles(java.io.File(app.filesDir, "tts-models"))
+    private val _offlineVoice = MutableStateFlow(OfflineVoiceState(config = offlineStore.load()))
+    val offlineVoiceState: StateFlow<OfflineVoiceState> = _offlineVoice.asStateFlow()
+    private var offlineJob: Job? = null
+
+    init {
+        viewModelScope.launch { refreshOfflineModels() }
+    }
+
+    private suspend fun refreshOfflineModels() {
+        val (ids, sizes) = withContext(Dispatchers.IO) {
+            val ids = offlineFiles.installedIds()
+            ids to OfflineModels.ALL.filter { it.id in ids }.associate { it.id to offlineFiles.sizeOnDisk(it) }
+        }
+        _offlineVoice.update { it.copy(installed = ids, sizes = sizes) }
+    }
+
+    fun saveOfflineConfig(c: OfflineVoiceConfig) {
+        offlineStore.save(c)
+        _offlineVoice.update { it.copy(config = c) }
+    }
+
+    /** 开关离线语音；开时关掉 AI 朗读（两样只能用一样，免得开关和实际用的对不上）。可以顺便换模型。 */
+    fun setOfflineEnabled(on: Boolean, model: String = _offlineVoice.value.config.model) {
+        saveOfflineConfig(_offlineVoice.value.config.copy(enabled = on, model = model))
+        if (on && aiConfig.value.speech.enabled) saveAiConfig(aiConfig.value.let { it.copy(speech = it.speech.copy(enabled = false)) })
+    }
+
+    /** 听书用的离线语音：开着、选的模型装好了才有。 */
+    private fun offlineVoice(): AiVoice? {
+        val c = _offlineVoice.value.config
+        val m = c.current
+        if (!c.enabled || m.id !in _offlineVoice.value.installed) return null
+        val dir = offlineFiles.dir(m)
+        return AiVoice(
+            m.label,
+            m.voices,
+            c.voice(m),
+            fingerprint = { v -> "offline|${m.id}|$v" },
+            fetch = { v, text -> OfflineEngine.synthesize(dir, m, v.toIntOrNull() ?: 0, text) },
+            offline = true,
+        )
+    }
+
+    /** 下载模型（读者点了才联网）；装好后选用它。 */
+    fun downloadOfflineModel(m: OfflineModel) = runOfflineTask(m.id) {
+        offlineFiles.download(m) { phase, done, total -> _offlineVoice.update { s -> s.copy(task = OfflineTask(m.id, phase, done, total)) } }
+        m
+    }
+
+    /** 从读者选的 .tar.bz2 文件导入模型。 */
+    fun importOfflineModel(uri: Uri) = runOfflineTask(null) {
+        val resolver = getApplication<Application>().contentResolver
+        val size = runCatching { resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } }.getOrNull() ?: -1L
+        offlineFiles.import({ resolver.openInputStream(uri) ?: throw OfflineVoiceException("打不开这个文件") }, size) { phase, done, total ->
+            _offlineVoice.update { s -> s.copy(task = OfflineTask(null, phase, done, total)) }
+        }
+    }
+
+    private fun runOfflineTask(model: String?, work: suspend () -> OfflineModel) {
+        if (offlineJob?.isActive == true) return
+        _offlineVoice.update { it.copy(task = OfflineTask(model, OfflinePhase.DOWNLOAD), error = null) }
+        offlineJob = viewModelScope.launch {
+            try {
+                val m = work()
+                refreshOfflineModels()
+                // 刚装好的模型直接选上、开启。
+                setOfflineEnabled(true, m.id)
+                _offlineVoice.update { it.copy(task = null) }
+                _messages.value = "「${m.label}」已装好"
+            } catch (e: CancellationException) {
+                _offlineVoice.update { it.copy(task = null) }
+                throw e
+            } catch (e: Exception) {
+                _offlineVoice.update { it.copy(task = null, error = (e as? OfflineVoiceException)?.message ?: "出错了：${e.message}") }
+            }
+        }
+    }
+
+    /** 取消下载（下了的部分留着，下次接着下）或导入。 */
+    fun cancelOfflineTask() {
+        offlineJob?.cancel()
+        offlineJob = null
+    }
+
+    fun deleteOfflineModel(m: OfflineModel) {
+        viewModelScope.launch {
+            if (ReadAloud.state.value?.offline == true && _offlineVoice.value.config.model == m.id) ReadAloud.stop()
+            OfflineEngine.release()
+            withContext(Dispatchers.IO) { offlineFiles.delete(m) }
+            refreshOfflineModels()
+        }
+    }
+
+    /** 离线语音设置页的“试听”。 */
+    fun previewOffline(onError: (String) -> Unit) {
+        val c = _offlineVoice.value.config
+        val m = c.current
+        if (m.id !in _offlineVoice.value.installed) return
+        val dir = offlineFiles.dir(m)
+        val sid = c.voice(m).toIntOrNull() ?: 0
+        preview?.release()
+        preview = com.xycs.lingyuereader.tts.AiSpeaker(
+            java.io.File(getApplication<Application>().cacheDir, "tts-offline"),
+            fetch = { text, _ -> OfflineEngine.synthesize(dir, m, sid, text) },
+            fingerprint = "offline|${m.id}|$sid",
+            onStart = {},
+            onDone = {},
+            onError = { _, message -> onError(message) },
+        ).also { it.play(listOf("preview" to "你好，我是灵阅的离线语音，不联网也能为你读书。晋太元中，武陵人捕鱼为业。")) }
+    }
+
     // ---------- AI ----------
 
     private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
@@ -1250,19 +1401,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 讲书用的声音：AI 朗读设好了就用（对谈时搭档换一个，尽量男女搭配），否则系统语音。 */
+    /** 讲书用的声音：开了离线语音就用它，AI 朗读设好了就用服务商的（对谈时搭档换一个，尽量男女搭配），否则系统语音。 */
     private fun talkVoices(style: TalkStyle): TalkPlayer.Ai? {
+        offlineVoice()?.let { v ->
+            val voices = listOf(v.voice, partnerVoice(style, v.voice, v.voices.map { it.name to it.label }))
+            return TalkPlayer.Ai(voices, v.fingerprint(""), fetch = { text, voice -> v.fetch(voice ?: v.voice, text) }, cacheName = v.cacheName)
+        }
         val c = aiConfig.value
         if (!(c.enabled && c.speech.complete)) return null
         val sp = c.speech
-        val main = sp.voice
-        val mainLabel = sp.voices.firstOrNull { it.first == main }?.second.orEmpty()
-        val second = if (style == TalkStyle.DUO) {
-            val others = sp.voices.filter { it.first != main }
-            val female = "女" in mainLabel
-            (others.firstOrNull { if (female) "男" in it.second else "女" in it.second } ?: others.firstOrNull())?.first ?: main
-        } else main
-        return TalkPlayer.Ai(listOf(main, second), sp.fingerprint(""), fetch = { text, voice -> assistant.speech(text, voice) })
+        val voices = listOf(sp.voice, partnerVoice(style, sp.voice, sp.voices))
+        return TalkPlayer.Ai(voices, sp.fingerprint(""), fetch = { text, voice -> assistant.speech(text, voice) })
+    }
+
+    /** 对谈时搭档的声音：和主讲异性的第一个，没有就换一个，只有一个声音就同一个。 */
+    private fun partnerVoice(style: TalkStyle, main: String, voices: List<Pair<String, String>>): String {
+        if (style != TalkStyle.DUO) return main
+        val female = "女" in voices.firstOrNull { it.first == main }?.second.orEmpty()
+        val others = voices.filter { it.first != main }
+        return (others.firstOrNull { if (female) "男" in it.second else "女" in it.second } ?: others.firstOrNull())?.first ?: main
     }
 
     /** 讲书开始播放：先停下听书，免得两个声音一起响。 */

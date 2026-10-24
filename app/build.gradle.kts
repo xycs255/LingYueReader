@@ -40,6 +40,8 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // 离线语音引擎带原生库：只打包手机用的两种（arm64 和老的 32 位 arm），省得安装包太大。
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {
@@ -56,7 +58,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // 有正式密钥用正式签名；没有时用调试签名，方便直接安装（两种签名的包不能互相覆盖安装）。
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
@@ -70,6 +72,14 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    packaging {
+        jniLibs {
+            // 原生库压缩存放：安装包小一半，装好后系统再解压。
+            useLegacyPackaging = true
+            // sherpa-onnx 的 C / C++ 接口库，Kotlin 用不到（只用 JNI 那个）。
+            excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
+        }
     }
 }
 
@@ -92,6 +102,9 @@ dependencies {
     implementation(libs.miuix.blur)
     // 书源（OPDS、WebDAV）：WebDAV 要用 PROPFIND，HttpURLConnection 不支持。
     implementation(libs.okhttp)
+    // 离线语音：sherpa-onnx 引擎（Apache-2.0），模型由读者按需下载；模型包是 .tar.bz2，用 commons-compress 解。
+    implementation(variantOf(libs.sherpa.onnx) { artifactType("aar") })
+    implementation(libs.commons.compress)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     testImplementation(libs.robolectric)
