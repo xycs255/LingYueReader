@@ -524,6 +524,25 @@ class LibraryTest {
         assertEquals(listOf(Block.Para("新正文。")), library.content(library.list().first { it.id == safe.id }).chapters.single().blocks)
     }
 
+    /** EPUB 目录里的空标题会原样成为章名，这样的书签和引文为空的批注也是应用自己写出来的，恢复时照收。 */
+    @Test
+    fun restoreKeepsMarksWithEmptyChapterTitles() {
+        val entry = import("空章名.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val marks = Marks(
+            bookmarks = listOf(Bookmark("b", 0, "", 1, 0, "", 1)),
+            notes = listOf(Note("n", 0, "", 0, 0, 2, "", "", MarkColor.YELLOW, 1)),
+        )
+        val archive = replacementBackup(
+            mapOf(entry.id to "第一章 起\n　　正文。\n".toByteArray()),
+            mapOf(entry.id to marks.toJson().toString().toByteArray()),
+        )
+        val result = library.restore(archive.inputStream())
+        assertEquals(1, result.books)
+        assertEquals(0, result.skippedBooks)
+        assertEquals(listOf("b"), library.marks(entry.id).bookmarks.map { it.id })
+        assertEquals(listOf("n"), library.marks(entry.id).notes.map { it.id })
+    }
+
     @Test
     fun restoreRejectsAllCorruptMarksWithoutChangingTheLocalBook() {
         val entry = import("本机书签.txt", "第一章 起\n　　仍能阅读。\n".toByteArray())

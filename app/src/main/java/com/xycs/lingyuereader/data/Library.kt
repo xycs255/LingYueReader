@@ -41,30 +41,40 @@ class Library(private val context: Context) {
 
     class Picked(val uri: Uri, val name: String)
 
+    /** 书架上读得出的书。整份索引损坏时抛错；个别条目读不出时跳过它们（见 [damagedEntries]）。 */
     @Synchronized
-    fun list(): List<BookEntry> {
-        if (!indexFile.isFile) return emptyList()
+    fun list(): List<BookEntry> = readIndex().first
+
+    /** 索引里读不出的条目数。大于 0 时 [update] 拒绝改写索引，免得把这些书从书架上抹掉。 */
+    @Synchronized
+    fun damagedEntries(): Int = readIndex().second
+
+    private fun readIndex(): Pair<List<BookEntry>, Int> {
+        if (!indexFile.isFile) return emptyList<BookEntry>() to 0
         return parseIndex(indexFile.readText())
     }
 
-    private fun parseIndex(json: String): List<BookEntry> {
+    private fun parseIndex(json: String): Pair<List<BookEntry>, Int> {
         val array = try {
             JSONArray(json)
         } catch (error: Exception) {
             throw IllegalStateException("书架索引损坏，已停止写入并保留原文件", error)
         }
-        return try {
-            (0 until array.length()).map { array.getJSONObject(it).toEntry() }
-        } catch (error: Exception) {
-            throw IllegalStateException("书架索引损坏，已停止写入并保留原文件", error)
+        var damaged = 0
+        val entries = (0 until array.length()).mapNotNull { i ->
+            runCatching { array.getJSONObject(i).toEntry() }.onFailure { damaged++ }.getOrNull()
         }
+        return entries to damaged
     }
 
     fun describe(uris: List<Uri>): List<Picked> =
         uris.map { Picked(it, displayName(it) ?: it.lastPathSegment?.substringAfterLast('/') ?: "未命名.txt") }
 
-    /** 导入一本书；[files] 多于一个时合成一本。 */
-    @Synchronized
+    /**
+     * 导入一本书；[files] 多于一个时合成一本。
+     * 不加锁：复制和解析一本大书要好几秒，只在新建的书目录里进行；最后写索引（[update]）时才加锁。
+     * 这样导入时保存进度、改名不必排队，点“取消”也能马上生效。
+     */
     fun add(files: List<Picked>, title: String?, checkCancelled: () -> Unit = {}): BookEntry {
         require(files.isNotEmpty()) { "没有选择文件" }
         val existing = list()
@@ -467,13 +477,15 @@ class Library(private val context: Context) {
             "书签文件结构损坏"
         }
         val marks = Marks.fromJson(json)
+        // 只查位置是否自洽。章名、引文可以为空：EPUB 目录里的空标题会原样成为章名，
+        // 应用自己就能写出这样的书签，不能因此把整本书挡在恢复之外。
         require(marks.bookmarks.all { mark ->
-            mark.id.isNotBlank() && mark.chapterTitle.isNotBlank() && mark.chapterIndex >= 0 &&
+            mark.id.isNotBlank() && mark.chapterIndex >= 0 &&
                 mark.itemIndex >= 0 && mark.charOffset >= 0 && mark.anchor.offset in 0..mark.anchor.text.length
         }) { "书签位置损坏" }
         require(marks.notes.all { note ->
-            note.id.isNotBlank() && note.chapterTitle.isNotBlank() && note.chapterIndex >= 0 &&
-                note.blockIndex >= 0 && note.start >= 0 && note.end >= note.start && note.quote.isNotEmpty()
+            note.id.isNotBlank() && note.chapterIndex >= 0 &&
+                note.blockIndex >= 0 && note.start >= 0 && note.end > note.start
         }) { "批注范围损坏" }
     }
 
@@ -496,6 +508,10 @@ class Library(private val context: Context) {
         }
     }
 
+    /** 书架上来源正是这个文件（同一个 URI、只有这一份来源）的书；内容可能已经和书架上的不同。 */
+    fun findBySource(picked: Picked): BookEntry? =
+        list().firstOrNull { e -> e.sources.size == 1 && e.sources[0].uri == picked.uri.toString() }
+
     data class RestoreResult(
         val books: Int,
         val settings: JSONObject?,
@@ -506,7 +522,8 @@ class Library(private val context: Context) {
     /**
      * 备份：书架索引、每本书的来源副本和书签批注，以及传入的设置。缓存和解出的插图可重建，不打包。
      */
-    @Synchronized
+    // 不加锁：打包整个书架可能要几分钟，期间保存进度、改名、删书都不该排队等它。
+    // 索引按改名原子替换，读到的总是完整的一份；书签批注同样先写临时文件再改名。
     fun backup(out: java.io.OutputStream, settings: JSONObject, data: Map<String, ByteArray> = emptyMap()): Int {
         val indexBytes = if (indexFile.isFile) indexFile.readBytes() else {
             check(root.listFiles().orEmpty().none { it.isDirectory && BACKUP_ID.matches(it.name) }) {
@@ -514,7 +531,8 @@ class Library(private val context: Context) {
             }
             "[]".toByteArray()
         }
-        val entries = parseIndex(indexBytes.toString(Charsets.UTF_8))
+        // 读不出的个别条目原样留在打包的索引里，能读的书照常备份：书架出问题时正是最需要备份的时候。
+        val entries = parseIndex(indexBytes.toString(Charsets.UTF_8)).first
         // 来源副本是恢复阅读所必需的，任何缺失都必须使整份备份失败。
         entries.forEach { entry ->
             check(BACKUP_ID.matches(entry.id) && entry.sources.isNotEmpty()) { "书架包含无效的书籍记录" }
@@ -710,8 +728,10 @@ class Library(private val context: Context) {
 
     @Synchronized
     private fun update(transform: (List<BookEntry>) -> List<BookEntry>) {
+        val (entries, damaged) = readIndex()
+        check(damaged == 0) { "书架索引里有 $damaged 条记录读不出，已停止写入并保留原文件" }
         val array = JSONArray()
-        transform(list()).forEach { array.put(it.toJson()) }
+        transform(entries).forEach { array.put(it.toJson()) }
         val tmp = File(root, "index.json.tmp")
         tmp.writeText(array.toString())
         check(tmp.renameTo(indexFile)) { "无法保存书架索引" }

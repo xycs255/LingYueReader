@@ -5,7 +5,13 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
 
-/** 中文文本先识别 BOM 和常见的无 BOM UTF-16，再严格尝试 UTF-8、GB18030（兼容 GBK）。 */
+/**
+ * 中文文本先识别 BOM 和常见的无 BOM UTF-16，再严格尝试 UTF-8、GB18030（兼容 GBK）定编码。
+ *
+ * 编码定下后对个别坏字节宽容：网上流传的 TXT 常有截断的末字节、旧 DOS 文件末尾的 Ctrl-Z、夹杂的控制字符，
+ * 这些书原本能读，不能因为一两个字节整本打不开。坏字节显示为 U+FFFD，控制字符去掉。
+ * 只有坏得多（超过百分之一）或根本没有正文时才报错，这时多半不是文本文件或编码猜错了。
+ */
 object TextDecoder {
     private val gb18030 = Charset.forName("GB18030")
 
@@ -18,25 +24,24 @@ object TextDecoder {
         }
         if (known != null) {
             val (charset, offset) = known
-            val text = try {
-                strictDecode(bytes, charset, offset)
-            } catch (_: CharacterCodingException) {
-                throw IllegalArgumentException("${charset.name()} 文本编码损坏")
-            }
-            return validate(text)
+            return validate(lenientDecode(bytes, charset, offset), "${charset.name()} 文本编码损坏")
         }
 
-        // UTF-8 必须严格校验，否则坏字节会被 U+FFFD 悄悄替换。
+        // 先严格试 UTF-8、再试 GB18030 定编码。都有坏字节时：UTF-8 只坏了零星几处就按 UTF-8
+        // （GB18030 几乎什么字节都能拼出字来，拿它的坏字数比不可靠），否则取坏得少的那种。
         val text = try {
             strictDecode(bytes, Charsets.UTF_8)
         } catch (_: CharacterCodingException) {
             try {
                 strictDecode(bytes, gb18030)
             } catch (_: CharacterCodingException) {
-                throw IllegalArgumentException("文本编码无法识别或文件已损坏")
+                val utf8 = lenientDecode(bytes, Charsets.UTF_8)
+                val utf8Bad = utf8.count { it == '\uFFFD' }
+                if (utf8Bad * 100 <= utf8.length) utf8
+                else lenientDecode(bytes, gb18030).takeIf { gb -> gb.count { it == '\uFFFD' } < utf8Bad } ?: utf8
             }
         }
-        return validate(text)
+        return validate(text, "文本编码无法识别或文件已损坏")
     }
 
     private fun strictDecode(bytes: ByteArray, charset: Charset, offset: Int = 0): String =
@@ -46,12 +51,32 @@ object TextDecoder {
             .decode(ByteBuffer.wrap(bytes, offset, bytes.size - offset))
             .toString()
 
-    private fun validate(text: String): String {
-        require('\uFFFD' !in text) { "文本含有损坏字符" }
-        require(text.none { (it < ' ' && it != '\n' && it != '\r' && it != '\t' && it != '\u000C') || it in '\u007F'..'\u009F' }) {
-            "文本含有无法显示的控制字符，可能不是纯文本文件"
+    private fun lenientDecode(bytes: ByteArray, charset: Charset, offset: Int = 0): String =
+        charset.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPLACE)
+            .onUnmappableCharacter(CodingErrorAction.REPLACE)
+            .decode(ByteBuffer.wrap(bytes, offset, bytes.size - offset))
+            .toString()
+
+    /**
+     * 去掉控制字符（换行、回车、制表、换页除外）。末尾的 NUL、Ctrl-Z 填充不算损坏；
+     * 其余控制字符和 U+FFFD 超过全文百分之一，或去掉后没剩下可读的字，就当作不是文本、报 [error]。
+     */
+    private fun validate(text: String, error: String): String {
+        val body = text.trimEnd('\u0000', '\u001A')
+        var bad = 0
+        val cleaned = StringBuilder(body.length)
+        for (c in body) {
+            if ((c < ' ' && c != '\n' && c != '\r' && c != '\t' && c != '\u000C') || c in '\u007F'..'\u009F') {
+                bad++
+                continue
+            }
+            if (c == '\uFFFD') bad++
+            cleaned.append(c)
         }
-        return text
+        require(bad * 100 <= body.length) { if (bad == 0) error else "$error（$bad 处损坏）" }
+        require(bad == 0 || cleaned.any { !it.isWhitespace() && it != '\uFFFD' }) { error }
+        return cleaned.toString()
     }
 
     /** 按双字节边界寻找换行与空格；普通中文 UTF-16 的汉字字节本身很少是零。 */

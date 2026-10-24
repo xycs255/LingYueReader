@@ -843,7 +843,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
         show = true,
         title = "导入 ${files.size} 个文件",
         summary = sorted.take(5).joinToString("\n") + if (sorted.size > 5) "\n……" else "",
-        onDismissRequest = vm::cancelImport,
+        onDismissRequest = vm::dismissImport,
     ) {
         Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
             RadioButtonPreference(
@@ -867,7 +867,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
         }
-        DialogButtons(confirm = "导入", onDismiss = vm::cancelImport) {
+        DialogButtons(confirm = "导入", onDismiss = vm::dismissImport) {
             vm.importBooks(files, merge, title)
         }
     }

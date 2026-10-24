@@ -163,4 +163,60 @@ class AppViewModelTest {
         assertEquals(entry.id, vm.shelf.value.single().id)
         assertEquals(ReaderSettings().fontSize, Prefs(app).settings().fontSize, 0f)
     }
+
+    /** 索引里一条记录坏了：其余的书照常显示，写书架被拒绝时提示，不崩溃，也不改写索引。 */
+    @Test
+    fun damagedIndexEntryKeepsOtherBooksAndFailedWritesDoNotCrash() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        app.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        val library = Library(app)
+        val good = library.add(library.describe(listOf(Uri.fromFile(File(app.cacheDir, "好书.txt").apply { writeText("第一章 起\n　　正文。\n") }))), null)
+        val bad = library.add(library.describe(listOf(Uri.fromFile(File(app.cacheDir, "坏记录.txt").apply { writeText("第一章 起\n　　另一本。\n") }))), null)
+        val index = File(app.filesDir, "books/index.json")
+        val array = org.json.JSONArray(index.readText())
+        for (i in 0 until array.length()) {
+            if (array.getJSONObject(i).getString("id") == bad.id) array.getJSONObject(i).put("sources", "已损坏")
+        }
+        index.writeText(array.toString())
+        val damagedIndex = index.readBytes()
+
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.isNotEmpty() }
+        assertEquals(listOf(good.id), vm.shelf.value.map { it.id })
+        assertTrue(vm.messages.value.orEmpty().contains("读不出"))
+        vm.consumeMessage()
+
+        vm.ensureLoaded(good.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == good.id }
+        vm.saveProgress(0, 1, 0, 1)
+        waitUntilReady { vm.messages.value.orEmpty().contains("保存阅读进度失败") }
+        // 同一种失败只提示一次。
+        vm.consumeMessage()
+        vm.saveProgress(0, 1, 0, 2)
+        Thread.sleep(200)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(null, vm.messages.value)
+        assertArrayEquals(damagedIndex, index.readBytes())
+    }
+
+    /** 从文件管理器打开已导入过、之后又改过的同一个文件：打开书架上那本并提示可刷新，不再报“已在书架上”。 */
+    @Test
+    fun openingAChangedSourceFileOpensTheBookOnTheShelf() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        app.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        val library = Library(app)
+        val file = File(app.cacheDir, "追更.txt").apply { writeText("第一章 起\n　　正文。\n") }
+        val uri = Uri.fromFile(file)
+        val entry = library.add(library.describe(listOf(uri)), null)
+        file.writeText("第一章 起\n　　正文。\n第二章 续\n　　作者追更了。\n")
+
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.openExternal(listOf(uri))
+        waitUntilReady { (vm.stack.value.lastOrNull() as? Screen.Reader)?.bookId == entry.id }
+        assertTrue(vm.messages.value.orEmpty().contains("原文件有改动"))
+        assertEquals(1, vm.shelf.value.size)
+    }
 }

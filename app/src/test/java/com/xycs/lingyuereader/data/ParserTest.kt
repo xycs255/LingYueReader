@@ -150,6 +150,27 @@ class ParserTest {
         marked.forEach { assertEquals(text, TextDecoder.decode(it)) }
     }
 
+    /** 网上流传的长篇 TXT 常有个别坏字节、末尾 Ctrl-Z、夹杂的控制字符：照样能读，控制字符去掉。 */
+    @Test
+    fun sparseDamageInALongTxtIsTolerated() {
+        val text = buildString {
+            append("第一章 风起\n")
+            repeat(300) { append("　　这是第 ${it + 1} 段，风从山上吹来。\n") }
+        }
+        val gbk = text.toByteArray(Charset.forName("GB18030"))
+        // GBK：中间插一个落单的高位字节，末尾截掉半个汉字，再补 DOS 的 Ctrl-Z。
+        val broken = gbk.copyOfRange(0, 400) + byteArrayOf(0x81.toByte()) + gbk.copyOfRange(400, gbk.size) +
+            byteArrayOf(0xB7.toByte(), 0x1A)
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("坏了一点.txt", broken)))
+        assertEquals("第一章 风起", book.chapters.single().title)
+        assertEquals("这是第 300 段，风从山上吹来。", book.chapters.single().blocks[299].plainText)
+        // UTF-8：夹一个控制字符和一个坏字节。
+        val utf8 = text.replaceFirst("风从", "风\u0007从").toByteArray() + byteArrayOf(0xE4.toByte())
+        val decoded = TextDecoder.decode(utf8)
+        assertTrue(decoded.contains("这是第 1 段，风从山上吹来。"))
+        assertTrue(decoded.none { it == '\u0007' })
+    }
+
     @Test
     fun malformedTextIsRejectedInsteadOfImportingReplacementOrControlCharacters() {
         val badInputs = listOf(
@@ -251,8 +272,9 @@ class ParserTest {
         assertEquals("雨落在旧城，第 240 段。", book.chapters[1].blocks.last().plainText)
     }
 
+    /** 缺了一章文件的 EPUB 照样能读，缺的那章留一段说明，不悄悄少一章；阅读顺序引用清单里没有的项目时略过。 */
     @Test
-    fun epubRejectsMissingLinearSpineChapterInsteadOfSilentlyLosingIt() {
+    fun epubWithMissingSpineFilesKeepsReadableChaptersAndMarksTheGap() {
         val container = """<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>"""
         val opf = """<package><manifest>
             <item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>
@@ -263,24 +285,22 @@ class ParserTest {
             "book.opf" to opf,
             "a.xhtml" to "<html><body><p>第一章仍然有效。</p></body></html>",
         )
-        val error = runCatching { EpubParser.parse(missingChapter, "x") }.exceptionOrNull()
-        assertTrue(error?.message.orEmpty().contains("正文文件缺失 b.xhtml"))
+        val book = EpubParser.parse(missingChapter, "x")
+        assertEquals(2, book.chapters.size)
+        assertEquals("第一章仍然有效。", book.chapters[0].blocks.single().plainText)
+        assertTrue(book.chapters[1].blocks.single().plainText.contains("b.xhtml"))
 
         val missingManifest = zip(
             "META-INF/container.xml" to container,
             "book.opf" to opf.replace("<item id=\"b\" href=\"b.xhtml\" media-type=\"application/xhtml+xml\"/>", ""),
             "a.xhtml" to "<html><body><p>第一章仍然有效。</p></body></html>",
         )
-        val manifestError = runCatching { EpubParser.parse(missingManifest, "x") }.exceptionOrNull()
-        assertTrue(manifestError?.message.orEmpty().contains("阅读顺序引用了缺失的文件 b"))
+        assertEquals(1, EpubParser.parse(missingManifest, "x").chapters.size)
 
-        // 非线性附录不参与阅读顺序，可以在正文缺失时略过。
-        val nonLinear = zip(
-            "META-INF/container.xml" to container,
-            "book.opf" to opf.replace("<itemref idref=\"b\"/>", "<itemref idref=\"b\" linear=\"no\"/>"),
-            "a.xhtml" to "<html><body><p>第一章仍然有效。</p></body></html>",
-        )
-        assertEquals(1, EpubParser.parse(nonLinear, "x").chapters.size)
+        // 正文文件全都缺失时才算无效。
+        val nothing = zip("META-INF/container.xml" to container, "book.opf" to opf)
+        val error = runCatching { EpubParser.parse(nothing, "x") }.exceptionOrNull()
+        assertTrue(error?.message.orEmpty().contains("正文文件都缺失"))
     }
 
     /** 两种常见注释：EPUB3 的 noteref + 正文里的 aside；以及指向尾注章节的 [1] 链接。 */

@@ -114,6 +114,16 @@ data class ReaderSettings(
     val pageEdges: Boolean = true,
 )
 
+/**
+ * 影响排版、分页的那部分设置。阅读区只在这些变了时才重新排版、按原文位置找回读到哪；
+ * 拖亮度条、调语速、换配色这些不该让正文重排、跳动。
+ */
+val ReaderSettings.layoutKey: List<Any>
+    get() = listOf(
+        fontSize, lineHeight, paragraphSpacing, serif, pageMode, fullscreen, indent, justify,
+        chineseConvert, font, pinyin, twoPage, margin, letterSpacing,
+    )
+
 /** 界面的深浅色。 */
 enum class ThemeMode(val label: String) {
     SYSTEM("跟随系统"),

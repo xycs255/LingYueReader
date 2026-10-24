@@ -131,6 +131,7 @@ import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
+import com.xycs.lingyuereader.data.layoutKey
 import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.data.TextAnchors
 import kotlinx.coroutines.delay
@@ -620,7 +621,7 @@ private fun Reader(
             LocalImageZoom provides { zoomed = it },
         ) {
             if (settings.pageMode == PageMode.SCROLL) {
-                key(screen, content, settings) {
+                key(screen, content, settings.layoutKey) {
                     val start = remember { pos }
                     val listState = rememberLazyListState(start.item, start.offset)
                     ScrollReader(
@@ -648,7 +649,7 @@ private fun Reader(
                     )
                 }
             } else if (settings.pageMode == PageMode.VERTICAL) {
-                key(screen, content, settings) {
+                key(screen, content, settings.layoutKey) {
                     val start = remember { pos }
                     val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
                     VerticalReader(
@@ -674,7 +675,7 @@ private fun Reader(
             } else {
                 // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
                 // 只在排版设置变化时重新分页；配色随环境渐变时不必。
-                key(screen, content, settings) {
+                key(screen, content, settings.layoutKey) {
                     val start = remember { pos }
                     PagedReader(
                         content = content,

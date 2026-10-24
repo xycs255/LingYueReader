@@ -39,12 +39,10 @@ object EpubParser {
         var cover = (manifest.values.firstOrNull { "cover-image" in it.properties.split(' ') } ?: coverId?.let(manifest::get))
             ?.takeIf { it.type.startsWith("image/") }?.href
         val spineTag = Regex("""<spine\b[^>]*>""").find(opf)?.value.orEmpty()
+        // 阅读顺序里引用了清单中没有的项目时略过：不知道它是什么（可能是图片页），没法替它占位。
         val spine = Regex("""<itemref\b[^>]*>""").findAll(opf)
             .filter { attr(it.value, "linear") != "no" }
-            .map { ref ->
-                val id = attr(ref.value, "idref") ?: error("不是有效的 EPUB：阅读顺序缺少 idref")
-                manifest[id] ?: error("不是有效的 EPUB：阅读顺序引用了缺失的文件 $id")
-            }
+            .mapNotNull { ref -> attr(ref.value, "idref")?.let(manifest::get) }
             .filter { it.type in textTypes || it.href.endsWith("html", ignoreCase = true) }
             .toList()
 
@@ -52,10 +50,20 @@ object EpubParser {
             .ifEmpty { tocTitles(files, attr(spineTag, "toc")?.let(manifest::get)?.href) }
 
         val chapters = mutableListOf<Chapter>()
+        var missing = 0
         val noteKeys = linkedSetOf<String>()
         for (item in spine) {
-            val html = files[item.href]?.let(TextDecoder::decode)
-                ?: error("不是有效的 EPUB：正文文件缺失 ${item.href}")
+            val bytes = files[item.href]
+            if (bytes == null) {
+                // 正文文件在压缩包里缺失：不让整本书打不开，也不悄悄少一章，留一章说明缺了什么。
+                chapters += ChapterTitles.chapter(
+                    tocTitles[item.href] ?: "缺失的章节",
+                    listOf(Block.Para("这一章的文件（${item.href}）在 EPUB 里缺失，其余章节照常阅读。", prose = false)),
+                )
+                missing++
+                continue
+            }
+            val html = TextDecoder.decode(bytes)
             val htmlBase = item.href.substringBeforeLast('/', "")
             // 注释链接换算成“书内路径#锚点”；只写 #锚点 的指向本文件。
             val link = { href: String ->
@@ -79,6 +87,7 @@ object EpubParser {
             }
             chapters += ChapterTitles.chapter(chapterTitle, blocks)
         }
+        require(missing == 0 || chapters.size > missing) { "不是有效的 EPUB：正文文件都缺失" }
         val decoded = HashMap<String, String>()
         val notes = noteKeys.mapNotNull { key ->
             val path = key.substringBefore('#')

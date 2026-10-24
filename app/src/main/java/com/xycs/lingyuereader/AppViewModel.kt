@@ -406,8 +406,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ReadAloud.setRate(rate)
     }
 
+    /**
+     * 重新读书架。索引整份损坏时书架保持原样并提示（[Library] 已停止写入、保留原文件）；
+     * 个别条目读不出时照常显示其余的书，同样提示。读失败不往外抛，免得在协程里让应用崩溃。
+     */
     private suspend fun loadShelf() {
-        _shelf.value = withContext(Dispatchers.IO) { library.list() }
+        try {
+            val (shelf, damaged) = withContext(Dispatchers.IO) { library.list() to library.damagedEntries() }
+            _shelf.value = shelf
+            if (damaged > 0) _messages.value = "书架索引里有 $damaged 本书的记录读不出，已暂停改动书架，原文件已保留"
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            _messages.value = error.message ?: "书架读取失败；原文件已保留"
+        }
+    }
+
+    /** 写失败已经提示过的事（只在 [disk] 上读写）；同一种写入成功一次后再失败才重新提示。 */
+    private val reportedWriteFailures = HashSet<String>()
+
+    /**
+     * 后台按顺序写盘；写不进去（比如书架索引损坏、拒绝改写）时提示，不让应用崩溃。
+     * 每翻一页都存进度，同一种失败只提示一次，不刷屏。
+     */
+    private fun writeLater(what: String, block: () -> Unit) {
+        viewModelScope.launch(disk) {
+            try {
+                block()
+                reportedWriteFailures.remove(what)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (reportedWriteFailures.add(what)) _messages.value = "${what}失败：${error.message ?: "写入出错"}"
+            }
+        }
     }
 
     fun setShelfQuery(query: String) {
@@ -432,7 +464,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val clean = groups.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         updateShelfPrefs { p -> p.copy(groups = (p.groups + clean).distinct()) }
         _shelf.update { list -> list.map { if (it.id == entry.id) it.copy(groups = clean) else it } }
-        viewModelScope.launch(disk) { library.setGroups(entry.id, clean) }
+        writeLater("保存分组") { library.setGroups(entry.id, clean) }
     }
 
     /** 分组改名；[to] 为空即删除分组（书不删）。 */
@@ -447,7 +479,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _shelf.update { list ->
             list.map { e -> if (from !in e.groups) e else e.copy(groups = e.groups.flatMap { g -> if (g == from) listOfNotNull(target) else listOf(g) }.distinct()) }
         }
-        viewModelScope.launch(disk) { library.renameGroup(from, target) }
+        writeLater("修改分组") { library.renameGroup(from, target) }
     }
 
     /** 阅读页在前台的时长，离开或切到后台时累加。 */
@@ -479,7 +511,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (millis < 1_000) return
         _shelf.update { list -> list.map { if (it.id == bookId) it.copy(readMillis = it.readMillis + millis) else it } }
         viewModelScope.launch(Dispatchers.IO) {
-            library.addReadingTime(bookId, millis)
+            // 书架索引写不进去时，阅读统计照样记。
+            runCatching { library.addReadingTime(bookId, millis) }
             stats.addTime(bookId, millis)
             _stats.value = stats.days()
         }
@@ -500,6 +533,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 关掉“分别导入还是合成一本”的对话框；不影响正在进行的导入。 */
+    fun dismissImport() {
+        _pendingImport.value = null
+    }
+
+    /** 取消正在进行的导入（导入进度上的“取消导入”）。 */
     fun cancelImport() {
         _pendingImport.value = null
         importJob?.cancel()
@@ -507,7 +546,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importBooks(files: List<Library.Picked>, merge: Boolean, title: String?, precedingMessage: String? = null) {
         _pendingImport.value = null
-        if (_busy.value || files.isEmpty()) return
+        if (files.isEmpty()) return
+        if (_busy.value) {
+            // 备份、恢复、导入词典等正在进行：不能悄悄丢掉选好的文件。
+            _messages.value = "正在处理其他任务，完成后请再导入：${files.joinToString("、") { it.name }}"
+            return
+        }
         importJob = viewModelScope.launch {
             _busy.value = true
             _importing.value = true
@@ -608,7 +652,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun rename(entry: BookEntry, title: String) {
         if (title.isBlank()) return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { library.rename(entry.id, title.trim()) }
+            withContext(Dispatchers.IO) { runCatching { library.rename(entry.id, title.trim()) } }
+                .onFailure { _messages.value = "改名失败：${it.message ?: "写入出错"}" }
             loadShelf()
         }
     }
@@ -616,8 +661,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun remove(entry: BookEntry) {
         viewModelScope.launch {
             if (loadingBookId == entry.id) cancelBookLoad()
-            withContext(Dispatchers.IO) { library.remove(entry.id) }
-            if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
+            val removed = withContext(Dispatchers.IO) { runCatching { library.remove(entry.id) } }
+            removed.onFailure { _messages.value = "移除失败：${it.message ?: "写入出错"}" }
+            if (removed.isSuccess && _openBook.value?.entry?.id == entry.id) _openBook.value = null
             loadShelf()
         }
     }
@@ -715,14 +761,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         movesSinceJump++
         _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
         _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
-        viewModelScope.launch(disk) { library.saveProgress(book.entry.id, progress) }
+        writeLater("保存阅读进度") { library.saveProgress(book.entry.id, progress) }
     }
 
     private fun updateMarks(transform: (Marks) -> Marks) {
         val book = _openBook.value ?: return
         _marks.update(transform)
         val snapshot = _marks.value
-        viewModelScope.launch(disk) { library.saveMarks(book.entry.id, snapshot) }
+        writeLater("保存书签批注") { library.saveMarks(book.entry.id, snapshot) }
     }
 
     /** 在某块的某个位置加或删书签（同一块已有书签时删除）。 */
@@ -1185,13 +1231,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             _busy.value = true
+            // 先找内容相同的；再找同一来源的（原文件之后改过，比如作者追更）：打开书架上那本，提示可刷新，
+            // 而不是再导入一份（导入会因为“已在书架上”被拒绝，书就打不开了）。
+            var changedSource = false
             val entry = withContext(Dispatchers.IO) {
-                runCatching { library.findSame(picked.single()) ?: library.add(picked, null) }
+                runCatching {
+                    library.findSame(picked.single())
+                        ?: library.findBySource(picked.single())?.also { changedSource = true }
+                        ?: library.add(picked, null)
+                }
             }
             loadShelf()
             _busy.value = false
-            entry.onSuccess { _stack.value = listOf(Screen.Shelf, Screen.Reader(it.id)) }
-                .onFailure { _messages.value = "打不开 ${picked.single().name}：${it.message ?: "读取失败"}" }
+            entry.onSuccess {
+                _stack.value = listOf(Screen.Shelf, Screen.Reader(it.id))
+                if (changedSource) _messages.value = "原文件有改动，打开的是书架上的版本；要更新可在书架长按这本书选“刷新”"
+            }.onFailure { _messages.value = "打不开 ${picked.single().name}：${it.message ?: "读取失败"}" }
         }
     }
 
