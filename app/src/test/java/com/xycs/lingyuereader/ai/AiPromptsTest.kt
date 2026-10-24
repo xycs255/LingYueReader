@@ -57,10 +57,10 @@ class AiPromptsTest {
 
     @Test
     fun selectionPromptCarriesContextAndQuestion() {
-        val p = AiPrompts.selection("第一章", "上下文段落", "选文", AskKind.TRANSLATE.instruction)
+        val p = AiPrompts.selection("第一章", "上下文段落", "选文", QuickAsk.DEFAULTS[1].instruction)
         assertTrue(p.contains("上下文段落"))
         assertTrue(p.contains("「选文」"))
-        assertTrue(p.endsWith(AskKind.TRANSLATE.instruction))
+        assertTrue(p.endsWith(QuickAsk.DEFAULTS[1].instruction))
         assertTrue(AiPrompts.system("书", "作者").contains("剧透") || AiPrompts.system("书", "作者").contains("没读到"))
     }
 }

@@ -50,10 +50,18 @@ import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiBook
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiGloss
+import com.xycs.lingyuereader.ai.AiCharacters
+import com.xycs.lingyuereader.ai.AiException
+import com.xycs.lingyuereader.ai.AnswerLength
+import com.xycs.lingyuereader.ai.BookCharacter
+import com.xycs.lingyuereader.ai.CharacterTable
+import com.xycs.lingyuereader.ai.AiHistoryItem
+import com.xycs.lingyuereader.ai.AiTask
+import com.xycs.lingyuereader.ai.NoteRange
 import com.xycs.lingyuereader.ai.AiPrompts
 import com.xycs.lingyuereader.ai.AiSession
 import com.xycs.lingyuereader.ai.AiStore
-import com.xycs.lingyuereader.ai.AskKind
+import com.xycs.lingyuereader.ai.QuickAsk
 import com.xycs.lingyuereader.ai.ReadPos
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -928,7 +936,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- AI ----------
 
-    private val assistant = AiAssistant(viewModelScope, AiStore(app), recapFile = { id -> library.bookFile(id, "ai-recap.json") })
+    private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss
@@ -955,19 +963,137 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val from = (at - half).coerceAtLeast(0)
             paragraphs.substring(from, (from + AiPrompts.CONTEXT_CHARS).coerceAtMost(paragraphs.length))
         }
+        val pieces = selectionPieces(sel).map { (b, r) -> NoteRange(b, r.first, r.last + 1) }
         _selection.value = null
-        assistant.startSelection(book, text, context, chapter?.title.orEmpty())
+        assistant.startSelection(book, text, context, chapter?.title.orEmpty(), sel.chapterIndex, pieces)
+    }
+
+    /** 这本书的 AI 对话记录，新的在前。 */
+    suspend fun aiHistory(): List<AiHistoryItem> {
+        val id = _openBook.value?.entry?.id ?: return emptyList()
+        return withContext(Dispatchers.IO) { assistant.history(id).list() }
+    }
+
+    /** 打开一段旧对话，接着问。 */
+    fun resumeAi(id: String) {
+        val book = aiBook() ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { assistant.resume(book, id) }
+            if (!ok) _messages.value = "这段对话打不开了"
+        }
+    }
+
+    fun removeAiHistory(id: String) {
+        val bookId = _openBook.value?.entry?.id ?: return
+        viewModelScope.launch(Dispatchers.IO) { assistant.history(bookId).remove(id) }
+    }
+
+    /** 把划选问 AI 的一段回答存成批注：选中的每段划上蓝线，回答记在最后一段上。 */
+    fun saveAiAsNote(answer: String) {
+        val task = ai.value?.task as? AiTask.Selection ?: return
+        val chapter = _openBook.value?.content?.chapters?.getOrNull(task.chapter)
+        if (chapter == null || task.pieces.isEmpty() || chapter.title != task.chapterTitle) {
+            _messages.value = "找不到原来选的那段文字，没能存成批注"
+            return
+        }
+        task.pieces.forEachIndexed { i, p ->
+            addNote(task.chapter, p.block, p.start, p.end, if (i == task.pieces.lastIndex) "AI：" + answer.trim().take(2000) else "", MarkColor.BLUE)
+        }
+        _messages.value = "已存为批注"
     }
 
     fun startRecap(chapterIndex: Int, block: Int) {
         aiBook()?.let { assistant.startRecap(it, ReadPos(chapterIndex, block)) }
     }
 
+    // ---------- 人物表 ----------
+
+    /** 人物表的状态：表（没整理过时为空）、正在整理时的进度、出错、读到处还有多少字没整理。 */
+    data class CharacterState(
+        val bookId: String? = null,
+        val table: CharacterTable? = null,
+        val running: Boolean = false,
+        val progress: String? = null,
+        val error: String? = null,
+        val pendingChars: Int = 0,
+        val pendingChunks: Int = 0,
+    )
+
+    private val _characters = MutableStateFlow(CharacterState())
+    val characters: StateFlow<CharacterState> = _characters.asStateFlow()
+    private var characterJob: Job? = null
+
+    /** 读这本书的人物表（打开书、打开人物表时调用）；[chapterIndex]、[block] 给出时顺便算还有多少没整理。 */
+    fun loadCharacters(chapterIndex: Int? = null, block: Int? = null) {
+        val book = _openBook.value ?: return
+        viewModelScope.launch {
+            val (table, pending) = withContext(Dispatchers.IO) {
+                val table = AiCharacters.read(library.bookFile(book.entry.id, AiCharacters.FILE))
+                val pending = if (chapterIndex != null && block != null) {
+                    AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
+                } else null
+                table to pending
+            }
+            _characters.update {
+                val base = if (it.bookId == book.entry.id) it else CharacterState(bookId = book.entry.id)
+                base.copy(
+                    table = if (base.running) base.table else table,
+                    pendingChars = pending?.sumOf { c -> c.text.length } ?: base.pendingChars,
+                    pendingChunks = pending?.size ?: base.pendingChunks,
+                )
+            }
+        }
+    }
+
+    /** 整理人物表：从上次整理到的地方到读者读到的地方，分段发，每段整理完就存盘。 */
+    fun buildCharacters(chapterIndex: Int, block: Int) {
+        val book = _openBook.value ?: return
+        if (characterJob?.isActive == true) return
+        val aiBook = aiBook() ?: return
+        characterJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiCharacters.FILE)
+            var table = withContext(Dispatchers.IO) { AiCharacters.read(file) }
+            val chunks = withContext(Dispatchers.IO) {
+                AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
+            }
+            _characters.value = CharacterState(book.entry.id, table, running = true, pendingChars = chunks.sumOf { it.text.length }, pendingChunks = chunks.size)
+            try {
+                chunks.forEachIndexed { i, chunk ->
+                    _characters.update { it.copy(progress = "正在整理第 ${i + 1}/${chunks.size} 段") }
+                    val answer = assistant.complete(aiBook, AiCharacters.prompt(table?.characters.orEmpty(), chunk.text), AnswerLength.LONG)
+                    val list = AiCharacters.parse(answer)
+                    val next = CharacterTable(list, chunk.end.chapter, chunk.end.block, System.currentTimeMillis())
+                    withContext(Dispatchers.IO) { AiCharacters.write(file, next) }
+                    table = next
+                    val rest = chunks.drop(i + 1)
+                    _characters.update { it.copy(table = next, pendingChars = rest.sumOf { c -> c.text.length }, pendingChunks = rest.size) }
+                }
+                _characters.update { it.copy(running = false, progress = null, error = null) }
+            } catch (e: CancellationException) {
+                _characters.update { it.copy(running = false, progress = null) }
+                throw e
+            } catch (e: Exception) {
+                _characters.update { it.copy(running = false, progress = null, error = (e as? AiException)?.message ?: "整理失败：${e.message}") }
+            }
+        }
+    }
+
+    fun cancelCharacters() {
+        characterJob?.cancel()
+    }
+
+    /** 查词时认出人名：这本书的人物表里有这个名字或别称。 */
+    fun characterFor(word: String): BookCharacter? {
+        val s = _characters.value
+        if (s.bookId != _openBook.value?.entry?.id) return null
+        return s.table?.find(word)
+    }
+
     fun startAskBook(chapterIndex: Int, block: Int) {
         aiBook()?.let { assistant.startAskBook(it, ReadPos(chapterIndex, block)) }
     }
 
-    fun askAi(kind: AskKind) = assistant.ask(kind)
+    fun askAi(q: QuickAsk) = assistant.ask(q)
 
     fun askAi(question: String) = assistant.ask(question)
 

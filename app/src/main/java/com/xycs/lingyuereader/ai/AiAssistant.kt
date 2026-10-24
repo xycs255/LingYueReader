@@ -22,6 +22,8 @@ data class AiTurn(
     /** 问这本书时引用的原文。 */
     val sources: List<AiSource> = emptyList(),
     val loading: Boolean = true,
+    /** 回答出来之前在做什么（“正在找相关原文”“正在建立索引 120/800”）。 */
+    val status: String? = null,
     val error: String? = null,
     /** 追问时作为对话历史重发的问题：问这本书时不重发原文片段，省钱。 */
     val replay: String = question,
@@ -29,17 +31,30 @@ data class AiTurn(
 
 /** 面板在做什么。 */
 sealed interface AiTask {
-    /** 划选后问 AI。 */
-    data class Selection(val text: String, val context: String, val chapterTitle: String) : AiTask
+    /**
+     * 划选后问 AI。[chapter] 和 [pieces]（每段里选中的范围）用来把回答存成批注；从对话记录里打开的旧对话，章节可能已经变了。
+     */
+    data class Selection(
+        val text: String,
+        val context: String,
+        val chapterTitle: String,
+        val chapter: Int = -1,
+        val pieces: List<NoteRange> = emptyList(),
+    ) : AiTask
     data class Recap(val pos: ReadPos, val chapterTitle: String) : AiTask
     data class AskBook(val pos: ReadPos) : AiTask
 }
+
+/** 选区在某一块里的范围（[end] 不含），存批注用。 */
+data class NoteRange(val block: Int, val start: Int, val end: Int)
 
 data class AiSession(
     val task: AiTask,
     val turns: List<AiTurn> = emptyList(),
     /** 前情提要是之前生成、存下来的：显示生成时间和“重新生成”。 */
     val cachedAt: Long = 0L,
+    /** 对话记录里按它覆盖。 */
+    val id: String = java.util.UUID.randomUUID().toString(),
 )
 
 /** 查词面板里的 AI 释义。 */
@@ -56,9 +71,23 @@ class AiAssistant(
     private val scope: CoroutineScope,
     private val store: AiStore?,
     private val client: AiClient = AiClient(),
-    /** 某本书的前情提要缓存文件。 */
-    private val recapFile: (bookId: String) -> File?,
+    /** 某本书目录里的文件：前情提要、对话记录、人物表等缓存都放在书的目录里，删书时一起删。 */
+    private val bookFile: (bookId: String, name: String) -> File?,
 ) {
+    private fun recapFile(bookId: String): File? = bookFile(bookId, "ai-recap.json")
+
+    /** 当前这本书的对话记录。 */
+    fun history(bookId: String): AiHistory = AiHistory { bookFile(bookId, AiHistory.FILE) }
+
+    /** 新功能（人物表、读书笔记、翻译等）共用的请求：同一套设置，系统提示带上书名。 */
+    suspend fun complete(book: AiBook?, prompt: String, length: AnswerLength? = null, onText: (String) -> Unit = {}): String {
+        val c = _config.value
+        val system = AiPrompts.system(book?.title.orEmpty(), book?.author, length ?: c.length)
+        return client.stream(c, system, listOf(AiMessage("user", prompt)), onText)
+    }
+
+    val currentConfig: AiConfig get() = _config.value
+
     private val _config = MutableStateFlow(store?.load() ?: AiConfig())
     val config: StateFlow<AiConfig> = _config.asStateFlow()
 
@@ -84,8 +113,15 @@ class AiAssistant(
         if (!c.ready) close()
     }
 
-    fun startSelection(book: AiBook, text: String, context: String, chapterTitle: String) {
-        open(book, AiSession(AiTask.Selection(text.trim(), context, chapterTitle)))
+    fun startSelection(book: AiBook, text: String, context: String, chapterTitle: String, chapter: Int = -1, pieces: List<NoteRange> = emptyList()) {
+        open(book, AiSession(AiTask.Selection(text.trim(), context, chapterTitle, chapter, pieces)))
+    }
+
+    /** 从对话记录里打开一段旧对话，可以接着问。 */
+    fun resume(book: AiBook, id: String): Boolean {
+        val saved = history(book.id).load(id) ?: return false
+        open(book, saved)
+        return true
     }
 
     fun startRecap(book: AiBook, pos: ReadPos) {
@@ -111,9 +147,9 @@ class AiAssistant(
     }
 
     /** 划选面板里的快捷问题。 */
-    fun ask(kind: AskKind) {
+    fun ask(q: QuickAsk) {
         val task = _session.value?.task as? AiTask.Selection ?: return
-        send(kind.label) { Prepared(AiPrompts.selection(task.chapterTitle, task.context, task.text, kind.instruction)) }
+        send(q.label) { Prepared(AiPrompts.selection(task.chapterTitle, task.context, task.text, q.instruction)) }
     }
 
     /** 读者自己打的问题。 */
@@ -128,10 +164,13 @@ class AiAssistant(
                 val first = s.turns.none { it.error == null && !it.loading }
                 send(q) { Prepared(if (first) AiPrompts.selection(task.chapterTitle, task.context, task.text, q) else q) }
             }
-            is AiTask.AskBook -> send(q) {
-                val sources = indexFor(b, task.pos).search(q) + nearby(b, task.pos, nextIndex = 0)
-                val numbered = sources.mapIndexed { i, src -> src.copy(index = i + 1) }
-                Prepared(AiPrompts.askBook(numbered, q), numbered, replay = q)
+            is AiTask.AskBook -> {
+                val previous = s.turns.filter { it.error == null && !it.loading }.map { it.question }
+                send(q) {
+                    val sources = findSources(b, task.pos, q, previous) + nearby(b, task.pos, nextIndex = 0)
+                    val numbered = sources.mapIndexed { i, src -> src.copy(index = i + 1) }
+                    Prepared(AiPrompts.askBook(numbered, q), numbered, replay = q)
+                }
             }
             is AiTask.Recap -> send(q) { Prepared(q) }
         }
@@ -180,11 +219,12 @@ class AiAssistant(
             try {
                 val p = withContext(Dispatchers.IO) { build() }
                 updateLast { it.copy(sources = p.sources, replay = p.replay ?: p.prompt) }
-                val answer = client.stream(config, AiPrompts.system(b.title, b.author), history + AiMessage("user", p.prompt)) { piece ->
+                val answer = client.stream(config, AiPrompts.system(b.title, b.author, config.length), history + AiMessage("user", p.prompt)) { piece ->
                     updateLast { it.copy(answer = it.answer + piece) }
                 }
                 updateLast { it.copy(answer = answer, loading = false) }
                 onDone(answer)
+                _session.value?.let { done -> withContext(Dispatchers.IO) { history(b.id).save(done) } }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AiException) {
@@ -206,6 +246,49 @@ class AiAssistant(
         return BookIndex.build(b.content, pos).also { index = Triple(b.id, pos, it) }
     }
 
+    /**
+     * 问这本书时找原文：先让模型把问题改写成检索词（补上别称、把追问里的“他”换成具体的人），按关键词（BM25）排；
+     * 设了向量模型时，再按向量相似度排，两种排序融合。改写或向量出错时退回只按问题本身的关键词。
+     */
+    private suspend fun findSources(b: AiBook, pos: ReadPos, question: String, previous: List<String>): List<AiSource> {
+        val config = _config.value
+        val index = indexFor(b, pos)
+        status("正在找相关原文……")
+        val keywords = runCatching {
+            client.stream(config, "", listOf(AiMessage("user", AiPrompts.keywords(question, previous)))).take(200)
+        }.getOrDefault("")
+        val byWords = index.ranked("$question $keywords", 30)
+        val byVector = if (config.embeddingModel.isNotBlank() && config.protocol == AiProtocol.OPENAI) {
+            runCatching { vectorRanked(b, index, config, "$question $keywords", 30) }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                emptyList()
+            }
+        } else emptyList()
+        status(null)
+        return index.sources(VectorCache.fuse(byWords, byVector).take(8))
+    }
+
+    /** 按向量相似度排：缺向量的段落先补（分批发，每批存盘，取消了下次接着补）。 */
+    private suspend fun vectorRanked(b: AiBook, index: BookIndex, config: AiConfig, query: String, limit: Int): List<Int> {
+        val cache = VectorCache(bookFile(b.id, VectorCache.FILE))
+        val model = config.embeddingModel.trim()
+        val have = cache.load(model).toMutableMap()
+        val texts = index.texts
+        val keys = texts.map(VectorCache::key)
+        val missing = texts.indices.filter { keys[it] !in have }
+        missing.chunked(AiClient.EMBED_BATCH).forEachIndexed { n, batch ->
+            status("正在给读过的部分建立索引 ${n * AiClient.EMBED_BATCH}/${missing.size}（只需一次）")
+            val vectors = client.embed(config, model, batch.map { texts[it] })
+            val added = batch.indices.associate { keys[batch[it]] to vectors[it] }
+            have.putAll(added)
+            cache.put(added)
+        }
+        val q = client.embed(config, model, listOf(query)).single()
+        return texts.indices.sortedByDescending { have[keys[it]]?.let { v -> VectorCache.cosine(q, v) } ?: -1f }.take(limit)
+    }
+
+    private fun status(text: String?) = updateLast { it.copy(status = text) }
+
     /** 读者停下的地方附近那一段：“刚才”“这里”一类的问题靠它。 */
     private fun nearby(b: AiBook, pos: ReadPos, nextIndex: Int): List<AiSource> {
         val text = AiPrompts.recentText(b.content, pos, limit = 1200).substringAfterLast("】\n").trim()
@@ -223,7 +306,7 @@ class AiAssistant(
         _gloss.value = AiGloss(word, AiTurn(word))
         val config = _config.value
         glossJob = scope.launch {
-            val system = if (book != null) AiPrompts.system(book.title, book.author) else AiPrompts.system("", null)
+            val system = if (book != null) AiPrompts.system(book.title, book.author, AnswerLength.SHORT) else AiPrompts.system("", null, AnswerLength.SHORT)
             try {
                 val answer = client.stream(config, system, listOf(AiMessage("user", AiPrompts.gloss(word, sentence)))) { piece ->
                     _gloss.update { g -> if (g?.word == word) g.copy(turn = g.turn.copy(answer = g.turn.answer + piece)) else g }

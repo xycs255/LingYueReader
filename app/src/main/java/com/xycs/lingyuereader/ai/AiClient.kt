@@ -47,7 +47,7 @@ object AiWire {
         put("Content-Type", "application/json; charset=utf-8")
         put("Accept", "text/event-stream")
         when (c.protocol) {
-            AiProtocol.OPENAI -> put("Authorization", "Bearer ${c.apiKey.trim()}")
+            AiProtocol.OPENAI -> if (c.apiKey.isNotBlank()) put("Authorization", "Bearer ${c.apiKey.trim()}")
             AiProtocol.ANTHROPIC -> {
                 put("x-api-key", c.apiKey.trim())
                 put("anthropic-version", ANTHROPIC_VERSION)
@@ -155,12 +155,17 @@ object AiWire {
  * [open] 可以换掉，测试时连本机的假服务。
  */
 class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }) {
+    companion object {
+        /** 一次向量请求最多几段（通义千问的向量接口一次最多 10 段）。 */
+        const val EMBED_BATCH = 10
+    }
 
     /** 发出请求，回答一段段到时调 [onText]（在 IO 线程）；返回整段回答。拒答时末尾加一句说明。 */
     suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, onText: (String) -> Unit = {}): String =
         withContext(Dispatchers.IO) {
-            val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || it.protocol == "http" }
-                ?: throw AiException("接口地址不对：要以 https:// 开头")
+            // 明文 http 只给局域网里的模型（家里电脑上的 Ollama 等）；公网上的服务商一律 https，密钥不明文传输。
+            val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
+                ?: throw AiException("接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
             val conn = try {
                 open(url)
             } catch (e: IOException) {
@@ -220,6 +225,54 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
                 conn.disconnect()
             }
         }
+
+    /**
+     * 文本向量（OpenAI 兼容的 /embeddings 接口）：问这本书时找相关原文用。一次最多发 [EMBED_BATCH] 段。
+     * Anthropic 接口没有向量模型。
+     */
+    suspend fun embed(config: AiConfig, model: String, inputs: List<String>): List<FloatArray> = withContext(Dispatchers.IO) {
+        if (config.protocol != AiProtocol.OPENAI) throw AiException("Anthropic 接口没有向量模型")
+        require(inputs.size <= EMBED_BATCH)
+        val endpoint = AiWire.endpoint(config).removeSuffix("/chat/completions") + "/embeddings"
+        val url = runCatching { URL(endpoint) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
+            ?: throw AiException("接口地址不对")
+        val conn = try { open(url) } catch (e: IOException) { throw AiException(networkError(e, url)) }
+        val handle = coroutineContext.job.invokeOnCompletion { if (it != null) conn.disconnect() }
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 60_000
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (config.apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer ${config.apiKey.trim()}")
+            val body = JSONObject().put("model", model.trim()).put("input", JSONArray(inputs)).toString()
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                throw AiException("向量模型：" + AiWire.error(code, err))
+            }
+            val o = JSONObject(conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+            val data = o.optJSONArray("data") ?: throw AiException("向量模型没有返回结果")
+            val out = arrayOfNulls<FloatArray>(inputs.size)
+            for (i in 0 until data.length()) {
+                val item = data.getJSONObject(i)
+                val v = item.getJSONArray("embedding")
+                out[item.optInt("index", i).coerceIn(0, inputs.lastIndex)] = FloatArray(v.length()) { k -> v.getDouble(k).toFloat() }
+            }
+            out.map { it ?: throw AiException("向量模型少返回了结果") }
+        } catch (e: AiException) {
+            throw e
+        } catch (e: IOException) {
+            coroutineContext.ensureActive()
+            throw AiException(networkError(e, url))
+        } catch (e: org.json.JSONException) {
+            throw AiException("看不懂向量模型的回复")
+        } finally {
+            handle.dispose()
+            conn.disconnect()
+        }
+    }
 
     private fun networkError(e: IOException, url: URL): String = when {
         e is UnknownHostException -> "连不上 ${url.host}：检查网络或接口地址"

@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,7 +62,7 @@ import com.xycs.lingyuereader.ai.AiSession
 import com.xycs.lingyuereader.ai.AiSource
 import com.xycs.lingyuereader.ai.AiTask
 import com.xycs.lingyuereader.ai.AiTurn
-import com.xycs.lingyuereader.ai.AskKind
+import com.xycs.lingyuereader.ai.QuickAsk
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
@@ -70,11 +71,13 @@ import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 /** 面板里要做的事，由阅读界面接到 ViewModel。 */
 internal class AiActions(
     val ask: (String) -> Unit,
-    val askKind: (AskKind) -> Unit,
+    val askKind: (QuickAsk) -> Unit,
     val retry: () -> Unit,
     val regenerate: () -> Unit,
     /** 点引用的原文：跳到第几章第几块。 */
     val jump: (chapter: Int, block: Int) -> Unit,
+    /** 划选问 AI 的回答存成批注；不是划选来的对话时为空。 */
+    val saveNote: ((String) -> Unit)? = null,
 )
 
 /**
@@ -141,11 +144,12 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
                 }
             }
             if (task is AiTask.Selection) {
+                // 快捷问题在设置里可以改、可以加，多了就横着滑。
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    AskKind.entries.forEach { k -> Chip(k.label, enabled = !loading, strong = session.turns.isEmpty()) { actions.askKind(k) } }
+                    config.asks.forEach { k -> Chip(k.label, enabled = !loading, strong = session.turns.isEmpty()) { actions.askKind(k) } }
                 }
             }
             AskField(
@@ -228,7 +232,7 @@ private fun Answer(turn: AiTurn, actions: AiActions) {
                     modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = actions.retry).padding(horizontal = 12.dp, vertical = 10.dp),
                 )
             }
-            turn.loading -> Thinking(turn.answer.isEmpty())
+            turn.loading -> Thinking(turn.answer.isEmpty(), turn.status)
             else -> {
                 val cited = AiPrompts.citations(turn.answer).mapNotNull { n -> turn.sources.firstOrNull { it.index == n } }
                 if (cited.isNotEmpty()) {
@@ -236,18 +240,28 @@ private fun Answer(turn: AiTurn, actions: AiActions) {
                         cited.forEach { s -> SourceRow(s) { actions.jump(s.chapter, s.block) } }
                     }
                 }
-                Text(
-                    "复制",
-                    color = c.secondary,
-                    fontSize = 13.sp,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(role = Role.Button) { copy(context, turn.answer) }
-                        .padding(vertical = 6.dp, horizontal = 2.dp),
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    AnswerAction("复制") { copy(context, turn.answer) }
+                    actions.saveNote?.let { save -> AnswerAction("存为批注") { save(turn.answer) } }
+                }
             }
         }
     }
+}
+
+/** 回答下面的小字操作：复制、存为批注。 */
+@Composable
+private fun AnswerAction(label: String, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Text(
+        label,
+        color = c.secondary,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 2.dp),
+    )
 }
 
 /** 回答里的 [2] 用强调色标出，和下面的出处对上。 */
@@ -284,11 +298,11 @@ private fun SourceRow(s: AiSource, onClick: () -> Unit) {
 
 /** 等回答时：还没字时说“正在思考”，字出来了只留一个小点在末尾闪。 */
 @Composable
-private fun Thinking(empty: Boolean) {
+private fun Thinking(empty: Boolean, status: String? = null) {
     val c = LocalGroupedColors.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 16.dp, color = c.tint)
-        if (empty) Text("正在思考……", color = c.secondary, fontSize = 14.sp)
+        if (empty) Text(status ?: "正在思考……", color = c.secondary, fontSize = 14.sp)
     }
 }
 

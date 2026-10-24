@@ -10,25 +10,19 @@ data class ReadPos(val chapter: Int, val block: Int)
 /** 问这本书时引用的一段原文：在第几章第几块开始。 */
 data class AiSource(val index: Int, val chapter: Int, val chapterTitle: String, val block: Int, val text: String)
 
-/** 划选后“问 AI”的快捷问题。 */
-enum class AskKind(val label: String, val instruction: String) {
-    EXPLAIN("解释", "解释选中文字的意思：难懂的字词、典故、言外之意，以及它在上下文里起什么作用。150 字左右。"),
-    TRANSLATE("翻译", "翻译选中的文字：文言或古白话译成现代汉语，外文译成中文，现代汉语译成英文。只给译文，必要时加一句注释。"),
-    BACKGROUND("背景", "讲讲选中文字涉及的人物、典故、历史或文化背景，帮读者读懂这里。200 字以内。"),
-}
-
 object AiPrompts {
     /** 发给模型的原文最多这么多字（约等于一两万 token），够前情提要，也不至于太贵。 */
     const val RECAP_CHARS = 16_000
     const val CONTEXT_CHARS = 600
 
-    fun system(title: String, author: String?): String = buildString {
+    fun system(title: String, author: String?, length: AnswerLength = AnswerLength.MEDIUM): String = buildString {
         append("你是阅读软件“灵阅”里的读书助手。读者正在读《").append(title).append("》")
         if (!author.isNullOrBlank()) append("（").append(author).append("）")
         append("。\n")
         append("- 用简体中文回答，清楚、简洁，不说客套话；用纯文本，不用 Markdown 标题和表格。\n")
         append("- 只依据给出的原文和常识回答。即使你知道这本书，也绝不透露读者还没读到的情节、人物结局或谜底。\n")
-        append("- 不确定时直说不确定，不要编造。")
+        append("- 不确定时直说不确定，不要编造。\n")
+        append("- ").append(length.instruction)
     }
 
     /** 划选后问 AI：选中的文字连同所在段落一起发，模型才知道语境。 */
@@ -102,6 +96,17 @@ object AiPrompts {
         return parts.joinToString("\n")
     }
 
+    /** 让模型把问题改写成检索词：补上人名、别称、同义说法；追问里的“他”“那件事”换成具体的。 */
+    fun keywords(question: String, previous: List<String>): String = buildString {
+        if (previous.isNotEmpty()) {
+            append("之前的问题：\n")
+            previous.takeLast(3).forEach { append("- ").append(it).append('\n') }
+        }
+        append("现在的问题：").append(question.trim()).append("\n\n")
+        append("为了在小说原文里检索相关段落，列出 3 到 12 个检索词：问题里的人名、地名、物件、事件，它们的别称和同义说法；")
+        append("追问里的代词换成具体的人或事。只输出用空格分隔的词，不要解释。")
+    }
+
     /** 回答里引用的片段编号 [n]，按出现先后、不重复。 */
     fun citations(answer: String): List<Int> =
         Regex("""\[(\d{1,2})]""").findAll(answer).mapNotNull { it.groupValues[1].toIntOrNull() }.distinct().toList()
@@ -120,8 +125,14 @@ class BookIndex private constructor(
 
     val size: Int get() = passages.size
 
+    /** 各段原文（建向量索引用）。 */
+    val texts: List<String> get() = passages.map { it.text }
+
     /** 和 [question] 最相关的至多 [limit] 段，按在书中的先后排好、编号从 1 起。 */
-    fun search(question: String, limit: Int = 8): List<AiSource> {
+    fun search(question: String, limit: Int = 8): List<AiSource> = sources(ranked(question, limit))
+
+    /** 按 BM25 分数从高到低，至多 [limit] 段的下标。 */
+    fun ranked(question: String, limit: Int = 30): List<Int> {
         // 一般按两字词找；问的只有一个字（“伞”）时才按单字找。
         val all = terms(question).keys
         val query = all.filter { it.length >= 2 && it !in STOP }.ifEmpty { all.filter { it.length == 1 } }
@@ -137,10 +148,13 @@ class BookIndex private constructor(
             }
             if (score > 0) i to score else null
         }
-        return scored.sortedByDescending { it.second }.take(limit).map { it.first }.sorted().mapIndexed { k, i ->
-            val p = passages[i]
-            AiSource(k + 1, p.chapter, p.chapterTitle, p.block, p.text)
-        }
+        return scored.sortedByDescending { it.second }.take(limit).map { it.first }
+    }
+
+    /** 把选出的段落按在书中的先后排好、编号从 1 起。 */
+    fun sources(indices: List<Int>): List<AiSource> = indices.distinct().sorted().mapIndexed { k, i ->
+        val p = passages[i]
+        AiSource(k + 1, p.chapter, p.chapterTitle, p.block, p.text)
     }
 
     companion object {

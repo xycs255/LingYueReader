@@ -139,7 +139,7 @@ class AiClientTest {
         reply = Triple(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"他从江南来[1]。\"}}]}\n\ndata: [DONE]\n\n")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val dir = Files.createTempDirectory("ai").toFile()
-        val assistant = AiAssistant(scope, null, recapFile = { File(dir, "$it.json") })
+        val assistant = AiAssistant(scope, null, bookFile = { id, name -> File(dir, "$id-$name") })
         assistant.saveConfig(openAi())
         val content = BookContent(
             "书", null,
@@ -158,9 +158,16 @@ class AiClientTest {
         assertEquals("他从江南来[1]。", turn.answer)
         assertTrue(turn.sources.first().text.contains("江南"))
         assertEquals("林舟从哪里来？", turn.replay)
-        val sent = requests.single().second.getJSONArray("messages").getJSONObject(1).getString("content")
+        // 先让模型改写检索词，再带着找到的原文回答；两次都不带没读到的内容。
+        assertEquals(2, requests.size)
+        assertTrue(requests[0].second.toString().contains("检索词"))
+        val sent = requests[1].second.getJSONArray("messages").getJSONObject(1).getString("content")
         assertTrue(sent.contains("江南"))
-        assertFalse(sent.contains("儿子"))
+        requests.forEach { assertFalse(it.second.toString().contains("儿子")) }
+        // 答完的对话存进对话记录。
+        withTimeout(5_000) { while (!File(dir, "b-ai-chats.json").exists()) delay(10) }
+        val saved = AiHistory { File(dir, "b-ai-chats.json") }.list().single()
+        assertEquals("林舟从哪里来？", saved.title)
         scope.cancel()
         dir.deleteRecursively()
     }
@@ -170,13 +177,13 @@ class AiClientTest {
         reply = Triple(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"提要\"}}]}\n\ndata: [DONE]\n\n")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val dir = Files.createTempDirectory("ai").toFile()
-        val assistant = AiAssistant(scope, null, recapFile = { File(dir, "$it.json") })
+        val assistant = AiAssistant(scope, null, bookFile = { id, name -> File(dir, "$id-$name") })
         assistant.saveConfig(openAi())
         val book = AiBook("b", "书", null, BookContent("书", null, listOf(Chapter("第一章", listOf(Block.Para("开头。"), Block.Para("接着。"))))))
         assistant.startRecap(book, ReadPos(0, 1))
         withTimeout(5_000) {
             while (assistant.session.value?.turns?.lastOrNull()?.loading != false) delay(10)
-            while (!File(dir, "b.json").exists()) delay(10)
+            while (!File(dir, "b-ai-recap.json").exists()) delay(10)
         }
         assistant.close()
         assistant.startRecap(book, ReadPos(0, 1))

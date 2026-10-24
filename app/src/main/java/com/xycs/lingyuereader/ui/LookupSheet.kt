@@ -96,6 +96,9 @@ internal fun LookupSheet(
     // 开了 AI 助手才有“AI 释义”；只显示当前这个词的。
     val gloss = aiGloss?.takeIf { it.word == lookup.word }?.turn
     val ai = AiGlossState(aiReady.ready, gloss, vm::glossLookup)
+    // 人物表里有这个名字：顶上显示人物卡（本机数据，不联网）。
+    val characters by vm.characters.collectAsStateWithLifecycle()
+    val person = remember(lookup.word, characters) { vm.characterFor(lookup.word) }
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         // 先是一张小卡片：词、读音、头几条释义、原句；“完整释义”再展开成整页（各本词典、微调选区、相关词语）。
@@ -111,7 +114,7 @@ internal fun LookupSheet(
             label = "lookupExpand",
         ) { expanded ->
         if (!expanded) {
-            CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, ai, onAnnotate) { full = true }
+            CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, ai, person, onAnnotate) { full = true }
         } else Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("查词", back = null, action = "管理词典" to onManage) {}
             Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -142,6 +145,9 @@ internal fun LookupSheet(
                 if (lookup.range != null) ActionTile("划线·批注", LingYueIcons.Highlight, Modifier.weight(1f), onAnnotate)
             }
 
+            if (person != null) {
+                GroupedSection(header = "人物") { row { CharacterCard(person) } }
+            }
             if (ai.enabled) {
                 GroupedSection(header = "AI 释义") {
                     row {
@@ -218,7 +224,7 @@ internal fun LookupSheet(
 
 /** 查词小卡片：照样稿，词和读音大字，右上角划线、收入生词本，下面头几条释义、原句，最底下在线查询和“完整释义”。 */
 @Composable
-private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai: AiGlossState, onAnnotate: () -> Unit, onExpand: () -> Unit) {
+private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai: AiGlossState, person: com.xycs.lingyuereader.ai.BookCharacter?, onAnnotate: () -> Unit, onExpand: () -> Unit) {
     val c = LocalGroupedColors.current
     val context = LocalContext.current
     val result = lookup.result
@@ -236,7 +242,9 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
                 if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
             }
         }
+        if (person != null) CharacterCard(person)
         when {
+            person != null && definitions.isEmpty() -> {}
             result == null -> Text("正在查……", color = c.secondary, fontSize = 15.sp)
             definitions.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 definitions.forEachIndexed { i, d ->

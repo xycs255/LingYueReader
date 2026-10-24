@@ -127,6 +127,7 @@ import com.xycs.lingyuereader.ReturnPoint
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiSession
+import com.xycs.lingyuereader.ai.AiTask
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.MarkColor
@@ -301,6 +302,8 @@ private fun Reader(
     val marks by vm.marks.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val aiSession by vm.ai.collectAsStateWithLifecycle()
+    // 人物表在本机：打开书时读进来，查词时认人名。
+    LaunchedEffect(entry.id) { vm.loadCharacters() }
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
     // 注音要读字表，后台准备好再用。
@@ -318,6 +321,8 @@ private fun Reader(
     val chapter = content.chapters[chapterIndex]
     var menuVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<ReaderSheet?>(null) }
+    // AI 工具面板（对话记录、人物表、读书笔记）。
+    var aiTool by remember { mutableStateOf<AiTool?>(null) }
     // 面板一打开，菜单就收起：不然菜单的玻璃条压在面板后面，关掉面板时还挂在那儿。
     LaunchedEffect(sheet) { if (sheet != null) menuVisible = false }
     val turner = remember { Turner() }
@@ -874,6 +879,34 @@ private fun Reader(
                         tint = if (bookmarked) palette.accent else palette.text,
                     )
                 }
+                // AI 工具都收在这个星星按钮里：开了 AI 助手、书里有文字时才有。
+                if (aiConfig.ready && !entry.format.imageOnly) {
+                    Box {
+                        var aiMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { aiMenu = true }) {
+                            Icon(LingYueIcons.Sparkle, contentDescription = "AI", tint = palette.text)
+                        }
+                        OverlayListPopup(show = aiMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { aiMenu = false }) {
+                            GlassMenu {
+                                ListPopupColumn {
+                                    val block = pos.block.coerceAtLeast(0)
+                                    aiMenuItems(
+                                        onPick = { item ->
+                                            aiMenu = false
+                                            menuVisible = false
+                                            when (item) {
+                                                AiMenuItem.RECAP -> vm.startRecap(chapterIndex, block)
+                                                AiMenuItem.ASK_BOOK -> vm.startAskBook(chapterIndex, block)
+                                                AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
+                                                AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
                     Icon(LingYueIcons.Search, contentDescription = "书内搜索", tint = palette.text)
                 }
@@ -891,18 +924,6 @@ private fun Reader(
                                     autoScroll = true
                                     autoPaused = false
                                     menuVisible = false
-                                }
-                                if (aiConfig.ready && !entry.format.imageOnly) {
-                                    LingYueMenuItem(AiAssistant.RECAP, selected = false) {
-                                        more = false
-                                        menuVisible = false
-                                        vm.startRecap(chapterIndex, pos.block.coerceAtLeast(0))
-                                    }
-                                    LingYueMenuItem("问这本书", selected = false) {
-                                        more = false
-                                        menuVisible = false
-                                        vm.startAskBook(chapterIndex, pos.block.coerceAtLeast(0))
-                                    }
                                 }
                                 LingYueMenuItem("书籍详情", selected = false) {
                                     more = false
@@ -1183,6 +1204,7 @@ private fun Reader(
                     askKind = vm::askAi,
                     retry = vm::retryAi,
                     regenerate = vm::regenerateRecap,
+                    saveNote = vm::saveAiAsNote.takeIf { (s.task as? AiTask.Selection)?.pieces?.isNotEmpty() == true },
                     jump = { ch, block ->
                         vm.closeAi()
                         jump(ch, block, true)
@@ -1191,6 +1213,7 @@ private fun Reader(
             )
         }
     }
+    AiToolSheets(aiTool, vm, palette, appTint, chapterIndex, pos.block.coerceAtLeast(0), onClose = { aiTool = null })
     LookupOverlay(vm, palette, appTint) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
