@@ -100,6 +100,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -107,8 +108,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-/** 首页底部导航的四个标签。 */
-enum class HomeTab(val label: String) { Shelf("书架"), Vocabulary("生词本"), Stats("统计"), Me("我的") }
+/** 预览的作品在书架上的分组。 */
+const val WORKS_GROUP = "我的作品"
+
+/** 首页底部导航的五个标签。 */
+enum class HomeTab(val label: String) { Shelf("书架"), Write("写作"), Vocabulary("生词本"), Stats("统计"), Me("我的") }
 
 private val readerSeq = java.util.concurrent.atomic.AtomicLong()
 
@@ -148,6 +152,12 @@ sealed interface Screen {
     /** 主题设置（界面的深浅色、配色、玻璃效果等）。 */
     data object Theme : Screen
     data class BookRules(val bookId: String) : Screen
+    /** 一部作品：卷章目录、作品信息、导出与预览。 */
+    data class Work(val workId: String) : Screen
+    /** 写一章。 */
+    data class Editor(val workId: String, val chapterId: String) : Screen
+    /** 一章的历史版本。 */
+    data class WorkHistory(val workId: String, val chapterId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
@@ -240,6 +250,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _vocab = MutableStateFlow<List<VocabWord>>(emptyList())
     val vocab: StateFlow<List<VocabWord>> = _vocab.asStateFlow()
     private val dictionaries = Dictionaries(app)
+
+    /** 写作：作品、正文、码字统计。 */
+    val writing = WritingModel(com.xycs.lingyuereader.data.WorkStore(java.io.File(app.filesDir, "writing")), viewModelScope) { _messages.value = it }
 
     private val _dictSettings = MutableStateFlow(DictSettings())
     val dictSettings: StateFlow<DictSettings> = _dictSettings.asStateFlow()
@@ -454,6 +467,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { _dictSettings.value = withContext(Dispatchers.IO) { dictionaries.settings() } }
         reloadVocabulary()
         reloadStats()
+        writing.reload()
         // 听书存下的进度（由 ReadAloud 写盘，界面关了也照存）：这里只更新内存里的书架，打开书时从那里读起。
         viewModelScope.launch {
             ReadAloud.saved.collect { saved ->
@@ -2195,6 +2209,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun backupData(): Map<String, ByteArray> = buildMap {
         vocabulary.raw()?.let { put("vocabulary.json", it) }
         stats.raw()?.let { put("stats.json", it) }
+        writing.backup()?.let { put("writing.json", it) }
     }
 
     fun restore(uri: Uri) {
@@ -2213,6 +2228,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.IO) {
                         data["vocabulary.json"]?.let(vocabulary::merge)
                         data["stats.json"]?.let(stats::merge)
+                        data["writing.json"]?.let(writing::restoreBackup)
                     }
                     reloadVocabulary()
                     reloadStats()
@@ -2401,6 +2417,72 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val content = _openBook.value?.content ?: return
         viewModelScope.launch {
             _searchHits.value = withContext(Dispatchers.Default) { BookParser.search(content, query) }
+        }
+    }
+
+    /** 把作品导出到读者选的文件。 */
+    fun exportWork(workId: String, format: ExportFormat, uri: Uri) {
+        viewModelScope.launch {
+            beginBusy()
+            try {
+                withContext(Dispatchers.IO) {
+                    val out = getApplication<Application>().contentResolver.openOutputStream(uri, "wt") ?: throw IllegalArgumentException("无法写入文件")
+                    out.use { writing.export(workId, format, it) }
+                }
+                _messages.value = "已导出 ${format.label}"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "导出失败：${error.message ?: "写入出错"}"
+            } finally {
+                endBusy()
+            }
+        }
+    }
+
+    // ---------- 写作：当书预览、听稿 ----------
+
+    /**
+     * 把作品生成 EPUB 放进书架（分组“我的作品”），用阅读页打开到 [chapterId] 那一章（为空时从上次读到的地方）；
+     * [listen] 为真时打开后从那一章开头听。第一次放进书架，之后刷新同一本书，阅读进度、书签照旧。
+     */
+    fun previewWork(workId: String, chapterId: String?, listen: Boolean = false) {
+        viewModelScope.launch {
+            beginBusy()
+            try {
+                writing.flush()
+                val (work, file) = writing.writePreview(workId)
+                val uri = Uri.fromFile(file).toString()
+                val entry = withContext(Dispatchers.IO) {
+                    val list = library.list()
+                    val existing = list.firstOrNull { it.id == work.previewBookId } ?: list.firstOrNull { e -> e.sources.any { it.uri == uri } }
+                    val entry = if (existing != null) {
+                        library.refresh(existing)
+                        if (existing.title != work.title) library.rename(existing.id, work.title)
+                        existing
+                    } else {
+                        library.add(listOf(Library.Picked(Uri.fromFile(file), "${work.title}.epub")), work.title).also { e ->
+                            library.setGroups(e.id, listOf(WORKS_GROUP))
+                        }
+                    }
+                    if (entry.id != work.previewBookId) writing.setPreviewBook(workId, entry.id)
+                    entry
+                }
+                loadShelf()
+                bookContentChanged(entry.id)
+                val index = chapterId?.let { id -> work.chapters.indexOfFirst { it.id == id } }?.takeIf { it >= 0 }
+                open(Screen.Reader(entry.id, chapterIndex = index))
+                if (listen) {
+                    val book = kotlinx.coroutines.withTimeoutOrNull(30_000) { _openBook.first { it?.entry?.id == entry.id } }
+                    if (book != null) startReadAloud(index ?: book.entry.progress?.chapterIndex ?: 0, 0, 0)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "预览失败：${error.message ?: "生成出错"}"
+            } finally {
+                endBusy()
+            }
         }
     }
 

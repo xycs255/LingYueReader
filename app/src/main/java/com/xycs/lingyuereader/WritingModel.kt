@@ -1,0 +1,215 @@
+package com.xycs.lingyuereader
+
+import com.xycs.lingyuereader.data.Snapshot
+import com.xycs.lingyuereader.data.Work
+import com.xycs.lingyuereader.data.WorkChapter
+import com.xycs.lingyuereader.data.WorkExport
+import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.WritingStats
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.OutputStream
+
+/** 导出的格式。 */
+enum class ExportFormat(val label: String, val ext: String, val mime: String) {
+    TXT("TXT", "txt", "text/plain"),
+    EPUB("EPUB", "epub", "application/epub+zip"),
+    MARKDOWN("Markdown", "md", "text/markdown"),
+}
+
+/**
+ * 写作：作品列表、码字统计，以及改作品、存正文。读写盘都排成一队在后台做（先改的先落盘），
+ * 改完再更新界面看的 [works]、[stats]。出错时用 [message] 告诉读者。
+ */
+class WritingModel(
+    private val store: WorkStore,
+    private val scope: CoroutineScope,
+    private val message: (String) -> Unit,
+) {
+    private val disk = Dispatchers.IO.limitedParallelism(1)
+
+    private val _works = MutableStateFlow<List<Work>>(emptyList())
+    val works: StateFlow<List<Work>> = _works.asStateFlow()
+    private val _stats = MutableStateFlow(WritingStats())
+    val stats: StateFlow<WritingStats> = _stats.asStateFlow()
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
+    /** 每章上次存历史版本的时间：写着写着每隔一阵存一版。 */
+    private val lastSnapshot = HashMap<String, Long>()
+
+    fun reload() {
+        scope.launch {
+            val (works, stats) = withContext(disk) { store.list() to store.stats() }
+            _works.value = works
+            _stats.value = stats
+            _loaded.value = true
+        }
+    }
+
+    fun work(id: String): Work? = _works.value.firstOrNull { it.id == id }
+
+    private fun publish(work: Work?) {
+        if (work == null) return
+        _works.update { list -> (listOf(work) + list.filterNot { it.id == work.id }).sortedByDescending { it.updatedAt } }
+    }
+
+    /** 在写盘队列里做 [block]；做完更新作品列表。 */
+    private fun change(failure: String, block: () -> Work?, then: (Work) -> Unit = {}) {
+        scope.launch {
+            try {
+                val work = withContext(disk) { block() }
+                publish(work)
+                work?.let(then)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("$failure：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun create(title: String, author: String, then: (Work) -> Unit) = change("新建失败", { store.create(title, author) }, then)
+
+    fun updateInfo(workId: String, title: String, author: String, synopsis: String) = change("保存失败", {
+        store.update(workId) { it.copy(title = title.trim().ifEmpty { it.title }, author = author.trim(), synopsis = synopsis.trim()) }
+    })
+
+    /** 记下预览用的书（不算改动作品）。 */
+    internal fun setPreviewBook(workId: String, bookId: String?) = store.update(workId, touch = false) { it.copy(previewBookId = bookId) }.also(::publish)
+
+    fun delete(workId: String) {
+        scope.launch {
+            try {
+                withContext(disk) { store.delete(workId) }
+                _works.update { list -> list.filterNot { it.id == workId } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("删除失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun addChapter(workId: String, volumeId: String, then: (WorkChapter) -> Unit = {}) {
+        var added: WorkChapter? = null
+        change("加章失败", { store.addChapter(workId, volumeId)?.let { (w, c) -> added = c; w } }) { added?.let(then) }
+    }
+
+    fun addVolume(workId: String, title: String) = change("加卷失败", { store.addVolume(workId, title) })
+    fun renameChapter(workId: String, chapterId: String, title: String) {
+        if (title.isBlank()) return
+        change("改名失败", { store.renameChapter(workId, chapterId, title) })
+    }
+
+    fun renameVolume(workId: String, volumeId: String, title: String) {
+        if (title.isBlank()) return
+        change("改名失败", { store.renameVolume(workId, volumeId, title) })
+    }
+
+    fun deleteChapter(workId: String, chapterId: String) = change("删除失败", { store.deleteChapter(workId, chapterId) })
+    fun deleteVolume(workId: String, volumeId: String) = change("删除失败", { store.deleteVolume(workId, volumeId) })
+    fun moveChapter(workId: String, chapterId: String, delta: Int) = change("移动失败", { store.moveChapter(workId, chapterId, delta) })
+
+    // ---------- 正文 ----------
+
+    /** 打开一章来写：先把现在的正文存一个历史版本，这次写坏了能回到开写前。 */
+    suspend fun open(workId: String, chapterId: String): String = withContext(disk) {
+        val text = store.text(workId, chapterId)
+        if (text.isNotBlank()) runCatching { store.snapshot(workId, chapterId, text) }
+        lastSnapshot[chapterId] = System.currentTimeMillis()
+        text
+    }
+
+    /** 自动保存。每写 [SNAPSHOT_EVERY] 存一个历史版本；[closing] 为真（离开这一章）时也存一版。 */
+    fun save(workId: String, chapterId: String, text: String, closing: Boolean = false) {
+        scope.launch {
+            try {
+                val work = withContext(disk) {
+                    val saved = store.saveText(workId, chapterId, text)
+                    val now = System.currentTimeMillis()
+                    if (text.isNotBlank() && (closing || now - (lastSnapshot[chapterId] ?: 0) >= SNAPSHOT_EVERY)) {
+                        store.snapshot(workId, chapterId, text)
+                        lastSnapshot[chapterId] = now
+                    }
+                    saved to store.stats()
+                }
+                publish(work.first)
+                _stats.value = work.second
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    /** 等前面排着的保存都写完（预览、导出前用）。 */
+    suspend fun flush() = withContext(disk) { }
+
+    suspend fun history(workId: String, chapterId: String): List<Snapshot> = withContext(disk) { store.history(workId, chapterId) }
+
+    suspend fun snapshotText(workId: String, chapterId: String, at: Long): String? = withContext(disk) { store.snapshotText(workId, chapterId, at) }
+
+    fun restore(workId: String, chapterId: String, at: Long, then: () -> Unit) {
+        scope.launch {
+            try {
+                val (work, stats) = withContext(disk) { store.restore(workId, chapterId, at) to store.stats() }
+                publish(work)
+                _stats.value = stats
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("恢复失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun setGoal(goal: Int) {
+        scope.launch {
+            _stats.value = withContext(disk) {
+                store.setGoal(goal)
+                store.stats()
+            }
+        }
+    }
+
+    // ---------- 导出、预览、备份 ----------
+
+    suspend fun export(workId: String, format: ExportFormat, out: OutputStream) = withContext(disk) {
+        val work = requireNotNull(store.get(workId)) { "作品不在了" }
+        val text = { c: WorkChapter -> store.text(workId, c.id) }
+        when (format) {
+            ExportFormat.TXT -> out.write(WorkExport.txt(work, text).toByteArray())
+            ExportFormat.MARKDOWN -> out.write(WorkExport.markdown(work, text).toByteArray())
+            ExportFormat.EPUB -> WorkExport.epub(work, text, out)
+        }
+    }
+
+    /** 生成预览用的 EPUB，返回作品和文件。 */
+    internal suspend fun writePreview(workId: String): Pair<Work, java.io.File> = withContext(disk) {
+        val work = requireNotNull(store.get(workId)) { "作品不在了" }
+        val file = store.previewFile(workId)
+        file.parentFile?.mkdirs()
+        val tmp = java.io.File(file.parentFile, file.name + ".tmp")
+        tmp.outputStream().use { WorkExport.epub(work, { c -> store.text(workId, c.id) }, it, placeholders = true) }
+        check(tmp.renameTo(file)) { "无法写入预览文件" }
+        work to file
+    }
+
+    internal fun backup(): ByteArray? = store.backup()
+
+    internal fun restoreBackup(json: String): Int = store.restoreBackup(json).also { reload() }
+
+    companion object {
+        const val SNAPSHOT_EVERY = 10 * 60_000L
+    }
+}

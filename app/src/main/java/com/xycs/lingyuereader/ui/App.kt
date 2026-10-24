@@ -207,6 +207,9 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.CatalogBrowse -> CatalogBrowseScreen(vm, screen)
             Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
+            is Screen.Work -> WorkScreen(vm, screen.workId)
+            is Screen.Editor -> EditorScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkHistory -> WorkHistoryScreen(vm, screen.workId, screen.chapterId)
         }
     }
 }

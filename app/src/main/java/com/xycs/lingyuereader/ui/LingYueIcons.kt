@@ -567,4 +567,58 @@ object LingYueIcons {
             trace { moveTo(12f, 19f); lineTo(12f, 5f); moveTo(6f, 11f); lineTo(12f, 5f); lineTo(18f, 11f) }
         }
     }
+
+    /** 写作：一支斜放的铅笔，笔下一张纸的边。 */
+    val Write by lazy {
+        glyph("Write") {
+            trace {
+                moveTo(15.2f, 4.3f)
+                lineTo(19.7f, 8.8f)
+                lineTo(9.6f, 18.9f)
+                lineTo(4.5f, 19.5f)
+                lineTo(5.1f, 14.4f)
+                close()
+                moveTo(13f, 6.5f); lineTo(17.5f, 11f)
+            }
+            trace { moveTo(13.5f, 19.5f); lineTo(19.5f, 19.5f) }
+        }
+    }
+
+    /** 撤销：向左回转的箭头。 */
+    val Undo by lazy {
+        glyph("Undo", autoMirror = true) {
+            trace {
+                moveTo(9f, 5.5f); lineTo(4.5f, 10f); lineTo(9f, 14.5f)
+                moveTo(4.5f, 10f); lineTo(14.5f, 10f)
+                curveTo(17.3f, 10f, 19.5f, 12.2f, 19.5f, 15f)
+                curveTo(19.5f, 17.5f, 17.5f, 19f, 15f, 19f)
+                lineTo(11f, 19f)
+            }
+        }
+    }
+
+    /** 重做：向右回转的箭头。 */
+    val Redo by lazy {
+        glyph("Redo", autoMirror = true) {
+            trace {
+                moveTo(15f, 5.5f); lineTo(19.5f, 10f); lineTo(15f, 14.5f)
+                moveTo(19.5f, 10f); lineTo(9.5f, 10f)
+                curveTo(6.7f, 10f, 4.5f, 12.2f, 4.5f, 15f)
+                curveTo(4.5f, 17.5f, 6.5f, 19f, 9f, 19f)
+                lineTo(13f, 19f)
+            }
+        }
+    }
+
+    /** 历史版本：带回转箭头的钟。 */
+    val History by lazy {
+        glyph("History") {
+            trace {
+                moveTo(4.6f, 9.2f)
+                arcTo(7.8f, 7.8f, 0f, true, true, 4.2f, 12f)
+                moveTo(4.6f, 4.8f); lineTo(4.6f, 9.2f); lineTo(9f, 9.2f)
+                moveTo(12f, 7.8f); lineTo(12f, 12f); lineTo(15f, 14f)
+            }
+        }
+    }
 }

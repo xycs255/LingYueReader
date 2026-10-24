@@ -53,8 +53,8 @@ class Library(private val context: Context) {
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
-        /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
-        val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
+        /** 书以外的应用数据（生词本、阅读统计、写作的作品），按文件名放在 data/ 下。 */
+        val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats|writing)\.json""")
         val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json|ai-[a-z0-9-]{1,40}\.(json|md|bin))""")
 
         /** 每本书的 AI 数据（读书笔记、整章翻译、讲书稿、人物表等）：备份时打包，恢复时保留本机已有的。 */
