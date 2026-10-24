@@ -351,6 +351,48 @@ object LingYueIcons {
         }
     }
 
+    /** 复制：后面一张纸露出左上角，前面一张完整的圆角纸。 */
+    val Copy by lazy {
+        glyph("Copy") {
+            trace {
+                moveTo(9.5f, 8f)
+                lineTo(17.5f, 8f)
+                curveTo(18.6f, 8f, 19.5f, 8.9f, 19.5f, 10f)
+                lineTo(19.5f, 18.5f)
+                curveTo(19.5f, 19.6f, 18.6f, 20.5f, 17.5f, 20.5f)
+                lineTo(9.5f, 20.5f)
+                curveTo(8.4f, 20.5f, 7.5f, 19.6f, 7.5f, 18.5f)
+                lineTo(7.5f, 10f)
+                curveTo(7.5f, 8.9f, 8.4f, 8f, 9.5f, 8f)
+                close()
+            }
+            trace {
+                moveTo(16.5f, 5.5f)
+                curveTo(16.5f, 4.4f, 15.6f, 3.5f, 14.5f, 3.5f)
+                lineTo(6.5f, 3.5f)
+                curveTo(5.4f, 3.5f, 4.5f, 4.4f, 4.5f, 5.5f)
+                lineTo(4.5f, 14f)
+                curveTo(4.5f, 15.1f, 5.4f, 16f, 6.5f, 16f)
+            }
+        }
+    }
+
+    /** 划线：斜着的笔，笔下一道横线。 */
+    val Highlight by lazy {
+        glyph("Highlight") {
+            trace {
+                moveTo(14.8f, 4.6f)
+                lineTo(18.4f, 8.2f)
+                lineTo(10.2f, 16.4f)
+                lineTo(6f, 17.2f)
+                lineTo(6.8f, 13f)
+                close()
+                moveTo(12.6f, 6.8f); lineTo(16.2f, 10.4f)
+            }
+            trace { moveTo(4f, 20.5f); lineTo(20f, 20.5f) }
+        }
+    }
+
     val Tune by lazy {
         glyph("Tune") {
             trace {

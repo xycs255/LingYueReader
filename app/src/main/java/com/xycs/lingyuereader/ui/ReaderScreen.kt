@@ -277,6 +277,8 @@ private fun Reader(
         value = if (settings.pinyin) vm.pinyinAnnotator() else null
     }
     val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
+    // 翻页模式分好的页：换章时阅读区重建，这份留着，前后章不必重分。
+    val pageCache = remember(content) { PageCache() }
     val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
@@ -694,6 +696,7 @@ private fun Reader(
                         onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
                         registerTurner = { turner.turn = it },
                         speaking = speaking,
+                        pageCache = pageCache,
                     )
                 }
             }
@@ -1009,14 +1012,14 @@ private fun Reader(
     (sheet as? ReaderSheet.Card)?.let { lastCard = it.content }
     GlassSheet(
         show = sheet is ReaderSheet.Card,
-        title = "书摘卡片",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         lastCard?.let { c ->
             val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
-            QuoteCardSheet(c, typeface, palette)
+            QuoteCardSheet(c, typeface, palette, appTint)
         }
     }
     // 注释面板：收起动画期间还显示原来的内容。
@@ -1024,21 +1027,14 @@ private fun Reader(
     footnote?.let { lastFootnote = it }
     GlassSheet(
         show = footnote != null,
-        title = "注释",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { footnote = null },
     ) {
-        Text(
-            lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。",
-            color = palette.text,
-            fontSize = 16.sp,
-            lineHeight = 26.sp,
-            fontFamily = styles.fontFamily,
-            modifier = Modifier.padding(bottom = 32.dp).verticalScroll(rememberScrollState()),
-        )
+        FootnoteSheet(lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。", palette, styles.fontFamily, appTint) { footnote = null }
     }
-    LookupOverlay(vm, palette) { l ->
+    LookupOverlay(vm, palette, appTint) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
     }
@@ -1098,15 +1094,15 @@ private fun SelectionBarRow(
 }
 
 @Composable
-private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: (Lookup) -> Unit) {
+private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, tint: Color, onAnnotate: (Lookup) -> Unit) {
     val lookup by vm.lookup.collectAsStateWithLifecycle()
     // 面板收起的动画期间还要显示内容，记住最后一次查的词。
     var last by remember { mutableStateOf<Lookup?>(null) }
     lookup?.let { last = it }
     GlassSheet(
         show = lookup != null,
-        title = "查词",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, tint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = vm::closeLookup,
     ) {
@@ -1120,6 +1116,7 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: 
                     vm.closeLookup()
                     vm.open(Screen.Dictionaries)
                 },
+                tint = tint,
             )
         }
     }

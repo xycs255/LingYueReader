@@ -18,6 +18,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateListOf
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -59,7 +64,10 @@ import top.yukonga.miuix.kmp.basic.Icon
 import java.io.ByteArrayInputStream
 import java.net.URLEncoder
 
-/** 查词面板：所选的词、调整选区、内置字典与词典、导入的词典、在线与其他应用。 */
+/**
+ * 查词面板，照苹果的“查询”：标题栏右边“管理词典”；词头大字，两边微调选区；
+ * 下面一排操作（生词本、复制、划线）；字典、词典、导入的词典各一组；最后是在线查询。
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun LookupSheet(
@@ -68,171 +76,186 @@ internal fun LookupSheet(
     vm: AppViewModel,
     onAnnotate: () -> Unit,
     onManage: () -> Unit,
+    tint: Color = palette.accent,
 ) {
     val context = LocalContext.current
     val vocab by vm.vocab.collectAsStateWithLifecycle()
-    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (lookup.range != null) {
-                IconChip(LingYueIcons.ChevronBackward, "选区向前多一个字", palette) { vm.adjustSelection(-1, 0) }
-                IconChip(LingYueIcons.ChevronForward, "选区开头少一个字", palette) { vm.adjustSelection(1, 0) }
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            SheetNavBar("查词", back = null, action = "管理词典" to onManage) {}
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (lookup.range != null) {
+                    AdjustButton(LingYueIcons.ChevronBackward, "选区向前多一个字") { vm.adjustSelection(-1, 0) }
+                    AdjustButton(LingYueIcons.ChevronForward, "选区开头少一个字") { vm.adjustSelection(1, 0) }
+                }
+                Text(
+                    lookup.word,
+                    color = c.label,
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 30.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                if (lookup.range != null) {
+                    AdjustButton(LingYueIcons.ChevronBackward, "选区结尾少一个字") { vm.adjustSelection(0, -1) }
+                    AdjustButton(LingYueIcons.ChevronForward, "选区向后多一个字") { vm.adjustSelection(0, 1) }
+                }
             }
-            Text(
-                lookup.word,
-                color = palette.text,
-                fontFamily = FontFamily.Serif,
-                fontWeight = FontWeight.Bold,
-                fontSize = 26.sp,
-                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-            )
-            if (lookup.range != null) {
-                IconChip(LingYueIcons.ChevronBackward, "选区结尾少一个字", palette) { vm.adjustSelection(0, -1) }
-                IconChip(LingYueIcons.ChevronForward, "选区向后多一个字", palette) { vm.adjustSelection(0, 1) }
+            Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                val inVocab = vocab.any { it.word == lookup.word }
+                ActionTile(if (inVocab) "已在生词本" else "收入生词本", if (inVocab) LingYueIcons.FavoritesFill else LingYueIcons.Favorites, Modifier.weight(1f)) {
+                    if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
+                }
+                ActionTile("复制", LingYueIcons.Copy, Modifier.weight(1f)) { copyText(context, lookup.word) }
+                if (lookup.range != null) ActionTile("划线·批注", LingYueIcons.Highlight, Modifier.weight(1f), onAnnotate)
             }
-        }
-        FlowRow(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val inVocab = vocab.any { it.word == lookup.word }
-            Chip(
-                if (inVocab) "已在生词本" else "收入生词本",
-                null,
-                palette,
-                if (inVocab) LingYueIcons.FavoritesFill else LingYueIcons.Favorites,
-            ) {
-                if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
-            }
-            Chip("复制", null, palette) { copyText(context, lookup.word) }
-            if (lookup.range != null) Chip("划线·批注", null, palette) { onAnnotate() }
-            Chip("汉典", null, palette) { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) }
-            Chip("百度汉语", null, palette) { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") }
-            Chip("其他词典 App", null, palette) { sendToApps(context, lookup.word) }
-        }
 
-        val result = lookup.result
-        if (result == null) {
-            Text("正在查……", color = palette.secondary, fontSize = 14.sp)
-            return@Column
-        }
-        // 查单字时先看字典（读音、部首），查词时先看词典。
-        if (lookup.word.codePointCount(0, lookup.word.length) == 1) {
-            result.chars.forEach { CharCard(it, palette) }
-            result.words.forEach { WordCard(it, palette) }
-        } else {
-            result.words.forEach { WordCard(it, palette) }
-            result.chars.forEach { CharCard(it, palette) }
-        }
-        if (result.related.isNotEmpty()) {
-            Text("相关词语", color = palette.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                result.related.forEach { w -> Chip(w, null, palette) { vm.lookupWord(w) } }
+            val result = lookup.result
+            if (result == null) {
+                GroupedSection { row { ValueRow("正在查……", "") } }
+            } else {
+                // 查单字时先看字典（读音、部首），查词时先看词典。
+                val chars: @Composable () -> Unit = {
+                    if (result.chars.isNotEmpty()) {
+                        GroupedSection(header = "字典", footer = "Unihan") { result.chars.forEach { row { CharCell(it) } } }
+                    }
+                }
+                val words: @Composable () -> Unit = {
+                    if (result.words.isNotEmpty()) {
+                        GroupedSection(header = "词典", footer = "CC-CEDICT（英文释义）") { result.words.forEach { row { WordCell(it) } } }
+                    }
+                }
+                if (lookup.word.codePointCount(0, lookup.word.length) == 1) {
+                    chars()
+                    words()
+                } else {
+                    words()
+                    chars()
+                }
+                result.imported.forEach { (dict, entries) -> ImportedSection(dict, entries, vm) }
+                if (result.words.isEmpty() && result.chars.isEmpty() && result.imported.isEmpty()) {
+                    GroupedSection(footer = "可以微调选区，或用下面的在线查询、其他词典 App。") {
+                        row { ValueRow("词典里没有查到“${lookup.word}”", "") }
+                    }
+                }
+                if (result.related.isNotEmpty()) {
+                    GroupedSection(header = "相关词语") {
+                        row {
+                            FlowRow(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                result.related.forEach { w ->
+                                    Text(
+                                        w,
+                                        color = c.tint,
+                                        fontSize = 15.sp,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(c.fill)
+                                            .clickable(role = Role.Button) { vm.lookupWord(w) }
+                                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
-        result.imported.forEach { (dict, entries) -> ImportedSection(dict, entries, palette, vm) }
-        if (result.words.isEmpty() && result.chars.isEmpty() && result.imported.isEmpty()) {
-            Text(
-                "词典里没有查到“${lookup.word}”。可以调整选区，或用上面的在线查询、其他词典 App。",
-                color = palette.secondary,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(vertical = 12.dp),
-            )
-        }
-        Row(
-            modifier = Modifier.padding(top = 18.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onManage).padding(vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text("管理词典", color = palette.accent, fontSize = 14.sp)
-            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = palette.accent, modifier = Modifier.size(16.dp))
+            GroupedSection(header = "在线查询") {
+                row { NavRow("汉典") { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) } }
+                row { NavRow("百度汉语") { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") } }
+                row { NavRow("其他词典 App") { sendToApps(context, lookup.word) } }
+            }
         }
     }
 }
 
+/** 词头两边微调选区的小圆钮：看上去 34dp，能按到的 48dp。 */
 @Composable
-private fun IconChip(icon: ImageVector, description: String, palette: ReaderPalette, onClick: () -> Unit) {
-    Icon(
-        icon,
-        contentDescription = description,
-        tint = palette.text,
-        modifier = Modifier
-            .size(48.dp)
-            .clip(RoundedCornerShape(50))
-            .background(palette.text.copy(alpha = 0.07f))
-            .clickable(onClickLabel = description, onClick = onClick)
-            .padding(14.dp),
-    )
-}
-
-@Composable
-private fun Chip(label: String, description: String?, palette: ReaderPalette, icon: ImageVector? = null, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(palette.text.copy(alpha = 0.07f))
-            .clickable(onClickLabel = description, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp)
-            .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+private fun AdjustButton(icon: ImageVector, description: String, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Box(
+        Modifier.size(40.dp, 48.dp).clickable(onClickLabel = description, role = Role.Button, onClick = onClick).semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
     ) {
-        if (icon != null) Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(16.dp))
-        Text(label, color = palette.text, fontSize = 14.sp)
+        Icon(icon, contentDescription = null, tint = c.label, modifier = Modifier.size(34.dp).clip(CircleShape).background(c.cell).padding(8.dp))
     }
 }
 
+/** 一排操作里的一格：圆角卡片，上面图标、下面字，像“照片”里的分享操作。 */
 @Composable
-private fun WordCard(entry: WordEntry, palette: ReaderPalette) {
+private fun ActionTile(label: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
     Column(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(14.dp)).background(palette.text.copy(alpha = 0.05f)).padding(14.dp),
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.cell)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.size(22.dp))
+        Text(label, color = c.tint, fontSize = 13.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+@Composable
+private fun WordCell(entry: WordEntry) {
+    val c = LocalGroupedColors.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(entry.pinyin, color = palette.accent, fontSize = 16.sp)
+            Text(entry.pinyin, color = c.tint, fontSize = 17.sp)
             if (entry.traditional != entry.simplified) {
-                Text("繁 ${entry.traditional}", color = palette.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 10.dp))
+                Text("繁 ${entry.traditional}", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 10.dp))
             }
         }
         entry.definitions.forEachIndexed { i, d ->
-            Text("${i + 1}. $d", color = palette.text, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp))
+            Text("${i + 1}. $d", color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
         }
-        Text("CC-CEDICT（英文释义）", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
 @Composable
-private fun CharCard(c: CharEntry, palette: ReaderPalette) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(14.dp)).background(palette.text.copy(alpha = 0.05f)).padding(14.dp),
-    ) {
-        Text(c.char, color = palette.text, fontFamily = FontFamily.Serif, fontSize = 40.sp, modifier = Modifier.padding(end = 14.dp))
+private fun CharCell(ch: CharEntry) {
+    val c = LocalGroupedColors.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Text(ch.char, color = c.label, fontFamily = FontFamily.Serif, fontSize = 40.sp, modifier = Modifier.padding(end = 14.dp))
         Column(Modifier.weight(1f)) {
-            Text(c.readings.joinToString("  "), color = palette.accent, fontSize = 16.sp)
+            Text(ch.readings.joinToString("  "), color = c.tint, fontSize = 17.sp)
             val shape = listOfNotNull(
-                c.radical.takeIf { it.isNotEmpty() }?.let { "部首 $it" },
-                c.totalStrokes?.let { "共 $it 画" },
-                c.traditional.takeIf { it.isNotEmpty() }?.let { "繁体 $it" },
-                c.simplified.takeIf { it.isNotEmpty() }?.let { "简体 $it" },
+                ch.radical.takeIf { it.isNotEmpty() }?.let { "部首 $it" },
+                ch.totalStrokes?.let { "共 $it 画" },
+                ch.traditional.takeIf { it.isNotEmpty() }?.let { "繁体 $it" },
+                ch.simplified.takeIf { it.isNotEmpty() }?.let { "简体 $it" },
             )
-            if (shape.isNotEmpty()) Text(shape.joinToString(" · "), color = palette.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-            if (c.definition.isNotEmpty()) Text(c.definition, color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
-            Text("Unihan", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+            if (shape.isNotEmpty()) Text(shape.joinToString(" · "), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+            if (ch.definition.isNotEmpty()) Text(ch.definition, color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
 
 @Composable
-private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, palette: ReaderPalette, vm: AppViewModel) {
-    Text(dict.title, color = palette.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
+private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, vm: AppViewModel) {
+    val c = LocalGroupedColors.current
     val styles = vm.dictStyles(dict.id).joinToString("") { """<link rel="stylesheet" href="$it">""" }
-    val text = palette.text.hex()
-    val accent = palette.accent.hex()
+    val text = c.label.hex()
+    val accent = c.tint.hex()
     val raw = entries.joinToString("""<hr style="border:none;border-top:1px solid $text;opacity:.15">""") { localResourceUrls(it.html) }
     // 图片先在后台从词典里取出来直接嵌进网页（data: 地址），不靠 WebView 再去请求——
     // 不同 WebView 对拦截自定义地址的处理不一，嵌进去最稳；找不到的记下来。
     val inlined by produceState<Pair<String, List<String>>?>(null, raw, dict.id) {
         value = withContext(Dispatchers.IO) { inlineImages(raw) { path -> vm.dictResource(dict.id, path) } }
     }
-    val (body, notFound) = inlined ?: run {
-        Text("正在载入释义……", color = palette.secondary, fontSize = 13.sp)
+    val loaded = inlined
+    if (loaded == null) {
+        GroupedSection(header = dict.title) { row { ValueRow("正在载入释义……", "") } }
         return
     }
+    val (body, notFound) = loaded
     val html = """<!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">$styles
         <style>body{margin:0;color:$text;background:transparent;font-size:15px;line-height:1.6;word-wrap:break-word}
@@ -242,24 +265,23 @@ private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, palette: 
     // 释义区最高占屏幕六成，长的在里面滚。整页撑开的话，几千像素高的网页画在玻璃面板里会闪，
     // 面板的高度也会跟着释义一变再变。
     val maxHeight = with(LocalDensity.current) { (LocalWindowInfo.current.containerSize.height * 0.6f).toDp() }
-    DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().heightIn(min = 40.dp, max = maxHeight)) { path -> if (path !in missing) missing += path }
-    if (missing.isNotEmpty()) {
-        Text(
-            buildString {
-                append("有 ${missing.size} 个文件没找到：")
-                append(missing.take(3).joinToString("、") { it.substringAfterLast('/') })
-                if (missing.size > 3) append(" 等")
-                append("。")
-                if (dict.mdds.isEmpty()) {
-                    append("这本词典导入时没有带 .mdd，图片、读音一般都在 .mdd 里——到“管理词典”删掉它，重新导入时把同名的 .mdd 一起选上。")
-                } else {
-                    append("词典的 .mdd 里也没有这些文件。")
-                }
-            },
-            color = palette.secondary,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 6.dp),
-        )
+    val footer = if (missing.isEmpty()) null else buildString {
+        append("有 ${missing.size} 个文件没找到：")
+        append(missing.take(3).joinToString("、") { it.substringAfterLast('/') })
+        if (missing.size > 3) append(" 等")
+        append("。")
+        if (dict.mdds.isEmpty()) {
+            append("这本词典导入时没有带 .mdd，图片、读音一般都在 .mdd 里——到“管理词典”删掉它，重新导入时把同名的 .mdd 一起选上。")
+        } else {
+            append("词典的 .mdd 里也没有这些文件。")
+        }
+    }
+    GroupedSection(header = dict.title, footer = footer) {
+        row {
+            DictWebView(dict.id, html, vm, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).heightIn(min = 40.dp, max = maxHeight)) { path ->
+                if (path !in missing) missing += path
+            }
+        }
     }
 }
 

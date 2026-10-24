@@ -143,3 +143,25 @@ internal class Paginator(
 
     private fun px(dp: Float): Float = dp * density.density
 }
+
+/**
+ * 分好的页，按章留着。翻进下一章时，阅读区按新的位置重建，这时新的本章、上一章都已分过，只要再分新的下一章，
+ * 换章那一下不必一口气分三章。[key] 里是影响分页的一切（排版设置、字体、页面大小……），变了就全部作废。
+ */
+internal class PageCache(private val keep: Int = 5) {
+    private var key: Any? = null
+    private val pages = LinkedHashMap<Int, List<Page>>()
+
+    fun get(key: Any, chapter: Int, paginate: () -> List<Page>?): List<Page>? {
+        if (key != this.key) {
+            pages.clear()
+            this.key = key
+        }
+        pages[chapter]?.let { return it }
+        val result = paginate() ?: return null
+        pages[chapter] = result
+        // 只留离这一章最近的几章。
+        while (pages.size > keep) pages.remove(pages.keys.maxBy { kotlin.math.abs(it - chapter) })
+        return result
+    }
+}

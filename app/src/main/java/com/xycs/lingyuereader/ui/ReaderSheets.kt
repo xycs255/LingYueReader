@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
@@ -364,6 +365,30 @@ internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color =
             GroupedSection(header = "颜色与批注") {
                 row { MarkColors(color) { color = it } }
                 row { NoteField(note) { note = it } }
+            }
+        }
+    }
+}
+
+/** 注释面板：标题栏“注释”、右边“完成”，正文用书里的字体放在一张卡片里。 */
+@Composable
+internal fun FootnoteSheet(text: String, palette: ReaderPalette, fontFamily: FontFamily, tint: Color, onDone: () -> Unit) {
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            SheetNavBar("注释", back = null, action = "完成" to onDone) {}
+            Spacer(Modifier.height(8.dp))
+            GroupedSection {
+                row {
+                    Text(
+                        text,
+                        color = c.label,
+                        fontSize = 17.sp,
+                        lineHeight = 28.sp,
+                        fontFamily = fontFamily,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    )
+                }
             }
         }
     }

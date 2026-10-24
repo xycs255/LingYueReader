@@ -30,6 +30,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,8 @@ import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Utterance
 import com.xycs.lingyuereader.data.displayText
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -100,6 +103,9 @@ private class ScrollAnchorSelector(private val delegate: TextSelector) : TextSel
 
 /** 列表里第 0 项是章名，正文块从第 1 项开始。 */
 internal const val HEADER_ITEMS = 1
+
+/** 滚动时最多多久报一次阅读位置。 */
+private const val POSITION_INTERVAL_MS = 200L
 
 /**
  * 滚动模式点一下翻多远：能看清的只有状态栏以下、状态行以上这一段，按这段的高度翻，再少翻一行半——
@@ -197,14 +203,21 @@ internal fun ScrollReader(
     }
 
     LaunchedEffect(listState, anchorSelector) {
+        // 滚动时每帧都在变；最多每 200 毫秒报一次（找顶上那个字、重组整个阅读页都不便宜），停下来的那一帧之后一定报。
+        var reportedAt = 0L
         snapshotFlow { Triple(Triple(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, anchorSelector.version), ready, viewport) }
-            .collect { (state, canReport, visibleViewport) ->
-                if (!canReport) return@collect
-                val (item, offset) = state
+            .collectLatest { (_, canReport, visibleViewport) ->
+                if (!canReport) return@collectLatest
+                val now = withFrameMillis { it }
+                val wait = POSITION_INTERVAL_MS - (now - reportedAt)
+                if (wait > 0) delay(wait)
+                val item = listState.firstVisibleItemIndex
+                val offset = listState.firstVisibleItemScrollOffset
                 val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: item
                 val fraction = if (last >= total - 1) 1f else item.toFloat() / total
                 val char = anchorSelector.charAtTop(item - HEADER_ITEMS, visibleViewport)
-                if (char == null && chapter.blocks.getOrNull(item - HEADER_ITEMS)?.displayText?.isNotEmpty() == true) return@collect
+                if (char == null && chapter.blocks.getOrNull(item - HEADER_ITEMS)?.displayText?.isNotEmpty() == true) return@collectLatest
+                reportedAt = now + wait.coerceAtLeast(0)
                 onPosition(item, offset, char ?: 0, fraction)
             }
     }

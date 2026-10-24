@@ -67,6 +67,8 @@ internal fun PagedReader(
     speaking: Utterance? = null,
     /** 正在查的词：第几块、哪一段。 */
     selected: Highlight? = null,
+    /** 分好的页；放在阅读区外面，换章重建阅读区时还在。 */
+    pageCache: PageCache = remember { PageCache() },
 ) {
     // 仿真翻页：按下的高度决定掀哪个角，之后角跟着手指上下走。
     val touch = remember { CurlTouch() }
@@ -102,7 +104,11 @@ internal fun PagedReader(
             Paginator(ComposeTextFitter(measurer), styles, density) { src -> images?.aspect(src) }
         }
 
-        fun pagesOf(index: Int): List<Page>? = content.chapters.getOrNull(index)?.let { paginator.paginate(it, widthPx, heightPx) }
+        val cacheKey = listOf(styles.settings.layoutKey, styles.pinyin != null, styles.fontFamily, density, images, widthPx, heightPx)
+
+        fun pagesOf(index: Int): List<Page>? = content.chapters.getOrNull(index)?.let { c ->
+            pageCache.get(cacheKey, index) { paginator.paginate(c, widthPx, heightPx) }
+        }
 
         val chapter = content.chapters[chapterIndex]
         val pages = remember(chapter, paginator, widthPx, heightPx) { pagesOf(chapterIndex)!! }
