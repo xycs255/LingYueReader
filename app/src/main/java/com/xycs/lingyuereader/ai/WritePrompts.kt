@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterTitles
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkAssist
@@ -175,14 +176,47 @@ object WritePrompts {
 
     private const val REVIEW_JSON = "\n只输出 JSON：{\"issues\":[{\"quote\":\"原文里有问题的那一句，原样摘出，不超过 40 字\",\"problem\":\"问题在哪、依据哪一条\",\"fix\":\"怎么改，一句话\"}]}"
 
-    /** 审稿结果：容忍多余的话和 ``` 包裹；没写问题的条目丢掉。 */
-    fun parseReview(answer: String): List<ReviewIssue> {
-        val issues = runCatching { json(answer).optJSONArray("issues") }.getOrNull() ?: return emptyList()
+    /**
+     * 审稿结果：容忍多余的话和 ``` 包裹；没写问题的条目丢掉。
+     * 回答里找不到 {"issues":[…]} 时返回 null（不能当成“没发现问题”）。
+     */
+    fun parseReview(answer: String): List<ReviewIssue>? {
+        val issues = runCatching { json(answer).optJSONArray("issues") }.getOrNull() ?: return null
         return (0 until issues.length()).mapNotNull { i ->
             val o = issues.optJSONObject(i) ?: return@mapNotNull null
             val problem = o.optString("problem").trim()
             if (problem.isEmpty()) null else ReviewIssue(o.optString("quote").trim().trim('“', '”', '「', '」', '"'), problem, o.optString("fix").trim())
         }
+    }
+
+    /** 本章摘要：给写后面的章当前情用，只写事实。 */
+    fun summary(text: String, title: String): String = buildString {
+        append("下面是小说的一章「").append(title).append("」：\n\n").append(text).append("\n\n")
+        append("请用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；")
+        append("章末留下的钩子写一句。只写事实，不评价写法，不猜后文。只输出摘要本身。")
+    }
+
+    /**
+     * AI 写一章：按细纲卡（在系统提示里）写，接上一章结尾，照写作规范和检查规则。
+     * [length] 是篇幅要求（“3000 到 6000 字”），[instruction] 是作者这次的补充要求（可空）。
+     */
+    fun draft(title: String, previous: String, rules: String, length: String, instruction: String): String = buildString {
+        if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
+        if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
+        append("请写出这一章「").append(title).append("」的正文。\n")
+        append("- 按本章细纲卡写：细纲卡里的事实都要写到，结果不能改；不越过后文承接边界，不提前写后面的事。\n")
+        append("- 接上上一章的结尾和钩子，人物知道什么、不知道什么以设定资料为准。\n")
+        append("- 篇幅").append(length).append("；故事写完就收，不为凑字数加插曲。\n")
+        if (instruction.isNotBlank()) append("- 作者这次的要求：").append(instruction.trim()).append('\n')
+        append("- 一行一段，段首不空格；不要章名、小标题，不要写“本章完”，也不要任何解释。")
+    }
+
+    /** 草稿没写完（被截断或作者要接着写）：从已写的结尾接下去。 */
+    fun draftMore(title: String, written: String, rules: String, length: String): String = buildString {
+        if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
+        append("这一章「").append(title).append("」已经写了下面这些（只给出最后一部分）：\n\n").append(written.takeLast(4_000)).append("\n\n")
+        append("请从最后一句接着往下写，直到把细纲卡里的事实写完、停在章末钩子上。全章篇幅").append(length).append("。")
+        append("不要重复已经写的内容，不要总结。一行一段，不要任何解释。")
     }
 
     /** 从写作规范里挑出能逐章数出来的硬规则，改写成灵阅的检查规则格式（见 [com.xycs.lingyuereader.data.CheckRules]）。 */
@@ -203,6 +237,16 @@ object WritePrompts {
         append("有不算的情况写在词后的括号里，例如“大概（除外：大概在今天）”；只限对白或只限叙述的规则，在前面加“对白”或“叙述”，例如“对白禁用：词甲”。\n")
         append("规范前后冲突时，以后写的、写明以它为准的为准。只收数得出来的规则，审美建议和写法要求不收；不要编规范里没有的规则。")
         append("可以用“#”开头的行简短注明出处。只输出规则文本，不要别的解释。")
+    }
+
+    /** 写好的草稿：去掉 ``` 包裹、章名、“本章完”，一行一段、段首不空格。 */
+    fun cleanDraft(answer: String): String {
+        val lines = answer.trim().removePrefix("```").removeSuffix("```").lines()
+            .map { it.trim().trim('　').trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("```") }
+            .filterIndexed { i, l -> !(i == 0 && (l.startsWith("#") || ChapterTitles.isTxtChapterTitle(l))) }
+            .filterNot { Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$").matches(it) }
+        return lines.joinToString("\n")
     }
 
     /** 去掉模型回答里的 ``` 包裹和前后空行。 */

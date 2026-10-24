@@ -402,6 +402,18 @@ class WritingModel(
         }
     }, then)
 
+    /**
+     * AI 写的草稿放进正文：[replace] 为真时替换整章，否则接在后面。原来的正文先存一个历史版本；
+     * AI 写的字不算码字数。
+     */
+    fun applyDraft(workId: String, chapterId: String, draft: String, replace: Boolean, then: () -> Unit = {}) =
+        change("放进正文失败", {
+            val old = store.text(workId, chapterId)
+            if (old.isNotBlank()) store.snapshot(workId, chapterId, old)
+            val text = if (replace || old.isBlank()) draft.trim() else old.trimEnd() + "\n" + draft.trim()
+            store.saveText(workId, chapterId, text, count = false)
+        }) { then() }
+
     // ---------- 检查规则 ----------
 
     /** 设定包里各份“检查规则”文档的规则，合在一起。 */

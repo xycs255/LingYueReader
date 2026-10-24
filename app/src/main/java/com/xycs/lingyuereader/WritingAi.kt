@@ -7,6 +7,7 @@ import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.GateResult
 import com.xycs.lingyuereader.data.PackKind
@@ -355,7 +356,7 @@ class WritingAi(
                                     chapterContext(workId, chapterId, text) to (work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
                                 }
                                 val answer = ai.ask(WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true)
-                                GateResult(gate, WritePrompts.parseReview(answer), at = System.currentTimeMillis())
+                                reviewResult(gate, answer)
                             }
                         }
                         ReviewGate.CRAFT -> {
@@ -370,7 +371,7 @@ class WritingAi(
                                 rules.isBlank() -> GateResult(gate, error = "设定包里没有写作规范，跳过", at = System.currentTimeMillis())
                                 else -> {
                                     val answer = ai.ask(WritePrompts.system(work.title, assist), WritePrompts.craftReview(text, title, rules), whole = true)
-                                    GateResult(gate, WritePrompts.parseReview(answer), at = System.currentTimeMillis())
+                                    reviewResult(gate, answer)
                                 }
                             }
                         }
@@ -397,6 +398,180 @@ class WritingAi(
             val done = _review.value?.review ?: return@launch
             withContext(Dispatchers.IO) { runCatching { store.saveReview(workId, chapterId, done) } }
         }
+    }
+
+    /** AI 的回答读不出问题列表时如实报错：不能当成“没发现问题”。 */
+    private fun reviewResult(gate: ReviewGate, answer: String): GateResult {
+        val issues = WritePrompts.parseReview(answer)
+        return if (issues == null) GateResult(gate, error = "AI 的回答不是要求的格式，没读懂。可以重新审稿，或换个模型。", at = System.currentTimeMillis())
+        else GateResult(gate, issues, at = System.currentTimeMillis())
+    }
+
+    // ---------- 章节摘要 ----------
+
+    /** 让 AI 概括一章（存盘的正文），返回摘要文字，不存（作者看过、改过再存进细纲卡）。 */
+    suspend fun summarize(workId: String, chapterId: String): String {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        val (work, text) = withContext(Dispatchers.IO) { store.get(workId) to store.text(workId, chapterId) }
+        if (work == null) throw IllegalStateException("作品不在了")
+        if (text.isBlank()) throw IllegalStateException("这一章还没有正文")
+        val title = work.chapter(chapterId)?.title.orEmpty()
+        return ai.ask(WritePrompts.system(work.title, assistOf(workId)), WritePrompts.summary(text, title), whole = true).trim()
+    }
+
+    private val _summaries = MutableStateFlow<SummaryProgress?>(null)
+    /** 批量补写摘要的进度。 */
+    val summaries: StateFlow<SummaryProgress?> = _summaries.asStateFlow()
+    private var summaryJob: Job? = null
+
+    /** 给有正文、还没有摘要的章依次写摘要，写一章存一章（作者之后可以在细纲卡里改）。 */
+    fun summarizeAll(workId: String) {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        if (summaryJob?.isActive == true) return
+        summaryJob = scope.launch {
+            val todo = withContext(Dispatchers.IO) {
+                val work = store.get(workId) ?: return@withContext emptyList()
+                work.chapters.filter { it.words > 0 && store.card(workId, it.id).summary.isBlank() }
+            }
+            if (todo.isEmpty()) {
+                message("有正文的章都已经有摘要了")
+                return@launch
+            }
+            var failed = 0
+            try {
+                todo.forEachIndexed { i, c ->
+                    _summaries.value = SummaryProgress(workId, i, todo.size, c.title)
+                    try {
+                        val text = summarize(workId, c.id)
+                        withContext(Dispatchers.IO) { store.saveCard(workId, c.id, store.card(workId, c.id).copy(summary = text)) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failed++
+                        if (failed >= 3) throw e
+                    }
+                }
+                message(if (failed == 0) "写好了 ${todo.size} 章的摘要，可以在各章细纲卡里改" else "写好了 ${todo.size - failed} 章的摘要，$failed 章没写成")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("写摘要停下了：${e.message ?: "请求失败"}")
+            } finally {
+                _summaries.value = null
+            }
+        }
+    }
+
+    fun stopSummaries() {
+        summaryJob?.cancel()
+        _summaries.value = null
+    }
+
+    // ---------- AI 写本章 ----------
+
+    private val _draft = MutableStateFlow<DraftState?>(null)
+    /** AI 写的本章草稿（正在写或写好了的）。 */
+    val draft: StateFlow<DraftState?> = _draft.asStateFlow()
+    private var draftJob: Job? = null
+
+    /** 打开草稿页：读上次没放进正文的草稿。 */
+    fun loadDraft(workId: String, chapterId: String) {
+        val d = _draft.value
+        if (d != null && d.workId == workId && d.chapterId == chapterId) return
+        scope.launch {
+            val text = withContext(Dispatchers.IO) { runCatching { store.draft(workId, chapterId) }.getOrDefault("") }
+            _draft.value = DraftState(workId, chapterId, text)
+        }
+    }
+
+    /** 写作规范、称谓与语气、检查规则的原文（写正文时照着写）。 */
+    private fun writingRules(workId: String): String =
+        store.pack(workId).filter { it.kind == PackKind.STYLE || it.kind == PackKind.VOICE || it.kind == PackKind.RULES }
+            .sortedBy { it.priority }
+            .map { "【${it.title}】\n" + store.packText(workId, it.id).trim() }
+            .filter { it.substringAfter('\n').isNotBlank() }
+            .joinToString("\n\n").take(RULE_SOURCE_CHARS)
+
+    /** 篇幅要求：检查规则里写了字数就照它，没写按 3000 到 5000 字。 */
+    private fun lengthOf(workId: String): String {
+        val rule = store.pack(workId).filter { it.kind == PackKind.RULES }
+            .flatMap { CheckRules.parse(store.packText(workId, it.id)).rules }
+            .filterIsInstance<CheckRule.Length>().firstOrNull()
+        val unit = if (rule?.han == true) "个汉字" else "字"
+        return when {
+            rule?.min != null && rule.max != null -> "${rule.min} 到 ${rule.max} $unit"
+            rule?.min != null -> "不少于 ${rule.min} $unit"
+            rule?.max != null -> "不超过 ${rule.max} $unit"
+            else -> "3000 到 5000 字"
+        }
+    }
+
+    /**
+     * AI 写本章：[more] 为真时接着已有的草稿往下写，否则从头写一版（替换草稿）。边写边显示，写完存成草稿，
+     * 作者看过再放进正文。
+     */
+    fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false) {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        draftJob?.cancel()
+        val start = _draft.value?.takeIf { more && it.workId == workId && it.chapterId == chapterId }?.text.orEmpty()
+        val prefix = if (start.isEmpty()) "" else start.trimEnd() + "\n"
+        _draft.value = DraftState(workId, chapterId, prefix, loading = true, instruction = instruction)
+        draftJob = scope.launch {
+            try {
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+                val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+                if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val (pack, previous, rules, length) = withContext(Dispatchers.IO) {
+                    val i = work.chapters.indexOfFirst { it.id == chapterId }
+                    listOf(
+                        chapterContext(workId, chapterId, store.text(workId, chapterId)).orEmpty(),
+                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(2_000) }.orEmpty(),
+                        writingRules(workId),
+                        lengthOf(workId),
+                    )
+                }
+                val prompt = if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction)
+                else WritePrompts.draftMore(chapter.title, prefix, rules, length)
+                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
+                var written = ""
+                val answer = ai.ask(system, prompt, whole = true) { piece ->
+                    written += piece
+                    _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = prefix + written) ?: d }
+                }
+                val text = prefix + WritePrompts.cleanDraft(answer)
+                _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = text, loading = false) ?: d }
+                withContext(Dispatchers.IO) { store.saveDraft(workId, chapterId, text) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(loading = false, error = e.message ?: "请求失败") ?: d }
+                // 写了一半也存下来，可以接着写。
+                _draft.value?.takeIf { it.chapterId == chapterId && it.text.isNotBlank() }?.let { d ->
+                    withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, d.text) } }
+                }
+            }
+        }
+    }
+
+    /** 停下正在写的（写了的留着，存成草稿）。 */
+    fun stopDraft() {
+        draftJob?.cancel()
+        val d = _draft.value ?: return
+        _draft.value = d.copy(loading = false)
+        if (d.text.isNotBlank()) scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(d.workId, d.chapterId, d.text) } } }
+    }
+
+    /** 草稿放进正文以后（或作者不要了）：清掉。 */
+    fun clearDraft(workId: String, chapterId: String) {
+        draftJob?.cancel()
+        _draft.value = DraftState(workId, chapterId, "")
+        scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, "") } } }
     }
 
     /** 停下正在审的（已经审完的几道留着，不存）。 */
@@ -440,3 +615,16 @@ class WritingAi(
 
 /** 一章的审稿：[running] 是正在审的那一道（审完是 null），[review] 是已经有的结果（可能是上次存下的）。 */
 data class ReviewRun(val workId: String, val chapterId: String, val running: ReviewGate?, val review: ChapterReview?)
+
+/** 批量写摘要的进度：第 [done] 章（从 0 数）/ 共 [total] 章，正在写 [title]。 */
+data class SummaryProgress(val workId: String, val done: Int, val total: Int, val title: String)
+
+/** AI 写的本章草稿。 */
+data class DraftState(
+    val workId: String,
+    val chapterId: String,
+    val text: String,
+    val loading: Boolean = false,
+    val error: String? = null,
+    val instruction: String = "",
+)

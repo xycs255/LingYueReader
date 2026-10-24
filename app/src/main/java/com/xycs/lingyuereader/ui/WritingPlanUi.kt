@@ -18,12 +18,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,13 +37,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -145,7 +149,7 @@ internal fun StatusDialog(chapter: WorkChapter, ruleHits: Int? = null, onDismiss
 }
 
 private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> = listOf(
-    Triple("本章事实与结果", "这一章发生了什么、结果是什么（数字、生死、谁得了什么）", { it.facts }),
+    Triple("本章事实与结果", "发生了什么、结果（数字、生死、得失）", { it.facts }),
     Triple("后文承接边界", "后面的章节不能和哪些点冲突", { it.boundary }),
     Triple("视角人物", "", { it.pov }),
     Triple("倒计时", "章首交代：离某件事还有多久", { it.countdown }),
@@ -174,6 +178,9 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var saved by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     var previous by remember(chapterId) { mutableStateOf<Pair<WorkChapter, ChapterCard>?>(null) }
     var statusDialog by remember { mutableStateOf(false) }
+    var summarizing by remember { mutableStateOf(false) }
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val snackbar = rememberWritingMessages(vm)
     LaunchedEffect(workId, chapterId) {
         val (mine, prev) = vm.writing.cards(workId, chapterId)
@@ -251,6 +258,39 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                             label = if (hint.isNotEmpty()) "$label · $hint" else label,
                                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
                                         )
+                                    }
+                                }
+                            }
+                        }
+                        GroupedSection(
+                            header = "写完以后",
+                            footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章），AI 就知道前面写了什么。" +
+                                "可以自己写，也可以让 AI 概括正文再改。",
+                        ) {
+                            row {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                    TextField(
+                                        value = now.summary,
+                                        onValueChange = { v -> card = now.copy(summary = v) },
+                                        label = "本章摘要 · 发生了什么、结果、留下什么",
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 260.dp),
+                                    )
+                                }
+                            }
+                            row {
+                                ActionRow(if (summarizing) "AI 正在概括……" else "AI 概括正文", enabled = !summarizing && aiConfig.ready && (chapter?.words ?: 0) > 0) {
+                                    summarizing = true
+                                    scope.launch {
+                                        try {
+                                            val text = vm.writingAi.summarize(workId, chapterId)
+                                            card = (card ?: now).copy(summary = text)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            vm.showMessage(e.message ?: "概括失败")
+                                        } finally {
+                                            summarizing = false
+                                        }
                                     }
                                 }
                             }

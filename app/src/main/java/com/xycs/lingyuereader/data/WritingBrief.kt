@@ -1,12 +1,15 @@
 package com.xycs.lingyuereader.data
 
-/** 一个人物：名字、别名（字、小名……）、设定文档里写到他的几段（表格行、列表项、小节）。 */
-data class CharacterEntry(val name: String, val aliases: List<String> = emptyList(), val notes: List<String> = emptyList()) {
+/**
+ * 一个人物：名字、别名（字、小名……）、设定文档里写到他的几段（表格行、列表项、小节）。
+ * [later] 是表格里“结局”“下场”“怎么变”这类写后文走向的格子：只给 AI 把握方向，不能写进正文。
+ */
+data class CharacterEntry(val name: String, val aliases: List<String> = emptyList(), val notes: List<String> = emptyList(), val later: List<String> = emptyList()) {
     val names: List<String> get() = listOf(name) + aliases
 }
 
-/** 察觉表里的一条：谁、什么事、从第几章（或第几卷）起。 */
-data class KnowledgeItem(val text: String, val who: Set<String>, val chapter: Int? = null, val volume: Int? = null)
+/** 察觉表里的一条：谁、什么事、从第几章（或第几卷）起。[secret] 是“××这一面”“真相”这类视角人物不知道的格子。 */
+data class KnowledgeItem(val text: String, val who: Set<String>, val chapter: Int? = null, val volume: Int? = null, val secret: String = "")
 
 /** 一条伏笔：什么、第几章埋下、计划第几章回收、回收了没有。[doc]、[line] 记它在哪份文档的哪一行（标为已回收时改那一行）。 */
 data class Foreshadow(
@@ -18,6 +21,9 @@ data class Foreshadow(
     val line: Int = -1,
     val statusColumn: Int = -1,
 )
+
+/** 前面一章的摘要（细纲卡里写完以后的那一栏）。 */
+data class ChapterSummary(val number: Int, val title: String, val summary: String)
 
 /** 本章资料里的一项：哪一类、标题、内容、为什么带上它。 */
 data class BriefItem(val group: String, val title: String, val text: String, val reason: String)
@@ -34,8 +40,10 @@ data class ChapterBrief(
     val notYet: List<String>,
     val open: List<Foreshadow>,
     val due: List<Foreshadow>,
+    /** 作者知道、正文里还不能写出的：出场人物的结局和后文走向、对手的底牌。 */
+    val hidden: List<String> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = items.isEmpty() && notYet.isEmpty() && open.isEmpty() && due.isEmpty()
+    val isEmpty: Boolean get() = items.isEmpty() && notYet.isEmpty() && open.isEmpty() && due.isEmpty() && hidden.isEmpty()
 
     /** 拼成给 AI 的文字。 */
     fun render(): String? {
@@ -55,6 +63,10 @@ data class ChapterBrief(
         if (notYet.isNotEmpty()) {
             out.append("\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
             notYet.forEach { out.append("- ").append(it).append('\n') }
+        }
+        if (hidden.isNotEmpty()) {
+            out.append("\n【只有作者知道的（人物的结局和后文走向、对手的底牌）：只用来把握方向，不能写进正文，不能让视角人物知道，旁白也不能说破】\n")
+            hidden.forEach { out.append("- ").append(it).append('\n') }
         }
         return out.toString().trim()
     }
@@ -97,6 +109,7 @@ object ChapterBriefs {
      */
     fun characters(docs: List<Pair<String, String>>): List<CharacterEntry> {
         val found = LinkedHashMap<String, MutableList<String>>()
+        val later = HashMap<String, MutableList<String>>()
         fun add(name: String?, note: String) {
             if (name == null || note.isBlank()) return
             found.getOrPut(name) { mutableListOf() } += note.trim()
@@ -108,10 +121,14 @@ object ChapterBriefs {
             MdTable.parse(text).forEach { t ->
                 val col = t.column("人物", "角色", "姓名", "名字")
                 if (col < 0) return@forEach
+                val future = t.header.indices.filter { it != col && futureColumn.containsMatchIn(t.header[it]) }.toSet()
                 t.rows.forEach { row ->
-                    val note = t.header.indices.filter { it != col && t.cell(row, it).isNotBlank() && t.cell(row, it) != "—" }
-                        .joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
-                    add(cleanName(t.cell(row, col)), t.cell(row, col) + if (note.isEmpty()) "" else "——$note")
+                    fun cells(cols: List<Int>) = cols.filter { t.cell(row, it).isNotBlank() && t.cell(row, it) != "—" }.joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
+                    val name = cleanName(t.cell(row, col))
+                    val note = cells(t.header.indices.filter { it != col && it !in future })
+                    add(name, t.cell(row, col) + if (note.isEmpty()) "" else "——$note")
+                    val ahead = cells(future.sorted())
+                    if (name != null && ahead.isNotEmpty()) later.getOrPut(name) { mutableListOf() } += ahead
                 }
             }
             val lines = text.lines()
@@ -149,8 +166,25 @@ object ChapterBriefs {
         bullets.forEach { (name, note, noted) -> if (noted || name in confirmed || !Regex("[与的及和之]").containsMatchIn(name)) add(name, note) }
         return found.map { (name, notes) ->
             val all = notes.distinct()
-            CharacterEntry(name, all.flatMap { aliases(it, name) }.distinct().filter { a -> a !in found.keys || a == name }, all)
+            CharacterEntry(name, all.flatMap { aliases(it, name) }.distinct().filter { a -> a !in found.keys || a == name }, all, later[name].orEmpty().distinct())
         }
+    }
+
+    /** 写后文走向的表头：结局、下场、怎么变、记忆止于、后续…… */
+    private val futureColumn = Regex("结局|下场|怎么变|记忆止于|后续|终局|命运|归宿|死于|死因")
+
+    /** 视角人物不知道的表头：“曹操这一面”“对方”“真相”“内心”“底牌”…… */
+    private val secretColumn = Regex("这一面|对方|真相|内心|底牌|暗线|作者")
+
+    /** 一段设定里写到后面章节的句子（提到的章号都在 [chapter] 之后）挑出来：返回（现在可用的，后文的）。 */
+    internal fun splitByChapter(text: String, chapter: Int): Pair<String, String> {
+        val now = StringBuilder()
+        val later = StringBuilder()
+        Regex("[^。；;\n]+[。；;]?\n?").findAll(text).forEach { m ->
+            val refs = ChapterRefs.find(m.value)
+            (if (refs.isNotEmpty() && refs.min() > chapter) later else now).append(m.value)
+        }
+        return now.toString().trim() to later.toString().trim()
     }
 
     /** 人物在这一章出现几次（名字和别名都算）。 */
@@ -194,13 +228,17 @@ object ChapterBriefs {
                 val section = sections.lastOrNull { it.line <= firstLine }
                 val owners = section?.path.orEmpty().mapNotNull { cleanName(it) }.toSet()
                 val timeCol = t.column("章", "卷", "时间", "从")
+                val secretCols = t.header.indices.filter { it != timeCol && secretColumn.containsMatchIn(t.header[it]) }.toSet()
                 t.rows.forEach { row ->
                     val cell = t.cell(row, timeCol)
-                    val body = t.header.indices.filter { it != timeCol && t.cell(row, it).isNotBlank() }.joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
+                    fun cells(cols: List<Int>) = cols.filter { t.cell(row, it).isNotBlank() && t.cell(row, it) !in setOf("—", "无", "-") }.joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
+                    val body = cells(t.header.indices.filter { it != timeCol && it !in secretCols })
+                    val secret = cells(secretCols.sorted())
                     val chapter = ChapterRefs.find(cell).minOrNull()
                     val volume = if (t.header.getOrNull(timeCol)?.contains("卷") == true) volumeOf(cell) else volumeRef.find(cell)?.let { volumeOf(it.value) }
                     val label = listOfNotNull(volume?.let { "第${it}卷" }, chapter?.let { "第${it}章" }).joinToString("")
-                    out += KnowledgeItem((if (owners.isEmpty()) "" else owners.joinToString("、") + "，") + (if (label.isEmpty()) "" else "$label：") + body, owners + names(body), chapter, volume)
+                    val head = (if (owners.isEmpty()) "" else owners.joinToString("、") + "，") + (if (label.isEmpty()) "" else "$label：")
+                    out += KnowledgeItem(head + body, owners + names(body), chapter, volume, if (secret.isEmpty()) "" else head + secret)
                 }
             }
             val inTable = tables.flatMap { it.lines }.toSet()
@@ -281,8 +319,17 @@ object ChapterBriefs {
      * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认）。
      * 先放常用文档（最多一半字数），再放出场人物的人物卡、到这一章为止知道的事和伏笔，最后放提到这一章或出场人物的其他小节。
      */
-    fun build(docs: List<Pair<PackDoc, String>>, text: String, card: String, chapter: Int, volume: Int, limit: Int = LIMIT): ChapterBrief {
+    fun build(
+        docs: List<Pair<PackDoc, String>>,
+        text: String,
+        card: String,
+        chapter: Int,
+        volume: Int,
+        limit: Int = LIMIT,
+        summaries: List<ChapterSummary> = emptyList(),
+    ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
+        val hidden = mutableListOf<String>()
         var left = limit
         val sorted = docs.filter { it.second.isNotBlank() }.sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
         val characters = characters(sorted.filter { it.first.kind == PackKind.CHARACTER }.map { it.first.title to it.second })
@@ -301,14 +348,29 @@ object ChapterBriefs {
             left -= cut.length
         }
 
-        // 二、出场人物的人物卡：出现次数多的在前。
+        // 二、前情：最近几章的摘要，更早的章里写到出场人物的也带（离这一章近的在前）。
+        val before = summaries.filter { it.number < chapter && it.summary.isNotBlank() }.sortedByDescending { it.number }
+        val recent = before.take(RECENT_SUMMARIES)
+        val older = before.drop(RECENT_SUMMARIES).filter { s -> presentNames.any { it in s.summary } }
+        var pastBudget = left / 4
+        (recent + older).forEach { s ->
+            if (pastBudget <= 100) return@forEach
+            val body = cut(s.summary.trim(), minOf(pastBudget, 600))
+            items += BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), body, if (s in recent) "最近几章" else "写到" + presentNames.filter { it in s.summary }.joinToString("、"))
+            pastBudget -= body.length
+            left -= body.length
+        }
+
+        // 三、出场人物的人物卡：出现次数多的在前。写到后面章节的句子、“结局”“怎么变”这类格子另列为只有作者知道的。
         var charBudget = left * 2 / 5
         present.forEach { c ->
             if (charBudget <= 100) return@forEach
-            val body = cut(c.notes.joinToString("\n"), minOf(charBudget, 1_500))
+            val (now, ahead) = splitByChapter(c.notes.joinToString("\n"), chapter)
+            val body = cut(now, minOf(charBudget, 1_500))
             items += BriefItem("人物", c.name, body, "本章出场" + if (c.aliases.isEmpty()) "" else "（也叫${c.aliases.joinToString("、")}）")
             charBudget -= body.length
             left -= body.length
+            (c.later + listOf(ahead)).filter { it.isNotBlank() }.forEach { hidden += c.name + "——" + cut(it, 300) }
         }
 
         // 三、察觉：出场人物到这一章为止知道的（离这一章近的在前），以及还不该知道的。
@@ -318,6 +380,7 @@ object ChapterBriefs {
         val presentAll = present.flatMap { it.names }.toSet()
         val relevant = knowledge.filter { k -> k.who.isEmpty() || k.who.any { it in presentAll } }
         val known = relevant.filter(::reached).sortedByDescending { it.chapter ?: ((it.volume ?: 0) * 1000) }
+        known.filter { it.secret.isNotBlank() }.take(8).forEach { hidden += cut(it.secret, 200) }
         var knowBudget = left / 3
         val knownText = StringBuilder()
         known.forEach { k ->
@@ -363,8 +426,19 @@ object ChapterBriefs {
             items += BriefItem(d.kind.label, (listOf(d.title) + s.path).joinToString(" › "), body, why)
             left -= body.length
         }
-        return ChapterBrief(chapter, volume, presentNames, items, notYet, open, due)
+        // 只有作者知道的也算字数，限一段，不挤掉别的。
+        val hiddenCut = mutableListOf<String>()
+        var hiddenBudget = minOf(1_500, maxOf(left, 300))
+        hidden.forEach { h ->
+            if (hiddenBudget - h.length < 0) return@forEach
+            hiddenCut += h
+            hiddenBudget -= h.length
+        }
+        return ChapterBrief(chapter, volume, presentNames, items, notYet, open, due, hiddenCut)
     }
+
+    /** 带上的前情摘要：前面这几章的都带。 */
+    const val RECENT_SUMMARIES = 5
 
     private fun cut(text: String, max: Int): String = if (text.length <= max) text else text.take(maxOf(max, 0)) + "……（后面省略）"
 }
@@ -387,5 +461,10 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     val number = work.chapterNumber(chapterId) ?: return null
     val docs = pack(workId).map { it to packText(workId, it.id) }
     val card = card(workId, chapterId).let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
-    return ChapterBriefs.build(docs, text ?: text(workId, chapterId), card, number, work.volumeNumber(chapterId), limit)
+    // 目录里排在这一章前面的章的摘要。
+    val index = work.chapters.indexOfFirst { it.id == chapterId }
+    val summaries = work.chapters.take(index).mapNotNull { c ->
+        card(workId, c.id).summary.takeIf { it.isNotBlank() }?.let { ChapterSummary(work.chapterNumber(c.id) ?: 0, c.title, it) }
+    }
+    return ChapterBriefs.build(docs, text ?: text(workId, chapterId), card, number, work.volumeNumber(chapterId), limit, summaries)
 }

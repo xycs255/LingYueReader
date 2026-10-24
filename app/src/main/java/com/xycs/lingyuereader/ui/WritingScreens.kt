@@ -335,6 +335,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     // 检查规则有几条（设定包改过就重读）；改状态时顺便看看这一章合不合规则。
     var ruleCount by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
+    val summaryProgress by vm.writingAi.summaries.collectAsStateWithLifecycle()
     var foreshadowNote by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(workId, pack) {
         val (list, latest) = vm.writing.foreshadows(workId)
@@ -377,6 +378,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                             "当书预览" to { vm.previewWork(workId, null) },
                                             "新建一卷" to { addingVolume = true },
                                             "作品信息" to { editingInfo = true },
+                                            "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
                                         ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
                                             ("删除作品" to { deleting = true })
                                         items.forEach { (label, action) ->
@@ -401,6 +403,12 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             ) {
                 item {
                     if (busy) top.yukonga.miuix.kmp.basic.LinearProgressIndicator(Modifier.padding(horizontal = 32.dp, vertical = 4.dp))
+                    summaryProgress?.takeIf { it.workId == workId }?.let { p ->
+                        GroupedSection(footer = "写好的摘要存在各章细纲卡里，可以改。写后面的章时，AI 会把前面几章的摘要当前情。") {
+                            row { TwoLine("正在写章节摘要 ${p.done + 1}/${p.total}", p.title) }
+                            row { ActionRow("停止", destructive = true) { vm.writingAi.stopSummaries() } }
+                        }
+                    }
                     val last = work.chapters.maxByOrNull { it.updatedAt }
                     GroupedSection(footer = work.synopsis.ifBlank { null }) {
                         row {
@@ -856,18 +864,20 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     // 预览、听稿要用刚打的字：不等自动保存，先存一次（排在预览前面落盘）。
                                     val saveNow = { current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it) } }
                                     val items = buildList<Pair<String, () -> Unit>> {
-                                        add("预览本章" to { saveNow(); vm.previewWork(workId, chapterId) })
-                                        add("听本章" to { saveNow(); vm.previewWork(workId, chapterId, listen = true) })
+                                        // 常用的在前：这一章的细纲和状态，再是 AI，最后是预览、历史、改名。
+                                        add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
+                                        add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
+                                        add("AI 写本章" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
+                                        add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
+                                        add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
+                                        add("规则检查" to { rulesOpen = true })
                                         // 先把现在的正文存成一版，历史列表里就有“刚才”这一版。
                                         add("历史版本" to {
                                             current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
                                             vm.open(Screen.WorkHistory(workId, chapterId))
                                         })
-                                        add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
-                                        add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
-                                        add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
-                                        add("规则检查" to { rulesOpen = true })
-                                        add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
+                                        add("预览本章" to { saveNow(); vm.previewWork(workId, chapterId) })
+                                        add("听本章" to { saveNow(); vm.previewWork(workId, chapterId, listen = true) })
                                         add("改章名" to { renaming = true })
                                         chapters.getOrNull(index - 1)?.let { p -> add("上一章" to { vm.replaceTop(Screen.Editor(workId, p.id)) }) }
                                         chapters.getOrNull(index + 1)?.let { n -> add("下一章" to { vm.replaceTop(Screen.Editor(workId, n.id)) }) }

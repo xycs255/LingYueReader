@@ -80,6 +80,10 @@ private fun WritingPage(vm: AppViewModel, title: String, content: androidx.compo
     }
 }
 
+/** 两行的一项（不能点）：标题、灰色说明。 */
+@Composable
+internal fun TwoLine(title: String, subtitle: String?) = TwoLineRow(title, subtitle)
+
 /** 两行的一项：标题、灰色说明，可以点。 */
 @Composable
 private fun TwoLineRow(title: String, subtitle: String?, titleColor: Color? = null, maxLines: Int = 3, onClick: (() -> Unit)? = null) {
@@ -228,7 +232,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
             ReviewGate.entries.forEachIndexed { i, gate ->
                 val result = review?.gate(gate)
                 val status = when {
-                    result != null && result.error != null -> "跳过"
+                    result != null && result.error != null -> if ("跳过" in result.error) "跳过" else "出错"
                     result != null -> if (result.issues.isEmpty()) "没发现问题" else "${result.issues.size} 处"
                     running == gate -> "审稿中……"
                     else -> null
