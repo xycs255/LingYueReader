@@ -27,7 +27,7 @@ import com.xycs.lingyuereader.data.FontStore
 import com.xycs.lingyuereader.data.TextRules
 import com.xycs.lingyuereader.data.DayStats
 import com.xycs.lingyuereader.data.ReadingStats
-import com.xycs.lingyuereader.data.HtmlText
+import com.xycs.lingyuereader.data.DictGloss
 import com.xycs.lingyuereader.data.VocabWord
 import com.xycs.lingyuereader.data.Vocabulary
 import com.xycs.lingyuereader.data.Prefs
@@ -981,11 +981,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val r = l.result
         val word = r?.words?.firstOrNull()
         val char = r?.chars?.firstOrNull()?.takeIf { l.word.codePointCount(0, l.word.length) == 1 }
-        val reading = word?.pinyin ?: char?.readings?.firstOrNull() ?: ""
+        // 导入词典的一条往往先是目录、部首笔画，挑出读音和带义项编号的那几段。
+        val imported = r?.imported?.firstOrNull()?.second?.firstOrNull()?.html?.let { DictGloss.summarize(it) }
+        val reading = word?.pinyin ?: char?.readings?.firstOrNull() ?: imported?.reading ?: ""
         val gloss = when {
             word != null -> word.definitions.take(3).joinToString("；")
             char != null && char.definition.isNotBlank() -> char.definition
-            else -> r?.imported?.firstOrNull()?.second?.firstOrNull()?.html?.let { HtmlText.plain(it).take(120) } ?: ""
+            else -> imported?.gloss ?: ""
         }
         val entry = VocabWord(
             word = l.word,

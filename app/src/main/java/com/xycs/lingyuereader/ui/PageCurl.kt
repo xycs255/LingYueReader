@@ -29,7 +29,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.createBitmap
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
@@ -150,6 +152,14 @@ internal data class CurlCylinder(
     val radius: Float,
     /** 阴影深浅：最后四分之一淡掉，翻完那一下左边不留一道影子。 */
     val shade: Float,
+    /**
+     * 折痕弯多少（像素）。真纸被拉着一角翻起时，折痕不是直线：手拉着的那段翻得最远，两头贴着页边、落在后面，
+     * 翻起那块的边是弯的，和页边差不多垂直地接上。离拉着的那点沿折痕走 t，折痕往回让 bend × (t / chord)²。
+     * 刚拉动和快翻完时为 0（纸是平的），翻到一半最弯。
+     */
+    val bend: Float = 0f,
+    /** 折痕在纸上从拉着的那点到最远一头的长度，[bend] 按它归一。 */
+    val chord: Float = 1f,
 ) {
     companion object {
         fun of(width: Float, height: Float, progress: Float, pressY: Float, fingerY: Float, left: Float = 0f): CurlCylinder? {
@@ -164,12 +174,38 @@ internal data class CurlCylinder(
             val radius = minOf(min(page, height) / 8f, len / PI.toFloat(), landing)
             val fromCorner = (len + PI.toFloat() * radius) / 2f
             val shade = ((1f - progress) * 4f).coerceIn(0f, 1f)
-            return CurlCylinder(corner - normal * fromCorner, normal, radius, shade)
+            val fold = corner - normal * fromCorner
+            val chord = chordReach(fold, Offset(-normal.y, normal.x), left, width, height).coerceAtLeast(1f)
+            val t = progress.coerceIn(0f, 1f)
+            val bend = BEND * chord * sin(PI.toFloat() * t).pow(0.6f)
+            return CurlCylinder(fold, normal, radius, shade, bend, chord)
         }
     }
 }
 
 /** 正面平铺、正面在圆柱上、背面在圆柱上、背面平铺、露出的下一页上的阴影，见 [CurlCylinder]。 */
+/** 折痕最弯时让回去的距离占折痕半长的比例。 */
+private const val BEND = 0.12f
+
+/** 过 [point]、沿 [dir] 的直线落在纸（[left]..[width] × 0..[height]）上的那段，离 [point] 最远的一头有多远。 */
+internal fun chordReach(point: Offset, dir: Offset, left: Float, width: Float, height: Float): Float {
+    var lo = -1e6f
+    var hi = 1e6f
+    fun slab(p: Float, d: Float, min: Float, max: Float) {
+        if (abs(d) < 1e-6f) {
+            if (p < min || p > max) { lo = 1f; hi = 0f }
+            return
+        }
+        val a = (min - p) / d
+        val b = (max - p) / d
+        lo = maxOf(lo, minOf(a, b))
+        hi = minOf(hi, maxOf(a, b))
+    }
+    slab(point.x, dir.x, left, width)
+    slab(point.y, dir.y, 0f, height)
+    return if (hi < lo) 0f else maxOf(abs(lo), abs(hi))
+}
+
 internal const val CURL_SHADER = """
 uniform shader content;
 uniform float2 size;
@@ -184,6 +220,9 @@ uniform float left;
 // 双页时纸的背面就是下一面的左页（hasBack = 1）；没有时用纸色。
 uniform shader backside;
 uniform float hasBack;
+// 折痕弯多少、按多长归一，见 CurlCylinder.bend。
+uniform float bend;
+uniform float chord;
 
 const float PI = 3.14159265;
 
@@ -199,8 +238,8 @@ half4 back(float2 q, float light) {
         half4 b = backside.eval(float2(2.0 * left - q.x, q.y));
         rgb = mix(paper.rgb, b.rgb, b.a);
     } else {
-        // 背面是纸色，隐约透出反着的字。
-        rgb = mix(content.eval(q).rgb, paper.rgb, 0.86);
+        // 背面是素纸，比正面稍暗一点。不透出反着的字：哪怕淡淡一层，在手机上看着也像叠了乱码。
+        rgb = paper.rgb * 0.97;
     }
     return half4(rgb * light, 1.0);
 }
@@ -214,21 +253,30 @@ half4 over(half4 under, half4 top, float coverage) {
     return mix(under, top, half(clamp(coverage + 0.5, 0.0, 1.0)));
 }
 
-half4 main(float2 p) {
+// 这点在折痕哪一边、离多远：折痕是弯的，离拉着的那点沿折痕越远，折痕越往回让。
+float side(float2 p) {
     float d = dot(p - fold, normal);
+    float t = dot(p - fold, float2(-normal.y, normal.x)) / max(chord, 1.0);
+    return d - bend * min(t * t, 2.0);
+}
+
+half4 main(float2 p) {
+    float d = side(p);
     float r = max(radius, 0.5);
     if (d <= 0.0) {
-        // 平铺的正面（双页时还有书脊左边那页）；翻过来的背面压在上面，边上投一道淡影。
+        // 平铺的正面（双页时还有书脊左边那页）；翻过来的背面压在上面，边上投一道影子。
         half4 base = content.eval(p);
         float s = PI * r - d;
         float2 q = p + normal * (s - d);
         float2 outside = max(max(float2(left, 0.0) - q, q - size), 0.0);
         float gap = length(outside);
         if (gap > 0.0) {
-            float a = shade * 0.22 * pow(1.0 - clamp(gap / shadow, 0.0, 1.0), 2.0);
+            float a = shade * 0.32 * (1.0 - smoothstep(0.0, shadow, gap));
             base = half4(base.rgb * half(1.0 - a), base.a);
         }
-        return over(base, back(q, 1.0), inside(q));
+        // 背面离卷起处越远越暗一点点，看得出纸是斜着搭下来的。
+        float light = 1.0 - 0.07 * smoothstep(0.0, max(r * 4.0, 1.0), -d);
+        return over(base, back(q, light), inside(q));
     }
     // 圆柱外：空出来的地方，靠近圆柱的阴影最深。
     float fade = clamp((d - r) / shadow, 0.0, 1.0);
@@ -310,6 +358,8 @@ private fun Modifier.curlShader(progress: () -> Float, touch: CurlTouch, paper: 
                 shader.setFloatUniform("shade", it.shade)
                 shader.setFloatUniform("paper", paper.red, paper.green, paper.blue, 1f)
                 shader.setFloatUniform("left", left)
+                shader.setFloatUniform("bend", it.bend)
+                shader.setFloatUniform("chord", it.chord)
                 shader.setFloatUniform("hasBack", if (cache.imageShader != null) 1f else 0f)
                 shader.setInputShader("backside", cache.imageShader ?: emptyBackside)
                 cache.effect = RenderEffect.createRuntimeShaderEffect(shader, "content").asComposeRenderEffect()

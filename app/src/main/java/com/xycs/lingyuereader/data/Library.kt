@@ -116,7 +116,7 @@ class Library(private val context: Context) {
             val entry = BookEntry(
                 id = id,
                 title = title?.trim()?.ifEmpty { null } ?: content.title ?: BookParser.titleOf(files.first().name),
-                author = content.author,
+                author = content.author ?: BookParser.authorOf(files.first().name),
                 format = if (files.map { BookParser.formatOf(it.name) }.distinct().size == 1) BookParser.formatOf(files.first().name) else BookFormat.MIXED,
                 sources = sources,
                 addedAt = now,

@@ -55,7 +55,28 @@ object BookParser {
         else -> null
     }
 
-    fun titleOf(name: String): String = name.substringBeforeLast('.').trim().ifEmpty { name }
+    /**
+     * 文件名里的书名。网上下来的文件常写成“《覆汉》（校对版全本）作者：榴弹怕水 (1).txt”：
+     * 有书名号就取书名号里的；没有就去掉“（精校版）”“[全本]”这类版本标注、“作者：…”和下载时加的“(1)”。
+     */
+    fun titleOf(name: String): String {
+        val base = name.substringBeforeLast('.').trim().replace(duplicateMark, "").trim()
+        bookMarks.find(base)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        val cleaned = base
+            .replace(authorPart, "")
+            .replace(editionTag, "")
+            .trim().trim('-', '_', '—', ' ', '·')
+        return cleaned.ifEmpty { base.ifEmpty { name } }
+    }
+
+    /** 文件名里写了“作者：某某”就取出来。 */
+    fun authorOf(name: String): String? =
+        authorPart.find(name.substringBeforeLast('.').replace(duplicateMark, ""))?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+
+    private val duplicateMark = Regex("""\s*[（(]\d{1,2}[)）]\s*$""")
+    private val bookMarks = Regex("""《([^》]+)》""")
+    private val authorPart = Regex("""\s*[（(\[【]?\s*作者\s*[:：]\s*([^()（）\[\]【】\s_]+)\s*[)）\]】]?""")
+    private val editionTag = Regex("""\s*[（(\[【][^()（）\[\]【】]*(?:校对|精校|全本|完本|完结|全集|精排|修订|txt|TXT)[^()（）\[\]【】]*[)）\]】]""")
 
     private fun parseOne(source: SourceBytes, rules: TextRules): BookContent {
         val fallback = titleOf(source.name)

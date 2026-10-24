@@ -1,7 +1,11 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.style.TextOverflow
+import com.xycs.lingyuereader.data.DictGloss
 import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -138,7 +142,19 @@ fun VocabularyScreen(vm: AppViewModel) {
                     }
                     Spacer(Modifier.weight(1f))
                     if (due.isNotEmpty()) {
-                        TextButton("复习 ${due.size}", onClick = { reviewing = true }, colors = ButtonDefaults.textButtonColorsPrimary())
+                        // 和左边的分段控件一样高的强调色小胶囊，不用一颗大按钮压过整行。
+                        Text(
+                            "复习 ${due.size}",
+                            color = MiuixTheme.colorScheme.onPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MiuixTheme.colorScheme.primary)
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { reviewing = true }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
                     } else if (learning.isNotEmpty()) {
                         val next = learning.minOf { it.due }
                         Text(
@@ -173,43 +189,75 @@ fun VocabularyScreen(vm: AppViewModel) {
 
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
 
+/**
+ * 一个生词：卡片里左右留 16dp。第一行词、读音，右边两个小图标（标为掌握 / 删除）；
+ * 下面释义、书里的原句（左边一道竖线，像引文），最后一行灰色小字写出处和下次复习。
+ */
 @Composable
 private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
-    GlassCard(modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
-        Row(verticalAlignment = Alignment.Bottom) {
+    val scheme = MiuixTheme.colorScheme
+    GlassCard(modifier.padding(horizontal = 12.dp, vertical = 6.dp), insideMargin = PaddingValues(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(w.word, fontSize = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (w.reading.isNotBlank()) {
-                Text(w.reading, color = MiuixTheme.colorScheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp, bottom = 3.dp))
+                Text(w.reading, color = scheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp))
             }
             Spacer(Modifier.weight(1f))
-            if (w.lookups > 1) Text("查过 ${w.lookups} 次", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            CardAction(if (w.mastered) LingYueIcons.Timer else LingYueIcons.Check, if (w.mastered) "重新学习" else "已掌握", onToggleMastered)
+            CardAction(LingYueIcons.Delete, "删除", onRemove)
         }
-        if (w.gloss.isNotBlank()) Text(w.gloss, style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(top = 6.dp))
-        if (w.context.isNotBlank()) {
-            Text(
-                highlighted(w.context, w.word),
-                style = MiuixTheme.textStyles.body2,
-                fontFamily = FontFamily.Serif,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(end = 8.dp)) {
+            val gloss = DictGloss.clean(w.gloss)
+            if (gloss.isNotBlank()) Text(gloss, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+            if (w.context.isNotBlank()) {
+                Row(Modifier.padding(top = 10.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                    Box(Modifier.width(2.dp).fillMaxHeight().clip(RoundedCornerShape(1.dp)).background(scheme.primary.copy(alpha = 0.4f)))
+                    Text(
+                        highlighted(w.context, w.word),
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                        fontFamily = FontFamily.Serif,
+                        color = scheme.onSurfaceVariantSummary,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+            }
             Text(
                 listOfNotNull(
-                    w.bookTitle.takeIf { it.isNotBlank() }?.let { "《$it》" },
+                    shortTitle(w.bookTitle).takeIf { it.isNotBlank() }?.let { "《$it》" },
                     dateFormat.format(Date(w.addedAt)),
                     if (w.mastered) null else "下次复习 " + dueLabel(w.due, System.currentTimeMillis()),
                 ).joinToString(" · "),
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.weight(1f),
+                fontSize = 12.sp,
+                color = scheme.onSurfaceVariantActions,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 10.dp),
             )
-            TextButton(if (w.mastered) "重新学习" else "已掌握", onClick = onToggleMastered)
-            TextButton("删除", onClick = onRemove, modifier = Modifier.padding(start = 6.dp))
         }
     }
 }
+
+/** 卡片右上角的小图标按钮：图标 20dp，能点的范围 40dp。 */
+@Composable
+private fun CardAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** 书名太长时（“《覆汉》（校对版全本）作者：…”）只留书名号里的那段。 */
+private fun shortTitle(title: String): String =
+    Regex("《([^》]+)》").find(title)?.groupValues?.get(1)?.trim() ?: title.trim()
 
 private fun highlighted(text: String, word: String) = buildAnnotatedString {
     append(text)

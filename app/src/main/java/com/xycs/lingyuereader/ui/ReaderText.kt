@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -505,21 +506,32 @@ internal fun SelectionHandles(tracker: SelectionTracker, highlight: Highlight, c
     tracker.caret(highlight.endBlock, highlight.endChar + 1, atLineEnd = true)?.let { SelectionHandle(it, isStart = false, color, tracker) }
 }
 
+/** 把手圆点的直径；选字操作条也按它让出位置。 */
+internal val HANDLE_DOT = 11.dp
+
 /**
- * 一端的把手：起点挂在光标左下，终点挂在右下，像系统的选择把手。看上去 22dp，能按到的范围 44dp 见方，
- * 从行底往下，横向以把手为中心，手指不必按得很准，也不会盖住这一行的字。
+ * 一端的把手：一道和这一行一样高的细竖线，加一个小圆点——起点的圆点在行顶上，终点的在行底下（苹果的样子）。
+ * 圆点落在行与行之间的空白里，不像水滴形把手那样盖住下一行的字。能按到的范围是以圆点为中心 44dp 见方。
  */
 @Composable
 private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker: SelectionTracker) {
-    val visual = 22.dp
     val touch = 44.dp
     val current by rememberUpdatedState(caret)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val bar = 2.dp
+    // 竖线：贴着光标，和这一行的字一样高。
+    Box(
+        Modifier
+            .offset { IntOffset((caret.left - bar.toPx() / 2).roundToInt(), caret.top.roundToInt()) }
+            .size(bar, with(density) { caret.height.toDp() })
+            .background(color),
+    )
     Box(
         Modifier
             .offset {
-                val v = visual.toPx()
-                val center = if (isStart) caret.left - v / 2 else caret.left + v / 2
-                IntOffset((center - touch.toPx() / 2).roundToInt(), caret.bottom.roundToInt())
+                val dot = HANDLE_DOT.toPx()
+                val dotY = if (isStart) caret.top - dot / 2 else caret.bottom + dot / 2
+                IntOffset((caret.left - touch.toPx() / 2).roundToInt(), (dotY - touch.toPx() / 2).roundToInt())
             }
             .size(touch)
             .pointerInput(isStart, tracker) {
@@ -529,17 +541,9 @@ private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker
                 }
             }
             .semantics { contentDescription = if (isStart) "选区起点" else "选区终点" },
+        contentAlignment = androidx.compose.ui.Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .align(androidx.compose.ui.Alignment.TopCenter)
-                .size(visual)
-                .clip(
-                    if (isStart) RoundedCornerShape(topStart = 0.dp, topEnd = 50.dp, bottomStart = 50.dp, bottomEnd = 50.dp)
-                    else RoundedCornerShape(topStart = 50.dp, topEnd = 0.dp, bottomStart = 50.dp, bottomEnd = 50.dp),
-                )
-                .background(color),
-        )
+        Box(Modifier.size(HANDLE_DOT).clip(CircleShape).background(color))
     }
 }
 

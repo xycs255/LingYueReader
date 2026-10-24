@@ -765,12 +765,14 @@ private fun Reader(
         StatusLine(
             chapter.title,
             // 左边已经写了章名，右边只写本章第几页和还剩多久（不再写“第几章 / 共几章”，免得和页码挤成“1/3 · 1/3 页”）。
-            listOfNotNull(pos.label.ifEmpty { null }?.let { "第 $it" }, chapterLeft).joinToString(" · "),
+            // 翻页模式的“N/M 页”前面加“第”；滚动模式的百分比原样写。
+            listOfNotNull(pos.label.ifEmpty { null }?.let { if (it.endsWith("页")) "第 $it" else it }, chapterLeft).joinToString(" · "),
             palette,
             Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = footerAlpha },
             bookFraction,
             // 系统状态栏藏起来时，页脚补上时间和电量。
             clock = settings.fullscreen,
+            backdrop = settings.pageMode == PageMode.SCROLL,
         )
         }
 
@@ -982,10 +984,11 @@ private fun Reader(
                 modifier = Modifier.layout { measurable, constraints ->
                     val bar = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
                     val gap = with(density) { 10.dp.toPx() }
-                    val handle = with(density) { 22.dp.toPx() }
+                    // 起点的圆点在首行上方、终点的在末行下方，操作条让开它们。
+                    val handle = with(density) { HANDLE_DOT.toPx() }
                     val minTop = with(density) { topInset.toPx() }
                     val maxBottom = constraints.maxHeight - with(density) { bottomInset.toPx() }
-                    val above = barBounds.top - gap - bar.height
+                    val above = barBounds.top - handle - gap - bar.height
                     val below = barBounds.bottom + handle + gap
                     val y = when {
                         above >= minTop -> above
@@ -1484,7 +1487,16 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
 }
 
 @Composable
-private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f, clock: Boolean = false) {
+private fun StatusLine(
+    title: String,
+    label: String,
+    palette: ReaderPalette,
+    modifier: Modifier,
+    bookFraction: Float = 0f,
+    clock: Boolean = false,
+    /** 滚动模式正文会滚到页脚底下，要垫一层底色；翻页模式书页本来就停在页脚上面，不垫，免得盖住两侧的书口。 */
+    backdrop: Boolean = true,
+) {
     // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳：滚动时一小步一小步来，匀速跟上、不拖尾；跳章这种大步才缓动过去。
     val shown = remember { Animatable(bookFraction) }
     LaunchedEffect(bookFraction) {
@@ -1499,7 +1511,7 @@ private fun StatusLine(title: String, label: String, palette: ReaderPalette, mod
     Column(
         modifier
             .fillMaxWidth()
-            .background(palette.background.copy(alpha = 0.92f))
+            .background(if (backdrop) palette.background.copy(alpha = 0.92f) else Color.Transparent)
             .semantics { contentDescription = "全书已读 ${(bookFraction * 100).toInt()}%" }
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(start = 28.dp, end = 28.dp, top = 6.dp, bottom = 8.dp),

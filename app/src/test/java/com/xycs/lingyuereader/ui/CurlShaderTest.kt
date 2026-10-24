@@ -47,6 +47,8 @@ class CurlShaderTest {
             setInputShader("content", BitmapShader(content, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
             setInputShader("backside", BitmapShader(backside ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
             setFloatUniform("left", left)
+            setFloatUniform("bend", g.bend)
+            setFloatUniform("chord", g.chord)
             setFloatUniform("hasBack", if (backside != null) 1f else 0f)
             setFloatUniform("size", w.toFloat(), h.toFloat())
             setFloatUniform("fold", g.fold.x, g.fold.y)
@@ -95,11 +97,14 @@ class CurlShaderTest {
         half.getPixel(20, 20).let { assertTrue(Integer.toHexString(it), Color.red(it) > 230 && Color.green(it) < 20 && Color.blue(it) < 20) }
         // 圆柱右边一大段是露出来的下一页（带阴影，仍偏蓝）。
         assertTrue(half.getPixel(w - 5, 400).isBlue())
+        // 折痕是弯的：离按下处（中间）越远越往右让。第 20 行的折痕在这里。
+        val t = (20f - g.fold.y) / g.chord
+        val fold20 = g.fold.x + g.bend * minOf(t * t, 2f)
         // 折痕左边一点是翻过来的背面：纸色，不是红也不是蓝。
-        val back = half.getPixel((g.fold.x - 10).toInt(), 20)
+        val back = half.getPixel((fold20 - 10).toInt(), 20)
         assertTrue(Integer.toHexString(back), Color.red(back) > 180 && Color.blue(back) > 150)
         // 底下的红块不会出现在折痕右边。
-        for (x in (g.fold.x + g.radius + 2).toInt() until w) assertTrue(!half.getPixel(x, 20).let { Color.red(it) > 200 && Color.green(it) < 80 })
+        for (x in (fold20 + g.radius + 2).toInt() until w) assertTrue(!half.getPixel(x, 20).let { Color.red(it) > 200 && Color.green(it) < 80 })
     }
 
     @Test
@@ -112,6 +117,19 @@ class CurlShaderTest {
         // 翻完：整页离开，露出的下一页上没有残留的阴影。
         val done = render(0.999f, 780f)
         for (x in 0 until w step 20) assertEquals(Color.BLUE, done.getPixel(x, h / 2))
+    }
+
+    /** 中间按下拉开时，折痕中间翻得最远，上下两头落在后面：露出的下一页在中间那行最宽。 */
+    @Test
+    fun theFoldBendsLikePaperPulledInTheMiddle() {
+        val g = CurlCylinder.of(w.toFloat(), h.toFloat(), 0.4f, 400f, 400f)!!
+        assertTrue(g.bend > 10f)
+        val img = render(0.4f, 400f)
+        fun firstBlue(y: Int) = (0 until w).first { img.getPixel(it, y).isBlue() }
+        assertTrue("${firstBlue(400)} ${firstBlue(40)}", firstBlue(400) + 10 < firstBlue(40))
+        assertTrue(firstBlue(400) + 10 < firstBlue(h - 40))
+        // 刚拉动和快翻完时纸是平的，不弯。
+        assertTrue(CurlCylinder.of(w.toFloat(), h.toFloat(), 0.999f, 400f, 400f)!!.bend < 2f)
     }
 
     /** 双页：左页红、右页绿；下一面左页黄、右页蓝（垫在底下）。 */
