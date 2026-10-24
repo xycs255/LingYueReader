@@ -3,7 +3,7 @@ package com.xycs.lingyuereader.ai
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.InlineText
-import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.spokenText
 import org.json.JSONObject
 import java.io.File
 
@@ -45,7 +45,7 @@ object AiTranslate {
         var cur = ArrayList<Pair<Int, String>>()
         var size = 0
         blocks.forEachIndexed { i, b ->
-            val text = b.displayText?.let(InlineText::stripTranslation)?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEachIndexed
+            val text = b.spokenText?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEachIndexed
             if (size + text.length > BATCH && cur.isNotEmpty()) {
                 out += cur
                 cur = ArrayList()

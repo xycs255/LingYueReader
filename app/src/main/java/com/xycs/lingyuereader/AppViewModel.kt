@@ -50,6 +50,11 @@ import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiBook
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiGloss
+import com.xycs.lingyuereader.ai.AiSummaries
+import com.xycs.lingyuereader.ai.AiCompanion
+import com.xycs.lingyuereader.ai.ChapterCompanion
+import com.xycs.lingyuereader.ai.chapterExcerpt
+import com.xycs.lingyuereader.ai.SummaryRange
 import com.xycs.lingyuereader.ai.AiTranslate
 import com.xycs.lingyuereader.ai.TranslateTarget
 import com.xycs.lingyuereader.ai.Translations
@@ -1064,6 +1069,132 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _readingNotes.update { it.copy(loading = false, error = (e as? AiException)?.message ?: "整理失败：${e.message}") }
             }
         }
+    }
+
+    // ---------- 章节速读 ----------
+
+    /** 速读：这本书各章的摘要（章名对得上的）、正在生成时的进度。 */
+    data class SummaryState(
+        val bookId: String? = null,
+        val summaries: Map<Int, String> = emptyMap(),
+        val running: Boolean = false,
+        val progress: String? = null,
+        val error: String? = null,
+    )
+
+    private val _summaries = MutableStateFlow(SummaryState())
+    val summaries: StateFlow<SummaryState> = _summaries.asStateFlow()
+    private var summaryJob: Job? = null
+
+    fun loadSummaries() {
+        val book = _openBook.value ?: return
+        if (_summaries.value.bookId == book.entry.id) return
+        viewModelScope.launch {
+            val map = withContext(Dispatchers.IO) { AiSummaries.valid(book.content, AiSummaries.read(library.bookFile(book.entry.id, AiSummaries.FILE))) }
+            _summaries.value = SummaryState(book.entry.id, map)
+        }
+    }
+
+    /** 要速读哪些章：读过的、从当前起接下来 10 章、全书；已有摘要的不再生成。 */
+    fun summaryTargets(range: SummaryRange, chapterIndex: Int): List<Int> {
+        val book = _openBook.value ?: return emptyList()
+        val all = book.content.chapters.indices
+        val wanted = when (range) {
+            SummaryRange.READ -> 0..chapterIndex
+            SummaryRange.NEXT -> chapterIndex..(chapterIndex + 9).coerceAtMost(all.last)
+            SummaryRange.ALL -> all
+        }
+        val have = _summaries.value.takeIf { it.bookId == book.entry.id }?.summaries.orEmpty()
+        return wanted.filter { it !in have }
+    }
+
+    /** 这些章大约多少字。 */
+    fun summarySize(indices: List<Int>): Int = _openBook.value?.let { AiSummaries.size(it.content, indices) } ?: 0
+
+    fun buildSummaries(indices: List<Int>) {
+        val book = _openBook.value ?: return
+        if (summaryJob?.isActive == true || indices.isEmpty()) return
+        val aiBook = aiBook() ?: return
+        summaryJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiSummaries.FILE)
+            val packs = withContext(Dispatchers.IO) { AiSummaries.packs(book.content, indices) }
+            _summaries.update { it.copy(bookId = book.entry.id, running = true, error = null, progress = "0/${indices.size}") }
+            var done = 0
+            try {
+                packs.forEach { pack ->
+                    val got = AiSummaries.parse(assistant.complete(aiBook, AiSummaries.prompt(pack), AnswerLength.SHORT), pack)
+                    withContext(Dispatchers.IO) {
+                        val stored = AiSummaries.read(file).toMutableMap()
+                        got.forEach { (i, text) -> stored[i] = book.content.chapters[i].title to text }
+                        AiSummaries.write(file, stored)
+                    }
+                    done += pack.chapters.size
+                    _summaries.update { it.copy(summaries = it.summaries + got, progress = "$done/${indices.size}") }
+                }
+                _summaries.update { it.copy(running = false, progress = null) }
+            } catch (e: CancellationException) {
+                _summaries.update { it.copy(running = false, progress = null) }
+                throw e
+            } catch (e: Exception) {
+                _summaries.update { it.copy(running = false, progress = null, error = (e as? AiException)?.message ?: "生成失败：${e.message}") }
+            }
+        }
+    }
+
+    fun cancelSummaries() {
+        summaryJob?.cancel()
+    }
+
+    // ---------- AI 伴读 ----------
+
+    /** 伴读：哪一章、要点和思考题（没生成时为空）、生成中、出错。 */
+    data class CompanionState(
+        val bookId: String? = null,
+        val chapter: Int = -1,
+        val data: ChapterCompanion? = null,
+        val loading: Boolean = false,
+        val error: String? = null,
+    )
+
+    private val _companion = MutableStateFlow(CompanionState())
+    val companion: StateFlow<CompanionState> = _companion.asStateFlow()
+    private var companionJob: Job? = null
+
+    /** 打开某章的伴读：存过的直接显示，没有就生成。 */
+    fun openCompanion(chapterIndex: Int, regenerate: Boolean = false) {
+        val book = _openBook.value ?: return
+        val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
+        val aiBook = aiBook() ?: return
+        companionJob?.cancel()
+        _companion.value = CompanionState(book.entry.id, chapterIndex, loading = true)
+        companionJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiCompanion.FILE)
+            try {
+                val cached = if (regenerate) null else withContext(Dispatchers.IO) { AiCompanion.read(file)[chapterIndex]?.takeIf { it.first == chapter.title }?.second }
+                val data = cached ?: run {
+                    val previous = _summaries.value.takeIf { it.bookId == book.entry.id }?.summaries?.get(chapterIndex - 1)
+                    val text = withContext(Dispatchers.IO) { chapterExcerpt(chapter, AiCompanion.LIMIT) }
+                    val answer = assistant.complete(aiBook, AiCompanion.prompt(chapter.title, text, previous), AnswerLength.MEDIUM)
+                    val parsed = AiCompanion.parse(answer) ?: throw AiException("AI 没有按格式回答，请重试")
+                    withContext(Dispatchers.IO) { AiCompanion.write(file, AiCompanion.read(file) + (chapterIndex to (chapter.title to parsed))) }
+                    parsed
+                }
+                _companion.update { it.copy(data = data, loading = false) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _companion.update { it.copy(loading = false, error = (e as? AiException)?.message ?: "生成失败：${e.message}") }
+            }
+        }
+    }
+
+    /** 和 AI 讨论一道思考题：用“问这本书”，只看读到本章末尾为止的内容。 */
+    fun discuss(question: String) {
+        val c = _companion.value
+        val book = _openBook.value ?: return
+        val last = book.content.chapters.getOrNull(c.chapter)?.blocks?.lastIndex ?: return
+        startAskBook(c.chapter, last.coerceAtLeast(0))
+        askAi(question)
     }
 
     // ---------- 整章翻译 ----------

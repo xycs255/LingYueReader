@@ -304,6 +304,8 @@ private fun Reader(
     val aiSession by vm.ai.collectAsStateWithLifecycle()
     // 人物表在本机：打开书时读进来，查词时认人名。
     LaunchedEffect(entry.id) { vm.loadCharacters() }
+    val summaryState by vm.summaries.collectAsStateWithLifecycle()
+    LaunchedEffect(entry.id) { vm.loadSummaries() }
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
     // 注音要读字表，后台准备好再用。
@@ -691,6 +693,7 @@ private fun Reader(
                         registerTurner = { turner.turn = it },
                         registerScroller = { tracker.scroller = it },
                         speaking = speaking,
+                        onCompanion = { aiTool = AiTool.COMPANION }.takeIf { aiConfig.ready },
                     )
                 }
             } else {
@@ -900,6 +903,7 @@ private fun Reader(
                                                 AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
                                                 AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
                                                 AiMenuItem.NOTES -> aiTool = AiTool.NOTES
+                                                AiMenuItem.COMPANION -> aiTool = AiTool.COMPANION
                                                 AiMenuItem.TRANSLATE -> aiTool = AiTool.TRANSLATE
                                             }
                                         },
@@ -1080,6 +1084,15 @@ private fun Reader(
             chapterFraction = pos.fraction,
             charsPerMinute = speed.toFloat(),
             onClose = { sheet = null },
+            summaries = summaryState.summaries.takeIf { summaryState.bookId == entry.id }.orEmpty(),
+            summary = if (aiConfig.ready && !entry.format.imageOnly) SummaryControls(
+                running = summaryState.running,
+                progress = summaryState.progress,
+                error = summaryState.error,
+                estimate = { r -> vm.summaryTargets(r, chapterIndex).let { it.size to vm.summarySize(it) } },
+                onStart = { r -> vm.buildSummaries(vm.summaryTargets(r, chapterIndex)) },
+                onCancel = vm::cancelSummaries,
+            ) else null,
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。

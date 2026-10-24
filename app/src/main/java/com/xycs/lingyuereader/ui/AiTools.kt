@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,6 +57,7 @@ import top.yukonga.miuix.kmp.basic.Text
 /** 阅读页顶栏 AI 菜单里的各项。 */
 internal enum class AiMenuItem(val label: String) {
     RECAP("前情提要"),
+    COMPANION("本章伴读"),
     ASK_BOOK("问这本书"),
     CHARACTERS("人物表"),
     NOTES("读书笔记"),
@@ -64,7 +66,7 @@ internal enum class AiMenuItem(val label: String) {
 }
 
 /** AI 菜单打开的面板。 */
-internal enum class AiTool { HISTORY, CHARACTERS, NOTES, TRANSLATE }
+internal enum class AiTool { HISTORY, CHARACTERS, NOTES, TRANSLATE, COMPANION }
 
 @Composable
 internal fun AiMenuItems(onPick: (AiMenuItem) -> Unit) {
@@ -94,6 +96,10 @@ internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalett
                     AiTool.CHARACTERS -> CharacterSheet(vm, chapter, block)
                     AiTool.NOTES -> NotesSheet(vm)
                     AiTool.TRANSLATE -> TranslateSheet(vm, chapter, onClose)
+                    AiTool.COMPANION -> CompanionSheet(vm, chapter, onDiscuss = { q ->
+                        onClose()
+                        vm.discuss(q)
+                    })
                     null -> {}
                 }
             }
@@ -439,5 +445,58 @@ private fun TranslateSheet(vm: AppViewModel, chapter: Int, onClose: () -> Unit) 
                 }
             }
         }
+    }
+}
+
+/**
+ * 本章伴读：要点、思考题；点一道题和 AI 讨论（“问这本书”，只看读到本章末尾为止）。
+ * 存过的直接显示，右上角可重新生成。
+ */
+@Composable
+private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -> Unit) {
+    val c = LocalGroupedColors.current
+    val state by vm.companion.collectAsStateWithLifecycle()
+    val book by vm.openBook.collectAsStateWithLifecycle()
+    LaunchedEffect(chapter) {
+        if (state.chapter != chapter || state.bookId != book?.entry?.id || (state.data == null && !state.loading)) vm.openCompanion(chapter)
+    }
+    val data = state.data.takeIf { state.chapter == chapter }
+    SheetNavBar("本章伴读", back = null, action = if (data != null && !state.loading) "重新生成" to { vm.openCompanion(chapter, regenerate = true) } else null) {}
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(book?.content?.chapters?.getOrNull(chapter)?.title.orEmpty() + " · 按整章生成，建议读完本章再看", color = c.secondary, fontSize = 13.sp)
+        when {
+            state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Text("正在读这一章……", color = c.secondary, fontSize = 14.sp)
+            }
+            data != null -> {
+                Text("本章要点", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                data.points.forEach { p ->
+                    Row {
+                        Text("•", color = c.tint, fontSize = 15.sp, modifier = Modifier.width(18.dp))
+                        Text(p, color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                    }
+                }
+                if (data.questions.isNotEmpty()) {
+                    Text("想一想", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                    Text("点一道题，和 AI 聊聊（只看你读过的部分）。", color = c.secondary, fontSize = 12.sp)
+                    data.questions.forEach { q ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(c.cell)
+                                .clickable(role = Role.Button) { onDiscuss(q) }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(q, color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.weight(1f))
+                            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 8.dp).size(14.dp))
+                        }
+                    }
+                }
+            }
+        }
+        state.error?.takeIf { state.chapter == chapter }?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
     }
 }
