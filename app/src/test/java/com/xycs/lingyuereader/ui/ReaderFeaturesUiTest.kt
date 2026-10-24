@@ -8,6 +8,9 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -15,6 +18,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -193,6 +198,9 @@ class ShelfUiTest {
             val dir = File(files, "books/b2").apply { mkdirs() }
             File(dir, "s0.txt").writeText("第一章 起\n　　乙书正文。\n")
             val index = JSONArray(File(files, "books/index.json").readText())
+            index.getJSONObject(0)
+                .put("openedAt", 3L)
+                .put("progress", JSONObject().put("chapter", 0).put("title", "第一章 开端").put("item", 1).put("offset", 0))
             index.put(
                 JSONObject().put("id", "b2").put("title", "乙书").put("author", "某人").put("format", "TXT")
                     .put("addedAt", 2L).put("openedAt", 0L).put("chapterCount", 1).put("charCount", 5).put("readMillis", 3_720_000L)
@@ -213,10 +221,21 @@ class ShelfUiTest {
     @Test
     fun searchFiltersByTitleOrAuthor() {
         waitForText("测试书")
+        waitForText("接着读")
         compose.onNodeWithContentDescription("搜索书架").performClick()
         compose.onNode(androidx.compose.ui.test.hasSetTextAction()).performTextInput("某人")
         compose.waitUntil(5_000) { compose.onAllNodesWithText("测试书").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("接着读").fetchSemanticsNodes().isEmpty() }
         waitForText("乙书")
+    }
+
+    @Test
+    fun continueReadingShowsChapterAndOpensBook() {
+        waitForText("接着读")
+        waitForText("读到第 1/2 章")
+        waitForText("第一章 开端")
+        compose.onNodeWithText("继续阅读").performClick()
+        waitForText("第1段")
     }
 
     @Test
@@ -257,18 +276,56 @@ class ShelfUiTest {
     }
 
     @Test
+    fun gridMenuOpensBookDetails() {
+        waitForText("测试书")
+        // 接着读卡片占据首行时，先把网格书项滚进视口再点操作。
+        compose.onAllNodes(hasScrollToIndexAction())[0].performScrollToNode(hasContentDescription("操作"))
+        compose.onAllNodesWithContentDescription("操作")[0].performScrollTo().performClick()
+        waitForText("详情")
+        compose.onNodeWithText("详情").performClick()
+        waitForText("书籍详情")
+        waitForText("累计阅读")
+    }
+
+    @Test
     fun listViewAndDetailPage() {
         waitForText("测试书")
         compose.onNodeWithContentDescription("排序与显示").performClick()
         waitForText("列表显示")
         compose.onNodeWithText("列表显示").performClick()
-        // 列表里有作者一栏
+        // 接着读卡片占据首行，先滚到有作者的那本书。
+        compose.onAllNodes(hasScrollToIndexAction())[0].performScrollToNode(hasText("某人 · TXT"))
         waitForText("某人 · TXT")
-        compose.onAllNodesWithContentDescription("操作")[0].performClick()
+        compose.onAllNodesWithContentDescription("操作")[0].performScrollTo().performClick()
         waitForText("详情")
         compose.onNodeWithText("详情").performClick()
         waitForText("书籍详情")
         waitForText("累计阅读")
+    }
+}
+
+class ShelfProgressLabelTest {
+    private fun entry(chapters: Int, at: Int?) = com.xycs.lingyuereader.data.BookEntry(
+        id = "book",
+        title = "测试书",
+        author = null,
+        format = com.xycs.lingyuereader.data.BookFormat.TXT,
+        sources = emptyList(),
+        addedAt = 0,
+        openedAt = 0,
+        chapterCount = chapters,
+        charCount = 100,
+        progress = at?.let { com.xycs.lingyuereader.data.ReadingProgress(it, "章节", 0, 0) },
+    )
+
+    @Test
+    fun progressLabelUsesChapterPositionAndClampsBadIndexes() {
+        assertEquals("未读 · 10 章", progressLabel(entry(10, null)))
+        assertEquals("读到第 1/10 章", progressLabel(entry(10, 0)))
+        assertEquals("读到第 1/10 章", progressLabel(entry(10, -3)))
+        assertEquals("读到第 10/10 章", progressLabel(entry(10, 99)))
+        assertEquals("读到第 10/10 章", progressLabel(entry(10, Int.MAX_VALUE)))
+        assertEquals("继续阅读", progressLabel(entry(0, 0)))
     }
 }
 

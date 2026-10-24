@@ -36,9 +36,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Add
-import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -71,12 +68,12 @@ fun DictionariesScreen(vm: AppViewModel) {
                 title = "词典",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
                 actions = {
                     IconButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy, modifier = Modifier.padding(end = 12.dp)) {
-                        Icon(MiuixIcons.Add, contentDescription = "导入词典")
+                        Icon(LingYueIcons.Add, contentDescription = "导入词典")
                     }
                 },
             )

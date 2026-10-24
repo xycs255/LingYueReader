@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -88,7 +89,6 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
@@ -101,9 +101,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Add
-import top.yukonga.miuix.kmp.icon.extended.Notes
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.preference.RadioButtonPreference
@@ -114,9 +111,6 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import top.yukonga.miuix.kmp.icon.extended.Sort
-import top.yukonga.miuix.kmp.icon.extended.More
-import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import com.xycs.lingyuereader.data.ShelfSort
 
@@ -218,6 +212,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
     val busy by vm.busy.collectAsStateWithLifecycle()
     val pending by vm.pendingImport.collectAsStateWithLifecycle()
     val message by vm.messages.collectAsStateWithLifecycle()
+    val continueReading = shelf.filter { it.progress != null }.maxByOrNull { it.openedAt }
     val snackbar = remember { SnackbarHostState() }
     val scrollBehavior = MiuixScrollBehavior()
     var searching by rememberSaveable { mutableStateOf(query.isNotEmpty()) }
@@ -246,14 +241,14 @@ internal fun ShelfScreen(vm: AppViewModel) {
                         searching = !searching
                         if (!searching) vm.setShelfQuery("")
                     }) {
-                        Icon(MiuixIcons.Search, contentDescription = "搜索书架")
+                        Icon(LingYueIcons.Search, contentDescription = "搜索书架")
                     }
                     IconButton(onClick = pickFiles, enabled = !busy) {
-                        Icon(MiuixIcons.Add, contentDescription = "导入")
+                        Icon(LingYueIcons.Add, contentDescription = "导入")
                     }
                     Box(Modifier.padding(end = 12.dp)) {
                         IconButton(onClick = { moreMenu = true }) {
-                            Icon(MiuixIcons.Sort, contentDescription = "排序与显示")
+                            Icon(LingYueIcons.Sort, contentDescription = "排序与显示")
                         }
                         // 只放排序和显示方式；其他功能在底部的“我的”里。
                         val options = ShelfSort.entries.map { "按${it.label}" } + (if (shelfPrefs.list) "网格显示" else "列表显示")
@@ -265,20 +260,14 @@ internal fun ShelfScreen(vm: AppViewModel) {
                             GlassMenu {
                                 ListPopupColumn {
                                     options.forEachIndexed { index, label ->
-                                        DropdownImpl(
-                                            text = label,
-                                            optionSize = options.size,
-                                            isSelected = index == shelfPrefs.sort.ordinal,
-                                            index = index,
-                                            onSelectedIndexChange = { i ->
-                                                moreMenu = false
-                                                if (i < ShelfSort.entries.size) {
-                                                    vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[i]) }
-                                                } else {
-                                                    vm.updateShelfPrefs { it.copy(list = !it.list) }
-                                                }
-                                            },
-                                        )
+                                        LingYueMenuItem(label, selected = index == shelfPrefs.sort.ordinal) {
+                                            moreMenu = false
+                                            if (index < ShelfSort.entries.size) {
+                                                vm.updateShelfPrefs { it.copy(sort = ShelfSort.entries[index]) }
+                                            } else {
+                                                vm.updateShelfPrefs { it.copy(list = !it.list) }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -301,16 +290,26 @@ internal fun ShelfScreen(vm: AppViewModel) {
                             )
                             if (query.isNotBlank()) {
                                 // 书名、作者之外，还可以在所有书的正文里找。
-                                Text(
-                                    "在所有书的正文里搜索“${query.trim()}” ›",
-                                    color = MiuixTheme.colorScheme.primary,
-                                    style = MiuixTheme.textStyles.body2,
+                                Row(
                                     modifier = Modifier
                                         .padding(horizontal = 20.dp)
+                                        .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
                                         .clickable { vm.openLibrarySearch(query) }
                                         .padding(horizontal = 8.dp, vertical = 10.dp),
-                                )
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        "在所有书的正文里搜索“${query.trim()}”",
+                                        color = MiuixTheme.colorScheme.primary,
+                                        style = MiuixTheme.textStyles.body2,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = MiuixTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                }
                             }
                         }
                         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
@@ -346,6 +345,11 @@ internal fun ShelfScreen(vm: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 overscrollEffect = null,
             ) {
+                if (continueReading != null) {
+                    item(key = "continue-reading") {
+                        ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                    }
+                }
                 items(shelf, key = { it.id }) { entry ->
                     ShelfRow(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
                 }
@@ -358,6 +362,11 @@ internal fun ShelfScreen(vm: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 overscrollEffect = null,
             ) {
+                if (continueReading != null) {
+                    item(key = "continue-reading", span = { GridItemSpan(maxLineSpan) }) {
+                        ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                    }
+                }
                 items(shelf, key = { it.id }) { entry ->
                     // 排序、分组筛选、删书时各本书挪到新位置，而不是一下子跳过去。
                     ShelfItem(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
@@ -435,7 +444,7 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
         GlassCard(Modifier.fillMaxWidth()) {
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    MiuixIcons.Notes,
+                    LingYueIcons.Notes,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
                     tint = MiuixTheme.colorScheme.primary,
@@ -459,26 +468,81 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
     }
 }
 
-internal fun progressLabel(entry: BookEntry): String =
-    if (entry.progress == null) "未读 · ${entry.chapterCount} 章" else "读到 ${(entry.readFraction * 100).toInt()}%"
+internal fun progressLabel(entry: BookEntry): String {
+    val progress = entry.progress ?: return "未读 · ${entry.chapterCount.coerceAtLeast(0)} 章"
+    if (entry.chapterCount <= 0) return "继续阅读"
+    val chapter = progress.chapterIndex.coerceIn(0, entry.chapterCount - 1) + 1
+    return "读到第 $chapter/${entry.chapterCount} 章"
+}
+
+/** 当前筛选结果里最近读过的书，提供一眼能找到的继续阅读入口。 */
+@Composable
+private fun ContinueReading(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
+    val open = rememberOpenFromCover(entry.id, "featured") { vm.open(Screen.Reader(entry.id)) }
+    GlassCard(
+        modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(12.dp),
+        pressFeedbackType = PressFeedbackType.Sink,
+        onClick = open.click,
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(52.dp)) {
+                BookCover(
+                    entry.title,
+                    "",
+                    modifier = open.track,
+                    cover = entry.cover?.let { vm.bookFile(entry.id, it) },
+                    compact = true,
+                )
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text("接着读", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
+                Text(entry.title, style = MiuixTheme.textStyles.title4, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    progressLabel(entry),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
+                entry.progress?.chapterTitle?.takeIf { it.isNotBlank() }?.let { chapter ->
+                    Text(
+                        chapter,
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("继续阅读", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
+                    Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = MiuixTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
+                }
+            }
+        }
+    }
+}
 
 /** 封面在窗口里的位置，点开时交给 [OpenFrom]，阅读页从这里放大出来。 */
 private class OpenFromCover(val track: Modifier, val click: () -> Unit)
+private var activeCoverSource: String? = null
 
 @Composable
-private fun rememberOpenFromCover(bookId: String, open: () -> Unit): OpenFromCover {
+private fun rememberOpenFromCover(bookId: String, source: String, open: () -> Unit): OpenFromCover {
     // 用根视图的大小（和 boundsInWindow 同一坐标系）。
     val view = LocalView.current
     val bounds = remember { object { var rect = androidx.compose.ui.geometry.Rect.Zero } }
     val current by rememberUpdatedState(open)
-    return remember(bookId) {
+    return remember(bookId, source) {
         OpenFromCover(
             track = Modifier.onGloballyPositioned {
                 bounds.rect = it.boundsInWindow()
                 // 正从这本书退回书架：封面一排好就更新位置，阅读页缩到这里。
-                if (OpenFrom.bookId == bookId) OpenFrom.set(bookId, bounds.rect, view.width.toFloat(), view.height.toFloat())
+                if (OpenFrom.bookId == bookId && activeCoverSource == source) {
+                    OpenFrom.set(bookId, bounds.rect, view.width.toFloat(), view.height.toFloat())
+                }
             },
             click = {
+                activeCoverSource = source
                 OpenFrom.set(bookId, bounds.rect, view.width.toFloat(), view.height.toFloat())
                 current()
             },
@@ -486,12 +550,12 @@ private fun rememberOpenFromCover(bookId: String, open: () -> Unit): OpenFromCov
     }
 }
 
-/** 网格里的一本书：点开阅读，长按弹出操作菜单。 */
+/** 网格里的一本书：点封面阅读，点操作按钮或长按封面管理。 */
 @Composable
 private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
-    val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
+    val open = rememberOpenFromCover(entry.id, "grid") { vm.open(Screen.Reader(entry.id)) }
     val haptic = LocalHapticFeedback.current
     Column(modifier) {
         Box {
@@ -506,7 +570,18 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                     menu = true
                 },
             )
-            BookMenu(entry, vm, menu, dialogs) { menu = false }
+            Box(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+                IconButton(
+                    onClick = { menu = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                ) {
+                    Icon(LingYueIcons.More, contentDescription = "操作", tint = Color.White)
+                }
+                BookMenu(entry, vm, menu, dialogs) { menu = false }
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(entry.title, style = MiuixTheme.textStyles.body2, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -520,7 +595,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
 private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
     val dialogs = remember { BookDialogState() }
     var menu by remember { mutableStateOf(false) }
-    val open = rememberOpenFromCover(entry.id) { vm.open(Screen.Reader(entry.id)) }
+    val open = rememberOpenFromCover(entry.id, "list") { vm.open(Screen.Reader(entry.id)) }
     val haptic = LocalHapticFeedback.current
     GlassCard(
         modifier = modifier,
@@ -555,7 +630,7 @@ private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Mo
             }
             Box {
                 IconButton(onClick = { menu = true }) {
-                    Icon(MiuixIcons.More, contentDescription = "操作", tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Icon(LingYueIcons.More, contentDescription = "操作", tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
                 BookMenu(entry, vm, menu, dialogs) { menu = false }
             }
@@ -583,17 +658,11 @@ private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs:
     OverlayListPopup(show = show, onDismissRequest = onDismiss) {
         GlassMenu {
             ListPopupColumn {
-                actions.forEachIndexed { index, (label, action) ->
-                    DropdownImpl(
-                        text = label,
-                        optionSize = actions.size,
-                        isSelected = false,
-                        index = index,
-                        onSelectedIndexChange = {
-                            onDismiss()
-                            action()
-                        },
-                    )
+                actions.forEach { (label, action) ->
+                    LingYueMenuItem(label, selected = false) {
+                        onDismiss()
+                        action()
+                    }
                 }
             }
         }

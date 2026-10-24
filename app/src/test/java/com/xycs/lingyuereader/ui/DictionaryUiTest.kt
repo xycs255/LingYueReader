@@ -97,7 +97,7 @@ class DictionaryUiTest {
         compose.onNodeWithContentDescription("选区结尾少一个字").performClick()
         waitForText("部首")
         // 从面板进词典管理。
-        compose.onNodeWithText("管理词典 ›").performScrollTo().performClick()
+        compose.onNodeWithText("管理词典").performScrollTo().performClick()
         waitForText("基础字典与词典")
     }
 
@@ -195,8 +195,8 @@ class DictionaryUiTest {
         java.io.File(context.filesDir, "vocabulary.json").delete()
         longPressWord()
         waitForText("bank")
-        compose.onNodeWithText("☆ 收入生词本").performClick()
-        waitForText("★ 已在生词本")
+        compose.onNodeWithText("收入生词本").performClick()
+        waitForText("已在生词本")
         val saved = java.io.File(context.filesDir, "vocabulary.json").readText()
         assertTrue(saved, saved.contains("银行") && saved.contains("银行门口排着长队") && saved.contains("测试书"))
     }

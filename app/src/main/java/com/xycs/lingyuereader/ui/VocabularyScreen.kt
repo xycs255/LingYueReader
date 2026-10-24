@@ -64,9 +64,6 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.Share
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.text.SimpleDateFormat
@@ -96,7 +93,7 @@ fun VocabularyScreen(vm: AppViewModel) {
                 navigationIcon = {
                     if (reviewing) {
                         IconButton(onClick = { reviewing = false }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(MiuixIcons.Back, contentDescription = "返回")
+                            Icon(LingYueIcons.Back, contentDescription = "返回")
                         }
                     }
                 },
@@ -106,7 +103,7 @@ fun VocabularyScreen(vm: AppViewModel) {
                             onClick = { shareText(context, "生词本", vm.vocabularyMarkdown(words)) },
                             modifier = Modifier.padding(end = 12.dp),
                         ) {
-                            Icon(MiuixIcons.Share, contentDescription = "导出生词本")
+                            Icon(LingYueIcons.Share, contentDescription = "导出生词本")
                         }
                     }
                 },
@@ -142,7 +139,7 @@ fun VocabularyScreen(vm: AppViewModel) {
             if (shown.isEmpty()) {
                 item {
                     Text(
-                        if (words.isEmpty()) "还没有生词。读书时长按选词，在查词面板里点“☆ 收入生词本”。" else "这里还没有词。",
+                        if (words.isEmpty()) "还没有生词。读书时长按选词，在查词面板里点“收入生词本”。" else "这里还没有词。",
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),

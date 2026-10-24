@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.animation.animateColorAsState
@@ -75,8 +76,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TextFieldDefaults
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Delete
 
 // ---------- 目录 / 书签 / 批注 ----------
 
@@ -208,7 +207,7 @@ private fun MarkRow(
             if (note != null) Text(note, color = palette.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
         }
         IconButton(onClick = onDelete) {
-            Icon(MiuixIcons.Delete, contentDescription = "删除", tint = palette.secondary)
+            Icon(LingYueIcons.Delete, contentDescription = "删除", tint = palette.secondary)
         }
     }
 }
@@ -639,25 +638,26 @@ private fun FontRow(
         Text("字体", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp).padding(top = 8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             @Composable
-            fun Chip(label: String, on: Boolean, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
-                Text(
-                    label,
-                    color = if (on) palette.accent else palette.text,
-                    fontSize = 14.sp,
-                    maxLines = 1,
+            fun Chip(label: String, on: Boolean, onLongClick: (() -> Unit)? = null, icon: ImageVector? = null, onClick: () -> Unit) {
+                Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
                         .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                         .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (icon != null) Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(16.dp))
+                    Text(label, color = if (on) palette.accent else palette.text, fontSize = 14.sp, maxLines = 1)
+                }
             }
             Chip("宋体", current == null && settings.serif) { update { it.copy(serif = true, font = "") } }
             Chip("黑体", current == null && !settings.serif) { update { it.copy(serif = false, font = "") } }
             fonts.forEach { f ->
                 Chip(FontStore.label(f), current == f, onLongClick = { deleting = f }) { update { it.copy(font = f) } }
             }
-            Chip("＋ 导入字体", false) { picker.launch(arrayOf("*/*")) }
+            Chip("导入字体", false, icon = LingYueIcons.Add) { picker.launch(arrayOf("*/*")) }
         }
     }
     if (fonts.isNotEmpty()) {

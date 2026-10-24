@@ -39,9 +39,6 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.Search
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -64,7 +61,7 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
                 title = "书内搜索",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
                 bottomContent = {
@@ -76,7 +73,7 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
                         singleLine = true,
                         leadingIcon = {
                             Icon(
-                                MiuixIcons.Search,
+                                LingYueIcons.Search,
                                 contentDescription = null,
                                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                 modifier = Modifier.padding(start = 12.dp, end = 4.dp),
@@ -149,7 +146,7 @@ fun LibrarySearchScreen(vm: AppViewModel) {
                 title = "在所有书里搜索",
                 navigationIcon = {
                     IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+                        Icon(LingYueIcons.Back, contentDescription = "返回")
                     }
                 },
                 bottomContent = {
@@ -161,7 +158,7 @@ fun LibrarySearchScreen(vm: AppViewModel) {
                         singleLine = true,
                         leadingIcon = {
                             Icon(
-                                MiuixIcons.Search,
+                                LingYueIcons.Search,
                                 contentDescription = null,
                                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                 modifier = Modifier.padding(start = 12.dp, end = 4.dp),

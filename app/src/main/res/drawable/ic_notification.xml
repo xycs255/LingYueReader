@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 听书与阅读提醒：新书签标志的通知栏单色简化版。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5,9 L5,11 M5,14 L5,16 M9,7 L9,9 M9,12 L9,14 M9,17 L9,19"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13,3 L20,3 L20,21 L16.5,18 L13,21 Z" />
+</vector>

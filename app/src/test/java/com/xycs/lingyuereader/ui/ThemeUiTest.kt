@@ -100,4 +100,14 @@ class ThemeUiTest {
         assertFalse(a.floatingBar)
         assertFalse(GlassStyle.blur)
     }
+
+    @Test
+    fun pageTransitionMenuSavesSelection() {
+        openThemePage()
+        compose.onNodeWithText("页面切换动画").performScrollTo().performClick()
+        waitForText("淡入淡出")
+        compose.onNodeWithText("淡入淡出").performClick()
+        compose.waitForIdle()
+        assertEquals(PageTransition.FADE, Prefs(context).appearance().transition)
+    }
 }

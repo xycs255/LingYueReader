@@ -28,6 +28,7 @@ class Library(private val context: Context) {
         const val RULES = "rules.json"
         const val BACKUP_MANIFEST = "lingyue-backup.json"
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
+        val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
         /** 书以外的应用数据（生词本、阅读统计），按文件名放在 data/ 下。 */
         val BACKUP_DATA_FILE = Regex("""data/(vocabulary|stats)\.json""")
         val BACKUP_BOOK_FILE = Regex("""books/[A-Za-z0-9-]{1,64}/(s\d{1,4}\.[A-Za-z0-9]{1,10}|marks\.json|rules\.json)""")
@@ -211,34 +212,72 @@ class Library(private val context: Context) {
         return content.copy(chapters = chapters, cover = cover)
     }
 
-    /** 从原位置重读每份文件。返回是否有变化；读不到的保留旧副本。 */
+    /** 从原位置重读每份文件。先在临时目录验证新书，失败时保留旧副本和缓存。 */
+    @Synchronized
     fun refresh(entry: BookEntry): RefreshResult {
         val dir = File(root, entry.id)
+        require(dir.isDirectory) { "书籍文件不存在" }
+        val staging = File(root, ".refresh-${entry.id}-${UUID.randomUUID()}")
+        val incoming = File(staging, "incoming")
+        val next = File(staging, "next")
+        val previous = File(staging, "previous")
         var changed = 0
         var failed = 0
-        for (s in entry.sources) {
-            val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
-            if (bytes == null) {
-                failed++
-                continue
-            }
-            val target = File(dir, s.file)
-            if (!target.isFile || !target.readBytes().contentEquals(bytes)) {
-                target.writeBytes(bytes)
-                changed++
-            }
-        }
-        if (changed > 0) {
-            val content = buildCache(dir, entry.sources)
-            update { list ->
-                list.map {
-                    if (it.id == entry.id) {
-                        it.copy(chapterCount = content.chapters.size, charCount = content.charCount, cover = content.cover, description = content.description)
-                    } else it
+        var committed = false
+        try {
+            for (s in entry.sources) {
+                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
+                if (bytes == null) {
+                    failed++
+                    continue
+                }
+                val target = File(dir, s.file)
+                if (!target.isFile || !target.readBytes().contentEquals(bytes)) {
+                    require(bytes.isNotEmpty()) { "来源文件为空：${s.name}" }
+                    check(incoming.isDirectory || incoming.mkdirs()) { "无法准备书籍刷新目录" }
+                    File(incoming, s.file).writeBytes(bytes)
+                    changed++
                 }
             }
+            if (changed == 0) return RefreshResult(0, failed)
+
+            check(dir.copyRecursively(next)) { "无法复制书籍文件" }
+            for (s in entry.sources) {
+                val replacement = File(incoming, s.file)
+                if (replacement.isFile) replacement.copyTo(File(next, s.file), overwrite = true)
+            }
+
+            val content = buildCache(next, entry.sources)
+            require(content.chapters.isNotEmpty()) { "没有读出正文" }
+
+            // 两次改名均在 books/ 所在文件系统内。索引写入失败时也恢复旧目录。
+            try {
+                check(dir.renameTo(previous)) { "无法保存旧书籍文件" }
+                check(next.renameTo(dir)) { "无法替换书籍文件" }
+                update { list ->
+                    list.map {
+                        if (it.id == entry.id) {
+                            it.copy(chapterCount = content.chapters.size, charCount = content.charCount, cover = content.cover, description = content.description)
+                        } else it
+                    }
+                }
+                committed = true
+            } catch (error: Throwable) {
+                if (previous.isDirectory) {
+                    if (dir.exists() && !dir.renameTo(next) && !dir.deleteRecursively()) {
+                        error.addSuppressed(IllegalStateException("无法移走刷新后的书籍文件"))
+                    }
+                    if (!previous.renameTo(dir)) {
+                        error.addSuppressed(IllegalStateException("无法恢复旧书籍文件：${previous.absolutePath}"))
+                    }
+                }
+                throw error
+            }
+            return RefreshResult(changed, failed)
+        } finally {
+            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉。
+            if (committed || !previous.exists()) staging.deleteRecursively()
         }
-        return RefreshResult(changed, failed)
     }
 
     data class RefreshResult(val changed: Int, val failed: Int)
@@ -301,6 +340,7 @@ class Library(private val context: Context) {
      * 恢复：备份里的书加回书架，同一本书（同一 id）用备份里的版本整体替换。
      * 只接受固定格式的条目路径，防止压缩包里的“../”之类路径写到书架目录之外。
      */
+    @Synchronized
     fun restore(input: java.io.InputStream): RestoreResult {
         val staging = File(context.cacheDir, "restore-${UUID.randomUUID()}").apply { mkdirs() }
         try {
@@ -327,19 +367,87 @@ class Library(private val context: Context) {
             }
             val books = index ?: throw IllegalArgumentException("不是灵阅的备份文件")
             requireNotNull(manifest) { "不是灵阅的备份文件" }
-            val restored = (0 until books.length()).mapNotNull { i ->
+            val candidates = (0 until books.length()).mapNotNull { i ->
                 val e = runCatching { books.getJSONObject(i).toEntry() }.getOrNull() ?: return@mapNotNull null
                 if (!BACKUP_ID.matches(e.id)) return@mapNotNull null
                 val from = File(staging, "books/${e.id}")
-                if (e.sources.any { !File(from, it.file).isFile }) return@mapNotNull null
-                val to = File(root, e.id)
-                to.deleteRecursively()
-                from.copyRecursively(to, overwrite = true)
+                if (e.sources.isEmpty() || e.sources.any { !BACKUP_SOURCE_FILE.matches(it.file) || !File(from, it.file).isFile }) return@mapNotNull null
                 e
             }
-            val ids = restored.map { it.id }.toSet()
-            update { current -> current.filterNot { it.id in ids } + restored }
-            return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data)
+            if (candidates.isEmpty()) return RestoreResult(0, manifest?.optJSONObject("settings"), data)
+            val transaction = File(root, ".restore-${UUID.randomUUID()}")
+            val prepared = File(transaction, "prepared")
+            val previous = File(transaction, "previous")
+            val restored = mutableListOf<BookEntry>()
+            val installed = mutableListOf<String>()
+            val movedOld = mutableListOf<String>()
+            var committed = false
+            try {
+                // 先把所有书完整复制到 books/ 所在文件系统，复制失败不影响现有书籍。
+                for (e in candidates) {
+                    val from = File(staging, "books/${e.id}")
+                    val next = File(prepared, e.id)
+                    check(from.copyRecursively(next)) { "无法复制备份书籍：${e.title}" }
+                    val existing = File(root, e.id)
+                    if (existing.isDirectory) {
+                        // 只有覆盖现有书籍时才预解析。坏备份不能替换仍可阅读的旧书。
+                        val content = runCatching {
+                            require(e.sources.none { source ->
+                                val old = File(existing, source.file)
+                                File(next, source.file).length() == 0L && old.isFile && old.length() > 0L
+                            }) { "来源文件为空" }
+                            val parsed = buildCache(next, e.sources)
+                            require(parsed.chapters.isNotEmpty()) { "没有读出正文" }
+                            parsed
+                        }.getOrNull()
+                        if (content == null) {
+                            next.deleteRecursively()
+                            continue
+                        }
+                        restored += e.copy(chapterCount = content.chapters.size, charCount = content.charCount,
+                            cover = content.cover, description = content.description)
+                    } else {
+                        restored += e
+                    }
+                }
+                if (restored.isEmpty()) return RestoreResult(0, manifest?.optJSONObject("settings"), data)
+                try {
+                    for (e in restored) {
+                        val current = File(root, e.id)
+                        val next = File(prepared, e.id)
+                        if (current.exists()) {
+                            check(previous.isDirectory || previous.mkdirs()) { "无法准备书籍恢复目录" }
+                            check(current.renameTo(File(previous, e.id))) { "无法保存旧书籍文件：${e.title}" }
+                            movedOld += e.id
+                        }
+                        check(next.renameTo(current)) { "无法恢复书籍文件：${e.title}" }
+                        installed += e.id
+                    }
+                    val ids = restored.map { it.id }.toSet()
+                    update { current -> current.filterNot { it.id in ids } + restored }
+                    committed = true
+                } catch (error: Throwable) {
+                    // 倒序撤销所有已安装的书，最后还原原目录及原索引。
+                    for (e in restored.asReversed()) {
+                        val current = File(root, e.id)
+                        if (e.id in installed && current.exists()) {
+                            val discard = File(transaction, "discard/${e.id}")
+                            discard.parentFile?.mkdirs()
+                            if (!current.renameTo(discard) && !current.deleteRecursively()) {
+                                error.addSuppressed(IllegalStateException("无法移走恢复后的书籍文件：${e.title}"))
+                            }
+                        }
+                        if (e.id in movedOld && !File(previous, e.id).renameTo(current)) {
+                            error.addSuppressed(IllegalStateException("无法还原旧书籍文件：${e.title}"))
+                        }
+                    }
+                    throw error
+                }
+                return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data)
+            } finally {
+                // 如果回滚也失败，保留 previous 中的原书副本供恢复。
+                if (committed || previous.listFiles().isNullOrEmpty()) transaction.deleteRecursively()
+            }
         } finally {
             staging.deleteRecursively()
         }
@@ -384,7 +492,7 @@ class Library(private val context: Context) {
         transform(list()).forEach { array.put(it.toJson()) }
         val tmp = File(root, "index.json.tmp")
         tmp.writeText(array.toString())
-        tmp.renameTo(indexFile)
+        check(tmp.renameTo(indexFile)) { "无法保存书架索引" }
     }
 
     private fun load(dir: File, sources: List<SourceRef>) =

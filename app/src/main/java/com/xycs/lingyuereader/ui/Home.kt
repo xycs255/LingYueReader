@@ -32,11 +32,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import com.xycs.lingyuereader.ui.glass.glass
 import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.ContactsCircle
-import top.yukonga.miuix.kmp.icon.extended.Months
-import top.yukonga.miuix.kmp.icon.extended.Notes
-import top.yukonga.miuix.kmp.icon.extended.Translate
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** 首页各标签页底部要给悬浮导航栏让出的高度；不在首页时为 0。 */
@@ -44,10 +39,10 @@ val LocalTabBarInset = compositionLocalOf { 0.dp }
 
 private val HomeTab.icon
     get() = when (this) {
-        HomeTab.Shelf -> MiuixIcons.Notes
-        HomeTab.Vocabulary -> MiuixIcons.Translate
-        HomeTab.Stats -> MiuixIcons.Months
-        HomeTab.Me -> MiuixIcons.ContactsCircle
+        HomeTab.Shelf -> LingYueIcons.Notes
+        HomeTab.Vocabulary -> LingYueIcons.Translate
+        HomeTab.Stats -> LingYueIcons.Months
+        HomeTab.Me -> LingYueIcons.ContactsCircle
     }
 
 /** 导航栏离屏幕底边的距离，与 [LiquidGlassNavigationBar] 里的算法一致。 */

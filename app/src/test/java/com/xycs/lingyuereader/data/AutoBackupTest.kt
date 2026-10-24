@@ -43,21 +43,21 @@ class AutoBackupTest {
     }
 
     @Test
-    fun keepsTheNewestSevenAndCleansUpHalfWrittenFiles() {
+    fun keepsTheNewestSevenWithoutDeletingAnotherDevicesPartialBackup() {
         backups.setFolder("folder", "同步盘")
         (1..9).forEach { File(dir, "灵阅备份-202610%02d-0800.zip".format(it)).writeText("old") }
-        File(dir, "灵阅备份-20261001-0800.zip.part").writeText("broken")
+        File(dir, "灵阅备份-20261001-0800.zip.other-device.part").writeText("still writing")
         File(dir, "别的文件.txt").writeText("keep")
 
         backups.run { it.write("new".toByteArray()) }.getOrThrow()
         val left = dir.list()!!.sorted()
-        assertEquals(8, left.size)
+        assertEquals(9, left.size)
         assertTrue("别的文件.txt" in left)
         assertTrue("灵阅备份-20261023-2140.zip" in left)
         // 最旧的三份没了（新的一份加上留下的六份旧的，正好七份）。
         assertFalse("灵阅备份-20261003-0800.zip" in left)
         assertTrue("灵阅备份-20261004-0800.zip" in left)
-        assertTrue(left.none { it.endsWith(".part") })
+        assertTrue("灵阅备份-20261001-0800.zip.other-device.part" in left)
     }
 
     @Test
@@ -68,6 +68,69 @@ class AutoBackupTest {
         assertEquals(0, dir.list()!!.size)
         assertEquals("磁盘满了", backups.state().lastError)
         assertTrue(backups.due())
+    }
+
+    @Test
+    fun aFailedBackupCleansOnlyItsOwnPartialFile() {
+        backups.setFolder("folder", "同步盘")
+        val otherDevicesPart = File(dir, "灵阅备份-20261023-2140.zip.other-device.part")
+        otherDevicesPart.writeText("still writing")
+
+        val result = backups.run { stream ->
+            stream.write("partial".toByteArray())
+            error("磁盘满了")
+        }
+
+        assertTrue(result.isFailure)
+        assertEquals(listOf(otherDevicesPart.name), dir.list()!!.toList())
+        assertEquals("still writing", otherDevicesPart.readText())
+    }
+
+    @Test
+    fun anotherBackupInTheSameMinuteKeepsThePreviousCopy() {
+        backups.setFolder("folder", "同步盘")
+        val first = backups.run { it.write("first".toByteArray()) }.getOrThrow()
+        val second = backups.run { it.write("second".toByteArray()) }.getOrThrow()
+
+        assertEquals("灵阅备份-20261023-2140.zip", first)
+        assertEquals("灵阅备份-20261023-2140-0002.zip", second)
+        assertEquals("first", File(dir, first).readText())
+        assertEquals("second", File(dir, second).readText())
+        assertEquals(second, backups.state().lastFile)
+        assertTrue(dir.list()!!.none { it.endsWith(".part") })
+    }
+
+    @Test
+    fun failedRenameInTheSameMinutePreservesThePreviousBackup() {
+        backups.setFolder("folder", "同步盘")
+        val first = backups.run { it.write("first".toByteArray()) }.getOrThrow()
+        val failing = AutoBackup(context, {
+            object : BackupFolder by FileFolder(dir) {
+                override fun rename(from: String, to: String): Unit = error("改不了文件名")
+            }
+        }, { clock })
+
+        val result = failing.run { it.write("second".toByteArray()) }
+
+        assertTrue(result.isFailure)
+        assertEquals("first", File(dir, first).readText())
+        assertEquals(listOf(first), dir.list()!!.toList())
+        assertEquals(first, backups.state().lastFile)
+        assertEquals("改不了文件名", backups.state().lastError)
+    }
+
+    @Test
+    fun sameMinuteCopiesStillKeepOnlyTheNewestSeven() {
+        backups.setFolder("folder", "同步盘")
+        repeat(9) { i -> backups.run { it.write("copy-$i".toByteArray()) }.getOrThrow() }
+
+        val kept = dir.list()!!.filter { AutoBackup.BACKUP_NAME.matches(it) }.sorted()
+        assertEquals(AutoBackup.KEEP, kept.size)
+        assertFalse("灵阅备份-20261023-2140.zip" in kept)
+        assertFalse("灵阅备份-20261023-2140-0002.zip" in kept)
+        assertTrue("灵阅备份-20261023-2140-0009.zip" in kept)
+        assertEquals("copy-8", File(dir, kept.last()).readText())
+        assertEquals(kept.last(), backups.state().lastFile)
     }
 
     @Test

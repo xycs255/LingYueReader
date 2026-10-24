@@ -1,0 +1,59 @@
+package com.xycs.lingyuereader
+
+import android.app.Application
+import android.content.Context
+import android.net.Uri
+import android.os.Looper
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.Prefs
+import com.xycs.lingyuereader.data.ReaderSettings
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Shadows
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.LooperMode
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
+@LooperMode(LooperMode.Mode.PAUSED)
+class AppViewModelTest {
+    @Test
+    fun malformedBackupSettingsLeaveRestoredBooksVisibleAndReleaseBusyState() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        app.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        val library = Library(app)
+        val source = File(app.cacheDir, "viewmodel-restore.txt").apply {
+            writeText("第一章 起\n　　可以继续阅读的正文。\n")
+        }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val backup = ByteArrayOutputStream()
+        library.backup(backup, JSONObject().put("fontSize", JSONObject().put("s", "invalid")))
+        library.remove(entry.id)
+
+        val file = File(app.cacheDir, "viewmodel-restore.zip").apply { writeBytes(backup.toByteArray()) }
+        val vm = AppViewModel(app)
+        vm.restore(Uri.fromFile(file))
+
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        while ((vm.messages.value == null || vm.busy.value) && System.nanoTime() < deadline) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(vm.messages.value.orEmpty().contains("但附加数据恢复失败"))
+        assertFalse(vm.busy.value)
+        assertEquals(entry.id, vm.shelf.value.single().id)
+        assertEquals(ReaderSettings().fontSize, Prefs(app).settings().fontSize, 0f)
+    }
+}
