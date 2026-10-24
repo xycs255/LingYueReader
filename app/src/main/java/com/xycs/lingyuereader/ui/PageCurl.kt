@@ -14,12 +14,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -27,6 +31,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
@@ -524,56 +529,86 @@ internal data class CurlPoints(
 }
 
 /**
- * 画一页经典仿真：当前页去掉翻起的那块；掀开处透出底下的下一页（下一页由翻页器垫在下面），贴着折痕一道阴影；
- * 翻起的纸边在当前页上投一道窄影；最上面是翻过来的背面——当前页镜像过去，蒙一层纸色，隐约透出反着的字，靠折痕处暗一些。
- * [shade] 在翻完前的最后一段淡到 0，翻完那一下不留影子。
+ * 画一页经典仿真：掀开处透出底下的下一页（下一页由翻页器垫在下面），贴着折痕一道阴影；当前页去掉翻起的那块；
+ * 翻起的纸边在当前页上投一道窄影；最上面是翻过来的背面——不透明的纸，隐约透出反着的字，靠折痕处暗一些。
+ *
+ * 各块的边都是用路径画出来的遮罩（离屏层里用 DstOut 挖掉不要的部分），不是 clipPath：硬件画布上的 clipPath 没有抗锯齿，
+ * 斜边和弧边一动就是一圈锯齿在闪。[shade] 在翻完前的最后一段淡到 0，翻完那一下不留影子。
  */
 internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, drawPage: DrawScope.() -> Unit) {
     val turned = p.turned()
     val reach = (p.f - p.a).getDistance()
     val n = (p.f - p.a) / reach.coerceAtLeast(1f)
     val fold = (p.d + p.i) / 2f
-    // 1. 当前页，去掉翻起的那块。
-    clipPath(turned, ClipOp.Difference) { drawPage() }
-    // 2. 翻起的纸边投在当前页上的影子：沿 a→e、a→h 两条纸边各一条窄带，往纸外面淡掉。
-    val edgeShadow = (reach / 10f).coerceIn(4.dp.toPx(), 18.dp.toPx())
-    val inner = (p.a + p.d + p.i) / 3f
-    clipPath(turned, ClipOp.Difference) {
-        for (end in listOf(p.e, p.h)) {
-            val dir = end - p.a
-            val len = dir.getDistance().coerceAtLeast(1f)
-            var out = Offset(-dir.y / len, dir.x / len)
-            if (dot(out, inner - p.a) > 0f) out = -out
-            val band = Path().apply {
-                moveTo(p.a.x, p.a.y)
-                lineTo(end.x, end.y)
-                lineTo(end.x + out.x * edgeShadow, end.y + out.y * edgeShadow)
-                lineTo(p.a.x + out.x * edgeShadow, p.a.y + out.y * edgeShadow)
-                close()
+    val whole = Rect(Offset.Zero, size)
+    val turnedBounds = turned.getBounds().intersect(whole)
+
+    /** 在离屏层里画 [content]，再用 [mask] 抠形状（[keep] 为真留下路径里面，否则挖掉路径里面），边是抗锯齿的。 */
+    fun masked(bounds: Rect, mask: Path, keep: Boolean, alpha: Float = 1f, content: DrawScope.() -> Unit) {
+        if (bounds.isEmpty) return
+        drawIntoCanvas { it.saveLayer(bounds, Paint().apply { this.alpha = alpha }) }
+        content()
+        // 只留里面时挖掉“层减去路径”那块（路径外面）；DstIn 只作用在路径画到的地方，管不到路径外面。
+        val cut = if (keep) {
+            Path().apply {
+                fillType = PathFillType.EvenOdd
+                // 矩形放大几像素：它自己的抗锯齿边落在层外面，不在纸上留一圈淡线。
+                addRect(bounds.inflate(4f))
+                addPath(mask)
             }
-            drawPath(band, Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.16f * shade), Color.Transparent), start = p.a, end = p.a + out * edgeShadow))
+        } else {
+            mask
+        }
+        drawPath(cut, Color.Black, blendMode = BlendMode.DstOut)
+        drawIntoCanvas { it.restore() }
+    }
+
+    // 1. 掀开处的下一页上，贴着折痕一道阴影，往纸角那边淡掉（画在翻起区里，背面会盖住其余部分）。
+    val revealShadow = (reach / 4f).coerceIn(8.dp.toPx(), 36.dp.toPx())
+    if (shade > 0f) {
+        masked(turnedBounds, turned, keep = true) {
+            drawRect(
+                Brush.linearGradient(
+                    0f to Color.Black.copy(alpha = 0.30f * shade),
+                    0.35f to Color.Black.copy(alpha = 0.10f * shade),
+                    1f to Color.Transparent,
+                    start = fold,
+                    end = fold + n * revealShadow,
+                ),
+            )
         }
     }
-    // 3. 掀开处的下一页上，贴着折痕一道阴影，往纸角那边淡掉。
-    val revealShadow = (reach / 4f).coerceIn(8.dp.toPx(), 36.dp.toPx())
-    clipPath(p.revealed()) {
-        drawRect(
-            Brush.linearGradient(
-                0f to Color.Black.copy(alpha = 0.30f * shade),
-                0.35f to Color.Black.copy(alpha = 0.10f * shade),
-                1f to Color.Transparent,
-                start = fold,
-                end = fold + n * revealShadow,
-            ),
-        )
+    // 2. 当前页，挖掉翻起的那块。
+    masked(whole, turned, keep = false) { drawPage() }
+    // 3. 翻起的纸边投在当前页上的影子：沿 a→e、a→h 两条纸边各一条窄带，往纸外面淡掉。
+    if (shade > 0f) {
+        val edgeShadow = (reach / 10f).coerceIn(4.dp.toPx(), 18.dp.toPx())
+        val inner = (p.a + p.d + p.i) / 3f
+        masked(whole, turned, keep = false) {
+            for (end in listOf(p.e, p.h)) {
+                val dir = end - p.a
+                val len = dir.getDistance().coerceAtLeast(1f)
+                var out = Offset(-dir.y / len, dir.x / len)
+                if (dot(out, inner - p.a) > 0f) out = -out
+                val band = Path().apply {
+                    moveTo(p.a.x, p.a.y)
+                    lineTo(end.x, end.y)
+                    lineTo(end.x + out.x * edgeShadow, end.y + out.y * edgeShadow)
+                    lineTo(p.a.x + out.x * edgeShadow, p.a.y + out.y * edgeShadow)
+                    close()
+                }
+                drawPath(band, Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.16f * shade), Color.Transparent), start = p.a, end = p.a + out * edgeShadow))
+            }
+        }
     }
-    // 4. 翻过来的背面。
+    // 4. 翻过来的背面：先铺一层不透明的纸，再隐约透出镜像过去的字，最后是靠折痕处的暗。
     val back = p.back()
-    clipPath(back) {
+    masked(back.getBounds().intersect(whole), back, keep = true) {
+        drawRect(paper)
+        drawIntoCanvas { it.saveLayer(whole, Paint().apply { alpha = 0.10f }) }
         withTransform({ transform(p.mirror) }) { drawPage() }
-        drawRect(paper.copy(alpha = 0.9f))
-        // 靠折痕处弯着，暗一些；往纸角渐亮。
-        val depth = (dot(p.a - fold, -n)).coerceAtLeast(1f)
+        drawIntoCanvas { it.restore() }
+        val depth = dot(p.a - fold, -n).coerceAtLeast(1f)
         drawRect(
             Brush.linearGradient(
                 0f to Color.Black.copy(alpha = 0.16f),

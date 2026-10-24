@@ -59,11 +59,6 @@ internal fun turnShadow(mode: PageMode): Float = when (mode) {
     PageMode.NONE, PageMode.SCROLL -> 0f
 }
 
-/**
- * 读过的那摞占全书厚度的多少：[fraction] 是停稳那页读到全书哪里，翻页时再按 [turn] 加减一页。
- * [pageShare] 是一页占全书的几分之几。
- */
-internal fun readShare(fraction: Float, turn: Float, pageShare: Float): Float = (fraction + turn * pageShare).coerceIn(0f, 1f)
 
 /**
  * 书页夹在两摞纸中间时，书页在阅读区里占哪一段：两摞合起来厚 [total]，左边那摞宽 [left] 像素。
@@ -111,7 +106,9 @@ internal fun BookEdges(
         if (Effects.noMotion || abs(fraction - shown.value) <= pageShare * 3f) shown.snapTo(fraction)
         else shown.animateTo(fraction, Motion.standard(Motion.MEDIUM))
     }
-    fun read() = readShare(shown.value, turn.progress, pageShare)
+    // 翻页途中两摞不动：一页的厚度不到一像素，要是跟着翻页进度挪，取整后中途会跳一像素，书页跟着一跳，书口一闪。
+    // 停稳以后 [fraction] 更新，两摞再接上。
+    fun read() = shown.value
     // 左边那摞的宽度（像素，取整，书页和两摞严丝合缝）。
     fun leftPx(total: Int): Int = (total * if (rightToLeft) 1f - read() else read()).roundToInt()
 

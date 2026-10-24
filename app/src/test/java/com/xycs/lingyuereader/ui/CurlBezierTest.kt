@@ -86,6 +86,17 @@ class CurlBezierTest {
         // 手指那里是翻过来的背面：纸色，不是红也不是蓝。
         val inBack = p.a + ((p.d + p.i) / 2f - p.a) * 0.2f
         assertTrue(Integer.toHexString(px(inBack.x, inBack.y)), isPaper(px(inBack.x, inBack.y)))
+        // 背面不透：这一页只画了左上角一小块（其余透明）时，翻过来的背面仍是纸色，透不出底下的下一页（蓝）。
+        val sparse = ImageBitmap(w.toInt(), h.toInt())
+        CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, Canvas(sparse), Size(w, h)) {
+            drawRect(Color.Blue)
+            drawPageCurl(p, Color(0xFFF5F0E6), 1f) { drawRect(Color.Green, size = Size(40f, 40f)) }
+        }
+        val sp = sparse.asAndroidBitmap()
+        for (s in listOf(0.1f, 0.2f, 0.35f)) {
+            val q = p.a + ((p.d + p.i) / 2f - p.a) * s
+            assertTrue("背面 $s ${Integer.toHexString(sp.getPixel(q.x.toInt(), q.y.toInt()))}", isPaper(sp.getPixel(q.x.toInt(), q.y.toInt())))
+        }
         // 翻完前最后那一下：整页都翻走，只剩下一页。
         val done = CurlPoints.of(w, h, 0.999f, 760f, 760f)!!
         val end = ImageBitmap(w.toInt(), h.toInt())
