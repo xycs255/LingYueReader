@@ -220,6 +220,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.ChapterReview -> ChapterReviewScreen(vm, screen.workId, screen.chapterId)
             is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
             is Screen.ChapterDraft -> ChapterDraftScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkAiLog -> WorkAiLogScreen(vm, screen.workId)
         }
     }
 }

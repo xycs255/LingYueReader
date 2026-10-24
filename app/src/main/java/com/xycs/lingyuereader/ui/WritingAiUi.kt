@@ -382,6 +382,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     val assist = assists[workId] ?: WorkAssist()
     var style by remember(assists[workId] != null) { mutableStateOf(assist.style) }
     var clearing by remember { mutableStateOf(false) }
+    var showSent by remember { mutableStateOf(false) }
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
     // 文风要求边打边存（停一下再写盘）。
     LaunchedEffect(style) {
         if (assists[workId] == null || style == assist.style) return@LaunchedEffect
@@ -412,7 +414,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     GroupedSection(
                         footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：选中文字（或把光标放在那段）润色、扩写、缩写、挑错、续写；" +
-                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。设定包里“常用”的文档会按优先级带给 AI。",
+                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
@@ -422,6 +424,26 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             val docs = packs[workId]
                             NavRow("设定包", value = docs?.let { if (it.isEmpty()) "空" else "${it.size} 份" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
                                 vm.open(Screen.WorkPack(workId))
+                            }
+                        }
+                    }
+                    GroupedSection(
+                        header = "记录",
+                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
+                            "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看。",
+                    ) {
+                        row { NavRow("AI 记录", icon = LingYueIcons.History, iconBackground = Color(0xFF8E8E93)) { vm.open(Screen.WorkAiLog(workId)) } }
+                        row {
+                            NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
+                        }
+                    }
+                    GroupedSection(
+                        header = "本章资料",
+                        footer = "请 AI 时最多带多少字的设定资料（人物卡、前情、察觉、伏笔、相关细纲）。上下文长的模型可以放宽；本机模型总是只带一小段。",
+                    ) {
+                        row {
+                            PickerRow("字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                                vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
                             }
                         }
                     }
@@ -448,11 +470,13 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "学你的改法",
-                        footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你。只存在这台手机上（随灵阅备份）。",
+                        footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
+                            "没采纳的改法记下最近 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。只存在这台手机上（随灵阅备份）。",
                     ) {
                         row { ValueRow("记住的采纳", "${assist.accepted.size} 条") }
+                        row { ValueRow("记住的没采纳", "${assist.declined.size} 条") }
                         row { ValueRow("没用上的建议", "${assist.rejected} 次") }
-                        if (assist.accepted.isNotEmpty() || assist.rejected > 0) {
+                        if (assist.accepted.isNotEmpty() || assist.rejected > 0 || assist.declined.isNotEmpty()) {
                             row { ActionRow("清除记录", destructive = true) { clearing = true } }
                         }
                     }
@@ -462,10 +486,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定集。", onDismissRequest = { clearing = false }) {
                     DialogButtons(confirm = "清除", onDismiss = { clearing = false }) {
                         clearing = false
-                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), rejected = 0) }
+                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
                     }
                 }
             }
+            if (showSent) sent?.let { SentDialog(it) { showSent = false } }
         }
     }
 }

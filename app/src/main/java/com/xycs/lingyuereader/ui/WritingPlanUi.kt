@@ -155,6 +155,7 @@ private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> =
     Triple("倒计时", "章首交代：离某件事还有多久", { it.countdown }),
     Triple("章末钩子", "一个动作、一句没说完的话、一点异样", { it.hook }),
     Triple("推进的线", "比如：明线、暗线、主角线，或某个配角的弧线", { it.threads }),
+    Triple("细纲章号", "发布章号顺延时填（比如拆成上下章）", { it.plan }),
 )
 
 private fun ChapterCard.with(field: String, value: String) = when (field) {
@@ -163,6 +164,7 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
     "视角人物" -> copy(pov = value)
     "倒计时" -> copy(countdown = value)
     "章末钩子" -> copy(hook = value)
+    "细纲章号" -> copy(plan = value)
     else -> copy(threads = value)
 }
 

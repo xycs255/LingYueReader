@@ -44,6 +44,8 @@ object AiWire {
                 base.endsWith("/v1") -> "$base/messages"
                 else -> "$base/v1/messages"
             }
+            // 本机模型不走网络（[AiClient.stream] 直接交给 [DeviceLlm]）。
+            AiProtocol.DEVICE -> ""
         }
     }
 
@@ -57,6 +59,7 @@ object AiWire {
                 put("anthropic-version", ANTHROPIC_VERSION)
                 if (refusalFallback(c)) put("anthropic-beta", "server-side-fallback-2026-07-01")
             }
+            AiProtocol.DEVICE -> {}
         }
     }
 
@@ -85,6 +88,7 @@ object AiWire {
                 if (supportsEffort(c.model)) o.put("output_config", JSONObject().put("effort", "low"))
                 if (refusalFallback(c)) o.put("fallbacks", "default")
             }
+            AiProtocol.DEVICE -> {}
         }
         return o.put("messages", list).toString()
     }
@@ -117,6 +121,7 @@ object AiWire {
                 "message_stop" -> Delta(done = true)
                 else -> Delta()
             }
+            AiProtocol.DEVICE -> Delta()
         }
     }
 
@@ -126,6 +131,7 @@ object AiWire {
         return when (protocol) {
             AiProtocol.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.optStringOrEmpty("finish_reason") == "length"
             AiProtocol.ANTHROPIC -> o.optString("stop_reason") == "max_tokens"
+            AiProtocol.DEVICE -> false
         }
     }
 
@@ -139,6 +145,7 @@ object AiWire {
                 val content = o.optJSONArray("content") ?: JSONArray()
                 (0 until content.length()).mapNotNull { i -> content.optJSONObject(i)?.takeIf { it.optString("type") == "text" }?.optString("text") }.joinToString("")
             }
+            AiProtocol.DEVICE -> ""
         }
     }
 
@@ -170,6 +177,9 @@ object AiWire {
  * [open] 可以换掉，测试时连本机的假服务。
  */
 class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }) {
+    /** 本机模型（选了“本机模型（离线）”时用）；手机不支持时为空。 */
+    var device: DeviceLlm? = null
+
     /**
      * 不自动跟随重定向：系统跟随到别的主机时只去掉 Authorization，x-api-key 之类的密钥头照样带过去，
      * 局域网的 http 地址还可能被引到公网上明文发出。遇到重定向就报错，让读者改填新地址。
@@ -205,7 +215,10 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
      * 回答到了长度上限被截断时：[whole] 为真（要完整 JSON 的整理、翻译）就报错，否则末尾加一句说明。
      */
     suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
-        withContext(Dispatchers.IO) {
+        if (config.onDevice) {
+            val llm = device ?: throw AiException("这台手机用不了本机模型（要 64 位的手机）")
+            llm.generate(config.model, system, messages, onText).also { if (it.isBlank()) throw AiException("本机模型没有回答") }
+        } else withContext(Dispatchers.IO) {
             // 明文 http 只给局域网里的模型（家里电脑上的 Ollama 等）；公网上的服务商一律 https，密钥不明文传输。
             val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
                 ?: throw AiException("接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
@@ -284,7 +297,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
      * Anthropic 接口没有向量模型。
      */
     suspend fun embed(config: AiConfig, model: String, inputs: List<String>): List<FloatArray> = withContext(Dispatchers.IO) {
-        if (config.protocol != AiProtocol.OPENAI) throw AiException("Anthropic 接口没有向量模型")
+        if (config.protocol != AiProtocol.OPENAI) throw AiException(if (config.onDevice) "本机模型没有向量模型" else "Anthropic 接口没有向量模型")
         require(inputs.size <= EMBED_BATCH)
         val endpoint = AiWire.endpoint(config).removeSuffix("/chat/completions") + "/embeddings"
         val url = runCatching { URL(endpoint) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }

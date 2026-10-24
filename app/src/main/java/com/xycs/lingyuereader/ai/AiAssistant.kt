@@ -70,7 +70,7 @@ class AiBook(val id: String, val title: String, val author: String?, val content
 class AiAssistant(
     private val scope: CoroutineScope,
     private val store: AiStore?,
-    private val client: AiClient = AiClient(),
+    val client: AiClient = AiClient(),
     /** 某本书目录里的文件：前情提要、对话记录、人物表等缓存都放在书的目录里，删书时一起删。 */
     private val bookFile: (bookId: String, name: String) -> File?,
 ) {
