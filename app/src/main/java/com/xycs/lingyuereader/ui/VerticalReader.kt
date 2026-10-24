@@ -268,9 +268,15 @@ internal fun VerticalReader(
             }
         }
 
-        val paint = remember(typeface, fontPx, styles.palette.text) {
+        val bold = styles.settings.boldText
+        val paint = remember(typeface, fontPx, styles.palette.text, bold) {
             Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.typeface = typeface
+                // 粗体文本：取半粗（Android 9 起按字重挑），更早的系统直接用粗体。
+                this.typeface = when {
+                    !bold -> typeface
+                    android.os.Build.VERSION.SDK_INT >= 28 -> android.graphics.Typeface.create(typeface, 600, false)
+                    else -> android.graphics.Typeface.create(typeface, android.graphics.Typeface.BOLD)
+                }
                 textSize = fontPx
                 textAlign = Paint.Align.CENTER
                 color = styles.palette.text.toArgb()

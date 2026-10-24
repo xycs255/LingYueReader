@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.em
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
+import com.xycs.lingyuereader.data.layoutKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -43,6 +44,17 @@ class ReadingLookTest {
         val styles = ReaderStyles(ReaderSettings(margin = 40f, letterSpacing = 0.1f), ReaderTheme.PAPER.palette())
         assertEquals(40.dp, styles.horizontalPadding)
         assertEquals(0.1.em, styles.para.letterSpacing)
+    }
+
+    @Test
+    fun boldTextThickensBodyTextAndReflows() {
+        val plain = ReaderStyles(ReaderSettings(), ReaderTheme.PAPER.palette())
+        val bold = ReaderStyles(ReaderSettings(boldText = true), ReaderTheme.PAPER.palette())
+        assertEquals(null, plain.para.fontWeight)
+        assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, bold.para.fontWeight)
+        assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, bold.quote.fontWeight)
+        // 字变粗、字宽可能变，要重新排版分页。
+        assertTrue(ReaderSettings().layoutKey != ReaderSettings(boldText = true).layoutKey)
     }
 }
 

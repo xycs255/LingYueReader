@@ -113,6 +113,8 @@ data class ReaderSettings(
     val orientation: ReadingOrientation = ReadingOrientation.SYSTEM,
     /** 翻页时在屏幕左右边缘画出读过 / 没读的“书页厚度”，像拿着纸书一样知道读到哪了。 */
     val pageEdges: Boolean = true,
+    /** 粗体文本（照 Apple Books）：正文加粗到半粗，细笔画的字体、低亮度下更好认。 */
+    val boldText: Boolean = false,
 )
 
 /**
@@ -122,7 +124,7 @@ data class ReaderSettings(
 val ReaderSettings.layoutKey: List<Any>
     get() = listOf(
         fontSize, lineHeight, paragraphSpacing, serif, pageMode, fullscreen, indent, justify,
-        chineseConvert, font, pinyin, twoPage, margin, letterSpacing,
+        chineseConvert, font, pinyin, twoPage, margin, letterSpacing, boldText,
     )
 
 /** 界面的深浅色。 */
@@ -211,7 +213,7 @@ class Prefs(context: Context) {
         val BOOLEAN_KEYS = setOf(
             "serif", "keepScreenOn", "tapToTurn", "volumeKeys", "fullscreen", "autoNight",
             "ambientLight", "eveningWarmth", "breakReminder", "indent", "justify", "eInk",
-            "goalReminder", "pinyin", "twoPage", "pageEdges", "ui.monet", "ui.blur",
+            "goalReminder", "pinyin", "twoPage", "pageEdges", "boldText", "ui.monet", "ui.blur",
             "ui.liquidGlass", "ui.floatingBar", "shelf.list",
         )
         val INT_KEYS = setOf("dailyGoal", "customBackground", "customText", "ui.accent")
@@ -256,6 +258,7 @@ class Prefs(context: Context) {
             customText = sp.getInt("customText", d.customText),
             tapZones = TapZones.decode(sp.getString("tapZones", null)),
             pageEdges = sp.getBoolean("pageEdges", d.pageEdges),
+            boldText = sp.getBoolean("boldText", d.boldText),
             orientation = runCatching { ReadingOrientation.valueOf(sp.getString("orientation", null)!!) }.getOrDefault(d.orientation),
             chineseConvert = runCatching { ChineseConvert.valueOf(sp.getString("chineseConvert", null)!!) }.getOrDefault(d.chineseConvert),
         )
@@ -296,6 +299,7 @@ class Prefs(context: Context) {
             putString("tapZones", TapZones.encode(s.tapZones))
             putString("orientation", s.orientation.name)
             putBoolean("pageEdges", s.pageEdges)
+            putBoolean("boldText", s.boldText)
             putFloat("ttsRate", s.ttsRate)
         }
     }

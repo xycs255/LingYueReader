@@ -119,6 +119,9 @@ internal class ReaderStyles(
     val fontFamily: FontFamily = customFont ?: if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
     private val size = settings.fontSize
 
+    /** 正文字重：打开“粗体文本”时半粗（系统字体取粗体，导入的单一字重字体由系统加粗）。 */
+    private val bodyWeight: FontWeight? = if (settings.boldText) FontWeight.SemiBold else null
+
     val gap: Dp = (size * settings.paragraphSpacing).dp
     val horizontalPadding: Dp = settings.margin.dp
 
@@ -131,6 +134,7 @@ internal class ReaderStyles(
     val para = TextStyle(
         color = palette.text,
         fontFamily = fontFamily,
+        fontWeight = bodyWeight,
         fontSize = size.sp,
         lineHeight = bodyLineHeight,
         lineHeightStyle = bodyLineStyle,
@@ -162,6 +166,7 @@ internal class ReaderStyles(
     val quote = TextStyle(
         color = palette.secondary,
         fontFamily = fontFamily,
+        fontWeight = bodyWeight,
         fontSize = (size * 0.92f).sp,
         lineHeight = bodyLineHeight,
         lineHeightStyle = bodyLineStyle,

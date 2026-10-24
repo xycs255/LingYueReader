@@ -321,6 +321,9 @@ private fun FontPage(
             modifier = Modifier.padding(horizontal = 32.dp).clickable { deleting = null }.padding(vertical = 8.dp),
         )
     }
+    GroupedSection(footer = "笔画细的字体、调暗屏幕或环境光弱时，正文加粗一些更好认。") {
+        row { ToggleRow("粗体文本", settings.boldText) { v -> update { it.copy(boldText = v) } } }
+    }
 }
 
 // ---------- 排版 ----------
