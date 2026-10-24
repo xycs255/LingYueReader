@@ -454,7 +454,8 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                                 )
                             }
                         }
-                        items(items, key = { (it as? RemoteItem.Folder)?.url ?: ((it as RemoteItem.Book).files.first().url + it.title) }) { item ->
+                        // 书源返回的条目可能重复（同一个链接出现两次、翻页时目录有变动）：重复的 key 会让列表崩溃，只留第一条。
+                        items(items.distinctBy { it.key }, key = { it.key }) { item ->
                             when (item) {
                                 is RemoteItem.Folder -> FolderRow(item, dav) {
                                     vm.open(Screen.CatalogBrowse(catalog.id, item.url, item.title))

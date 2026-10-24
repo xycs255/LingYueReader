@@ -777,4 +777,36 @@ class LibraryTest {
         library.saveMarks(a.id, Marks())
         assertEquals("{\"bookmarks\": [", library.bookFile(a.id, "marks.json.damaged").readText())
     }
+
+    @Test
+    fun comicsWithGbkFileNamesImportAndShowTheirPages() {
+        // Windows 资源管理器打的中文包：文件名是 GBK、没标 UTF-8。
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out, java.nio.charset.Charset.forName("GBK")).use { zip ->
+            listOf("第一话/001.png", "第一话/002.png", "第二话/001.png").forEach { name ->
+                zip.putNextEntry(ZipEntry(name)); zip.write(PNG); zip.closeEntry()
+            }
+        }
+        val entry = import("中文漫画.cbz", out.toByteArray())
+        val content = library.content(entry)
+        assertEquals(listOf("第一话", "第二话"), content.chapters.map { it.title })
+        // 页面按同一种编码从包里读得出来。
+        val first = (content.chapters[0].blocks[0] as Block.Image).src
+        val images = com.xycs.lingyuereader.ui.BookImages { name -> library.bookFile(entry.id, name) }
+        assertTrue(images.aspect(first) != null)
+    }
+
+    @Test
+    fun backupsDoNotCarryDownloadLinksThatMayHoldKeys() {
+        val a = import("书源下的.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val index = File(context.filesDir, "books/index.json")
+        index.writeText(index.readText().replace(Regex(""""uri":"[^"]*""""), """"uri":"https://kavita.example.com/api/opds/SECRET-KEY/series/1/download"""") )
+        val out = ByteArrayOutputStream()
+        library.backup(out, org.json.JSONObject())
+        val packed = java.util.zip.ZipInputStream(out.toByteArray().inputStream()).use { z ->
+            generateSequence { z.nextEntry }.first { it.name == "books/index.json" }.let { z.readBytes().toString(Charsets.UTF_8) }
+        }
+        assertFalse(packed.contains("SECRET-KEY"))
+        assertTrue(packed.contains(a.id))
+    }
 }

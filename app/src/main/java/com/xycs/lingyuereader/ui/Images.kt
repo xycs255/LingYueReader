@@ -54,9 +54,12 @@ class BookImages(private val fileOf: (String) -> File) {
     private val zips = HashMap<String, ZipFile>()
 
     @Synchronized
-    private fun zip(name: String): ZipFile? = zips[name] ?: runCatching { ZipFile(fileOf(name)) }.getOrNull()?.also { zips[name] = it }
+    private fun zip(name: String): ZipFile? = zips[name] ?: runCatching { com.xycs.lingyuereader.data.PageBooks.openZip(fileOf(name)) }.getOrNull()?.also { zips[name] = it }
 
-    /** 高宽比；读不出时为空。 */
+    /** 已经量过的高宽比（不读文件）；没量过时为空。 */
+    fun knownAspect(src: String): Float? = aspects[src] ?: PageBooks.pdfRef(src)?.aspect
+
+    /** 高宽比；读不出时为空。要读文件，别在界面线程上调。 */
     fun aspect(src: String): Float? = aspects[src] ?: run {
         PageBooks.pdfRef(src)?.let { return it.aspect }
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -140,7 +143,11 @@ internal fun BookImage(src: String, placeholder: androidx.compose.ui.graphics.Co
     val images = LocalBookImages.current ?: return
     val maxHeight = LocalImageMaxHeight.current
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        val aspect = remember(src) { images.aspect(src) } ?: 0.75f
+        // 高宽比要打开压缩包读图片头：量过的直接用，没量过的到后台去量（量好前按 3:4 占位）。
+        val measured by produceState(images.knownAspect(src), src) {
+            if (value == null) value = withContext(Dispatchers.IO) { images.aspect(src) }
+        }
+        val aspect = measured ?: 0.75f
         val height = min(maxWidth * aspect, maxHeight)
         val widthPx = with(LocalDensity.current) { maxWidth.roundToPx() }
         val bitmap by produceState<ImageBitmap?>(null, src, widthPx) {

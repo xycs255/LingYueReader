@@ -62,11 +62,13 @@ import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
 import kotlin.math.floor
 
@@ -155,7 +157,17 @@ internal fun PagedReader(
         }
 
         val chapter = content.chapters[chapterIndex]
-        val pages = remember(chapter, paginator, widthPx, heightPx) { pagesOf(chapterIndex)!! }
+        // 分页要逐段量文字、读插图大小，长章节、图多的漫画要好一会儿：放到后台线程分，不卡界面。
+        // 分好之前只露出纸（前后章多半已经提前分好，翻过来时直接就有）。
+        var ready by remember(chapter, paginator, widthPx, heightPx) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex)) }
+        LaunchedEffect(chapter, paginator, widthPx, heightPx) {
+            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) }
+        }
+        val pages = ready ?: run {
+            // 还在分页：轻点照样能叫出菜单、翻页。
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) })
+            return@BoxWithConstraints
+        }
         // 相邻两章：分过的直接拿；没分过的等这一章先画出来、书页停着时再分（见下面），打开书、换章那一下不用一口气分三章。
         val hasPrev = chapterIndex > 0
         val hasNext = chapterIndex < content.chapters.lastIndex
@@ -192,10 +204,10 @@ internal fun PagedReader(
             // 先让这一章画出来（打开书的放大动画就在这几帧），再趁书页停着时分；往后翻的多，先分下一章。
             repeat(2) { withFrameNanos { } }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (next == null) next = pagesOf(chapterIndex + 1)
+            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) }
             withFrameNanos { }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (prev == null) prev = pagesOf(chapterIndex - 1)
+            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) }
         }
 
         // 墨水屏上、选了“无动画”时翻页直接换过去，免得一页页地闪。
@@ -427,7 +439,9 @@ internal fun PagedReader(
                             Box(Modifier.weight(1f)) {
                                 PageContent(
                                     content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
-                                    selector.takeIf { pageChapter == chapterIndex },
+                                    // 只有停在屏幕上的那一页参与选字：覆盖翻页时下一页就垫在当前页下面、位置重合，
+                                    // 也算进来的话手指会选到看不见的字。
+                                    selector.takeIf { pageChapter == chapterIndex && p == pager.settledPage },
                                     speaking.takeIf { pageChapter == chapterIndex },
                                     selected.takeIf { pageChapter == chapterIndex },
                                     onFootnote,

@@ -20,6 +20,13 @@ data class RemoteFile(val url: String, val name: String, val label: String)
 sealed interface RemoteItem {
     val title: String
 
+    /** 在列表里认出同一条目用：文件夹按地址，书按第一个文件的地址加书名。 */
+    val key: String
+        get() = when (this) {
+            is Folder -> url
+            is Book -> files.firstOrNull()?.url.orEmpty() + "|" + title
+        }
+
     /** 下一层：OPDS 的分类，或 WebDAV 的子文件夹。 */
     data class Folder(override val title: String, val url: String, val subtitle: String? = null) : RemoteItem
 

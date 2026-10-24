@@ -100,7 +100,8 @@ class AiSpeaker(
         val bytes = fetch(text, voice)
         withContext(Dispatchers.IO) {
             cacheDir.mkdirs()
-            val tmp = File(cacheDir, file.name + ".tmp")
+            // 同一句在预取范围里出现两次时会同时合成：各写各的临时文件，改名时后到的为准，不会写坏。
+            val tmp = File(cacheDir, file.name + "." + java.util.UUID.randomUUID() + ".tmp")
             tmp.writeBytes(bytes)
             tmp.renameTo(file)
             trim()

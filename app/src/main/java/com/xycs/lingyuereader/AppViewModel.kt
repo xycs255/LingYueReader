@@ -488,7 +488,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             sp.voices.map { VoiceOption(it.first, it.second) },
             sp.voice,
             fingerprint = { v -> sp.fingerprint(v) },
-            fetch = { v, text -> assistant.speech(text, v) },
+            // 按开始听书时的设置合成，和缓存键用的是同一份：中途改了设置，换引擎或重新开始听书后才生效。
+            fetch = { v, text -> assistant.speech(text, v, sp) },
         )
     }
 
@@ -741,7 +742,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _busy.value = true
             val result = withContext(Dispatchers.IO) { runCatching { library.refresh(entry) } }
             loadShelf()
-            if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
+            if (result.getOrNull()?.changed?.let { it > 0 } == true) bookContentChanged(entry.id)
             _busy.value = false
             _messages.value = result.fold(
                 onSuccess = {
@@ -773,7 +774,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _busy.value = true
             val result = withContext(Dispatchers.IO) { runCatching { library.saveRules(entry, rules) } }
             loadShelf()
-            if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
+            if (result.isSuccess) bookContentChanged(entry.id)
             _busy.value = false
             _messages.value = result.fold({ "已按新规则重新整理：${it.chapters.size} 章" }, { "保存失败：${it.message}" })
             if (result.isSuccess) back()
@@ -794,8 +795,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (loadingBookId == entry.id) cancelBookLoad()
             val removed = withContext(Dispatchers.IO) { runCatching { library.remove(entry.id) } }
             removed.onFailure { _messages.value = "移除失败：${it.message ?: "写入出错"}" }
-            if (removed.isSuccess && _openBook.value?.entry?.id == entry.id) _openBook.value = null
+            if (removed.isSuccess) {
+                if (ReadAloud.state.value?.bookId == entry.id) ReadAloud.stop()
+                if (_openBook.value?.entry?.id == entry.id) _openBook.value = null
+                // 这本书的阅读页、详情、搜索、规则页都从返回栈里拿掉，不再返回到已删的书（一直转圈）。
+                _stack.update { stack ->
+                    stack.filterNot { s ->
+                        when (s) {
+                            is Screen.Reader -> s.bookId == entry.id
+                            is Screen.Detail -> s.bookId == entry.id
+                            is Screen.Search -> s.bookId == entry.id
+                            is Screen.BookRules -> s.bookId == entry.id
+                            else -> false
+                        }
+                    }.ifEmpty { listOf(Screen.Shelf) }
+                }
+            }
             loadShelf()
+        }
+    }
+
+    /**
+     * 这本书的正文变了（刷新、改分章规则、从备份恢复）：正在听这本书就停下（按旧章节读、存进度会错位），
+     * 按章号缓存的速读、翻译、伴读、讲书状态清掉重读，正打开着就重新加载（不然阅读页一直转圈）。
+     */
+    private fun bookContentChanged(id: String) {
+        if (ReadAloud.state.value?.bookId == id) ReadAloud.stop()
+        if (_summaries.value.bookId == id) { summaryJob?.cancel(); _summaries.value = SummaryState() }
+        if (_translate.value.bookId == id) { translateJob?.cancel(); _translate.value = TranslateState() }
+        if (_companion.value.bookId == id) _companion.value = CompanionState()
+        if (_talk.value.bookId == id) { stopTalk(); _talk.value = TalkState() }
+        if (_openBook.value?.entry?.id == id || loadingBookId == id) {
+            _openBook.value = null
+            cancelBookLoad()
+            ensureLoaded(id)
         }
     }
 
@@ -807,6 +840,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 阅读页进来时调用；已加载的同一本书不重复解析。 */
+    /** 最近打开的书（重新加载同一本书时 _openBook 会暂时为空，靠它分辨是不是换了书）。 */
+    private var lastBookId: String? = null
+
     fun ensureLoaded(bookId: String) {
         if (_openBook.value?.entry?.id == bookId) {
             // 刚回到这本已加载的书时，先取消仍在后台加载的另一本书。
@@ -817,6 +853,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         cancelBookLoad()
         val generation = bookLoadGeneration
         val entry = _shelf.value.firstOrNull { it.id == bookId } ?: return
+        // 换了一本书：上一本还在跑的整理笔记、速读、翻译停下（已完成的部分已存盘），免得结果写进这本书的状态。
+        if (lastBookId != null && lastBookId != bookId) {
+            notesJob?.cancel()
+            summaryJob?.cancel()
+            translateJob?.cancel()
+        }
+        lastBookId = bookId
         _openBook.value = null
         loadingBookId = bookId
         bookLoadJob = viewModelScope.launch {
@@ -1004,7 +1047,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun remoteMore(catalog: Catalog, url: String, page: RemotePage): RemotePage {
         val next = page.next ?: return page
         val more = remote.page(catalog, next)
-        return page.copy(items = page.items + more.items, next = more.next).also { synchronized(remotePages) { remotePages["${catalog.id}|$url"] = it } }
+        val seen = page.items.mapTo(HashSet()) { it.key }
+        return page.copy(items = page.items + more.items.filter { seen.add(it.key) }, next = more.next).also { synchronized(remotePages) { remotePages["${catalog.id}|$url"] = it } }
     }
 
     suspend fun remoteSearch(page: RemotePage, query: String): RemotePage = remote.search(page, query)
@@ -1118,28 +1162,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun runOfflineTask(model: String?, work: suspend () -> OfflineModel) {
         if (offlineJob?.isActive == true) return
+        // 刚取消的任务可能还没停下（正在写文件）：新任务先等它停，免得两个任务写同一个文件。
+        val previous = offlineJob
         _offlineVoice.update { it.copy(task = OfflineTask(model, OfflinePhase.DOWNLOAD), error = null) }
-        offlineJob = viewModelScope.launch {
+        lateinit var job: Job
+        // 只有还是当前任务时才改界面：旧任务停下时不能把新任务的进度条清掉。
+        fun mine(change: (OfflineVoiceState) -> OfflineVoiceState) {
+            if (offlineJob === job) _offlineVoice.update(change)
+        }
+        job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            previous?.join()
             try {
                 val m = work()
                 refreshOfflineModels()
                 // 刚装好的模型直接选上、开启。
                 setOfflineEnabled(true, m.id)
-                _offlineVoice.update { it.copy(task = null) }
+                mine { it.copy(task = null) }
                 _messages.value = "「${m.label}」已装好"
             } catch (e: CancellationException) {
-                _offlineVoice.update { it.copy(task = null) }
+                mine { it.copy(task = null) }
                 throw e
             } catch (e: Exception) {
-                _offlineVoice.update { it.copy(task = null, error = (e as? OfflineVoiceException)?.message ?: "出错了：${e.message}") }
+                mine { it.copy(task = null, error = (e as? OfflineVoiceException)?.message ?: "出错了：${e.message}") }
             }
         }
+        offlineJob = job
+        job.start()
     }
 
     /** 取消下载（下了的部分留着，下次接着下）或导入。 */
     fun cancelOfflineTask() {
         offlineJob?.cancel()
-        offlineJob = null
+        _offlineVoice.update { it.copy(task = null) }
     }
 
     fun deleteOfflineModel(m: OfflineModel) {
@@ -1148,6 +1202,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             OfflineEngine.release()
             withContext(Dispatchers.IO) { offlineFiles.delete(m) }
             refreshOfflineModels()
+            // 删的是正在用的模型：换成还装着的另一个；一个都不剩就关掉离线语音。
+            val c = _offlineVoice.value.config
+            if (c.model == m.id) {
+                val other = OfflineModels.ALL.firstOrNull { it.id in _offlineVoice.value.installed }
+                saveOfflineConfig(if (other != null) c.copy(model = other.id) else c.copy(enabled = false))
+            }
         }
     }
 
@@ -1280,17 +1340,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _readingNotes.value = NotesState(book.entry.id, "", loading = true, hasMarks = true)
         notesJob = viewModelScope.launch {
             try {
-                val text = assistant.complete(aiBook, AiStudy.notes(book.entry.title, marks), AnswerLength.LONG) { piece ->
+                val text = assistant.complete(aiBook, AiStudy.notes(book.entry.title, marks), AnswerLength.LONG, whole = false) { piece ->
                     _readingNotes.update { if (it.bookId == book.entry.id) it.copy(text = it.text + piece) else it }
                 }
                 val file = library.bookFile(book.entry.id, AiStudy.NOTES_FILE)
                 withContext(Dispatchers.IO) { runCatching { file.writeText(text) } }
-                _readingNotes.update { it.copy(text = text, loading = false, at = System.currentTimeMillis()) }
+                _readingNotes.update { if (it.bookId == book.entry.id) it.copy(text = text, loading = false, at = System.currentTimeMillis()) else it }
             } catch (e: CancellationException) {
-                _readingNotes.update { it.copy(loading = false) }
+                _readingNotes.update { if (it.bookId == book.entry.id) it.copy(loading = false) else it }
                 throw e
             } catch (e: Exception) {
-                _readingNotes.update { it.copy(loading = false, error = (e as? AiException)?.message ?: "整理失败：${e.message}") }
+                _readingNotes.update { if (it.bookId == book.entry.id) it.copy(loading = false, error = (e as? AiException)?.message ?: "整理失败：${e.message}") else it }
             }
         }
     }
@@ -1339,6 +1399,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val book = _openBook.value ?: return
         if (summaryJob?.isActive == true || indices.isEmpty()) return
         val aiBook = aiBook() ?: return
+        // 结果只写回这本书的状态：生成期间换了一本书，不能把这本的摘要显示到那本上。
+        fun mine(change: (SummaryState) -> SummaryState) = _summaries.update { if (it.bookId == book.entry.id) change(it) else it }
         summaryJob = viewModelScope.launch {
             val file = library.bookFile(book.entry.id, AiSummaries.FILE)
             val packs = withContext(Dispatchers.IO) { AiSummaries.packs(book.content, indices) }
@@ -1353,14 +1415,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         AiSummaries.write(file, stored)
                     }
                     done += pack.chapters.size
-                    _summaries.update { it.copy(summaries = it.summaries + got, progress = "$done/${indices.size}") }
+                    mine { it.copy(summaries = it.summaries + got, progress = "$done/${indices.size}") }
                 }
-                _summaries.update { it.copy(running = false, progress = null) }
+                mine { it.copy(running = false, progress = null) }
             } catch (e: CancellationException) {
-                _summaries.update { it.copy(running = false, progress = null) }
+                mine { it.copy(running = false, progress = null) }
                 throw e
             } catch (e: Exception) {
-                _summaries.update { it.copy(running = false, progress = null, error = (e as? AiException)?.message ?: "生成失败：${e.message}") }
+                mine { it.copy(running = false, progress = null, error = (e as? AiException)?.message ?: "生成失败：${e.message}") }
             }
         }
     }
@@ -1428,10 +1490,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return TalkPlayer.Ai(voices, v.fingerprint(""), fetch = { text, voice -> v.fetch(voice ?: v.voice, text) }, cacheName = v.cacheName)
         }
         val c = aiConfig.value
-        if (!(c.enabled && c.speech.complete)) return null
+        // 听书面板里选了“系统语音”（关了 AI 朗读）时，讲书也不用付费的 AI 语音。
+        if (!c.speechReady) return null
         val sp = c.speech
         val voices = listOf(sp.voice, partnerVoice(style, sp.voice, sp.voices))
-        return TalkPlayer.Ai(voices, sp.fingerprint(""), fetch = { text, voice -> assistant.speech(text, voice) })
+        return TalkPlayer.Ai(voices, sp.fingerprint(""), fetch = { text, voice -> assistant.speech(text, voice, sp) })
     }
 
     /** 对谈时搭档的声音：和主讲异性的第一个，没有就换一个，只有一个声音就同一个。 */
@@ -1540,6 +1603,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (translateJob?.isActive == true) return
         val aiBook = aiBook() ?: return
         val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
+        fun mine(change: (TranslateState) -> TranslateState) = _translate.update { if (it.bookId == book.entry.id) change(it) else it }
         translateJob = viewModelScope.launch {
             val file = library.bookFile(book.entry.id, AiTranslate.FILE)
             val batches = withContext(Dispatchers.IO) { AiTranslate.batches(converted(book.sourceContent, _settings.value.chineseConvert).chapters[chapterIndex].blocks) }
@@ -1547,22 +1611,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val result = HashMap<Int, String>()
             try {
                 batches.forEachIndexed { i, batch ->
-                    _translate.update { it.copy(progress = "${i}/${batches.size}") }
+                    mine { it.copy(progress = "${i}/${batches.size}") }
                     val answer = assistant.complete(aiBook, AiTranslate.prompt(batch, target), AnswerLength.LONG)
                     result.putAll(AiTranslate.parse(answer, batch))
                 }
                 val current = withContext(Dispatchers.IO) { AiTranslate.read(file) }
                 val next = current.copy(show = true, target = target, chapters = current.chapters + (chapterIndex to (chapter.title to result)))
                 withContext(Dispatchers.IO) { AiTranslate.write(file, next) }
-                _translate.update { it.copy(translations = next, running = null, progress = null) }
+                mine { it.copy(translations = next, running = null, progress = null) }
                 val missing = batches.sumOf { it.size } - result.size
                 _messages.value = if (missing > 0) "已翻译本章，有 $missing 段没译出来" else "已翻译本章"
-                reloadOpenBook()
+                if (_openBook.value?.entry?.id == book.entry.id) reloadOpenBook()
             } catch (e: CancellationException) {
-                _translate.update { it.copy(running = null, progress = null) }
+                mine { it.copy(running = null, progress = null) }
                 throw e
             } catch (e: Exception) {
-                _translate.update { it.copy(running = null, progress = null, error = (e as? AiException)?.message ?: "翻译失败：${e.message}") }
+                mine { it.copy(running = null, progress = null, error = (e as? AiException)?.message ?: "翻译失败：${e.message}") }
             }
         }
     }
@@ -1609,7 +1673,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _vocabAi.update { it + (word to AiTurn(word)) }
         viewModelScope.launch {
             try {
-                val text = assistant.complete(null, AiStudy.example(w.word, DictGloss.clean(w.gloss), w.context), AnswerLength.SHORT) { piece ->
+                val text = assistant.complete(null, AiStudy.example(w.word, DictGloss.clean(w.gloss), w.context), AnswerLength.SHORT, whole = false) { piece ->
                     _vocabAi.update { m -> m[word]?.let { t -> m + (word to t.copy(answer = t.answer + piece)) } ?: m }
                 }
                 _vocab.value = withContext(Dispatchers.IO) { vocabulary.annotate(word, example = text.trim()); vocabulary.list() }
@@ -2156,7 +2220,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _messages.value = if (restoredBooks == null) "恢复失败：$detail"
                 else "已恢复 $restoredBooks 本书，但附加数据恢复失败：$detail"
             } finally {
+                // 恢复可能换掉了正在听、正在看的书：停下听书，打开着的书在书架重新读好后重新加载。
+                ReadAloud.stop()
+                val open = _openBook.value?.entry?.id ?: loadingBookId
                 _openBook.value = null
+                cancelBookLoad()
+                _summaries.value = SummaryState()
+                _translate.value = TranslateState()
+                _companion.value = CompanionState()
                 try {
                     loadShelf()
                 } catch (cancelled: CancellationException) {
@@ -2166,6 +2237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } finally {
                     _busy.value = false
                 }
+                open?.let { id -> if (_shelf.value.any { it.id == id }) ensureLoaded(id) }
             }
         }
     }

@@ -80,19 +80,22 @@ class AiAssistant(
     fun history(bookId: String): AiHistory = AiHistory { bookFile(bookId, AiHistory.FILE) }
 
     /** 新功能（人物表、读书笔记、翻译等）共用的请求：同一套设置，系统提示带上书名。 */
-    suspend fun complete(book: AiBook?, prompt: String, length: AnswerLength? = null, onText: (String) -> Unit = {}): String {
+    /**
+     * 一次性的整理（速读、翻译、人物表、讲书稿等）。[whole] 为真时回答被长度上限截断就报错，
+     * 不把半截的 JSON、半句译文当成完整结果存下来。
+     */
+    suspend fun complete(book: AiBook?, prompt: String, length: AnswerLength? = null, whole: Boolean = true, onText: (String) -> Unit = {}): String {
         val c = _config.value
         val system = AiPrompts.system(book?.title.orEmpty(), book?.author, length ?: c.length)
-        return client.stream(c, system, listOf(AiMessage("user", prompt)), onText)
+        return client.stream(c, system, listOf(AiMessage("user", prompt)), whole, onText)
     }
 
     val currentConfig: AiConfig get() = _config.value
 
     /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
-    suspend fun speech(text: String, voice: String? = null): ByteArray {
-        val sp = _config.value.speech
-        return client.speech(sp, text, voice ?: sp.voice)
-    }
+    /** 合成一句。[sp] 给定时按它合成（听书开始时的设置，和缓存键一致），否则按当前设置。 */
+    suspend fun speech(text: String, voice: String? = null, sp: SpeechConfig = _config.value.speech): ByteArray =
+        client.speech(sp, text, voice ?: sp.voice)
 
     private val _config = MutableStateFlow(store?.load() ?: AiConfig())
     val config: StateFlow<AiConfig> = _config.asStateFlow()
@@ -262,7 +265,11 @@ class AiAssistant(
         status("正在找相关原文……")
         val keywords = runCatching {
             client.stream(config, "", listOf(AiMessage("user", AiPrompts.keywords(question, previous)))).take(200)
-        }.getOrDefault("")
+        }.getOrElse { e ->
+            // 读者关了面板：别吞掉取消，接着排序、读向量缓存都是白干。
+            if (e is CancellationException) throw e
+            ""
+        }
         val byWords = index.ranked("$question $keywords", 30)
         val byVector = if (config.embeddingModel.isNotBlank() && config.protocol == AiProtocol.OPENAI) {
             runCatching { vectorRanked(b, index, config, "$question $keywords", 30) }.getOrElse { e ->

@@ -1,6 +1,10 @@
 package com.xycs.lingyuereader.tts
 
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -68,9 +72,28 @@ class OfflineModelFiles(
         val have = part.length()
         val req = Request.Builder().url(urlOf(m)).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
         val call = http.newCall(req)
+        // 读网络会卡在 read() 里，协程取消管不到它：另起一个等取消的子协程，一取消就断开连接，read() 马上出错返回。
+        coroutineScope {
+            val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    awaitCancellation()
+                } finally {
+                    call.cancel()
+                }
+            }
+            try {
+                fetchBody(call, m, part, have, onProgress)
+            } finally {
+                watcher.cancel()
+            }
+        }
+    }
+
+    private suspend fun fetchBody(call: okhttp3.Call, m: OfflineModel, part: File, have: Long, onProgress: (OfflinePhase, Long, Long) -> Unit) {
         val response = try {
             call.execute()
         } catch (e: IOException) {
+            coroutineContext.ensureActive()
             throw OfflineVoiceException("下载失败：连不上 GitHub（${e.javaClass.simpleName}）。也可以用电脑下好后从文件导入")
         }
         response.use { r ->
@@ -87,6 +110,8 @@ class OfflineModelFiles(
                         val n = try {
                             input.read(buf)
                         } catch (e: IOException) {
+                            // 是读者取消的（连接被断开），就按取消处理，不报“下载中断”。
+                            coroutineContext.ensureActive()
                             throw OfflineVoiceException("下载中断（${e.javaClass.simpleName}），再点一次会接着下")
                         }
                         if (n < 0) break
@@ -126,6 +151,15 @@ class OfflineModelFiles(
         val tmp = File(root, m.id + TMP)
         tmp.deleteRecursively()
         tmp.mkdirs()
+        try {
+            extract(m, raw, tmp, total, onProgress)
+        } finally {
+            // 出错、被取消时不留下解了一半的文件（可能有两百 MB）。
+            if (tmp.exists()) tmp.deleteRecursively()
+        }
+    }
+
+    private suspend fun extract(m: OfflineModel, raw: InputStream, tmp: File, total: Long, onProgress: (OfflinePhase, Long, Long) -> Unit) {
         val base = tmp.canonicalPath + File.separator
         val counted = Counting(raw)
         try {

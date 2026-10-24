@@ -71,7 +71,7 @@ class AiClientTest {
             """.trimIndent(),
         )
         val pieces = mutableListOf<String>()
-        val answer = AiClient().stream(openAi(), "系统", listOf(AiMessage("user", "问")), pieces::add)
+        val answer = AiClient().stream(openAi(), "系统", listOf(AiMessage("user", "问")), onText = pieces::add)
         assertEquals("林舟来自江南。", answer)
         assertEquals(listOf("林舟", "来自江南。"), pieces)
         val (headers, body) = requests.single()

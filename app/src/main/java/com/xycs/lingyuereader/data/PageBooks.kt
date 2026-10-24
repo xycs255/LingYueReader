@@ -16,11 +16,25 @@ object PageBooks {
     /** 一章放多少页：章是进度和目录的单位，太长了进度条不好用。 */
     const val PAGES_PER_CHAPTER = 20
 
+    private val gbk: java.nio.charset.Charset = java.nio.charset.Charset.forName("GBK")
+
+    /**
+     * 打开漫画压缩包。用 Windows 资源管理器、WinRAR 打的中文包，文件名多是 GBK 编码、又没标 UTF-8，
+     * 按 UTF-8 读会报“文件名无效”：这时改按 GBK 读。读取页面时也要用同一种编码（见 [openZip] 的调用处）。
+     */
+    fun openZip(file: java.io.File): ZipFile =
+        runCatching { ZipFile(file).also { z -> z.entries().asSequence().forEach { it.name } } }.getOrElse { ZipFile(file, gbk) }
+
+    private fun zipNames(bytes: ByteArray): List<String> {
+        fun read(charset: java.nio.charset.Charset) = ZipInputStream(bytes.inputStream(), charset).use { zip ->
+            generateSequence { zip.nextEntry }.map { it.name }.toList()
+        }
+        return runCatching { read(Charsets.UTF_8) }.getOrElse { read(gbk) }
+    }
+
     fun comic(source: BookParser.SourceBytes): BookContent {
-        val names = (source.file?.let { f -> ZipFile(f).use { z -> z.entries().asSequence().map { it.name }.toList() } }
-            ?: ZipInputStream(source.bytes.inputStream()).use { zip ->
-                generateSequence { zip.nextEntry }.map { it.name }.toList()
-            })
+        val names = (source.file?.let { f -> openZip(f).use { z -> z.entries().asSequence().map { it.name }.toList() } }
+            ?: zipNames(source.bytes))
             .filter { !it.endsWith('/') && it.substringAfterLast('.', "").lowercase() in imageExtensions }
             .filterNot { it.startsWith("__MACOSX/") || it.substringAfterLast('/').startsWith('.') }
             .sortedWith(BookParser.NaturalOrder)

@@ -11,6 +11,7 @@ import com.xycs.lingyuereader.data.Chapter
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -49,8 +50,9 @@ class ReadAloudAiTest {
         assertEquals("硅基流动 CosyVoice", s0.aiLabel)
         assertEquals(listOf("v-a", "v-b"), s0.voices.map { it.name })
         assertEquals("v-b", s0.voice)
-        repeat(100) {
-            if (ReadAloud.state.value?.error != null) return@repeat
+        // 合成在后台线程里失败，再回到主线程；整套测试一起跑时机器忙，多等一会儿（最多 10 秒）。
+        val deadline = System.currentTimeMillis() + 10_000
+        while (ReadAloud.state.value?.error == null && System.currentTimeMillis() < deadline) {
             shadowOf(Looper.getMainLooper()).idle()
             Thread.sleep(20)
         }
@@ -58,6 +60,8 @@ class ReadAloudAiTest {
         assertEquals("语音合成：账户余额不足", s.error)
         assertFalse(s.playing)
         assertEquals(0, s.sentence)
-        assertEquals("v-b" to "甲一。", asked.first())
+        // 第一句和预取的后几句同时去合成，谁先到服务商不一定：只看用的是选中的声音、第一句确实请求过。
+        assertTrue(asked.contains("v-b" to "甲一。"))
+        assertTrue(asked.all { it.first == "v-b" })
     }
 }

@@ -428,4 +428,16 @@ class ParserTest {
         assertEquals(listOf("第一章 起", "第二章 承", "第三章 转"), book.chapters.map { it.title })
         assertEquals(Block.Para("新稿。"), book.chapters[1].blocks.single())
     }
+
+    @Test
+    fun big5TraditionalTextIsNotMistakenForGb18030() {
+        val text = "第一章 開端\n　　這是一個繁體中文的故事。我們在這裡讀書，他說：「明天再來。」她點了點頭，沒有說話。\n" +
+            "第二章 遠行\n　　路很長，他們走了很久，終於看見了城門。天已經黑了，城裡的燈一盞一盞亮起來。\n"
+        val book = BookParser.parse(listOf(BookParser.SourceBytes("繁體.txt", text.toByteArray(Charset.forName("Big5")))))
+        assertEquals(listOf("第一章 開端", "第二章 遠行"), book.chapters.map { it.title })
+        // 简体 GBK 的书照旧按 GBK 读。
+        val simplified = "第一章 开端\n　　这是一个简体中文的故事。我们在这里读书，他说：“明天再来。”\n"
+        val gb = BookParser.parse(listOf(BookParser.SourceBytes("简体.txt", simplified.toByteArray(Charset.forName("GBK")))))
+        assertEquals("第一章 开端", gb.chapters.single().title)
+    }
 }

@@ -2,6 +2,11 @@ package com.xycs.lingyuereader.tts
 
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
@@ -63,6 +68,15 @@ class OfflineModelFilesTest {
     fun start() {
         archive = tarBz2(melo.id, files)
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            executor = java.util.concurrent.Executors.newCachedThreadPool()
+            // 下到一半就卡住的服务器：给一点数据后一直不动。
+            createContext("/stall/") { ex ->
+                ex.sendResponseHeaders(200, archive.size.toLong())
+                ex.responseBody.write(archive, 0, 100)
+                ex.responseBody.flush()
+                stalled.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                runCatching { ex.close() }
+            }
             createContext("/") { ex ->
                 val range = ex.requestHeaders.getFirst("Range")
                 ranges += range
@@ -76,8 +90,13 @@ class OfflineModelFilesTest {
         }
     }
 
+    private val stalled = java.util.concurrent.CountDownLatch(1)
+
     @After
-    fun stop() = server.stop(0)
+    fun stop() {
+        stalled.countDown()
+        server.stop(0)
+    }
 
     private fun files(root: File) = OfflineModelFiles(root, urlOf = { "http://127.0.0.1:${server.address.port}/${it.id}.tar.bz2" })
 
@@ -156,5 +175,37 @@ class OfflineModelFilesTest {
         assertTrue(missing, "不完整" in missing && "tokens.txt" in missing)
         assertFalse(files(root).installed(melo))
         assertTrue(root.list()!!.isEmpty())
+    }
+
+    @Test
+    fun cancellingAStalledDownloadStopsRightAwayAndKeepsThePart() = runBlocking {
+        val root = tmp.newFolder("models")
+        val m = model(archive)
+        val f = OfflineModelFiles(root, urlOf = { "http://127.0.0.1:${server.address.port}/stall/x" })
+        val job = launch(Dispatchers.IO) { f.download(m) { _, _, _ -> } }
+        val part = File(root, "${m.id}.tar.bz2.part")
+        withTimeout(10_000) { while (part.length() < 100) delay(20) }
+        val at = System.nanoTime()
+        job.cancelAndJoin()
+        // 读超时 60 秒：取消时断开连接，马上就停。下了的部分留着，下次接着下。
+        assertTrue(java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - at) < 5)
+        assertEquals(100L, part.length())
+    }
+
+    @Test
+    fun cancellingDuringExtractionLeavesNoHalfInstalledFiles() = runBlocking<Unit> {
+        val root = tmp.newFolder("models")
+        // 一个解压要好一会儿的大文件（随机数据压不小），解到一半取消。
+        val random = java.util.Random(7)
+        val big = String(CharArray(3_000_000) { ('a'.code + random.nextInt(26)).toChar() })
+        val pkg = tarBz2(melo.id, files.filterKeys { !it.startsWith("..") } + ("model.onnx" to big))
+        val error = runCatching {
+            files(root).import({ pkg.inputStream() }, pkg.size.toLong()) { phase, _, _ ->
+                if (phase == OfflinePhase.EXTRACT) throw kotlinx.coroutines.CancellationException("读者取消")
+            }
+        }.exceptionOrNull()
+        assertTrue(error is kotlinx.coroutines.CancellationException)
+        assertTrue(root.list()!!.none { it.endsWith(".installing") })
+        assertFalse(files(root).installed(melo))
     }
 }

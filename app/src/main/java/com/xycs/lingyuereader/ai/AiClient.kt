@@ -2,7 +2,11 @@ package com.xycs.lingyuereader.ai
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -86,7 +90,7 @@ object AiWire {
     }
 
     /** 流里的一条事件带来的东西。 */
-    data class Delta(val text: String = "", val done: Boolean = false, val refused: Boolean = false)
+    data class Delta(val text: String = "", val done: Boolean = false, val refused: Boolean = false, val truncated: Boolean = false)
 
     /** 解析 SSE 里一行 `data:` 后面的内容。服务端在流里报错时抛 [AiException]。 */
     fun delta(protocol: AiProtocol, data: String): Delta {
@@ -100,17 +104,28 @@ object AiWire {
                 val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return Delta()
                 val text = choice.optJSONObject("delta")?.optStringOrEmpty("content") ?: ""
                 val finish = choice.optStringOrEmpty("finish_reason")
-                Delta(text, refused = finish == "content_filter")
+                Delta(text, refused = finish == "content_filter", truncated = finish == "length")
             }
             AiProtocol.ANTHROPIC -> when (o.optString("type")) {
                 "content_block_delta" -> {
                     val delta = o.optJSONObject("delta")
                     if (delta?.optString("type") == "text_delta") Delta(delta.optString("text")) else Delta()
                 }
-                "message_delta" -> Delta(refused = o.optJSONObject("delta")?.optString("stop_reason") == "refusal")
+                "message_delta" -> o.optJSONObject("delta")?.optString("stop_reason").let { reason ->
+                    Delta(refused = reason == "refusal", truncated = reason == "max_tokens")
+                }
                 "message_stop" -> Delta(done = true)
                 else -> Delta()
             }
+        }
+    }
+
+    /** 一整个 JSON 的回答是不是因为长度上限被截断了。 */
+    fun wholeTruncated(protocol: AiProtocol, body: String): Boolean {
+        val o = runCatching { JSONObject(body) }.getOrNull() ?: return false
+        return when (protocol) {
+            AiProtocol.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.optStringOrEmpty("finish_reason") == "length"
+            AiProtocol.ANTHROPIC -> o.optString("stop_reason") == "max_tokens"
         }
     }
 
@@ -154,14 +169,42 @@ object AiWire {
  * 连服务商。只在读者点了 AI 功能时调用；密钥只放在请求头里，不写日志。
  * [open] 可以换掉，测试时连本机的假服务。
  */
-class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }) {
+class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }) {
+    /**
+     * 不自动跟随重定向：系统跟随到别的主机时只去掉 Authorization，x-api-key 之类的密钥头照样带过去，
+     * 局域网的 http 地址还可能被引到公网上明文发出。遇到重定向就报错，让读者改填新地址。
+     */
+    private fun open(url: URL): HttpURLConnection = connect(url).apply { instanceFollowRedirects = false }
+
+    /** 重定向时的说明（不是重定向返回空）。 */
+    private fun redirected(conn: HttpURLConnection, code: Int): String? {
+        if (code !in 300..399) return null
+        val to = runCatching { URL(conn.url, conn.getHeaderField("Location")).host }.getOrNull()
+        return "接口地址被重定向到${to?.let { "「$it」" } ?: "别处"}，为了密钥安全不跟过去；请把接口地址改成重定向后的地址"
+    }
+
+    /**
+     * 读网络时线程卡在 read() 里，协程取消管不到它：另起一个等取消的子协程，读者一关面板就断开连接，
+     * 卡住的读马上出错返回，不再等到超时、继续计费。用完要 cancel 返回的 Job。
+     */
+    private fun CoroutineScope.disconnectOnCancel(conn: HttpURLConnection): Job = launch(start = CoroutineStart.UNDISPATCHED) {
+        try {
+            awaitCancellation()
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     companion object {
         /** 一次向量请求最多几段（通义千问的向量接口一次最多 10 段）。 */
         const val EMBED_BATCH = 10
     }
 
-    /** 发出请求，回答一段段到时调 [onText]（在 IO 线程）；返回整段回答。拒答时末尾加一句说明。 */
-    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, onText: (String) -> Unit = {}): String =
+    /**
+     * 发出请求，回答一段段到时调 [onText]（在 IO 线程）；返回整段回答。拒答时末尾加一句说明。
+     * 回答到了长度上限被截断时：[whole] 为真（要完整 JSON 的整理、翻译）就报错，否则末尾加一句说明。
+     */
+    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
         withContext(Dispatchers.IO) {
             // 明文 http 只给局域网里的模型（家里电脑上的 Ollama 等）；公网上的服务商一律 https，密钥不明文传输。
             val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
@@ -171,8 +214,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
             } catch (e: IOException) {
                 throw AiException(networkError(e, url))
             }
-            // 读者关掉面板时协程取消，断开连接，阻塞的读马上返回。
-            val handle = coroutineContext.job.invokeOnCompletion { if (it != null) conn.disconnect() }
+            val watcher = disconnectOnCancel(conn)
             try {
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 15_000
@@ -181,6 +223,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
                 AiWire.headers(config).forEach { (k, v) -> conn.setRequestProperty(k, v) }
                 conn.outputStream.use { it.write(AiWire.body(config, system, messages).toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
+                redirected(conn, code)?.let { throw AiException(it) }
                 if (code !in 200..299) {
                     val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                     throw AiException(AiWire.error(code, err))
@@ -188,9 +231,12 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
                 val type = conn.contentType.orEmpty()
                 val out = StringBuilder()
                 var refused = false
+                var truncated = false
                 conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     if (type.contains("json") && !type.contains("event-stream")) {
-                        val text = AiWire.whole(config.protocol, reader.readText())
+                        val body = reader.readText()
+                        val text = AiWire.whole(config.protocol, body)
+                        truncated = AiWire.wholeTruncated(config.protocol, body)
                         out.append(text)
                         onText(text)
                         return@use
@@ -205,8 +251,15 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
                             onText(d.text)
                         }
                         if (d.refused) refused = true
+                        if (d.truncated) truncated = true
                         if (d.done) break
                     }
+                }
+                if (truncated) {
+                    if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
+                    val note = "\n\n（回答太长，后面被截断了。）"
+                    out.append(note)
+                    onText(note)
                 }
                 if (refused) {
                     val note = if (out.isEmpty()) "模型拒绝回答这个问题。" else "\n\n（模型中途停止了回答。）"
@@ -221,7 +274,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
                 coroutineContext.ensureActive()
                 throw AiException(networkError(e, url))
             } finally {
-                handle.dispose()
+                watcher.cancel()
                 conn.disconnect()
             }
         }
@@ -237,7 +290,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
         val url = runCatching { URL(endpoint) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
             ?: throw AiException("接口地址不对")
         val conn = try { open(url) } catch (e: IOException) { throw AiException(networkError(e, url)) }
-        val handle = coroutineContext.job.invokeOnCompletion { if (it != null) conn.disconnect() }
+        val watcher = disconnectOnCancel(conn)
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 15_000
@@ -248,6 +301,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
             val body = JSONObject().put("model", model.trim()).put("input", JSONArray(inputs)).toString()
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
+            redirected(conn, code)?.let { throw AiException("向量模型：$it") }
             if (code !in 200..299) {
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                 throw AiException("向量模型：" + AiWire.error(code, err))
@@ -269,7 +323,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
         } catch (e: org.json.JSONException) {
             throw AiException("看不懂向量模型的回复")
         } finally {
-            handle.dispose()
+            watcher.cancel()
             conn.disconnect()
         }
     }
@@ -284,7 +338,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
         val url = runCatching { URL(endpoint) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
             ?: throw AiException("语音接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
         val conn = try { open(url) } catch (e: IOException) { throw AiException(networkError(e, url)) }
-        val handle = coroutineContext.job.invokeOnCompletion { if (it != null) conn.disconnect() }
+        val watcher = disconnectOnCancel(conn)
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 15_000
@@ -296,6 +350,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
             if (config.instructions.isNotBlank() && SpeechPresets.of(config.preset).instructions) body.put("instructions", config.instructions.trim())
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
+            redirected(conn, code)?.let { throw AiException("语音合成：$it") }
             if (code !in 200..299) {
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                 throw AiException("语音合成：" + AiWire.error(code, err))
@@ -313,7 +368,7 @@ class AiClient(private val open: (URL) -> HttpURLConnection = { it.openConnectio
             coroutineContext.ensureActive()
             throw AiException(networkError(e, url))
         } finally {
-            handle.dispose()
+            watcher.cancel()
             conn.disconnect()
         }
     }

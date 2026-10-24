@@ -110,6 +110,45 @@ object ReadAloud {
     /** 刚存下的听书进度（书、进度）：界面据此更新书架上的进度，不再另写一次。 */
     val saved: StateFlow<Pair<String, ReadingProgress>?> = _saved.asStateFlow()
 
+    /** 音频焦点：别的应用开始放音乐、来电时暂停；只是临时被占（导航播报、来电）的，结束后接着读。 */
+    private var focusRequest: android.media.AudioFocusRequest? = null
+    private var pausedByFocus = false
+
+    private fun requestFocus() {
+        val am = appContext?.getSystemService(android.media.AudioManager::class.java) ?: return
+        val request = focusRequest ?: android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            // 朗读是人声，被“压低音量”时也停下，不然听不清。
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener({ change -> onFocusChange(change) }, main)
+            .build()
+            .also { focusRequest = it }
+        am.requestAudioFocus(request)
+    }
+
+    private fun abandonFocus() {
+        val request = focusRequest ?: return
+        appContext?.getSystemService(android.media.AudioManager::class.java)?.abandonAudioFocusRequest(request)
+        pausedByFocus = false
+    }
+
+    private fun onFocusChange(change: Int) {
+        when (change) {
+            android.media.AudioManager.AUDIOFOCUS_LOSS -> if (_state.value?.playing == true) {
+                pause()
+                pausedByFocus = false
+            }
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> if (_state.value?.playing == true) {
+                pause()
+                pausedByFocus = true
+            }
+            android.media.AudioManager.AUDIOFOCUS_GAIN -> if (pausedByFocus) {
+                pausedByFocus = false
+                resume()
+            }
+        }
+    }
+
     /** 每次重新排队或中断朗读都换代；旧引擎即使继续回调，也不能改变新位置。 */
     private var utteranceGeneration = 0L
 
@@ -134,17 +173,27 @@ object ReadAloud {
         persist = saveProgress
         appContext = context.applicationContext
         this.content = content
-        setAi(ai)
+        setAi(ai, rate)
         val previous = _state.value
         val previousTimer = previous?.takeIf { it.bookId == bookId }?.timer ?: SleepTimer.Off
+        // 定时关闭只对同一本书接着算；换了书，旧的定时也要真的取消，不能只是界面上不显示。
+        if (previousTimer !is SleepTimer.At) main.removeCallbacks(sleepRunnable)
+        val engine = tts
         _state.value = ReadAloudState(
             bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, true, rate, previousTimer,
-            voices = if (ai != null) ai.voices else previous?.voices?.takeIf { previous.aiLabel == null }.orEmpty(),
+            voices = when {
+                ai != null -> ai.voices
+                previous != null && previous.aiLabel == null && previous.voices.isNotEmpty() -> previous.voices
+                // 从 AI 或离线语音切回来、或停过一次：系统引擎早已就绪，不会再回调初始化，这里重新列一遍声音。
+                ready && engine != null -> chineseVoices(engine)
+                else -> emptyList()
+            },
             voice = ai?.voice ?: voice,
             aiLabel = ai?.label,
             offline = ai?.offline == true,
         )
         loadChapter(chapterIndex, block, char)
+        requestFocus()
         ensureEngine {
             val current = _state.value ?: return@ensureEngine
             tts?.setSpeechRate(current.rate)
@@ -182,7 +231,7 @@ object ReadAloud {
     }
 
     /** 换用 AI 语音或系统语音；AI 语音的播放器按声音建一个。 */
-    private fun setAi(next: AiVoice?) {
+    private fun setAi(next: AiVoice?, rate: Float = _state.value?.rate ?: 1f) {
         speaker?.release()
         speaker = null
         ai = next
@@ -195,12 +244,14 @@ object ReadAloud {
                 onStart = ::onUtteranceStart,
                 onDone = ::onUtteranceDone,
                 onError = { id, message -> onUtteranceError(id, message) },
-            ).also { it.speed = _state.value?.rate ?: 1f }
+            ).also { it.speed = rate }
         }
     }
 
     fun resume() {
         val s = _state.value ?: return
+        pausedByFocus = false
+        requestFocus()
         invalidateUtterances()
         _state.value = s.copy(playing = true, error = null)
         ensureEngine {
@@ -218,6 +269,7 @@ object ReadAloud {
     fun stop() {
         persistNow(force = true)
         persist = null
+        abandonFocus()
         invalidateUtterances()
         main.removeCallbacks(sleepRunnable)
         haltEngine()

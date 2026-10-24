@@ -202,8 +202,14 @@ class Library(private val context: Context) {
     /** 读出一本书。优先用缓存（只读目录，章节按需加载）；缓存不在或过期时重新解析并写缓存。 */
     fun content(entry: BookEntry): BookContent {
         val dir = File(root, entry.id)
-        return BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources)) ?: buildCache(dir, entry.sources)
+        BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources))?.let { return it }
+        // 同一本书只许一处重建（全书架搜索和打开书可能同时触发）：两处一起写缓存、清插图目录会把对方的弄坏。
+        synchronized(buildLocks.getOrPut(dir.path) { Any() }) {
+            return BookCache.read(File(dir, CACHE), fingerprint(dir, entry.sources)) ?: buildCache(dir, entry.sources)
+        }
     }
+
+    private val buildLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
     /** 书籍目录里的文件（解出的插图、封面）。 */
     fun bookFile(id: String, name: String): File = File(File(root, id), name)
@@ -392,7 +398,7 @@ class Library(private val context: Context) {
                     val inner = path.removePrefix("@zip/")
                     val ext = inner.substringAfterLast('.', "").lowercase()
                     if (ext !in IMAGE_EXTENSIONS) return@runCatching null
-                    java.util.zip.ZipFile(file).use { zip ->
+                    PageBooks.openZip(file).use { zip ->
                         val entry = zip.getEntry(inner) ?: return@runCatching null
                         newFile(ext).also { name -> zip.getInputStream(entry).use { input -> File(dir, name).outputStream().use { input.copyTo(it) } } }
                     }
@@ -554,6 +560,23 @@ class Library(private val context: Context) {
      */
     // 不加锁：打包整个书架可能要几分钟，期间保存进度、改名、删书都不该排队等它。
     // 索引按改名原子替换，读到的总是完整的一份；书签批注同样先写临时文件再改名。
+    /**
+     * 备份里不留书源的下载地址：有的书源（如 Kavita）把 API 密钥写在下载链接的路径里，
+     * 备份文件常被存到云盘、发给别人。恢复后这些书不能“从原文件刷新”，从书源重新下载即可。
+     */
+    private fun withoutRemoteAddresses(indexBytes: ByteArray): ByteArray {
+        val array = runCatching { JSONArray(indexBytes.toString(Charsets.UTF_8)) }.getOrNull() ?: return indexBytes
+        for (i in 0 until array.length()) {
+            val sources = array.optJSONObject(i)?.optJSONArray("sources") ?: continue
+            for (k in 0 until sources.length()) {
+                val source = sources.optJSONObject(k) ?: continue
+                val uri = source.optString("uri")
+                if (uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)) source.put("uri", "")
+            }
+        }
+        return array.toString().toByteArray()
+    }
+
     fun backup(out: java.io.OutputStream, settings: JSONObject, data: Map<String, ByteArray> = emptyMap()): Int {
         val indexBytes = if (indexFile.isFile) indexFile.readBytes() else {
             check(root.listFiles().orEmpty().none { it.isDirectory && BACKUP_ID.matches(it.name) }) {
@@ -581,7 +604,7 @@ class Library(private val context: Context) {
             put(BACKUP_MANIFEST) {
                 it.write(JSONObject().put("format", 1).put("createdAt", System.currentTimeMillis()).put("settings", settings).toString().toByteArray())
             }
-            put("books/index.json") { it.write(indexBytes) }
+            put("books/index.json") { it.write(withoutRemoteAddresses(indexBytes)) }
             data.forEach { (name, bytes) -> put("data/$name") { it.write(bytes) } }
             entries.forEach { e ->
                 val dir = File(root, e.id)

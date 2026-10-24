@@ -257,4 +257,15 @@ class ReadAloudTest {
         assertEquals("b", ReadAloud.saved.value!!.first)
         assertEquals(Triple(0, 0, 3), calls.last())
     }
+
+    @Test
+    fun switchingBooksCancelsTheOldSleepTimerForReal() {
+        start()
+        ReadAloud.setTimer(15)
+        // 换一本书听：界面显示不定时，旧的定时也不能到点把新书停掉。
+        ReadAloud.start(context, "另一本", "书二", book, 0, 0, 0, 1f)
+        assertEquals(SleepTimer.Off, ReadAloud.state.value!!.timer)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMinutes(16))
+        assertEquals("另一本", ReadAloud.state.value?.bookId)
+    }
 }

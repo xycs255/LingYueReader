@@ -462,16 +462,16 @@ private fun LayoutPage(settings: ReaderSettings, update: ((ReaderSettings) -> Re
     }
     GroupedSection(header = "细调") {
         row {
-            LabeledSliderRow("行距", settings.lineHeight, "%.1f".format(settings.lineHeight), 1.3f..2.6f) { v -> update { it.copy(lineHeight = v) } }
+            LayoutSliderRow("行距", settings.lineHeight, { "%.1f".format(it) }, 1.3f..2.6f) { v -> update { it.copy(lineHeight = v) } }
         }
         row {
-            LabeledSliderRow("段距", settings.paragraphSpacing, "%.1f".format(settings.paragraphSpacing), 0f..1.5f) { v -> update { it.copy(paragraphSpacing = v) } }
+            LayoutSliderRow("段距", settings.paragraphSpacing, { "%.1f".format(it) }, 0f..1.5f) { v -> update { it.copy(paragraphSpacing = v) } }
         }
         row {
-            LabeledSliderRow("字距", settings.letterSpacing, "%.2f".format(settings.letterSpacing), 0f..0.2f) { v -> update { it.copy(letterSpacing = v) } }
+            LayoutSliderRow("字距", settings.letterSpacing, { "%.2f".format(it) }, 0f..0.2f) { v -> update { it.copy(letterSpacing = v) } }
         }
         row {
-            LabeledSliderRow("边距", settings.margin, "${settings.margin.toInt()}", 8f..48f, steps = 9) { v -> update { it.copy(margin = v) } }
+            LayoutSliderRow("边距", settings.margin, { "${it.toInt()}" }, 8f..48f, steps = 9) { v -> update { it.copy(margin = v) } }
         }
     }
     GroupedSection {
@@ -703,3 +703,20 @@ private val CUSTOM_TEXTS = listOf(
     0xFF2A2724, 0xFF000000, 0xFF3E3222, 0xFF26331F, 0xFF1F2D3D, 0xFF5A4636,
     0xFFC4B48E, 0xFFD6D2C8, 0xFFB8C7D6, 0xFFFFFFFF,
 )
+
+/**
+ * 改排版的滑块：拖动时只改显示的数，松手才保存。每动一下都保存的话，整章要跟着重新分页，
+ * 又卡，阅读位置还会一点点往前漂。
+ */
+@Composable
+private fun LayoutSliderRow(
+    title: String,
+    value: Float,
+    format: (Float) -> String,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int = 0,
+    onCommit: (Float) -> Unit,
+) {
+    var dragging by remember(value) { mutableStateOf(value) }
+    LabeledSliderRow(title, dragging, format(dragging), valueRange, steps, onValueChangeFinished = { if (dragging != value) onCommit(dragging) }) { dragging = it }
+}
