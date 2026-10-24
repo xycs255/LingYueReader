@@ -1,12 +1,10 @@
 package com.xycs.lingyuereader.ui
 
-import com.xycs.lingyuereader.data.FontStore
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,9 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -29,24 +25,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
@@ -55,31 +44,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.MarkColor
-import com.xycs.lingyuereader.data.TapAction
-import com.xycs.lingyuereader.data.ReadingOrientation
-import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Note
-import com.xycs.lingyuereader.data.PageMode
-import com.xycs.lingyuereader.data.ReaderSettings
-import com.xycs.lingyuereader.data.ChineseConvert
-import com.xycs.lingyuereader.data.ReaderTheme
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SliderDefaults
-import top.yukonga.miuix.kmp.basic.Switch
-import top.yukonga.miuix.kmp.basic.SwitchDefaults
-import top.yukonga.miuix.kmp.basic.TabRow
-import top.yukonga.miuix.kmp.basic.TabRowDefaults
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 
 // ---------- 目录 / 书签 / 批注 ----------
 
+/** 目录、书签、批注：顶上分段控件切换，下面是圆角卡片里的列表（照 Apple Books 的目录）。 */
 @Composable
 internal fun CatalogSheet(
     chapters: List<Chapter>,
@@ -91,82 +66,89 @@ internal fun CatalogSheet(
     onDeleteBookmark: (String) -> Unit,
     onDeleteNote: (String) -> Unit,
     onExportNotes: () -> Unit,
+    tint: Color = palette.accent,
 ) {
-    var tab by remember { mutableIntStateOf(0) }
-    Column {
-        TabRow(
-            tabs = listOf("目录 ${chapters.size}", "书签 ${marks.bookmarks.size}", "批注 ${marks.notes.size}"),
-            selectedTabIndex = tab,
-            onTabSelected = { tab = it },
-            colors = TabRowDefaults.tabRowColors(
-                backgroundColor = palette.text.copy(alpha = 0.06f),
-                contentColor = palette.secondary,
-                selectedBackgroundColor = palette.accent.copy(alpha = 0.15f),
-                selectedContentColor = palette.accent,
-            ),
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-        Box(Modifier.fillMaxWidth().height(440.dp)) {
-            when (tab) {
-                0 -> {
-                    val state = rememberLazyListState((current - 3).coerceAtLeast(0))
-                    LazyColumn(state = state) {
-                        itemsIndexed(chapters) { index, chapter ->
-                            Text(
-                                chapter.title,
-                                color = if (index == current) palette.accent else palette.text,
-                                fontWeight = if (index == current) FontWeight.Bold else FontWeight.Normal,
-                                fontFamily = FontFamily.Serif,
-                                fontSize = 16.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { onPickChapter(index) }
-                                    .padding(horizontal = 12.dp, vertical = 14.dp),
-                            )
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        var tab by remember { mutableIntStateOf(0) }
+        Column {
+            SheetNavBar("目录", back = null) {}
+            Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                SegmentedControl(
+                    listOf(0 to "目录 ${chapters.size}", 1 to "书签 ${marks.bookmarks.size}", 2 to "批注 ${marks.notes.size}"),
+                    tab,
+                ) { tab = it }
+            }
+            Box(Modifier.fillMaxWidth().height(460.dp).padding(top = 6.dp)) {
+                when (tab) {
+                    0 -> {
+                        val state = rememberLazyListState((current - 3).coerceAtLeast(0))
+                        LazyColumn(state = state, contentPadding = PaddingValues(bottom = 16.dp)) {
+                            itemsIndexed(chapters) { index, chapter ->
+                                GroupedListCell(index, chapters.size) {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .clickable { onPickChapter(index) }
+                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            chapter.title,
+                                            color = if (index == current) c.tint else c.label,
+                                            fontWeight = if (index == current) FontWeight.SemiBold else FontWeight.Normal,
+                                            fontSize = 16.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        if (index == current) Text("正在读", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                1 -> if (marks.bookmarks.isEmpty()) {
-                    EmptyHint("还没有书签。在阅读时点顶栏的书签按钮，或长按段落选“加书签”。", palette)
-                } else {
-                    LazyColumn {
-                        items(marks.bookmarks.sortedWith(compareBy({ it.chapterIndex }, { it.itemIndex })), key = { it.id }) { b ->
-                            MarkRow(
-                                title = if (b.lost) "原文已改动 · ${b.chapterTitle}" else chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
-                                body = b.excerpt,
-                                note = null,
-                                color = null,
-                                palette = palette,
-                                onClick = if (b.lost) null else ({ onPickPosition(b.chapterIndex, b.itemIndex - HEADER_ITEMS, b.charOffset) }),
-                                onDelete = { onDeleteBookmark(b.id) },
-                            )
+                    1 -> if (marks.bookmarks.isEmpty()) {
+                        EmptyHint("还没有书签。在阅读时点顶栏的书签按钮，或长按段落选“加书签”。", palette)
+                    } else {
+                        val list = marks.bookmarks.sortedWith(compareBy({ it.chapterIndex }, { it.itemIndex }))
+                        LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                            itemsIndexed(list, key = { _, b -> b.id }) { i, b ->
+                                GroupedListCell(i, list.size) {
+                                    MarkRow(
+                                        title = if (b.lost) "原文已改动 · ${b.chapterTitle}" else chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
+                                        body = b.excerpt,
+                                        note = null,
+                                        color = null,
+                                        palette = palette,
+                                        onClick = if (b.lost) null else ({ onPickPosition(b.chapterIndex, b.itemIndex - HEADER_ITEMS, b.charOffset) }),
+                                        onDelete = { onDeleteBookmark(b.id) },
+                                    )
+                                }
+                            }
                         }
                     }
-                }
-                else -> Column {
-                    if (marks.notes.isEmpty()) {
+                    else -> if (marks.notes.isEmpty()) {
                         EmptyHint("还没有批注。长按正文段落即可划线、写批注。", palette)
                     } else {
-                        TextButton(
-                            text = "导出全部批注（Markdown）",
-                            onClick = onExportNotes,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                            colors = ButtonDefaults.textButtonColors(color = palette.text.copy(alpha = 0.06f), textColor = palette.accent),
-                        )
-                        LazyColumn {
-                            items(marks.notes.sortedWith(compareBy({ it.lost }, { it.chapterIndex }, { it.blockIndex }, { it.start })), key = { it.id }) { n ->
-                                MarkRow(
-                                    title = if (n.lost) "原文已改动 · ${n.chapterTitle}" else chapters.getOrNull(n.chapterIndex)?.title ?: n.chapterTitle,
-                                    body = n.quote,
-                                    note = n.text.ifBlank { null },
-                                    color = Color(n.color.argb),
-                                    palette = palette,
-                                    onClick = if (n.lost) null else ({ onPickPosition(n.chapterIndex, n.blockIndex, n.start) }),
-                                    onDelete = { onDeleteNote(n.id) },
-                                )
+                        val list = marks.notes.sortedWith(compareBy({ it.lost }, { it.chapterIndex }, { it.blockIndex }, { it.start }))
+                        LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                            item {
+                                GroupedSection { row { ActionRow("导出全部批注（Markdown）", onClick = onExportNotes) } }
+                            }
+                            itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
+                                GroupedListCell(i, list.size) {
+                                    MarkRow(
+                                        title = if (n.lost) "原文已改动 · ${n.chapterTitle}" else chapters.getOrNull(n.chapterIndex)?.title ?: n.chapterTitle,
+                                        body = n.quote,
+                                        note = n.text.ifBlank { null },
+                                        color = Color(n.color.argb),
+                                        palette = palette,
+                                        onClick = if (n.lost) null else ({ onPickPosition(n.chapterIndex, n.blockIndex, n.start) }),
+                                        onDelete = { onDeleteNote(n.id) },
+                                    )
+                                }
                             }
                         }
                     }
@@ -176,9 +158,26 @@ internal fun CatalogSheet(
     }
 }
 
+/** 长列表里的一格：同一组的格子连成一张圆角卡片（首尾圆角、中间细线），像分组列表但可以懒加载。 */
 @Composable
-private fun EmptyHint(text: String, palette: ReaderPalette) {
-    Text(text, color = palette.secondary, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(32.dp))
+private fun GroupedListCell(index: Int, count: Int, content: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    val r = 12.dp
+    val shape = RoundedCornerShape(
+        topStart = if (index == 0) r else 0.dp,
+        topEnd = if (index == 0) r else 0.dp,
+        bottomStart = if (index == count - 1) r else 0.dp,
+        bottomEnd = if (index == count - 1) r else 0.dp,
+    )
+    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(shape).background(c.cell)) {
+        if (index > 0) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
+        content()
+    }
+}
+
+@Composable
+private fun EmptyHint(text: String, @Suppress("UNUSED_PARAMETER") palette: ReaderPalette) {
+    Text(text, color = LocalGroupedColors.current.secondary, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(32.dp))
 }
 
 @Composable
@@ -187,33 +186,75 @@ private fun MarkRow(
     body: String,
     note: String?,
     color: Color?,
-    palette: ReaderPalette,
+    @Suppress("UNUSED_PARAMETER") palette: ReaderPalette,
     onClick: (() -> Unit)?,
     onDelete: () -> Unit,
 ) {
+    val c = LocalGroupedColors.current
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = palette.accent, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(Modifier.padding(top = 4.dp)) {
-                if (color != null) Box(Modifier.padding(top = 4.dp, end = 8.dp).size(10.dp).clip(CircleShape).background(color))
-                Text(body, color = palette.text, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (color != null) Box(Modifier.padding(top = 5.dp, end = 8.dp).size(10.dp).clip(CircleShape).background(color))
+                Text(body, color = c.label, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
-            if (note != null) Text(note, color = palette.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+            if (note != null) Text(note, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
         }
         IconButton(onClick = onDelete) {
-            Icon(LingYueIcons.Delete, contentDescription = "删除", tint = palette.secondary)
+            Icon(LingYueIcons.Delete, contentDescription = "删除", tint = c.destructive)
         }
     }
 }
 
 // ---------- 长按段落 ----------
+
+/** 划线颜色：一排圆点，选中的外圈描强调色；圆点看着小，能点的范围 48dp。 */
+@Composable
+private fun MarkColors(selected: MarkColor, onPick: (MarkColor) -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+        MarkColor.entries.forEach { m ->
+            val on = m == selected
+            Box(
+                Modifier
+                    .size(52.dp)
+                    .clip(CircleShape)
+                    .clickable { onPick(m) }
+                    .semantics { contentDescription = "${m.label}批注颜色"; this.selected = on },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .border(if (on) 2.5.dp else 0.dp, if (on) c.tint else Color.Transparent, CircleShape)
+                        .padding(if (on) 4.dp else 2.dp)
+                        .clip(CircleShape)
+                        .background(Color(m.argb).copy(alpha = 1f)),
+                )
+            }
+        }
+    }
+}
+
+/** 批注输入框：卡片里的一行，没有边框和底色，占位字是灰色。 */
+@Composable
+private fun NoteField(note: String, onChange: (String) -> Unit) {
+    val c = LocalGroupedColors.current
+    TextField(
+        value = note,
+        onValueChange = onChange,
+        label = "写点批注（可选）",
+        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
+        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 17.sp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+    )
+}
 
 @Composable
 internal fun ParagraphSheet(
@@ -225,519 +266,105 @@ internal fun ParagraphSheet(
     onSave: (start: Int, end: Int, note: String, color: MarkColor) -> Unit,
     onDeleteNote: (String) -> Unit,
     initialSelection: IntRange? = null,
+    tint: Color = palette.accent,
 ) {
-    var selection by remember(text, initialSelection) {
-        mutableStateOf(TextFieldValue(text, initialSelection?.let { TextRange(it.first, it.last + 1) } ?: TextRange(text.length)))
-    }
-    var note by remember(text) { mutableStateOf("") }
-    var color by remember { mutableStateOf(MarkColor.YELLOW) }
-    val fieldColors = TextFieldDefaults.textFieldColors(
-        backgroundColor = palette.text.copy(alpha = 0.06f),
-        labelColor = palette.secondary,
-        borderColor = palette.accent,
-    )
-    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-        notes.forEach { n ->
-            MarkRow("已有批注", n.quote, n.text.ifBlank { null }, Color(n.color.argb), palette, null) { onDeleteNote(n.id) }
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        var selection by remember(text, initialSelection) {
+            mutableStateOf(TextFieldValue(text, initialSelection?.let { TextRange(it.first, it.last + 1) } ?: TextRange(text.length)))
         }
-        Text("拖动选中要划线的文字；不选则划整段。", color = palette.secondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
-        // 只读输入框：能选中文字，选区就是要划线的范围。
-        TextField(
-            value = selection,
-            onValueChange = { selection = it.copy(text = text) },
-            readOnly = true,
-            colors = fieldColors,
-            textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 16.sp, lineHeight = 26.sp),
-            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
-        )
-        Row(
-            Modifier.padding(vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("颜色", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp))
-            MarkColor.entries.forEach { c ->
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .clickable { color = c }
-                        .semantics { contentDescription = "${c.label}批注颜色"; selected = c == color },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.size(30.dp).clip(CircleShape).background(Color(c.argb).copy(alpha = 0.9f))
-                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier))
-                }
-            }
-        }
-        TextField(
-            value = note,
-            onValueChange = { note = it },
-            label = "写点批注（可选）",
-            colors = fieldColors,
-            textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 15.sp),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            val buttonColors = ButtonDefaults.textButtonColors(color = palette.text.copy(alpha = 0.06f), textColor = palette.text)
-            TextButton(
-                text = "复制",
-                onClick = {
-                    val r = selection.selection
-                    onCopy(if (r.collapsed) text else text.substring(r.min, r.max))
-                },
-                colors = buttonColors,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(text = "加书签", onClick = onBookmark, colors = buttonColors, modifier = Modifier.weight(1f))
-            TextButton(
-                text = "划线",
-                onClick = {
+        var note by remember(text) { mutableStateOf("") }
+        var color by remember { mutableStateOf(MarkColor.YELLOW) }
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            SheetNavBar(
+                "段落",
+                back = null,
+                action = "划线" to {
                     val r: TextRange = selection.selection
                     onSave(r.min, r.max, note, color)
                 },
-                colors = ButtonDefaults.textButtonColors(color = palette.accent, textColor = palette.background),
-                modifier = Modifier.weight(1f),
-            )
+            ) {}
+            Spacer(Modifier.height(8.dp))
+            if (notes.isNotEmpty()) {
+                GroupedSection(header = "已有批注") {
+                    notes.forEach { n ->
+                        row { NoteRow(n.quote, n.text.ifBlank { null }, Color(n.color.argb)) { onDeleteNote(n.id) } }
+                    }
+                }
+            }
+            GroupedSection(footer = "拖动选中要划线的文字；不选则划整段。") {
+                row {
+                    // 只读输入框：能选中文字，选区就是要划线的范围。
+                    TextField(
+                        value = selection,
+                        onValueChange = { selection = it.copy(text = text) },
+                        readOnly = true,
+                        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 16.sp, lineHeight = 26.sp),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                    )
+                }
+            }
+            GroupedSection(header = "颜色与批注") {
+                row { MarkColors(color) { color = it } }
+                row { NoteField(note) { note = it } }
+            }
+            GroupedSection {
+                row {
+                    ActionRow("复制") {
+                        val r = selection.selection
+                        onCopy(if (r.collapsed) text else text.substring(r.min, r.max))
+                    }
+                }
+                row { ActionRow("加书签", onClick = onBookmark) }
+            }
+        }
+    }
+}
+
+/** 分组里的一条批注：色点、引文、批注，右边删除。 */
+@Composable
+private fun NoteRow(quote: String, note: String?, color: Color, onDelete: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(quote, color = c.label, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (note != null) Text(note, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+        }
+        IconButton(onClick = onDelete) {
+            Icon(LingYueIcons.Delete, contentDescription = "删除", tint = c.destructive)
         }
     }
 }
 
 /** 跨段落划线：选颜色、写批注（记在最后一段上），每段各存一条划线。 */
 @Composable
-internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, onSave: (MarkColor, String) -> Unit) {
-    var note by remember { mutableStateOf("") }
-    var color by remember { mutableStateOf(MarkColor.YELLOW) }
-    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-        Text(
-            quote,
-            color = palette.text,
-            fontSize = 15.sp,
-            maxLines = 8,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(palette.text.copy(alpha = 0.06f)).padding(12.dp),
-        )
-        Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("颜色", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp))
-            MarkColor.entries.forEach { c ->
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .clickable { color = c }
-                        .semantics { contentDescription = "${c.label}批注颜色"; selected = c == color },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.size(30.dp).clip(CircleShape).background(Color(c.argb).copy(alpha = 0.9f))
-                        .then(if (c == color) Modifier.border(2.dp, palette.accent, CircleShape) else Modifier))
+internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color = palette.accent, onSave: (MarkColor, String) -> Unit) {
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        var note by remember { mutableStateOf("") }
+        var color by remember { mutableStateOf(MarkColor.YELLOW) }
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            SheetNavBar("划线", back = null, action = "完成" to { onSave(color, note) }) {}
+            Spacer(Modifier.height(8.dp))
+            GroupedSection(footer = "跨了几段就划几条，批注记在最后一段上。") {
+                row {
+                    Text(
+                        quote,
+                        color = c.label,
+                        fontSize = 15.sp,
+                        lineHeight = 23.sp,
+                        maxLines = 8,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    )
                 }
             }
-        }
-        TextField(
-            value = note,
-            onValueChange = { note = it },
-            label = "写点批注（可选）",
-            colors = TextFieldDefaults.textFieldColors(backgroundColor = palette.text.copy(alpha = 0.06f), labelColor = palette.secondary, borderColor = palette.accent),
-            textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 15.sp),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        TextButton(
-            text = "划线",
-            onClick = { onSave(color, note) },
-            colors = ButtonDefaults.textButtonColors(color = palette.accent, textColor = palette.background),
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-        )
-    }
-}
-
-// ---------- 阅读设置 ----------
-
-@Composable
-internal fun SettingsSheet(
-    settings: ReaderSettings,
-    palette: ReaderPalette,
-    update: ((ReaderSettings) -> ReaderSettings) -> Unit,
-    fonts: List<String> = emptyList(),
-    onImportFonts: (List<android.net.Uri>) -> Unit = {},
-    onDeleteFont: (String) -> Unit = {},
-    ambient: AmbientLight? = null,
-) {
-    val textColor = palette.text
-    val accent = palette.accent
-    val sliderColors = SliderDefaults.sliderColors(foregroundColor = accent, backgroundColor = textColor.copy(alpha = 0.12f))
-    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        ChoiceRow("翻页", PageMode.entries.map { it to it.label }, settings.pageMode, palette) { m -> update { it.copy(pageMode = m) } }
-        // 排版预设。宽松：字大、字距和行距都放开，年长读者和读字吃力时字挤在一起更难认（字距加大能减轻拥挤效应）。
-        val preset = LayoutPreset.entries.firstOrNull { it.matches(settings) }
-        ChoiceRow<LayoutPreset?>("排版", LayoutPreset.entries.map { it to it.label }, preset, palette) { p -> p?.let { update(it::apply) } }
-        LabeledSlider("字号", "${settings.fontSize.toInt()}", textColor) {
-            Slider(
-                value = settings.fontSize,
-                onValueChange = { v -> update { it.copy(fontSize = v) } },
-                valueRange = 14f..30f,
-                steps = 15,
-                colors = sliderColors,
-            )
-        }
-        LabeledSlider("行距", "%.1f".format(settings.lineHeight), textColor) {
-            Slider(
-                value = settings.lineHeight,
-                onValueChange = { v -> update { it.copy(lineHeight = v) } },
-                valueRange = 1.3f..2.6f,
-                colors = sliderColors,
-            )
-        }
-        LabeledSlider("段距", "%.1f".format(settings.paragraphSpacing), textColor) {
-            Slider(
-                value = settings.paragraphSpacing,
-                onValueChange = { v -> update { it.copy(paragraphSpacing = v) } },
-                valueRange = 0f..1.5f,
-                colors = sliderColors,
-            )
-        }
-        LabeledSlider("字距", "%.2f".format(settings.letterSpacing), textColor) {
-            Slider(
-                value = settings.letterSpacing,
-                onValueChange = { v -> update { it.copy(letterSpacing = v) } },
-                valueRange = 0f..0.2f,
-                colors = sliderColors,
-            )
-        }
-        LabeledSlider("边距", "${settings.margin.toInt()}", textColor) {
-            Slider(
-                value = settings.margin,
-                onValueChange = { v -> update { it.copy(margin = v) } },
-                valueRange = 8f..48f,
-                steps = 9,
-                colors = sliderColors,
-            )
-        }
-        LabeledSlider("亮度", if (settings.brightness < 0) "系统" else "${(settings.brightness * 100).toInt()}%", textColor) {
-            Slider(
-                value = if (settings.brightness < 0) 0.5f else settings.brightness,
-                onValueChange = { v -> update { it.copy(brightness = v.coerceAtLeast(0.02f)) } },
-                valueRange = 0f..1f,
-                colors = sliderColors,
-            )
-        }
-        SwitchRow("亮度跟随系统", settings.brightness < 0, textColor, accent) { v ->
-            update { it.copy(brightness = if (v) -1f else 0.5f) }
-        }
-        Text("背景", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
-        Row(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            ReaderTheme.entries.forEach { theme ->
-                val p = settings.paletteOf(theme)
-                // 圆和下面的名字都能点。
-                Column(
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { update { it.copy(theme = theme) } }
-                        .semantics { contentDescription = "${theme.label}背景"; selected = settings.theme == theme },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(if (settings.theme == theme) accent else p.secondary.copy(alpha = 0.4f))
-                            .padding(3.dp)
-                            .clip(CircleShape)
-                            .background(p.background),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 16.sp)
-                    }
-                    Text(theme.label, color = textColor, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-                }
+            GroupedSection(header = "颜色与批注") {
+                row { MarkColors(color) { color = it } }
+                row { NoteField(note) { note = it } }
             }
         }
-        if (settings.theme == ReaderTheme.CUSTOM) CustomColors(settings, palette, update)
-        SwitchRow("系统深色时自动用夜间背景", settings.autoNight, textColor, accent) { v -> update { it.copy(autoNight = v) } }
-        Text("护眼", color = textColor, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
-        SwitchRow("跟随环境光调整背景", settings.ambientLight, textColor, accent) { v -> update { it.copy(ambientLight = v) } }
-        Text(
-            buildString {
-                append("昏暗时压暗背景，很暗时换夜间，减少屏幕与周围的亮度落差。")
-                when {
-                    !settings.ambientLight -> {}
-                    settings.eInk -> append("墨水屏 / 省电模式下不读光线传感器。")
-                    ambient == null -> {}
-                    !ambient.available -> append("这台手机没有光线传感器，按上面的系统深色设置。")
-                    ambient.lux >= 0 -> append("当前环境光约 ${ambient.lux} lx（${ambient.level?.label ?: "测量中"}）。")
-                    else -> append("正在读取环境光…")
-                }
-            },
-            color = palette.secondary,
-            fontSize = 12.sp,
-        )
-        SwitchRow("日落后逐渐变暖", settings.eveningWarmth, textColor, accent) { v -> update { it.copy(eveningWarmth = v) } }
-        SwitchRow("远眺提醒（每 20 分钟看远处 20 秒）", settings.breakReminder, textColor, accent) { v -> update { it.copy(breakReminder = v) } }
-        FontRow(settings, palette, fonts, update, onImportFonts, onDeleteFont)
-        ChoiceRow("繁简", ChineseConvert.entries.map { it to it.label }, settings.chineseConvert, palette) { v -> update { it.copy(chineseConvert = v) } }
-        SwitchRow("注音（汉字上方标拼音）", settings.pinyin, textColor, accent) { v -> update { it.copy(pinyin = v) } }
-        SwitchRow("段首空两格", settings.indent, textColor, accent) { v -> update { it.copy(indent = v) } }
-        SwitchRow("两端对齐", settings.justify, textColor, accent) { v -> update { it.copy(justify = v) } }
-        SwitchRow("全屏（隐藏状态栏）", settings.fullscreen, textColor, accent) { v -> update { it.copy(fullscreen = v) } }
-        ChoiceRow("方向", ReadingOrientation.entries.map { it to it.label }, settings.orientation, palette) { v -> update { it.copy(orientation = v) } }
-        SwitchRow("书页厚度（翻页时两侧显示读过和剩下的）", settings.pageEdges, textColor, accent) { v -> update { it.copy(pageEdges = v) } }
-        SwitchRow("横屏时双页", settings.twoPage, textColor, accent) { v -> update { it.copy(twoPage = v) } }
-        SwitchRow("墨水屏 / 省电模式", settings.eInk, textColor, accent) { v -> update { it.copy(eInk = v) } }
-        Text(
-            "关掉玻璃、动画和环境光变色，书页纯黑白，翻页不带动画。墨水屏阅读器配合左右翻页最好。",
-            color = palette.secondary,
-            fontSize = 12.sp,
-        )
-        SwitchRow("点击翻页", settings.tapToTurn, textColor, accent) { v -> update { it.copy(tapToTurn = v) } }
-        if (settings.tapToTurn) TapZoneEditor(settings.tapZones, palette) { z -> update { it.copy(tapZones = z) } }
-        SwitchRow("音量键翻页", settings.volumeKeys, textColor, accent) { v -> update { it.copy(volumeKeys = v) } }
-        SwitchRow("阅读时屏幕常亮", settings.keepScreenOn, textColor, accent) { v -> update { it.copy(keepScreenOn = v) } }
-        TextButton(
-            text = "恢复默认排版",
-            onClick = {
-                val d = ReaderSettings()
-                update { it.copy(fontSize = d.fontSize, lineHeight = d.lineHeight, paragraphSpacing = d.paragraphSpacing, letterSpacing = d.letterSpacing, margin = d.margin) }
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            colors = ButtonDefaults.textButtonColors(color = textColor.copy(alpha = 0.06f), textColor = accent),
-        )
-    }
-}
-
-/** 一键排版：字号、行距、段距、字距一起改。 */
-private enum class LayoutPreset(val label: String, val fontSize: Float, val lineHeight: Float, val paragraphSpacing: Float, val letterSpacing: Float) {
-    COMPACT("紧凑", 18f, 1.6f, 0.4f, 0.02f),
-    STANDARD("标准", 19f, 1.8f, 0.6f, 0.03f),
-    RELAXED("宽松", 22f, 2.0f, 0.8f, 0.1f),
-    ;
-
-    fun matches(s: ReaderSettings) =
-        s.fontSize == fontSize && s.lineHeight == lineHeight && s.paragraphSpacing == paragraphSpacing && s.letterSpacing == letterSpacing
-
-    fun apply(s: ReaderSettings) = s.copy(fontSize = fontSize, lineHeight = lineHeight, paragraphSpacing = paragraphSpacing, letterSpacing = letterSpacing)
-}
-
-/** 九格点击区域：点一格换下一种动作；下面两个按钮是常用的两种布局。 */
-@Composable
-private fun TapZoneEditor(zones: List<TapAction>, palette: ReaderPalette, onChange: (List<TapAction>) -> Unit) {
-    Column(Modifier.padding(start = 48.dp, bottom = 8.dp)) {
-        Column(
-            Modifier
-                .width(198.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(palette.text.copy(alpha = 0.05f)),
-        ) {
-            (0 until 3).forEach { row ->
-                Row {
-                    (0 until 3).forEach { col ->
-                        val i = row * 3 + col
-                        val action = zones[i]
-                        Box(
-                            Modifier
-                                .size(66.dp, 48.dp)
-                                .clickable {
-                                    val next = TapAction.entries[(action.ordinal + 1) % TapAction.entries.size]
-                                    onChange(zones.toMutableList().also { it[i] = next })
-                                }
-                                .padding(2.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    when (action) {
-                                        TapAction.MENU -> palette.accent.copy(alpha = 0.18f)
-                                        TapAction.NONE -> Color.Transparent
-                                        else -> palette.text.copy(alpha = 0.07f)
-                                    },
-                                )
-                                .semantics { contentDescription = "点击区域第${row + 1}行第${col + 1}格：${action.label}" },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(action.label, color = if (action == TapAction.NONE) palette.secondary else palette.text, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-        }
-        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("左右翻页" to TapZones.DEFAULT, "单手（都翻下一页）" to TapZones.ONE_HAND).forEach { (label, preset) ->
-                val on = zones == preset
-                Text(
-                    label,
-                    color = if (on) palette.accent else palette.text,
-                    fontSize = 13.sp,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .heightIn(min = 48.dp)
-                        .clickable { onChange(preset) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-            }
-        }
-        Text(
-            "点一格换动作。竖排时左右对调；双指捏合正文可以直接调字号。",
-            color = palette.secondary,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-    }
-}
-
-/** 自定义背景的底色、字色，和两者的对比度。 */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CustomColors(settings: ReaderSettings, palette: ReaderPalette, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
-    @Composable
-    fun Swatches(label: String, colors: List<Long>, selected: Int, onPick: (Int) -> Unit) {
-        Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                colors.forEach { c ->
-                    val argb = c.toInt()
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .clickable { onPick(argb) }
-                            .semantics { contentDescription = "$label #%06X".format(argb and 0xFFFFFF); this.selected = argb == selected },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(Modifier.size(30.dp).clip(CircleShape)
-                            .background(if (argb == selected) palette.accent else palette.secondary.copy(alpha = 0.35f))
-                            .padding(if (argb == selected) 3.dp else 1.dp).clip(CircleShape).background(Color(argb)))
-                    }
-                }
-            }
-        }
-    }
-    Swatches("底色", CUSTOM_BACKGROUNDS, settings.customBackground) { c -> update { it.copy(customBackground = c) } }
-    Swatches("字色", CUSTOM_TEXTS, settings.customText) { c -> update { it.copy(customText = c) } }
-    val ratio = contrastRatio(Color(settings.customBackground), Color(settings.customText))
-    Text(
-        "对比度 %.1f : 1".format(ratio) + when {
-            ratio < 4.5f -> "，太低，看久了费眼，换一个更深（或更浅）的字色吧。"
-            ratio < 7f -> "，可以读，再拉开一点更不累眼。"
-            else -> "，适合长时间阅读。"
-        },
-        color = if (ratio < 4.5f) palette.accent else palette.secondary,
-        fontSize = 12.sp,
-    )
-}
-
-/** 自定义背景可选的底色：几种纸色、浅蓝、浅粉，和几种深底。 */
-private val CUSTOM_BACKGROUNDS = listOf(
-    0xFFF4F2EC, 0xFFFFFFFF, 0xFFEFE6D8, 0xFFF2E6CC, 0xFFDCEBD2, 0xFFDDE7EE, 0xFFF1E4E4,
-    0xFF2B2B2B, 0xFF1E2A35, 0xFF151413, 0xFF000000,
-)
-private val CUSTOM_TEXTS = listOf(
-    0xFF2A2724, 0xFF000000, 0xFF3E3222, 0xFF26331F, 0xFF1F2D3D, 0xFF5A4636,
-    0xFFC4B48E, 0xFFD6D2C8, 0xFFB8C7D6, 0xFFFFFFFF,
-)
-
-/** 字体：内置宋体、黑体，导入的字体（长按删除），以及“导入字体”。 */
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
-@Composable
-private fun FontRow(
-    settings: ReaderSettings,
-    palette: ReaderPalette,
-    fonts: List<String>,
-    update: ((ReaderSettings) -> ReaderSettings) -> Unit,
-    onImport: (List<android.net.Uri>) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { onImport(it) }
-    var deleting by remember { mutableStateOf<String?>(null) }
-    val current = settings.font.takeIf { it in fonts }
-    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.Top) {
-        Text("字体", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(40.dp).padding(top = 8.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            @Composable
-            fun Chip(label: String, on: Boolean, onLongClick: (() -> Unit)? = null, icon: ImageVector? = null, onClick: () -> Unit) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (icon != null) Icon(icon, contentDescription = null, tint = palette.text, modifier = Modifier.size(16.dp))
-                    Text(label, color = if (on) palette.accent else palette.text, fontSize = 14.sp, maxLines = 1)
-                }
-            }
-            Chip("宋体", current == null && settings.serif) { update { it.copy(serif = true, font = "") } }
-            Chip("黑体", current == null && !settings.serif) { update { it.copy(serif = false, font = "") } }
-            fonts.forEach { f ->
-                Chip(FontStore.label(f), current == f, onLongClick = { deleting = f }) { update { it.copy(font = f) } }
-            }
-            Chip("导入字体", false, icon = LingYueIcons.Add) { picker.launch(arrayOf("*/*")) }
-        }
-    }
-    if (fonts.isNotEmpty()) {
-        Text("长按导入的字体可以删除。", color = palette.secondary, fontSize = 12.sp, modifier = Modifier.padding(start = 40.dp))
-    }
-    deleting?.let { f ->
-        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("删除字体“${FontStore.label(f)}”？", color = palette.text, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            Text("取消", color = palette.secondary, fontSize = 14.sp, modifier = Modifier.clickable { deleting = null }.padding(8.dp))
-            Text(
-                "删除",
-                color = palette.accent,
-                fontSize = 14.sp,
-                modifier = Modifier.clickable {
-                    onDelete(f)
-                    deleting = null
-                }.padding(8.dp),
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, palette: ReaderPalette, onSelect: (T) -> Unit) {
-    Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
-        // 选项多了换行，窄屏上不挤出屏幕。
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            options.forEach { (value, text) ->
-                val on = value == selected
-                val press = remember { MutableInteractionSource() }
-                // 选中的底色渐变过去，按下缩一点。
-                val fill by animateColorAsState(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f), Motion.standard(Motion.SHORT), label = "chip")
-                val ink by animateColorAsState(if (on) palette.accent else palette.text, Motion.standard(Motion.SHORT), label = "chipText")
-                Text(
-                    text,
-                    color = ink,
-                    fontSize = 14.sp,
-                    modifier = Modifier
-                        .pressScale(press, 0.93f)
-                        .clip(RoundedCornerShape(50))
-                        .background(fill)
-                        .heightIn(min = 48.dp)
-                        .clickable(press, LocalIndication.current) { onSelect(value) }
-                        .semantics { this.selected = on }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LabeledSlider(label: String, value: String, textColor: Color, slider: @Composable () -> Unit) {
-    Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = textColor, fontSize = 14.sp, modifier = Modifier.width(40.dp))
-        Box(Modifier.weight(1f)) { slider() }
-        Text(value, color = textColor, fontSize = 13.sp, textAlign = TextAlign.End, modifier = Modifier.width(44.dp))
-    }
-}
-
-@Composable
-private fun SwitchRow(label: String, checked: Boolean, textColor: Color, accent: Color, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, color = textColor, fontSize = 15.sp, modifier = Modifier.weight(1f))
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.switchColors(checkedTrackColor = accent, uncheckedTrackColor = textColor.copy(alpha = 0.15f)),
-        )
     }
 }

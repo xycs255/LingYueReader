@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import com.xycs.lingyuereader.ui.glass.GlassSheet
 import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
 import com.xycs.lingyuereader.ui.glass.glassHighlight
@@ -86,13 +88,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,12 +101,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import kotlin.math.roundToInt
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -136,6 +133,7 @@ import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.data.TextAnchors
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -913,10 +911,11 @@ private fun Reader(
     }
     }
 
+    val appTint = MiuixTheme.colorScheme.primary
     GlassSheet(
         show = sheet == ReaderSheet.Catalog,
-        title = "目录",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -936,35 +935,37 @@ private fun Reader(
             onDeleteBookmark = vm::deleteBookmark,
             onDeleteNote = vm::deleteNote,
             onExportNotes = { vm.notesMarkdown()?.let { shareText(context, "《${entry.title}》批注", it) } },
+            tint = appTint,
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
     val ambient = LocalAmbientLight.current
+    // 阅读设置是苹果式的分组面板：底色用分组灰（深色书页用深灰），标题和返回在面板里面。
     GlassSheet(
         show = sheet == ReaderSheet.Settings,
-        title = "阅读设置",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         val fonts by vm.fonts.collectAsStateWithLifecycle()
-        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient)
+        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient, tint = appTint)
     }
     GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
-        title = "听书",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
-        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice) }
+        aloud?.let { a -> ReadAloudSheet(a, palette, onRate = vm::setReadAloudRate, onVoice = vm::setReadAloudVoice, tint = appTint) }
     }
     val paragraph = sheet as? ReaderSheet.Paragraph
     val paragraphText = paragraph?.let { chapter.blocks.getOrNull(it.block)?.displayText }
     GlassSheet(
         show = paragraph != null && paragraphText != null,
-        title = "段落",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -987,17 +988,18 @@ private fun Reader(
                 },
                 onDeleteNote = vm::deleteNote,
                 initialSelection = paragraph.selection,
+                tint = appTint,
             )
         }
     }
     GlassSheet(
         show = sheet == ReaderSheet.MultiNote,
-        title = "划线",
-        background = palette.background,
+        title = null,
+        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
-        MultiNoteSheet(vm.selectionText().orEmpty(), palette) { color, note ->
+        MultiNoteSheet(vm.selectionText().orEmpty(), palette, appTint) { color, note ->
             vm.annotateSelection(color, note)
             sheet = null
         }

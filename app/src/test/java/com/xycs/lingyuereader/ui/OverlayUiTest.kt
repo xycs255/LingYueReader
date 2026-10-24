@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -67,6 +68,7 @@ class OverlayUiTest {
         openReaderMenu()
         compose.onNodeWithText("设置").performClick()
         waitForText("阅读设置")
+        compose.onNodeWithText("排版").performScrollTo().performClick()
         compose.onNodeWithText("恢复默认排版").assertExists()
     }
 

@@ -96,8 +96,13 @@ class ChineseConvertUiTest {
         showReaderMenu()
         compose.onNodeWithText("设置").performClick()
         waitForText("阅读设置")
+        // 繁简在“繁简与注音”二级页里。
+        compose.onNodeWithText("繁简与注音").performScrollTo().performClick()
         compose.onNodeWithText(option).performScrollTo().performClick()
         waitForText(expectedBody)
+        // 第一次返回回到设置首页，第二次关面板。
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("阅读设置").fetchSemanticsNodes().isEmpty() }
     }
@@ -119,6 +124,7 @@ class ChineseConvertUiTest {
         waitForText("她的头发很长")
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()
+        compose.onNodeWithText("繁简与注音").performScrollTo().performClick()
         waitForText("简转繁")
         compose.onNodeWithText("简转繁").performScrollTo().performClick()
         waitForText("她的頭髮很長，後來皇后也來了。")

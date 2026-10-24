@@ -67,9 +67,11 @@ class FontUiTest {
         waitForText("测试字体灵阅")
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()
+        compose.onNodeWithText("字体").performScrollTo().performClick()
         waitForText("TestBlocks")
+        // 长按导入的字体，下面出现红色的“删除”。
         compose.onNodeWithText("TestBlocks").performScrollTo().performTouchInput { longClick() }
-        waitForText("删除字体")
+        waitForText("删除")
         compose.onNodeWithText("删除").performScrollTo().performClick()
         compose.waitUntil(5_000) { !fontFile.exists() }
         assertFalse(fontFile.exists())

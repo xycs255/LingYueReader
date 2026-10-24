@@ -66,6 +66,7 @@ class BookRulesUiTest {
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("查找"))
         compose.onNodeWithText("查找").performTextInput("本章未完")
         waitForText("将匹配 2 处")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("添加"))
         compose.onNodeWithText("添加").performClick()
         waitForText("匹配 2 处")
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存并重新分章"))

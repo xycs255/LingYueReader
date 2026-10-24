@@ -329,6 +329,28 @@ object LingYueIcons {
         }
     }
 
+    /** 亮度：小圆和八道光。滑块两端一小一大地放。 */
+    val Brightness by lazy {
+        glyph("Brightness") {
+            trace {
+                moveTo(15.6f, 12f)
+                curveTo(15.6f, 14f, 14f, 15.6f, 12f, 15.6f)
+                curveTo(10f, 15.6f, 8.4f, 14f, 8.4f, 12f)
+                curveTo(8.4f, 10f, 10f, 8.4f, 12f, 8.4f)
+                curveTo(14f, 8.4f, 15.6f, 10f, 15.6f, 12f)
+                close()
+                moveTo(12f, 3.5f); lineTo(12f, 5.2f)
+                moveTo(12f, 18.8f); lineTo(12f, 20.5f)
+                moveTo(3.5f, 12f); lineTo(5.2f, 12f)
+                moveTo(18.8f, 12f); lineTo(20.5f, 12f)
+                moveTo(6f, 6f); lineTo(7.2f, 7.2f)
+                moveTo(16.8f, 16.8f); lineTo(18f, 18f)
+                moveTo(6f, 18f); lineTo(7.2f, 16.8f)
+                moveTo(16.8f, 7.2f); lineTo(18f, 6f)
+            }
+        }
+    }
+
     val Tune by lazy {
         glyph("Tune") {
             trace {

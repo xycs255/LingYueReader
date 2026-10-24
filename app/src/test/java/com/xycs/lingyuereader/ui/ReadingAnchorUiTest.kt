@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.onRoot
 import androidx.test.core.app.ApplicationProvider
@@ -104,7 +105,11 @@ class ReadingAnchorUiTest {
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()
         waitForText("阅读设置")
+        compose.onNodeWithText("排版").performScrollTo().performClick()
         compose.onNodeWithText("宽松").performClick()
+        // 第一次返回回到设置首页，第二次关面板。
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("阅读设置").fetchSemanticsNodes().isEmpty() }
     }

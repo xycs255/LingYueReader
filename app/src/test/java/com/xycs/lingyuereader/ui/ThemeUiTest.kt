@@ -57,7 +57,7 @@ class ThemeUiTest {
         waitForText("主题设置")
         compose.onNodeWithText("主题设置").performClick()
         compose.waitUntil(10_000) {
-            compose.onAllNodes(androidx.compose.ui.test.hasContentDescription("主题预览")).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(androidx.compose.ui.test.hasContentDescription("深色外观")).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
@@ -81,10 +81,8 @@ class ThemeUiTest {
         waitForText("配色风格")
         compose.onNodeWithText("悬浮底栏").performScrollTo().performClick()
         compose.mainClock.advanceTimeBy(1_000)
-        // 预览随深色变暗。
-        val preview = compose.onNodeWithContentDescription("主题预览").performScrollTo().captureToImage().toPixelMap()
-        val px = preview[preview.width / 2, preview.height / 2 + 30]
-        assertTrue("预览底色 $px", px.luminance() < 0.2f)
+        // 外观选中了“深色”。
+        assertTrue(compose.onNodeWithContentDescription("深色外观").performScrollTo().fetchSemanticsNode().config[SemanticsProperties.Selected])
         // 下面的卡片也是深色底：取字左边一点的卡片底色。
         val title = compose.onNodeWithText("墨水屏 / 省电模式").performScrollTo().fetchSemanticsNode().boundsInRoot
         compose.mainClock.advanceTimeBy(500)
