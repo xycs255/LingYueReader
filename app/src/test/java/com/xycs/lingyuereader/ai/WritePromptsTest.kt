@@ -128,9 +128,26 @@ class WritePromptsTest {
 
     @Test
     fun proposalsMarkExistingCharacters() {
-        val existing = listOf(BibleEntry("1", BibleKind.CHARACTER, "林月", "女主"), BibleEntry("2", BibleKind.WORLD, "沈默", "一座城"))
-        val list = WritePrompts.parseProposals("""{"entries":[{"name":"林月","text":"药铺掌柜的女儿"},{"name":"沈默","text":"捕快"},{"name":"","text":"x"}]}""", existing)
+        val list = WritePrompts.parseProposals("""{"entries":[{"name":"林月","text":"药铺掌柜的女儿"},{"name":"沈默","text":"捕快"},{"name":"","text":"x"}]}""", listOf("林月"))
         assertEquals(listOf("林月" to true, "沈默" to false), list.map { it.name to it.existing })
+    }
+
+    @Test
+    fun characterNamesComeFromHeadingsListsAndTables() {
+        val doc = """
+            # 人物档案
+            ## 〇、核心人物卡（写前速查）
+            | 人物 | 想要 | 害怕 |
+            | --- | --- | --- |
+            | 林月 | 一个家 | 被赶走 |
+            ## 沈默
+            想要：报仇
+            - 老周：药铺伙计
+            ## 人物名
+        """.trimIndent()
+        assertEquals(listOf("沈默", "林月", "老周").sorted(), WritePrompts.characterNames(doc).sorted())
+        val appended = WritePrompts.appendCharacters("## 沈默\n游侠", listOf(BibleProposal("林月", "药铺掌柜的女儿", false), BibleProposal("沈默", "左手使刀", true)), "2026-10-24")
+        assertEquals("## 沈默\n游侠\n\n## 林月\n药铺掌柜的女儿\n\n## 沈默\n左手使刀\n（AI 整理补充，2026-10-24）", appended)
     }
 
     @Test
@@ -142,23 +159,15 @@ class WritePromptsTest {
     }
 
     @Test
-    fun systemPromptCarriesStyleBibleAndAcceptedExamples() {
-        val assist = WorkAssist(
-            style = "第一人称，口语化",
-            entries = listOf(BibleEntry("1", BibleKind.CHARACTER, "林月", "药铺掌柜的女儿"), BibleEntry("2", BibleKind.FORESHADOW, "玉佩", "第三章丢的玉佩还没找到")),
-            accepted = listOf(StyleExample("润色", "风很大。", "风刮得很猛。", 1)),
-        )
-        val s = WritePrompts.system("长夜", assist, examples = true)
+    fun systemPromptCarriesStylePackAndAcceptedExamples() {
+        val assist = WorkAssist(style = "第一人称，口语化", accepted = listOf(StyleExample("润色", "风很大。", "风刮得很猛。", 1)))
+        val s = WritePrompts.system("长夜", assist, pack = "【人物档案·人物（优先级 3）】\n林月：药铺掌柜的女儿", examples = true)
         assertTrue("《长夜》" in s)
-        assertTrue("第一人称，口语化" in s)
-        assertTrue("【人物】\n林月：药铺掌柜的女儿" in s)
-        assertTrue("【伏笔】\n玉佩：第三章丢的玉佩还没找到" in s)
+        assertTrue("作者对文风的要求（最优先" in s && "第一人称，口语化" in s)
+        assertTrue("林月：药铺掌柜的女儿" in s)
         assertTrue("原文：风很大。\n改为：风刮得很猛。" in s)
-        assertFalse("林月" in WritePrompts.system("长夜", assist, withBible = false))
+        assertFalse("林月" in WritePrompts.system("长夜", assist))
         assertFalse("改为" in WritePrompts.system("长夜", assist))
-        // 设定集太长就截断。
-        val long = WritePrompts.bible(List(200) { BibleEntry("$it", BibleKind.OTHER, "条目$it", "很长的说明".repeat(10)) }, limit = 500)!!
-        assertTrue(long.length < 600 && long.endsWith("后面省略）"))
     }
 
     @Test
@@ -195,8 +204,11 @@ class WritePromptsTest {
         val other = WorkStore(tmp.newFolder())
         other.restoreBackup(String(s.backup()!!))
         val restored = other.assist(w.id)
-        assertEquals(listOf("主线" to BibleKind.OUTLINE), restored.entries.map { it.name to it.kind })
         assertTrue(restored.realtime)
+        // 旧版设定集的条目在备份时已并进设定包（大纲 → 总纲），跟着备份过去。
+        val outline = other.pack(w.id).single()
+        assertEquals(com.xycs.lingyuereader.data.PackKind.OUTLINE, outline.kind)
+        assertEquals("## 主线\n复仇", other.packText(w.id, outline.id))
         // 作品不在了不能写设定。
         assertTrue(runCatching { s.updateAssist("nope") { it } }.isFailure)
     }

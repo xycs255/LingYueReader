@@ -157,11 +157,14 @@ sealed interface Screen {
     /** 写一章。 */
     data class Editor(val workId: String, val chapterId: String) : Screen
     /** 一章的历史版本。 */
-    data class WorkHistory(val workId: String, val chapterId: String) : Screen
+    /** 一章（或设定包里一份文档，[docId] 不为空时）的历史版本。 */
+    data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
     /** 一部作品的 AI 设置：实时检查、文风、学到的改法。 */
     data class WorkAi(val workId: String) : Screen
-    /** 一部作品的设定集。 */
-    data class WorkBible(val workId: String) : Screen
+    /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
+    data class WorkPack(val workId: String) : Screen
+    /** 设定包里的一份文档。 */
+    data class PackDoc(val workId: String, val docId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
@@ -2444,6 +2447,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     out.use { writing.export(workId, format, it) }
                 }
                 _messages.value = "已导出 ${format.label}"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "导出失败：${error.message ?: "写入出错"}"
+            } finally {
+                endBusy()
+            }
+        }
+    }
+
+    // ---------- 写作：设定包的导入导出 ----------
+
+    /** 读者选的文件：文件名和打开方法，交给设定包导入去认。 */
+    suspend fun readImportFiles(uris: List<Uri>): List<com.xycs.lingyuereader.data.PackImportItem> {
+        val app = getApplication<Application>()
+        val files = withContext(Dispatchers.IO) { library.describe(uris).map { p -> p.name to { requireNotNull(app.contentResolver.openInputStream(p.uri)) { "无法打开 ${p.name}" } } } }
+        return writing.parseImport(files)
+    }
+
+    /** 读者选的文件夹：往下几层里的 .md、.txt、.zip。 */
+    suspend fun readImportFolder(tree: Uri): List<com.xycs.lingyuereader.data.PackImportItem> {
+        val app = getApplication<Application>()
+        val files = withContext(Dispatchers.IO) {
+            com.xycs.lingyuereader.data.SafTree.files(app, tree).map { (name, uri) -> name to { requireNotNull(app.contentResolver.openInputStream(uri)) { "无法打开 $name" } } }
+        }
+        return writing.parseImport(files)
+    }
+
+    fun exportPack(workId: String, uri: Uri) {
+        viewModelScope.launch {
+            beginBusy()
+            try {
+                withContext(Dispatchers.IO) {
+                    val out = getApplication<Application>().contentResolver.openOutputStream(uri, "wt") ?: throw IllegalArgumentException("无法写入文件")
+                    out.use { writing.exportPack(workId, it) }
+                }
+                _messages.value = "已导出设定包"
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

@@ -6,8 +6,8 @@ import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
-import com.xycs.lingyuereader.data.BibleEntry
-import com.xycs.lingyuereader.data.BibleKind
+import com.xycs.lingyuereader.data.PackContext
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
 import kotlinx.coroutines.CancellationException
@@ -147,21 +147,23 @@ class WritingAi(
                     val i = chapters.indexOfFirst { it.id == chapterId }
                     chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
+                // 设定包里的常用文档（按优先级排好、限字数）：改稿、灵感、矛盾检查都带上。
+                val pack = withContext(Dispatchers.IO) { packContext(workId) }
                 val (system, prompt) = when (task) {
                     is WriteAiTask.Edit -> {
                         val before = text.substring(0, task.start.coerceIn(0, text.length))
                         val after = text.substring(task.end.coerceIn(0, text.length))
                         // 本章开头的话，前文接上一章的结尾。
                         val context = if (before.length < WritePrompts.BEFORE_CHARS && previous.isNotBlank()) previous.takeLast(WritePrompts.BEFORE_CHARS - before.length) + "\n" + before else before
-                        WritePrompts.system(work.title, assist, examples = task.action != WriteAction.CONTINUE) to
+                        WritePrompts.system(work.title, assist, pack, examples = task.action != WriteAction.CONTINUE) to
                             WritePrompts.edit(task.action, task.original, context, after, title, task.instruction)
                     }
                     is WriteAiTask.Idea -> {
                         val recent = (if (text.length < 6_000 && previous.isNotBlank()) previous.takeLast(6_000 - text.length) + "\n【" + title + "】\n" else "") + text.takeLast(6_000)
-                        WritePrompts.system(work.title, assist) to WritePrompts.idea(task.kind, recent, title, task.extra)
+                        WritePrompts.system(work.title, assist, pack) to WritePrompts.idea(task.kind, recent, title, task.extra)
                     }
-                    WriteAiTask.Review -> WritePrompts.system(work.title, assist, withBible = false) to WritePrompts.review(text, title)
-                    WriteAiTask.Consistency -> WritePrompts.system(work.title, assist) to WritePrompts.consistency(previous.takeLast(2_000), text, title)
+                    WriteAiTask.Review -> WritePrompts.system(work.title, assist) to WritePrompts.review(text, title)
+                    WriteAiTask.Consistency -> WritePrompts.system(work.title, assist, pack) to WritePrompts.consistency(previous.takeLast(2_000), text, title)
                 }
                 val answer = ai.ask(system, prompt) { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
@@ -218,7 +220,7 @@ class WritingAi(
                 val work = withContext(Dispatchers.IO) { store.get(workId) }
                 val assist = assistOf(workId)
                 if (!assist.realtime) return@launch
-                val answer = ai.ask(WritePrompts.system(work?.title.orEmpty(), assist, withBible = false), WritePrompts.proofread(todo), whole = true)
+                val answer = ai.ask(WritePrompts.system(work?.title.orEmpty(), assist), WritePrompts.proofread(todo), whole = true)
                 val found = WritePrompts.parseIssues(answer, todo)
                 seen += todo
                 _realtime.update { r ->
@@ -267,21 +269,38 @@ class WritingAi(
         }
         if (text.isBlank()) throw IllegalStateException("还没有正文可以整理")
         val assist = assistOf(workId)
-        val answer = ai.ask(WritePrompts.system(title, assist, withBible = false), WritePrompts.extract(text, assist.entries), whole = true)
-        return WritePrompts.parseProposals(answer, assist.entries)
+        val names = withContext(Dispatchers.IO) { characterNames(workId) }
+        val answer = ai.ask(WritePrompts.system(title, assist), WritePrompts.extract(text, names), whole = true)
+        return WritePrompts.parseProposals(answer, names)
     }
 
-    /** 把勾选的建议加进设定集：同名的人物更新说明，没有的新加。 */
-    fun addProposals(workId: String, picked: List<BibleProposal>) {
+    private fun characterDocs(workId: String) = store.pack(workId).filter { it.kind == PackKind.CHARACTER }
+
+    private fun characterNames(workId: String): List<String> =
+        characterDocs(workId).flatMap { WritePrompts.characterNames(store.packText(workId, it.id)) }.distinct()
+
+    /** 设定包里常用的文档，拼成给 AI 的资料。 */
+    private fun packContext(workId: String): String? =
+        PackContext.build(store.pack(workId).filter { it.always }.map { it to store.packText(workId, it.id) })
+
+    /** 把勾选的建议写进设定包的人物档案（没有就新建一份）。旧的文字先存一个历史版本。 */
+    fun addProposals(workId: String, picked: List<BibleProposal>, then: () -> Unit = {}) {
         if (picked.isEmpty()) return
-        updateAssist(workId) { a ->
-            var entries = a.entries
-            picked.forEach { p ->
-                val i = entries.indexOfFirst { it.kind == BibleKind.CHARACTER && it.name.trim() == p.name }
-                entries = if (i >= 0) entries.toMutableList().also { it[i] = it[i].copy(text = p.text) }
-                else entries + BibleEntry(WorkStore.newId(), BibleKind.CHARACTER, p.name, p.text)
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val date = java.time.LocalDate.now().toString()
+                    val doc = characterDocs(workId).firstOrNull() ?: store.addPackDoc(workId, PackKind.CHARACTER, PackKind.CHARACTER.label)
+                    val old = store.packText(workId, doc.id)
+                    if (old.isNotBlank()) store.snapshot(workId, store.docKey(doc.id), old)
+                    store.savePackText(workId, doc.id, WritePrompts.appendCharacters(old, picked, date))
+                }
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存失败：${e.message ?: "写入出错"}")
             }
-            a.copy(entries = entries)
         }
     }
 

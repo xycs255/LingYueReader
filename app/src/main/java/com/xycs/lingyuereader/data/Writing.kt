@@ -259,14 +259,14 @@ class WorkStore(private val root: File) {
 
     /** 存一章正文，更新字数，并把净增的字数记到今天。返回改后的作品；正文没变返回原作品。 */
     @Synchronized
-    fun saveText(workId: String, chapterId: String, text: String, today: LocalDate = LocalDate.now()): Work? {
+    fun saveText(workId: String, chapterId: String, text: String, today: LocalDate = LocalDate.now(), count: Boolean = true): Work? {
         val work = get(workId) ?: return null
         val old = work.chapter(chapterId) ?: return null
         val file = chapterFile(workId, chapterId)
         if (file.isFile && file.readText() == text) return work
         check(DurableFiles.write(file, text.toByteArray())) { "无法保存正文" }
         val words = WordCount.of(text)
-        if (words != old.words) addWords(today, words - old.words)
+        if (count && words != old.words) addWords(today, words - old.words)
         return update(workId) { w ->
             w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.map { if (it.id == chapterId) it.copy(words = words, updatedAt = clock()) else it }) })
         }
@@ -329,6 +329,151 @@ class WorkStore(private val root: File) {
         return next
     }
 
+    // ---------- 设定包 ----------
+
+    private fun packDir(workId: String) = File(dir(workId), PACK)
+
+    private fun packFile(workId: String, docId: String): File {
+        require(ID.matches(docId)) { "文档 id 无效" }
+        return File(packDir(workId), "$docId.md")
+    }
+
+    /** 文档的历史版本和章节放在同一处，键加个前缀分开。 */
+    fun docKey(docId: String) = "pack-$docId"
+
+    private fun readPack(workId: String): List<PackDoc>? {
+        val file = File(packDir(workId), PACK_INDEX)
+        if (!file.isFile) return null
+        return try {
+            val a = JSONArray(file.readText())
+            (0 until a.length()).mapNotNull { a.optJSONObject(it)?.toPackDoc() }
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            emptyList()
+        }
+    }
+
+    private fun writePack(workId: String, docs: List<PackDoc>) {
+        val d = packDir(workId).apply { mkdirs() }
+        check(DurableFiles.write(File(d, PACK_INDEX), JSONArray().apply { docs.forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存设定包" }
+    }
+
+    /**
+     * 设定包里的文档，按优先级排好。第一次打开时，把旧版“设定集”里的条目按类别并成几份文档
+     * （人物 → 人物档案，世界观 → 硬性设定，大纲 → 总纲，伏笔和其他 → 资料）。
+     */
+    @Synchronized
+    fun pack(workId: String): List<PackDoc> {
+        readPack(workId)?.let { return it.sorted() }
+        val entries = assist(workId).entries
+        if (entries.isEmpty()) return emptyList()
+        val docs = mutableListOf<PackDoc>()
+        val groups = listOf(
+            BibleKind.CHARACTER to (PackKind.CHARACTER to "人物"),
+            BibleKind.WORLD to (PackKind.CANON to "世界观"),
+            BibleKind.OUTLINE to (PackKind.OUTLINE to "大纲"),
+            BibleKind.FORESHADOW to (PackKind.REFERENCE to "伏笔"),
+            BibleKind.OTHER to (PackKind.REFERENCE to "其他设定"),
+        )
+        groups.forEach { (bk, target) ->
+            val list = entries.filter { it.kind == bk }
+            if (list.isEmpty()) return@forEach
+            val text = list.joinToString("\n\n") { e -> "## ${e.name.ifBlank { "（无标题）" }}\n${e.text}".trim() }
+            val doc = PackDoc(newId(), target.first, target.second, updatedAt = clock(), words = WordCount.of(text))
+            check(DurableFiles.write(packFile(workId, doc.id).also { it.parentFile?.mkdirs() }, text.toByteArray())) { "无法保存设定" }
+            docs += doc
+        }
+        writePack(workId, docs)
+        updateAssist(workId) { it.copy(entries = emptyList()) }
+        return docs.sorted()
+    }
+
+    private fun List<PackDoc>.sorted() = sortedWith(compareBy({ it.priority }, { it.kind.ordinal }, { it.title }))
+
+    @Synchronized
+    fun packText(workId: String, docId: String): String = packFile(workId, docId).takeIf { it.isFile }?.readText().orEmpty()
+
+    /** 新建一份文档。 */
+    @Synchronized
+    fun addPackDoc(workId: String, kind: PackKind, title: String, text: String = "", priority: Int = kind.priority, always: Boolean = kind.always): PackDoc {
+        require(get(workId) != null) { "作品不在了" }
+        val doc = PackDoc(newId(), kind, title.trim().ifEmpty { kind.label }, priority.coerceIn(1, 9), always, clock(), WordCount.of(text))
+        check(DurableFiles.write(packFile(workId, doc.id).also { it.parentFile?.mkdirs() }, text.toByteArray())) { "无法保存设定" }
+        writePack(workId, pack(workId) + doc)
+        return doc
+    }
+
+    /** 改文档的类型、标题、优先级、常用与否。 */
+    @Synchronized
+    fun updatePackDoc(workId: String, docId: String, transform: (PackDoc) -> PackDoc): PackDoc? {
+        val docs = pack(workId)
+        val old = docs.firstOrNull { it.id == docId } ?: return null
+        val next = transform(old).let { it.copy(id = old.id, priority = it.priority.coerceIn(1, 9), title = it.title.trim().ifEmpty { old.title }) }
+        if (next != old) writePack(workId, docs.map { if (it.id == docId) next else it })
+        return next
+    }
+
+    /** 存文档正文。没变就不写。 */
+    @Synchronized
+    fun savePackText(workId: String, docId: String, text: String): PackDoc? {
+        val file = packFile(workId, docId)
+        if (file.isFile && file.readText() == text) return pack(workId).firstOrNull { it.id == docId }
+        if (pack(workId).none { it.id == docId }) return null
+        check(DurableFiles.write(file, text.toByteArray())) { "无法保存设定" }
+        return updatePackDoc(workId, docId) { it.copy(updatedAt = clock(), words = WordCount.of(text)) }
+    }
+
+    /** 删一份文档：正文先存进历史版本。 */
+    @Synchronized
+    fun deletePackDoc(workId: String, docId: String) {
+        val text = packText(workId, docId)
+        if (text.isNotBlank()) snapshot(workId, docKey(docId), text)
+        writePack(workId, pack(workId).filterNot { it.id == docId })
+        packFile(workId, docId).delete()
+    }
+
+    /** 换回文档的某个历史版本（现在的先存一版）。 */
+    @Synchronized
+    fun restorePackDoc(workId: String, docId: String, at: Long): PackDoc? {
+        val text = snapshotText(workId, docKey(docId), at) ?: return null
+        snapshot(workId, docKey(docId), packText(workId, docId))
+        return savePackText(workId, docId, text)
+    }
+
+    /**
+     * 导入：设定类的文件，同名（标题相同）的替换（旧版存进历史），没有的新加；正文类的拆成章节，接在最后一卷后面，
+     * 不算进今天的码字数。
+     */
+    @Synchronized
+    fun importPack(workId: String, items: List<PackImportItem>): PackImportResult {
+        var added = 0
+        var replaced = 0
+        var chapters = 0
+        items.filter { it.include }.forEach { item ->
+            if (item.asChapters) {
+                PackImport.chapters(item.text, item.title).forEach { (title, body) ->
+                    val work = get(workId) ?: return@forEach
+                    val (_, c) = addChapter(workId, work.volumes.last().id, title) ?: return@forEach
+                    saveText(workId, c.id, body, count = false)
+                    chapters++
+                }
+                return@forEach
+            }
+            val existing = pack(workId).firstOrNull { it.title == item.title }
+            if (existing != null) {
+                val old = packText(workId, existing.id)
+                if (old.isNotBlank() && old != item.text) snapshot(workId, docKey(existing.id), old)
+                savePackText(workId, existing.id, item.text)
+                updatePackDoc(workId, existing.id) { it.copy(kind = item.kind, priority = item.priority, always = item.always) }
+                replaced++
+            } else {
+                addPackDoc(workId, item.kind, item.title, item.text, item.priority, item.always)
+                added++
+            }
+        }
+        return PackImportResult(added, replaced, chapters)
+    }
+
     // ---------- 码字统计 ----------
 
     @Synchronized
@@ -375,7 +520,8 @@ class WorkStore(private val root: File) {
         all.forEach { w ->
             val texts = JSONObject()
             w.chapters.forEach { c -> texts.put(c.id, text(w.id, c.id)) }
-            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()))
+            val pack = JSONArray().apply { pack(w.id).forEach { d -> put(d.toJson().put("text", packText(w.id, d.id))) } }
+            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()).put("pack", pack))
         }
         val stats = stats()
         val days = JSONObject()
@@ -405,6 +551,18 @@ class WorkStore(private val root: File) {
                 check(DurableFiles.write(chapterFile(incoming.id, c.id), texts.optString(c.id).toByteArray())) { "无法写入正文" }
             }
             local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach { chapterFile(local.id, it.id).delete() }
+            // 设定包整份换成备份里的（本机的文档正文先存历史版本）；备份里没有设定包（旧版备份）就按设定集重新迁移。
+            local?.let { l -> pack(l.id).forEach { d -> packText(l.id, d.id).takeIf { it.isNotBlank() }?.let { snapshot(l.id, docKey(d.id), it) } } }
+            packDir(incoming.id).deleteRecursively()
+            o.optJSONArray("pack")?.let { a ->
+                val docs = (0 until a.length()).mapNotNull { i ->
+                    val d = a.optJSONObject(i) ?: return@mapNotNull null
+                    val doc = runCatching { d.toPackDoc() }.getOrNull()?.takeIf { ID.matches(it.id) } ?: return@mapNotNull null
+                    check(DurableFiles.write(packFile(incoming.id, doc.id).also { it.parentFile?.mkdirs() }, d.optString("text").toByteArray())) { "无法写入设定" }
+                    doc
+                }
+                writePack(incoming.id, docs)
+            }
             o.optJSONObject("assist")?.let { a ->
                 runCatching { a.toAssist() }.getOrNull()?.let { assist ->
                     check(DurableFiles.write(File(dir(incoming.id), ASSIST), assist.toJson().toString().toByteArray())) { "无法写入设定" }
@@ -428,6 +586,8 @@ class WorkStore(private val root: File) {
         const val KEEP_SNAPSHOTS = 40
         private const val WORK = "work.json"
         private const val ASSIST = "assist.json"
+        private const val PACK = "pack"
+        private const val PACK_INDEX = "index.json"
         private val ID = Regex("""[A-Za-z0-9-]{1,64}""")
 
         internal fun newId() = UUID.randomUUID().toString()
@@ -443,6 +603,16 @@ class WorkStore(private val root: File) {
                     }))
                 }
             })
+
+        private fun PackDoc.toJson(): JSONObject = JSONObject()
+            .put("id", id).put("kind", kind.name).put("title", title).put("priority", priority).put("always", always)
+            .put("updatedAt", updatedAt).put("words", words)
+
+        private fun JSONObject.toPackDoc(): PackDoc? {
+            val kind = runCatching { PackKind.valueOf(optString("kind")) }.getOrDefault(PackKind.REFERENCE)
+            val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
+            return PackDoc(id, kind, optString("title"), optInt("priority", kind.priority).coerceIn(1, 9), optBoolean("always", kind.always), optLong("updatedAt"), optInt("words"))
+        }
 
         private fun WorkAssist.toJson(): JSONObject = JSONObject()
             .put("realtime", realtime).put("style", style).put("rejected", rejected)

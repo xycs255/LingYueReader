@@ -1,7 +1,5 @@
 package com.xycs.lingyuereader.ai
 
-import com.xycs.lingyuereader.data.BibleEntry
-import com.xycs.lingyuereader.data.BibleKind
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkAssist
 import org.json.JSONArray
@@ -38,23 +36,22 @@ data class BibleProposal(val name: String, val text: String, val existing: Boole
  * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
  */
 object WritePrompts {
-    /** 设定集最多带这么多字进系统提示。 */
-    const val BIBLE_CHARS = 4_000
     /** 改稿时带上前文多少字、后文多少字。 */
     const val BEFORE_CHARS = 1_500
     const val AFTER_CHARS = 300
     /** 整章点评、矛盾检查最多发多少字。 */
     const val CHAPTER_CHARS = 14_000
 
-    fun system(title: String, assist: WorkAssist, withBible: Boolean = true, examples: Boolean = false): String = buildString {
+    /** [pack] 是拼好的设定包（见 [com.xycs.lingyuereader.data.PackContext]），为空时不带设定。 */
+    fun system(title: String, assist: WorkAssist, pack: String? = null, examples: Boolean = false): String = buildString {
         append("你是写作软件“灵阅”里的编辑助手，在帮作者写长篇小说")
         if (title.isNotBlank()) append("《").append(title).append("》")
         append("。\n")
         append("- 用简体中文。尊重作者：保留作者的文风、人称、时态和用词习惯，不擅自改变情节和人物设定，不说教。\n")
         append("- 要你改写或续写时，只输出正文本身：不要解释，不要加标题、引号、序号或“修改后：”之类的话，不用 Markdown。\n")
         append("- 一行就是一段，段与段之间换行，不要空行，段首不要空格。\n")
-        if (assist.style.isNotBlank()) append("\n作者对文风的要求：").append(assist.style.trim()).append('\n')
-        if (withBible) bible(assist.entries)?.let { append("\n作品设定（供参考，不要和它矛盾）：\n").append(it).append('\n') }
+        if (assist.style.isNotBlank()) append("\n作者对文风的要求（最优先，和下面的设定资料冲突时以这里为准）：").append(assist.style.trim()).append('\n')
+        if (!pack.isNullOrBlank()) append("\n").append(pack).append("\n写的内容不要和这些设定矛盾。\n")
         if (examples) {
             val picked = assist.accepted.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(3)
             if (picked.isNotEmpty()) {
@@ -62,23 +59,6 @@ object WritePrompts {
                 picked.forEach { e -> append("原文：").append(e.before).append("\n改为：").append(e.after).append('\n') }
             }
         }
-    }
-
-    /** 设定集压成几行：按类别分组，超出 [limit] 字就截断。 */
-    fun bible(entries: List<BibleEntry>, limit: Int = BIBLE_CHARS): String? {
-        if (entries.isEmpty()) return null
-        val out = StringBuilder()
-        BibleKind.entries.forEach { kind ->
-            val list = entries.filter { it.kind == kind && (it.name.isNotBlank() || it.text.isNotBlank()) }
-            if (list.isEmpty()) return@forEach
-            out.append('【').append(kind.label).append("】\n")
-            list.forEach { e ->
-                out.append(e.name.trim())
-                if (e.text.isNotBlank()) out.append(if (e.name.isBlank()) "" else "：").append(e.text.trim().replace('\n', ' '))
-                out.append('\n')
-            }
-        }
-        return out.toString().let { if (it.length > limit) it.take(limit) + "……（设定集太长，后面省略）" else it }.trim().ifEmpty { null }
     }
 
     /** 改一段：[target] 是要改的文字（续写时是光标前的上文），[before]、[after] 是它前后的原文。 */
@@ -140,13 +120,27 @@ object WritePrompts {
     }
 
     /** 从正文整理人物到设定集。 */
-    fun extract(text: String, existing: List<BibleEntry>): String = buildString {
-        val names = existing.filter { it.kind == BibleKind.CHARACTER }.map { it.name }.filter { it.isNotBlank() }
+    fun extract(text: String, names: List<String>): String = buildString {
         append("下面是作者写的小说正文：\n\n").append(text).append("\n\n")
         append("请整理其中的人物，给作者的设定集用。")
         if (names.isNotEmpty()) append("设定集里已有：").append(names.joinToString("、")).append("。已有的人物如果正文里有了新信息，也列出来（用同样的名字）。")
         append("\n只收有名字的、有戏份的人物，最多 20 个。text 一两句话写身份、性格、外貌特征和与他人的关系，只依据正文，不要编。\n")
         append("只输出 JSON：{\"entries\":[{\"name\":\"\",\"text\":\"\"}]}")
+    }
+
+    /** 人物档案里已有的人名：整行只有名字的二级以下标题（“## 林月”；一级标题是文档名）、“- 林月：”这样的条目，或表格的第一列。 */
+    fun characterNames(text: String): List<String> {
+        val name = """([\p{IsHan}A-Za-z·]{1,8})"""
+        val patterns = listOf(Regex("""^#{2,4}\s*$name\s*$"""), Regex("""^[-*]\s*$name[：:]"""), Regex("""^\|\s*$name\s*\|"""))
+        return text.lines().mapNotNull { l -> patterns.firstNotNullOfOrNull { it.find(l.trim())?.groupValues?.get(1) } }
+            .filter { it !in setOf("人物名", "人物", "姓名", "名字") }.distinct()
+    }
+
+    /** 采纳的整理结果写成人物档案的几节：已有的人物在后面补一段“（AI 整理，日期）”。 */
+    fun appendCharacters(text: String, picked: List<BibleProposal>, date: String): String {
+        if (picked.isEmpty()) return text
+        val add = picked.joinToString("\n\n") { p -> "## ${p.name}\n${p.text}" + if (p.existing) "\n（AI 整理补充，$date）" else "" }
+        return if (text.isBlank()) add else text.trimEnd() + "\n\n" + add
     }
 
     /** 从模型回答里取出 JSON 对象：容忍前后多余的话和 ```json 包裹。 */
@@ -170,9 +164,9 @@ object WritePrompts {
         }.distinctBy { it.paragraph to it.wrong }
     }
 
-    fun parseProposals(answer: String, existing: List<BibleEntry>): List<BibleProposal> {
+    fun parseProposals(answer: String, existing: List<String>): List<BibleProposal> {
         val a = json(answer).optJSONArray("entries") ?: JSONArray()
-        val names = existing.filter { it.kind == BibleKind.CHARACTER }.map { it.name.trim() }.toSet()
+        val names = existing.map { it.trim() }.toSet()
         return (0 until a.length()).mapNotNull { i ->
             val o = a.optJSONObject(i) ?: return@mapNotNull null
             val name = o.optString("name").trim()

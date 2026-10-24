@@ -26,6 +26,9 @@ import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import androidx.activity.compose.setContent
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -191,15 +194,68 @@ class WritingAiUiTest {
         compose.onNodeWithText("完成").performClick()
         waitFor { store.get(workId)!!.chapters[0].title == "第一章 雪夜" }
 
-        // 设定集：手动加一条。
-        compose.runOnUiThread { vm.open(Screen.WorkBible(workId)) }
-        waitForText("设定集还是空的")
-        compose.onNodeWithText("添加一条").performClick()
-        waitForText("添加设定")
-        compose.onAllNodes(hasSetTextAction())[0].performTextInput("林月")
-        compose.onAllNodes(hasSetTextAction())[1].performTextInput("药铺掌柜的女儿，左手有疤")
+        // 设定包：新建一份人物档案（带人物卡模板），写进去，改优先级。
+        compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
+        waitForText("设定包还是空的")
+        compose.onNodeWithText("新建文档").performClick()
+        waitForText("想要、害怕、怎么说话")
+        compose.onNodeWithText("新建").performClick()
+        waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() && store.pack(workId).size == 1 }
+        val doc = store.pack(workId).single()
+        val wordsToday = store.stats().on(java.time.LocalDate.now())
+        assertEquals(com.xycs.lingyuereader.data.PackKind.CHARACTER to "人物档案", doc.kind to doc.title)
+        waitFor { compose.onAllNodesWithText("想要：", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("文档内容").performTextReplacement("## 林月\n药铺掌柜的女儿，左手有疤")
+        waitFor { store.packText(workId, doc.id) == "## 林月\n药铺掌柜的女儿，左手有疤" }
+        // 设定字数不算码字数。
+        assertEquals(wordsToday, store.stats().on(java.time.LocalDate.now()))
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("属性（类型、优先级）").performClick()
+        waitForText("文档属性")
+        compose.onNodeWithContentDescription("优先级1").performClick()
         compose.onNodeWithText("保存").performClick()
-        waitFor { store.assist(workId).entries.singleOrNull()?.name == "林月" }
-        waitForText("药铺掌柜的女儿")
+        waitFor { store.pack(workId).single().priority == 1 }
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForText("优先级 1 · 常用")
+    }
+
+    @Test
+    fun importReadsAZipThroughTheViewModelAndThePreviewImportsIt() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        // 一个“设定包”压缩包：两份设定、一份正文。
+        val zip = File(context.cacheDir, "设定包.zip")
+        java.util.zip.ZipOutputStream(zip.outputStream()).use { z ->
+            listOf(
+                "设定包/人物设定档案.md" to "## 林月\n想要：一个家",
+                "设定包/正文写作约定.md" to "少用成语。",
+                "设定包/已定正文_第1-2章.md" to "## 第一章 雪夜\n他推开门。\n## 第二章 来客\n来人了。",
+            ).forEach { (name, text) ->
+                z.putNextEntry(java.util.zip.ZipEntry(name)); z.write(text.toByteArray()); z.closeEntry()
+            }
+        }
+        var items: List<com.xycs.lingyuereader.data.PackImportItem>? = null
+        compose.runOnUiThread { vm.viewModelScope.launch { items = vm.readImportFiles(listOf(android.net.Uri.fromFile(zip))) } }
+        waitFor { items != null }
+        assertEquals(
+            listOf("人物设定档案" to false, "已定正文_第1-2章" to true, "正文写作约定" to false),
+            items!!.map { it.title to it.asChapters }.sortedBy { it.first },
+        )
+
+        val appearance = vm.appearance.value
+        compose.runOnUiThread {
+            compose.activity.setContent { LingYueTheme(appearance) { WorkPackScreen(vm, workId, initialPreview = items) } }
+        }
+        waitForText("3 个文件")
+        waitForText("正文（拆成章节）")
+        // 不导入写作约定：点那一行，选“不导入”。
+        compose.onNodeWithText("正文写作约定").performClick()
+        waitForText("不导入")
+        compose.onNodeWithContentDescription("导入与否不导入").performClick()
+        compose.onNodeWithText("好").performClick()
+        compose.onNodeWithText("导入 2 个文件").performClick()
+        waitFor { store.pack(workId).map { it.title } == listOf("人物设定档案") }
+        waitFor { store.get(workId)!!.chapters.map { it.title } == listOf("第1章", "第一章 雪夜", "第二章 来客") }
+        waitForText("人物设定档案")
     }
 }

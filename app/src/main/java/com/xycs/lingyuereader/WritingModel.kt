@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader
 
+import com.xycs.lingyuereader.data.PackDoc
+import com.xycs.lingyuereader.data.PackImport
+import com.xycs.lingyuereader.data.PackImportItem
+import com.xycs.lingyuereader.data.PackImportResult
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.Snapshot
 import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
@@ -182,6 +187,107 @@ class WritingModel(
         }
     }
 
+    // ---------- 设定包 ----------
+
+    private val _packs = MutableStateFlow<Map<String, List<PackDoc>>>(emptyMap())
+    /** 各作品的设定包（打开过的才有），按优先级排好。 */
+    val packs: StateFlow<Map<String, List<PackDoc>>> = _packs.asStateFlow()
+
+    fun loadPack(workId: String) {
+        scope.launch {
+            try {
+                val docs = withContext(disk) { store.pack(workId) }
+                _packs.update { it + (workId to docs) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("读取设定包失败：${e.message ?: "读取出错"}")
+            }
+        }
+    }
+
+    /** 在写盘队列里改设定包，改完刷新列表。 */
+    private fun changePack(workId: String, failure: String, block: () -> Unit, then: () -> Unit = {}) {
+        scope.launch {
+            try {
+                val docs = withContext(disk) {
+                    block()
+                    store.pack(workId)
+                }
+                _packs.update { it + (workId to docs) }
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("$failure：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun addDoc(workId: String, kind: PackKind, title: String, then: (PackDoc) -> Unit) {
+        var added: PackDoc? = null
+        changePack(workId, "新建失败", { added = store.addPackDoc(workId, kind, title, PackImport.template(kind)) }) { added?.let(then) }
+    }
+
+    fun updateDoc(workId: String, docId: String, transform: (PackDoc) -> PackDoc) =
+        changePack(workId, "保存失败", { store.updatePackDoc(workId, docId, transform) })
+
+    fun deleteDoc(workId: String, docId: String) = changePack(workId, "删除失败", { store.deletePackDoc(workId, docId) })
+
+    /** 打开一份文档来改：先存一版，改坏了能回到打开前。 */
+    suspend fun openDoc(workId: String, docId: String): String = withContext(disk) {
+        val text = store.packText(workId, docId)
+        if (text.isNotBlank()) runCatching { store.snapshot(workId, store.docKey(docId), text) }
+        lastSnapshot[store.docKey(docId)] = System.currentTimeMillis()
+        text
+    }
+
+    /** 自动保存文档（不算码字数）。每写 [SNAPSHOT_EVERY] 和离开时存一版。 */
+    fun saveDoc(workId: String, docId: String, text: String, closing: Boolean = false) {
+        val key = store.docKey(docId)
+        changePack(workId, "保存失败", {
+            store.savePackText(workId, docId, text)
+            val now = System.currentTimeMillis()
+            if (text.isNotBlank() && (closing || now - (lastSnapshot[key] ?: 0) >= SNAPSHOT_EVERY)) {
+                store.snapshot(workId, key, text)
+                lastSnapshot[key] = now
+            }
+        })
+    }
+
+    fun docKey(docId: String) = store.docKey(docId)
+
+    fun restoreDoc(workId: String, docId: String, at: Long, then: () -> Unit) =
+        changePack(workId, "恢复失败", { store.restorePackDoc(workId, docId, at) }, then)
+
+    /** 读选中的文件：zip 按设定包（或一包文本）读，文本文件按文件名认类型。 */
+    suspend fun parseImport(files: List<Pair<String, () -> java.io.InputStream>>): List<PackImportItem> = withContext(Dispatchers.IO) {
+        files.flatMap { (name, open) ->
+            when {
+                name.endsWith(".zip", ignoreCase = true) -> PackImport.readZip(open)
+                PackImport.isText(name) -> listOf(PackImport.classify(name, com.xycs.lingyuereader.data.TextDecoder.decode(open().use { it.readBytes() })))
+                else -> emptyList()
+            }
+        }
+    }
+
+    fun importPack(workId: String, items: List<PackImportItem>, then: (PackImportResult) -> Unit) {
+        var result: PackImportResult? = null
+        var work: Work? = null
+        changePack(workId, "导入失败", {
+            result = store.importPack(workId, items)
+            work = store.get(workId)
+        }) {
+            // 正文拆成的章节也要刷新作品列表。
+            publish(work)
+            result?.let(then)
+        }
+    }
+
+    suspend fun exportPack(workId: String, out: java.io.OutputStream) = withContext(disk) {
+        PackImport.writeZip(store.pack(workId).map { it to store.packText(workId, it.id) }, out)
+    }
+
     // ---------- 导出、预览、备份 ----------
 
     suspend fun export(workId: String, format: ExportFormat, out: OutputStream) = withContext(disk) {
@@ -207,7 +313,10 @@ class WritingModel(
 
     internal fun backup(): ByteArray? = store.backup()
 
-    internal fun restoreBackup(json: String): Int = store.restoreBackup(json).also { reload() }
+    internal fun restoreBackup(json: String): Int = store.restoreBackup(json).also {
+        _packs.value = emptyMap()
+        reload()
+    }
 
     companion object {
         const val SNAPSHOT_EVERY = 10 * 60_000L

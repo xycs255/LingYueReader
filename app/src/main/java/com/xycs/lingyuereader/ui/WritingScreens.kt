@@ -306,7 +306,12 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val work = works.firstOrNull { it.id == workId }
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val assist = assists[workId]
-    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    val pack = packs[workId]
+    LaunchedEffect(workId) {
+        vm.writingAi.loadAssist(workId)
+        vm.writing.loadPack(workId)
+    }
     val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
     var editingInfo by remember { mutableStateOf(false) }
@@ -399,8 +404,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                         row {
-                            NavRow("设定集", value = assist?.entries?.size?.let { if (it == 0) "空" else "$it 条" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
-                                vm.open(Screen.WorkBible(workId))
+                            NavRow("设定包", value = pack?.let { if (it.isEmpty()) "空" else "${it.size} 份" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
+                                vm.open(Screen.WorkPack(workId))
                             }
                         }
                         row {
@@ -952,16 +957,19 @@ private fun Modifier.combinedClickableCompat(onClick: () -> Unit): Modifier {
  * 一章的历史版本：新的在前，写了时间和字数。点开看全文，可以换回那一版（现在的正文会先存一版）。
  */
 @Composable
-fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String) {
+fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId: String? = null) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
-    val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    // 设定包的文档和章节共用历史版本，只是键不同。
+    val key = docId?.let(vm.writing::docKey) ?: chapterId
+    val title = if (docId != null) packs[workId]?.firstOrNull { it.id == docId }?.title else works.firstOrNull { it.id == workId }?.chapter(chapterId)?.title
     var list by remember { mutableStateOf<List<Snapshot>?>(null) }
     var open by remember { mutableStateOf<Pair<Snapshot, String>?>(null) }
     var loading by remember { mutableStateOf<Snapshot?>(null) }
-    LaunchedEffect(workId, chapterId) { list = vm.writing.history(workId, chapterId) }
+    LaunchedEffect(workId, key) { list = vm.writing.history(workId, key) }
     LaunchedEffect(loading) {
         val s = loading ?: return@LaunchedEffect
-        open = vm.writing.snapshotText(workId, chapterId, s.at)?.let { s to it }
+        open = vm.writing.snapshotText(workId, key, s.at)?.let { s to it }
         loading = null
     }
 
@@ -986,8 +994,9 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 item {
                     val items = list
                     GroupedSection(
-                        header = chapter?.title,
-                        footer = "每次打开、离开这一章，以及写作中每隔十分钟，都会存一版。每章最多留 ${com.xycs.lingyuereader.data.WorkStore.KEEP_SNAPSHOTS} 版。",
+                        header = title,
+                        footer = (if (docId != null) "每次打开、离开这份文档，以及导入替换、修改中每隔十分钟，都会存一版。" else "每次打开、离开这一章，以及写作中每隔十分钟，都会存一版。") +
+                            "最多留 ${com.xycs.lingyuereader.data.WorkStore.KEEP_SNAPSHOTS} 版。",
                     ) {
                         if (items != null && items.isEmpty()) {
                             row { Text("还没有历史版本。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
@@ -1005,7 +1014,8 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     DialogButtons(confirm = "换回这一版", onDismiss = { open = null }) {
                         open = null
-                        vm.writing.restore(workId, chapterId, s.at) { vm.back() }
+                        if (docId != null) vm.writing.restoreDoc(workId, docId, s.at) { vm.back() }
+                        else vm.writing.restore(workId, chapterId, s.at) { vm.back() }
                     }
                 }
             }

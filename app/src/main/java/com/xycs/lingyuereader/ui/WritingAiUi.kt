@@ -374,7 +374,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val ai by vm.aiConfig.collectAsStateWithLifecycle()
     val work = works.firstOrNull { it.id == workId }
-    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) {
+        vm.writingAi.loadAssist(workId)
+        vm.writing.loadPack(workId)
+    }
     val assist = assists[workId] ?: WorkAssist()
     var style by remember(assists[workId] != null) { mutableStateOf(assist.style) }
     var clearing by remember { mutableStateOf(false) }
@@ -408,15 +412,16 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     GroupedSection(
                         footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：选中文字（或把光标放在那段）润色、扩写、缩写、挑错、续写；" +
-                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。",
+                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。设定包里“常用”的文档会按优先级带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
                             else NavRow("AI 助手", value = if (!ai.enabled) "未开启" else "未填密钥", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) { vm.open(Screen.Ai) }
                         }
                         row {
-                            NavRow("设定集", value = if (assist.entries.isEmpty()) "空" else "${assist.entries.size} 条", icon = LingYueIcons.Book, iconBackground = Color(0xFF34C759)) {
-                                vm.open(Screen.WorkBible(workId))
+                            val docs = packs[workId]
+                            NavRow("设定包", value = docs?.let { if (it.isEmpty()) "空" else "${it.size} 份" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
+                                vm.open(Screen.WorkPack(workId))
                             }
                         }
                     }
@@ -465,163 +470,9 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     }
 }
 
-// ---------- 设定集 ----------
-
-/**
- * 设定集：人物、世界观、大纲、伏笔……写作时 AI 会参考它（改稿、灵感、矛盾检查）。
- * 可以手动加，也可以让 AI 从正文里整理人物，勾选后加进来。
- */
-@Composable
-fun WorkBibleScreen(vm: AppViewModel, workId: String) {
-    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
-    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
-    val assist = assists[workId] ?: WorkAssist()
-    var editing by remember { mutableStateOf<BibleEntry?>(null) }
-    var extracting by remember { mutableStateOf(false) }
-    var proposals by remember { mutableStateOf<List<BibleProposal>?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val snackbar = rememberWritingMessages(vm)
-
-    ProvideGroupedColors {
-        val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "设定集",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    },
-                    actions = {
-                        IconButton(onClick = { editing = BibleEntry("", BibleKind.CHARACTER, "", "") }, modifier = Modifier.padding(end = 12.dp)) {
-                            Icon(LingYueIcons.Add, contentDescription = "添加设定")
-                        }
-                    },
-                )
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-        ) { padding ->
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
-                overscrollEffect = null,
-            ) {
-                item {
-                    GroupedSection(footer = "AI 改稿、给灵感、检查前后矛盾时会参考设定集。整理人物会把最近写的正文（最多约 1.5 万字）发给 AI 服务商。") {
-                        row {
-                            NavRow("用 AI 整理人物", value = if (extracting) "整理中……" else null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE), enabled = !extracting) {
-                                extracting = true
-                                scope.launch {
-                                    try {
-                                        proposals = vm.writingAi.extractCharacters(workId)
-                                        if (proposals.isNullOrEmpty()) error = "没有整理出新的人物"
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Exception) {
-                                        error = e.message ?: "整理失败"
-                                    } finally {
-                                        extracting = false
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (assist.entries.isEmpty()) {
-                        EmptyState(
-                            LingYueIcons.Book,
-                            "设定集还是空的",
-                            "把人物、世界观、大纲和埋下的伏笔记在这里。写到后面，AI 能帮你对照有没有前后矛盾。",
-                            action = "添加一条" to { editing = BibleEntry("", BibleKind.CHARACTER, "", "") },
-                        )
-                    }
-                    BibleKind.entries.forEach { kind ->
-                        val list = assist.entries.filter { it.kind == kind }
-                        if (list.isEmpty()) return@forEach
-                        GroupedSection(header = kind.label) {
-                            list.forEach { e ->
-                                row {
-                                    NavRow(e.name.ifBlank { "（无标题）" }, subtitle = e.text.take(60).ifBlank { null }) { editing = e }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            editing?.let { e ->
-                BibleEntryDialog(
-                    e,
-                    onDismiss = { editing = null },
-                    onDelete = if (e.id.isEmpty()) null else {
-                        {
-                            editing = null
-                            vm.writingAi.updateAssist(workId) { a -> a.copy(entries = a.entries.filterNot { it.id == e.id }) }
-                        }
-                    },
-                ) { saved ->
-                    editing = null
-                    vm.writingAi.updateAssist(workId) { a ->
-                        if (saved.id.isEmpty()) a.copy(entries = a.entries + saved.copy(id = WorkStore.newId()))
-                        else a.copy(entries = a.entries.map { if (it.id == saved.id) saved else it })
-                    }
-                }
-            }
-            proposals?.takeIf { it.isNotEmpty() }?.let { list ->
-                ProposalsDialog(list, onDismiss = { proposals = null }) { picked ->
-                    proposals = null
-                    vm.writingAi.addProposals(workId, picked)
-                }
-            }
-            error?.let { msg ->
-                GlassDialog(show = true, title = "整理人物", summary = msg, onDismissRequest = { error = null }) {
-                    TextButton(text = "好", onClick = { error = null }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColorsPrimary())
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BibleEntryDialog(entry: BibleEntry, onDismiss: () -> Unit, onDelete: (() -> Unit)?, onSave: (BibleEntry) -> Unit) {
-    var kind by remember { mutableStateOf(entry.kind) }
-    var name by remember { mutableStateOf(entry.name) }
-    var text by remember { mutableStateOf(entry.text) }
-    GlassDialog(show = true, title = if (entry.id.isEmpty()) "添加设定" else "编辑设定", onDismissRequest = onDismiss) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            BibleKind.entries.forEach { k ->
-                val selected = k == kind
-                val scheme = MiuixTheme.colorScheme
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (selected) scheme.primary else LocalGroupedColors.current.fill)
-                        .clickable { kind = k }
-                        .semantics { contentDescription = "类别${k.label}" }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                ) { Text(k.label, color = if (selected) scheme.onPrimary else LocalGroupedColors.current.label, fontSize = 14.sp) }
-            }
-        }
-        TextField(value = name, onValueChange = { name = it }, label = if (kind == BibleKind.CHARACTER) "名字" else "标题", singleLine = true, modifier = Modifier.fillMaxWidth())
-        TextField(value = text, onValueChange = { text = it }, label = "内容", modifier = Modifier.fillMaxWidth().padding(top = 10.dp).heightIn(min = 96.dp, max = 240.dp))
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (onDelete != null) TextButton(text = "删除", onClick = onDelete, modifier = Modifier.weight(1f))
-            else TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = "保存",
-                enabled = name.isNotBlank() || text.isNotBlank(),
-                onClick = { onSave(entry.copy(kind = kind, name = name.trim(), text = text.trim())) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
-    }
-}
-
 /** AI 整理出的人物：勾选要加的（默认全选），已有的标“更新”。 */
 @Composable
-private fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, onAdd: (List<BibleProposal>) -> Unit) {
+internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, onAdd: (List<BibleProposal>) -> Unit) {
     var chosen by remember { mutableStateOf(list.map { it.name }.toSet()) }
     val c = LocalGroupedColors.current
     GlassDialog(show = true, title = "整理出 ${list.size} 个人物", summary = "勾选要加进设定集的；已有的人物会用新的说明替换。", onDismissRequest = onDismiss) {
