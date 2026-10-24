@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.semantics.Role
@@ -87,12 +89,9 @@ fun ThemeScreen(vm: AppViewModel) {
                     GroupedSection(header = "外观") {
                         row { AppearancePicker(a) { m -> if (m != a.mode) recolor { it.copy(mode = m) } } }
                     }
-                    GroupedSection(
-                        header = "强调色",
-                        footer = "Monet 从壁纸取色（Android 12 起）；选了强调色时按它生成整套配色。",
-                    ) {
+                    GroupedSection(header = "强调色") {
                         row { AccentDots(a.accent) { color -> if (color != a.accent) recolor { it.copy(accent = color) } } }
-                        row { ToggleRow("Monet 取色", a.monet) { v -> recolor { it.copy(monet = v) } } }
+                        row { ToggleRow("Monet 取色", a.monet, subtitle = "从壁纸取色（Android 12 起）；选了强调色时按它生成整套配色") { v -> recolor { it.copy(monet = v) } } }
                         if (a.dynamicColors) {
                             row {
                                 PickerRow("配色风格", PaletteStyle.entries.map { it to it.label }, a.paletteStyle) { p ->
@@ -101,22 +100,22 @@ fun ThemeScreen(vm: AppViewModel) {
                             }
                         }
                     }
-                    GroupedSection(
-                        header = "效果",
-                        footer = "模糊：顶栏、导航栏和弹出面板透出后面的内容。液态玻璃：边缘折射和高光。两样都关时用不透明底色。悬浮底栏可以按住左右拖动。",
-                    ) {
-                        row { ToggleRow("模糊", a.blur, enabled = !settings.eInk) { v -> update { it.copy(blur = v) } } }
-                        row { ToggleRow("液态玻璃", a.liquidGlass, enabled = !settings.eInk) { v -> update { it.copy(liquidGlass = v) } } }
-                        row { ToggleRow("悬浮底栏", a.floatingBar) { v -> update { it.copy(floatingBar = v) } } }
+                    // 每个开关的作用写在它自己下面，不堆在组末一大段。
+                    GroupedSection(header = "效果") {
+                        row { ToggleRow("模糊", a.blur, enabled = !settings.eInk, subtitle = "顶栏、底栏和面板透出后面的内容") { v -> update { it.copy(blur = v) } } }
+                        row { ToggleRow("液态玻璃", a.liquidGlass, enabled = !settings.eInk, subtitle = "玻璃边缘的折射和高光") { v -> update { it.copy(liquidGlass = v) } } }
+                        row { ToggleRow("悬浮底栏", a.floatingBar, subtitle = "底栏浮在内容上，按住可以左右拖动") { v -> update { it.copy(floatingBar = v) } } }
                     }
-                    GroupedSection(footer = "关掉玻璃、动画和环境光变色，书页纯黑白，翻页不带动画。墨水屏阅读器和旧手机用。") {
-                        row { ToggleRow("墨水屏 / 省电模式", settings.eInk) { v -> vm.updateSettings { it.copy(eInk = v) } } }
+                    GroupedSection {
+                        row {
+                            ToggleRow("墨水屏 / 省电模式", settings.eInk, subtitle = "关掉玻璃、动画和环境光变色，书页纯黑白") { v -> vm.updateSettings { it.copy(eInk = v) } }
+                        }
                     }
                     val steps = Appearance.SCALES
                     val index = steps.indexOfFirst { kotlin.math.abs(it - a.scale) < 0.001f }.takeIf { it >= 0 } ?: steps.indexOf(1f)
                     GroupedSection(
-                        header = "动画与缩放",
-                        footer = "界面缩放调整整个界面的显示比例。书页的配色、字体、排版在阅读页的“设置”里调。",
+                        header = "动画与大小",
+                        footer = "书页的配色、字体、排版在阅读页的“外观”里调。",
                     ) {
                         row {
                             PickerRow("页面切换动画", PageTransition.entries.map { it to it.label }, a.transition, enabled = !settings.eInk) { t ->
@@ -124,16 +123,13 @@ fun ThemeScreen(vm: AppViewModel) {
                             }
                         }
                         row {
-                            SliderRow(
+                            LabeledSliderRow(
+                                title = "界面缩放",
                                 value = index.toFloat(),
-                                onValueChange = { v -> update { it.copy(scale = steps[kotlin.math.round(v).toInt().coerceIn(steps.indices)]) } },
+                                valueText = "${(steps[index] * 100).toInt()}%",
                                 valueRange = 0f..steps.lastIndex.toFloat(),
                                 steps = steps.size - 2,
-                                label = "界面缩放",
-                                valueText = "${(steps[index] * 100).toInt()}%",
-                                start = { Text("A", color = c.secondary, fontSize = 13.sp) },
-                                end = { Text("A", color = c.secondary, fontSize = 21.sp) },
-                            )
+                            ) { v -> update { it.copy(scale = steps[kotlin.math.round(v).toInt().coerceIn(steps.indices)]) } }
                         }
                     }
                 }
@@ -219,16 +215,14 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
     }
 }
 
-/** 强调色：默认，加几种中国传统色。圆点看着小，能点的范围 48dp。 */
-@OptIn(ExperimentalLayoutApi::class)
+/** 强调色：默认（miuix 蓝），加几种中国传统色，排成一行，放不下就左右滑。选中的那个打勾、外圈弹出来。圆点看着小，能点的范围 48dp。 */
 @Composable
 private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
     val c = LocalGroupedColors.current
-    FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp)) {
         (listOf(0) + Appearance.ACCENTS).forEach { color ->
             val on = color == accent
-            // 选中的那个外圈弹出来。
-            val ring by animateDpAsState(if (on) 2.5.dp else 0.dp, Motion.pop(), label = "ring")
+            val ring by animateDpAsState(if (on) 2.dp else 0.dp, Motion.pop(), label = "ring")
             Box(
                 Modifier
                     .size(48.dp)
@@ -242,14 +236,20 @@ private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
             ) {
                 Box(
                     Modifier
-                        .size(34.dp)
-                        .border(ring.coerceAtLeast(0.dp), c.label.copy(alpha = if (on) 0.85f else 0f), CircleShape)
+                        .size(36.dp)
+                        .border(ring.coerceAtLeast(0.dp), (if (color == 0) Color(0xFF3482FF) else Color(color)).copy(alpha = if (on) 1f else 0f), CircleShape)
                         .padding(4.dp)
                         .clip(CircleShape)
                         .background(if (color == 0) Color(0xFF3482FF) else Color(color)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (color == 0) Text("默认", color = Color.White, fontSize = 8.sp)
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = on,
+                        enter = Effects.enter(androidx.compose.animation.scaleIn(Motion.pop(), initialScale = 0.5f) + androidx.compose.animation.fadeIn(Motion.standard(Motion.SHORT))),
+                        exit = Effects.exit(androidx.compose.animation.fadeOut(Motion.exit())),
+                    ) {
+                        Icon(LingYueIcons.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }

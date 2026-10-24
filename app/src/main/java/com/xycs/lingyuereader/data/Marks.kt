@@ -9,7 +9,13 @@ object InlineText {
     /**
      * 解析后的行内文字：[bold] 是加粗的范围，[footnotes] 是注释角标（显示文字里的范围 → 注释的键）。
      */
-    data class Parsed(val text: String, val bold: List<IntRange>, val footnotes: List<Pair<IntRange, String>> = emptyList())
+    data class Parsed(
+        val text: String,
+        val bold: List<IntRange>,
+        val footnotes: List<Pair<IntRange, String>> = emptyList(),
+        /** AI 译文（对照显示时接在原文后面）的范围。 */
+        val translation: List<IntRange> = emptyList(),
+    )
 
     /** 注释角标的标记：NOTE_START 角标文字 NOTE_KEY 注释键 NOTE_END。用私用区字符，正文里不会出现。 */
     const val NOTE_START = '\uE000'
@@ -18,6 +24,19 @@ object InlineText {
 
     fun footnote(label: String, key: String): String = "$NOTE_START$label$NOTE_KEY$key$NOTE_END"
 
+    /** 对照显示的译文标记：TRANS_START 译文 TRANS_END，接在段落原文后面（换一行），原文的字位不变。 */
+    const val TRANS_START = '\uE003'
+    const val TRANS_END = '\uE004'
+
+    fun withTranslation(raw: String, translation: String): String = stripTranslation(raw) + "\n" + TRANS_START + translation.trim() + TRANS_END
+
+    /** 去掉接在后面的译文，还原原文。 */
+    fun stripTranslation(raw: String): String {
+        val at = raw.indexOf(TRANS_START)
+        if (at < 0) return raw
+        return raw.substring(0, if (at > 0 && raw[at - 1] == '\n') at - 1 else at)
+    }
+
     /** 去掉注释标记里的键，只留角标文字（统计字数、搜索用）。 */
     fun stripNotes(raw: String): String {
         if (NOTE_START !in raw) return raw
@@ -25,12 +44,14 @@ object InlineText {
     }
 
     fun parse(raw: String): Parsed {
-        if ("**" !in raw && NOTE_START !in raw) return Parsed(raw, emptyList())
+        if ("**" !in raw && NOTE_START !in raw && TRANS_START !in raw) return Parsed(raw, emptyList())
         // 成对的 ** 才算加粗；落单的最后一个原样保留。
         val pairs = Regex("""\*\*""").findAll(raw).count() / 2 * 2
         val sb = StringBuilder()
         val bold = mutableListOf<IntRange>()
         val notes = mutableListOf<Pair<IntRange, String>>()
+        val translation = mutableListOf<IntRange>()
+        var transStart = -1
         var boldStart = -1
         var seen = 0
         var i = 0
@@ -59,10 +80,22 @@ object InlineText {
                     continue
                 }
             }
+            if (c == TRANS_START) {
+                transStart = sb.length
+                i++
+                continue
+            }
+            if (c == TRANS_END) {
+                if (transStart >= 0 && sb.length > transStart) translation += transStart until sb.length
+                transStart = -1
+                i++
+                continue
+            }
             sb.append(c)
             i++
         }
-        return Parsed(sb.toString(), bold, notes)
+        if (transStart >= 0 && sb.length > transStart) translation += transStart until sb.length
+        return Parsed(sb.toString(), bold, notes, translation)
     }
 }
 
@@ -73,6 +106,16 @@ val Block.displayText: String?
         is Block.Heading -> InlineText.parse(text).text
         is Block.Quote -> InlineText.parse(text).text
         is Block.ListItem -> InlineText.parse(text).text
+        else -> null
+    }
+
+/** 朗读的文字：和 [displayText] 一样，但不含对照显示的 AI 译文（字位与原文一致）。 */
+val Block.spokenText: String?
+    get() = when (this) {
+        is Block.Para -> InlineText.parse(InlineText.stripTranslation(text)).text
+        is Block.Heading -> InlineText.parse(InlineText.stripTranslation(text)).text
+        is Block.Quote -> InlineText.parse(InlineText.stripTranslation(text)).text
+        is Block.ListItem -> InlineText.parse(InlineText.stripTranslation(text)).text
         else -> null
     }
 

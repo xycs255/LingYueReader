@@ -98,9 +98,11 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
             contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 16.dp),
             overscrollEffect = null,
         ) {
-            if (savedQuery.isNotBlank()) {
-                item {
-                    SmallTitle(if (hits.size >= 300) "300 处以上，只列前 300 处" else "共 ${hits.size} 处")
+            when {
+                savedQuery.isBlank() -> item { EmptyState(LingYueIcons.Search, "在这本书里找", "人名、地名、记得的一句话都行。") }
+                hits.isEmpty() -> item { EmptyState(LingYueIcons.Search, "没有找到“$savedQuery”", "换个说法，或者少打几个字试试。") }
+                else -> item {
+                    SmallTitle(if (hits.size >= 300) "300 处以上，只列前 300 处" else "共 ${hits.size} 处", textColor = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
             }
             items(hits) { hit ->
@@ -180,15 +182,14 @@ fun LibrarySearchScreen(vm: AppViewModel) {
             contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 16.dp),
             overscrollEffect = null,
         ) {
-            if (state.query.isNotEmpty()) {
-                item {
-                    val found = state.results.sumOf { it.hits.size }
+            val found = state.results.sumOf { it.hits.size }
+            when {
+                state.query.isEmpty() -> item { EmptyState(LingYueIcons.Search, "在所有书里找", "书架上每本书的正文都会搜一遍。") }
+                !state.running && found == 0 -> item { EmptyState(LingYueIcons.Search, "没有找到“${state.query}”", "换个说法，或者少打几个字试试。") }
+                else -> item {
                     SmallTitle(
-                        when {
-                            state.running -> "正在搜索 ${state.done}/${state.total} 本…"
-                            found == 0 -> "没有找到“${state.query}”"
-                            else -> "在 ${state.results.size} 本书里找到 $found 处"
-                        },
+                        if (state.running) "正在搜索 ${state.done}/${state.total} 本…" else "在 ${state.results.size} 本书里找到 $found 处",
+                        textColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
                 }
             }

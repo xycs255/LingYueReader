@@ -70,9 +70,9 @@ class TwoPageUiTest : PageTurnUiBase("SLIDE") {
     fun wideLandscapeShowsTwoPagesAndTurnsThemTogether() {
         open()
         // 状态行“1-2/N 页”：一次两页。
-        waitForText("· 1-2/")
+        waitForText("第 1-2/")
         compose.onRoot().performTouchInput { swipeLeft() }
-        waitForText("· 3-4/")
+        waitForText("第 3-4/")
     }
 }
 
@@ -83,18 +83,18 @@ class CurlUiTest : PageTurnUiBase("CURL") {
     @Test
     fun curlTurnsOnePageAtATime() {
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.onRoot().performTouchInput { swipeLeft() }
-        waitForText("· 2/")
+        waitForText("第 2/")
         // 点右边：从右下角翻。
         compose.onRoot().performTouchInput { click(centerRight.copy(x = width * 0.9f)) }
-        waitForText("· 3/")
+        waitForText("第 3/")
         // 按住右下角往左上拖：掀角跟着手指走，照样翻过去。
         compose.onRoot().performTouchInput { swipe(Offset(width * 0.95f, height * 0.9f), Offset(width * 0.1f, height * 0.75f), 300) }
-        waitForText("· 4/")
+        waitForText("第 4/")
         // 从中间往右拖回上一页。
         compose.onRoot().performTouchInput { swipe(Offset(width * 0.1f, height * 0.5f), Offset(width * 0.95f, height * 0.5f), 300) }
-        waitForText("· 3/")
+        waitForText("第 3/")
     }
 }
 
@@ -105,12 +105,12 @@ class NoAnimationUiTest : PageTurnUiBase("NONE") {
     @Test
     fun tapAndSwipeTurnPagesWithoutMovingThem() {
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.onRoot().performTouchInput { click(centerRight.copy(x = width * 0.9f)) }
-        waitForText("· 2/")
+        waitForText("第 2/")
         compose.onRoot().performTouchInput { swipeLeft() }
-        waitForText("· 3/")
+        waitForText("第 3/")
         compose.onRoot().performTouchInput { swipeRight() }
-        waitForText("· 2/")
+        waitForText("第 2/")
     }
 }

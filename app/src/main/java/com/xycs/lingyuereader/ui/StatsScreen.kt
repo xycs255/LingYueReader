@@ -69,7 +69,7 @@ fun StatsScreen(vm: AppViewModel) {
                 TopAppBar(
                     color = Color.Transparent,
                     modifier = Modifier.glassBar(),
-                    title = "阅读统计",
+                    title = "统计",
                     scrollBehavior = scrollBehavior,
                 )
             },
@@ -85,11 +85,17 @@ fun StatsScreen(vm: AppViewModel) {
                     val year = ReadingStats.total(days, today.withDayOfYear(1), today)
                     GroupedSection(footer = "连续阅读 ${ReadingStats.streak(days, today)} 天 · 阅读速度约每分钟 ${ReadingStats.charsPerMinute(days, today)} 字") {
                         row {
-                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Figure("今天", days[today]?.millis ?: 0)
-                                Figure("本周", week)
-                                Figure("本月", month)
-                                Figure("今年", year)
+                            // 今天最要紧，写大；本周、本月、今年并排小一号。
+                            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                                Text("今天", fontSize = 13.sp, color = c.secondary)
+                                val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat(), 900)
+                                Text(minutes(todayShown.toLong()), color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
+                                Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
+                                Row(Modifier.fillMaxWidth()) {
+                                    Figure("本周", week, Modifier.weight(1f))
+                                    Figure("本月", month, Modifier.weight(1f))
+                                    Figure("今年", year, Modifier.weight(1f))
+                                }
                             }
                         }
                     }
@@ -110,7 +116,17 @@ fun StatsScreen(vm: AppViewModel) {
                     }
                     val books = shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis }
                     val longest = books.firstOrNull()?.readMillis ?: 1
-                    GroupedSection(header = "各本书", footer = if (books.isEmpty()) "还没有阅读记录。" else null) {
+                    GroupedSection(header = "各本书") {
+                        if (books.isEmpty()) {
+                            row {
+                                Text(
+                                    "还没有阅读记录。一本书读满 1 分钟，就会列在这里。",
+                                    color = c.secondary,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                                )
+                            }
+                        }
                         books.forEach { b ->
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -133,12 +149,12 @@ fun StatsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun Figure(label: String, millis: Long) {
+private fun Figure(label: String, millis: Long, modifier: Modifier = Modifier) {
     // 打开统计页时数字从 0 往上数。
     val shown = animateFromZero(millis.toFloat(), 900)
     val c = LocalGroupedColors.current
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(minutes(shown.toLong()), color = c.label, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+    Column(modifier) {
+        Text(minutes(shown.toLong()), color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium)
         Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }

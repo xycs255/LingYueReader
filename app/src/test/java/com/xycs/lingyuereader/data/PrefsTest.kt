@@ -66,7 +66,7 @@ class PrefsTest {
             ttsVoice = "zh", eInk = true, dailyGoal = 25, goalReminder = false,
             pinyin = true, twoPage = false, margin = 32f, letterSpacing = 0.1f,
             customBackground = 0xFF123456.toInt(), customText = 0xFF654321.toInt(),
-            tapZones = TapZones.ONE_HAND, orientation = ReadingOrientation.LANDSCAPE, pageEdges = false,
+            tapZones = TapZones.ONE_HAND, orientation = ReadingOrientation.LANDSCAPE, pageEdges = false, boldText = true,
         )
         val appearance = Appearance(
             mode = ThemeMode.DARK, monet = true, accent = 0xFF123456.toInt(),

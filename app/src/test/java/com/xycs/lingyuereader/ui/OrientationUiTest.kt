@@ -26,7 +26,7 @@ class OrientationUiTest : PageTurnUiBase("SLIDE") {
         waitForText("测试书")
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, requested())
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, requested())
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
         compose.waitForIdle()

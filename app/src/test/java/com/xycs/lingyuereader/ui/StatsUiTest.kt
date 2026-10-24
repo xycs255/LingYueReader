@@ -87,6 +87,6 @@ class StatsUiTest {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
         // 约 1300 字、每分钟 200 字：开头处约剩 7 分钟。
-        waitForText("本章约剩 7 分钟")
+        waitForText("本章余 7 分钟")
     }
 }

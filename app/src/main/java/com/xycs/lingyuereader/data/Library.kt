@@ -67,6 +67,14 @@ class Library(private val context: Context) {
         return entries to damaged
     }
 
+    /** 来自书源（OPDS、WebDAV）的书：来源地址是 http(s)，由书源客户端下载。没设时这类地址打不开。 */
+    var remote: ((String) -> java.io.InputStream)? = null
+
+    /** 打开一份来源：书源的地址交给 [remote]，其余走 ContentResolver。 */
+    private fun openSource(uri: Uri): java.io.InputStream? =
+        if (uri.scheme == "http" || uri.scheme == "https") requireNotNull(remote) { "书源不可用" }(uri.toString())
+        else context.contentResolver.openInputStream(uri)
+
     fun describe(uris: List<Uri>): List<Picked> =
         uris.map { Picked(it, displayName(it) ?: it.lastPathSegment?.substringAfterLast('/') ?: "未命名.txt") }
 
@@ -90,7 +98,7 @@ class Library(private val context: Context) {
                 val ext = picked.name.substringAfterLast('.', "txt").lowercase()
                 require(ext.matches(Regex("[a-z0-9]{1,10}"))) { "文件扩展名无效：${picked.name}" }
                 val file = "s$i.$ext"
-                requireNotNull(context.contentResolver.openInputStream(picked.uri)) { "无法打开文件：${picked.name}" }.use { input ->
+                requireNotNull(openSource(picked.uri)) { "无法打开文件：${picked.name}" }.use { input ->
                     File(dir, file).outputStream().use { output ->
                         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                         while (true) {
@@ -116,7 +124,7 @@ class Library(private val context: Context) {
             val entry = BookEntry(
                 id = id,
                 title = title?.trim()?.ifEmpty { null } ?: content.title ?: BookParser.titleOf(files.first().name),
-                author = content.author,
+                author = content.author ?: BookParser.authorOf(files.first().name),
                 format = if (files.map { BookParser.formatOf(it.name) }.distinct().size == 1) BookParser.formatOf(files.first().name) else BookFormat.MIXED,
                 sources = sources,
                 addedAt = now,
@@ -741,7 +749,7 @@ class Library(private val context: Context) {
         sources.map { BookParser.SourceBytes(it.name, File(dir, it.file)) }
 
     private fun readUri(uri: Uri): ByteArray =
-        requireNotNull(context.contentResolver.openInputStream(uri)) { "无法打开文件" }.use { it.readBytes() }
+        requireNotNull(openSource(uri)) { "无法打开文件" }.use { it.readBytes() }
 
     private fun displayName(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->

@@ -1,5 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
@@ -195,6 +200,10 @@ fun App(vm: AppViewModel = viewModel()) {
             Screen.LibrarySearch -> LibrarySearchScreen(vm)
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
+            Screen.Ai -> AiScreen(vm)
+            Screen.Catalogs -> CatalogsScreen(vm)
+            is Screen.CatalogEdit -> CatalogEditScreen(vm, screen.catalogId)
+            is Screen.CatalogBrowse -> CatalogBrowseScreen(vm, screen)
             Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
@@ -235,7 +244,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
             TopAppBar(
                 color = Color.Transparent,
                 modifier = Modifier.glassBar(),
-                title = "灵阅",
+                title = "书架",
                 scrollBehavior = scrollBehavior,
                 actions = {
                     IconButton(onClick = {
@@ -244,8 +253,26 @@ internal fun ShelfScreen(vm: AppViewModel) {
                     }) {
                         Icon(LingYueIcons.Search, contentDescription = "搜索书架")
                     }
-                    IconButton(onClick = pickFiles, enabled = !busy) {
-                        Icon(LingYueIcons.Add, contentDescription = "导入")
+                    // “+”：从手机里选文件导入，或到书源（OPDS、WebDAV）里下载。
+                    Box {
+                        var addMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { addMenu = true }, enabled = !busy) {
+                            Icon(LingYueIcons.Add, contentDescription = "添加书")
+                        }
+                        OverlayListPopup(show = addMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { addMenu = false }) {
+                            GlassMenu {
+                                ListPopupColumn {
+                                    LingYueMenuItem("导入手机里的文件", selected = false) {
+                                        addMenu = false
+                                        pickFiles()
+                                    }
+                                    LingYueMenuItem("从书源下载", selected = false) {
+                                        addMenu = false
+                                        vm.open(Screen.Catalogs)
+                                    }
+                                }
+                            }
+                        }
                     }
                     Box(Modifier.padding(end = 12.dp)) {
                         IconButton(onClick = { moreMenu = true }) {
@@ -336,20 +363,25 @@ internal fun ShelfScreen(vm: AppViewModel) {
             .overScrollVertical()
             .nestedScroll(scrollBehavior.nestedScrollConnection)
         val contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
+            start = 16.dp,
+            end = 16.dp,
             top = padding.calculateTopPadding() + 8.dp,
             bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 20.dp,
         )
         when {
             !loaded -> Unit
             all.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
-            shelf.isEmpty() -> Text(
-                if (query.isNotBlank()) "书名和作者里没有“$query”" else "这个分组里还没有书。长按书籍，选“分组…”加进来。",
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(padding).padding(top = 48.dp),
-            )
+            shelf.isEmpty() -> if (query.isNotBlank()) {
+                EmptyState(
+                    LingYueIcons.Search,
+                    "书名和作者里没有“${query.trim()}”",
+                    "可以到所有书的正文里找找。",
+                    Modifier.padding(padding),
+                    action = "在正文里搜索" to { vm.openLibrarySearch(query) },
+                )
+            } else {
+                EmptyState(LingYueIcons.Book, "这个分组里还没有书", "长按书，选“分组…”把它加进来。", Modifier.padding(padding))
+            }
             shelfPrefs.list -> LazyColumn(
                 modifier = listModifier,
                 contentPadding = contentPadding,
@@ -365,12 +397,13 @@ internal fun ShelfScreen(vm: AppViewModel) {
                     ShelfRow(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
                 }
             }
+            // 手机竖屏一行三本，平板、横屏按宽度多放几本。
             else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(108.dp),
+                columns = GridCells.Adaptive(100.dp),
                 modifier = listModifier,
                 contentPadding = contentPadding,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
                 overscrollEffect = null,
             ) {
                 if (continueReading != null) {
@@ -447,36 +480,13 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
 
 @Composable
 private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
-    Column(
-        modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        GlassCard(Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    LingYueIcons.Notes,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MiuixTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("书架还是空的", style = MiuixTheme.textStyles.title3, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "支持 TXT（自动识别 GBK/UTF-8 与章节）、EPUB、Markdown、MOBI / AZW3、FB2，以及 PDF 和漫画 CBZ。" +
-                        "可以从手机存储或 Google 云盘等处选择文件；一次选多个文件时，可以合成一本书，适合分卷或分章的文稿。",
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(20.dp))
-                Button(onClick = onImport, colors = ButtonDefaults.buttonColorsPrimary()) {
-                    Text("导入书籍", color = MiuixTheme.colorScheme.onPrimary)
-                }
-            }
-        }
-    }
+    EmptyState(
+        LingYueIcons.Book,
+        "书架还是空的",
+        "支持 TXT、EPUB、Markdown、MOBI / AZW3、FB2，以及 PDF 和漫画 CBZ。一次选多个文件，可以合成一本书；也可以在“我的 → 书源”里从 OPDS 书库、WebDAV 文件夹下载。",
+        modifier,
+        action = "导入书籍" to onImport,
+    )
 }
 
 internal fun progressLabel(entry: BookEntry): String {
@@ -561,7 +571,7 @@ private fun rememberOpenFromCover(bookId: String, source: String, open: () -> Un
     }
 }
 
-/** 网格里的一本书：点封面阅读，点操作按钮或长按封面管理。 */
+/** 网格里的一本书：封面，下面书名、进度和一个小小的“更多”。点封面阅读，长按封面或点“更多”管理。 */
 @Composable
 private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Modifier) {
     val dialogs = remember { BookDialogState() }
@@ -569,36 +579,51 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
     val open = rememberOpenFromCover(entry.id, "grid") { vm.open(Screen.Reader(entry.id)) }
     val haptic = LocalHapticFeedback.current
     Column(modifier) {
-        Box {
-            BookCover(
-                entry.title,
-                entry.format.label,
-                modifier = open.track,
-                cover = entry.cover?.let { vm.bookFile(entry.id, it) },
-                onClick = open.click,
-                onLongPress = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    menu = true
-                },
-            )
-            Box(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
-                IconButton(
-                    onClick = { menu = true },
-                    modifier = Modifier
-                        .size(40.dp)
+        BookCover(
+            entry.title,
+            entry.author.orEmpty(),
+            modifier = open.track,
+            cover = entry.cover?.let { vm.bookFile(entry.id, it) },
+            onClick = open.click,
+            onLongPress = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                menu = true
+            },
+        )
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Text(entry.title, style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    shelfProgress(entry),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = if (entry.progress != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Box {
+                Box(
+                    Modifier
+                        .size(28.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.Black.copy(alpha = 0.5f)),
+                        .clickable(role = Role.Button) { menu = true }
+                        .semantics { contentDescription = "操作" },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(LingYueIcons.More, contentDescription = "操作", tint = Color.White)
+                    Icon(LingYueIcons.More, contentDescription = null, tint = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.size(18.dp))
                 }
                 BookMenu(entry, vm, menu, dialogs) { menu = false }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Text(entry.title, style = MiuixTheme.textStyles.body2, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(progressLabel(entry), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
     }
     BookDialogs(entry, vm, dialogs)
+}
+
+/** 书架格子里那行小字：读过的写读到百分之几，没读过写“未读”。 */
+internal fun shelfProgress(entry: BookEntry): String {
+    val progress = entry.progress ?: return "未读"
+    if (entry.chapterCount <= 0) return "在读"
+    return "读到 ${progress.chapterIndex.coerceIn(0, entry.chapterCount - 1) + 1}/${entry.chapterCount} 章"
 }
 
 /** 列表里的一本书：小封面、书名、作者、进度。 */
@@ -768,67 +793,76 @@ internal fun DialogButtons(confirm: String, onDismiss: () -> Unit, onConfirm: ()
     }
 }
 
+/** 生成封面的底色：低饱和的书皮色，各自偏一点暖或冷，书架上并排不撞色。 */
 private val coverColors = listOf(
-    Color(0xFF8C3B2E), Color(0xFF2F4F6B), Color(0xFF3F5E45), Color(0xFF6B4E2E),
-    Color(0xFF4B3F6B), Color(0xFF2E5E5E), Color(0xFF6B2E4B), Color(0xFF4A4A42),
+    Color(0xFF8A4A3C), Color(0xFF3E5A73), Color(0xFF4E6A4F), Color(0xFF7A6142),
+    Color(0xFF5B5274), Color(0xFF3F6B6A), Color(0xFF7B4A5E), Color(0xFF5A5A50),
 )
 
-/** 没有封面图时按书名生成一张：色块、书脊和书名。 */
+/**
+ * 没有封面图时按书名生成一张：布面色块、左边一道书脊、上方衬线书名和一道短线、下方作者。
+ * [compact] 是列表里的小封面，只写书名第一个字。
+ */
 @Composable
 fun BookCover(
     title: String,
-    label: String,
+    author: String,
     modifier: Modifier = Modifier,
     cover: java.io.File? = null,
-    /** 列表里的小封面：不写书名，只留色块。 */
     compact: Boolean = false,
     onClick: (() -> Unit)? = null,
     onLongPress: (() -> Unit)? = null,
 ) {
     val color = coverColors[Math.floorMod(title.hashCode(), coverColors.size)]
+    val ink = Color(0xFFF6EEDF)
     Card(
-        modifier = modifier.fillMaxWidth().aspectRatio(0.72f),
-        cornerRadius = 8.dp,
+        modifier = modifier.fillMaxWidth().aspectRatio(0.7f),
+        cornerRadius = if (compact) 4.dp else 6.dp,
         insideMargin = PaddingValues(0.dp),
         onClick = onClick,
         onLongPress = onLongPress,
         pressFeedbackType = PressFeedbackType.Sink,
     ) {
-        Box(Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(color)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Brush.verticalGradient(listOf(lerp(color, Color.White, 0.08f), lerp(color, Color.Black, 0.12f)))),
+        ) {
             if (cover?.isFile == true) {
                 CoverImage(cover, Modifier.fillMaxSize())
-                return@Box
-            }
-            Box(Modifier.width(if (compact) 4.dp else 8.dp).fillMaxHeight().background(Color.Black.copy(alpha = 0.18f)))
-            if (compact) {
+            } else if (compact) {
                 Text(
                     title.take(1),
-                    color = Color(0xFFF7EFE2),
+                    color = ink,
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp,
                     modifier = Modifier.align(Alignment.Center),
                 )
-                return@Box
+            } else {
+                Column(
+                    Modifier.fillMaxSize().padding(start = 16.dp, end = 10.dp, top = 18.dp, bottom = 12.dp),
+                ) {
+                    Text(
+                        title,
+                        color = ink,
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        lineHeight = 20.sp,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Box(Modifier.padding(top = 8.dp).width(18.dp).height(1.5.dp).background(ink.copy(alpha = 0.6f)))
+                    Spacer(Modifier.weight(1f))
+                    if (author.isNotBlank()) {
+                        Text(author, color = ink.copy(alpha = 0.75f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
-            Text(
-                title,
-                color = Color(0xFFF7EFE2),
-                fontFamily = FontFamily.Serif,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                lineHeight = 22.sp,
-                textAlign = TextAlign.Center,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.Center).padding(start = 18.dp, end = 10.dp),
-            )
-            Text(
-                label,
-                color = Color(0xFFF7EFE2).copy(alpha = 0.7f),
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
-            )
+            // 书脊：左边一道暗色，紧挨着一线高光，像布面精装书的折口。实物封面上也压一道，书架上看着是一本本书。
+            Box(Modifier.width(if (compact) 3.dp else 6.dp).fillMaxHeight().background(Color.Black.copy(alpha = 0.22f)))
+            Box(Modifier.padding(start = if (compact) 3.dp else 6.dp).width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.12f)))
         }
     }
 }

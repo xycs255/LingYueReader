@@ -41,17 +41,17 @@ class OneHandTapUiTest : PageTurnUiBase("SLIDE") {
     @Test
     fun tappingTheLeftEdgeTurnsForwardOneHanded() {
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.onRoot().performTouchInput { click(Offset(width * 0.1f, height * 0.8f)) }
-        waitForText("· 2/")
+        waitForText("第 2/")
         compose.onRoot().performTouchInput { click(Offset(width * 0.1f, height * 0.2f)) }
-        waitForText("· 3/")
+        waitForText("第 3/")
     }
 
     @Test
     fun pinchingChangesTheFontSize() {
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.onRoot().performTouchInput {
             pinch(center - Offset(40f, 0f), center - Offset(200f, 0f), center + Offset(40f, 0f), center + Offset(200f, 0f))
         }

@@ -63,7 +63,7 @@ class FontUiTest {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
         // 翻页模式下用导入的字体分页、显示。
-        waitForText("· 1/")
+        waitForText("第 1/")
         waitForText("测试字体灵阅")
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()

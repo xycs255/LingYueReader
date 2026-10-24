@@ -351,6 +351,86 @@ object LingYueIcons {
         }
     }
 
+    /** 星：收入生词本。 */
+    val Star by lazy {
+        glyph("Star") {
+            trace {
+                moveTo(12f, 3.6f)
+                lineTo(14.6f, 8.9f)
+                lineTo(20.4f, 9.7f)
+                lineTo(16.2f, 13.8f)
+                lineTo(17.2f, 19.6f)
+                lineTo(12f, 16.9f)
+                lineTo(6.8f, 19.6f)
+                lineTo(7.8f, 13.8f)
+                lineTo(3.6f, 9.7f)
+                lineTo(9.4f, 8.9f)
+                close()
+            }
+        }
+    }
+
+    /** 实心星：已在生词本。 */
+    val StarFill by lazy {
+        glyph("StarFill") {
+            solid {
+                moveTo(12f, 3.6f)
+                lineTo(14.6f, 8.9f)
+                lineTo(20.4f, 9.7f)
+                lineTo(16.2f, 13.8f)
+                lineTo(17.2f, 19.6f)
+                lineTo(12f, 16.9f)
+                lineTo(6.8f, 19.6f)
+                lineTo(7.8f, 13.8f)
+                lineTo(3.6f, 9.7f)
+                lineTo(9.4f, 8.9f)
+                close()
+            }
+        }
+    }
+
+    /** 复制：后面一张纸露出左上角，前面一张完整的圆角纸。 */
+    val Copy by lazy {
+        glyph("Copy") {
+            trace {
+                moveTo(9.5f, 8f)
+                lineTo(17.5f, 8f)
+                curveTo(18.6f, 8f, 19.5f, 8.9f, 19.5f, 10f)
+                lineTo(19.5f, 18.5f)
+                curveTo(19.5f, 19.6f, 18.6f, 20.5f, 17.5f, 20.5f)
+                lineTo(9.5f, 20.5f)
+                curveTo(8.4f, 20.5f, 7.5f, 19.6f, 7.5f, 18.5f)
+                lineTo(7.5f, 10f)
+                curveTo(7.5f, 8.9f, 8.4f, 8f, 9.5f, 8f)
+                close()
+            }
+            trace {
+                moveTo(16.5f, 5.5f)
+                curveTo(16.5f, 4.4f, 15.6f, 3.5f, 14.5f, 3.5f)
+                lineTo(6.5f, 3.5f)
+                curveTo(5.4f, 3.5f, 4.5f, 4.4f, 4.5f, 5.5f)
+                lineTo(4.5f, 14f)
+                curveTo(4.5f, 15.1f, 5.4f, 16f, 6.5f, 16f)
+            }
+        }
+    }
+
+    /** 划线：斜着的笔，笔下一道横线。 */
+    val Highlight by lazy {
+        glyph("Highlight") {
+            trace {
+                moveTo(14.8f, 4.6f)
+                lineTo(18.4f, 8.2f)
+                lineTo(10.2f, 16.4f)
+                lineTo(6f, 17.2f)
+                lineTo(6.8f, 13f)
+                close()
+                moveTo(12.6f, 6.8f); lineTo(16.2f, 10.4f)
+            }
+            trace { moveTo(4f, 20.5f); lineTo(20f, 20.5f) }
+        }
+    }
+
     val Tune by lazy {
         glyph("Tune") {
             trace {
@@ -398,6 +478,93 @@ object LingYueIcons {
                 curveTo(19.5f, 7.8f, 20.4f, 9.6f, 20.4f, 12f)
                 curveTo(20.4f, 14.4f, 19.5f, 16.2f, 17.8f, 17.5f)
             }
+        }
+    }
+
+    /** 文件夹：自动备份的位置。 */
+    val Folder by lazy {
+        glyph("Folder") {
+            trace {
+                moveTo(4f, 7.5f); lineTo(4f, 17.5f)
+                quadTo(4f, 19f, 5.5f, 19f); lineTo(18.5f, 19f)
+                quadTo(20f, 19f, 20f, 17.5f); lineTo(20f, 9.8f)
+                quadTo(20f, 8.3f, 18.5f, 8.3f); lineTo(12.2f, 8.3f)
+                lineTo(10.4f, 6f); lineTo(5.5f, 6f)
+                quadTo(4f, 6f, 4f, 7.5f)
+            }
+        }
+    }
+
+    /** 往上的箭头进托盘：备份出去。 */
+    val Upload by lazy {
+        glyph("Upload") {
+            trace {
+                moveTo(12f, 15f); lineTo(12f, 4.5f)
+                moveTo(7.8f, 8.7f); lineTo(12f, 4.5f); lineTo(16.2f, 8.7f)
+                moveTo(4.5f, 14.5f); lineTo(4.5f, 17.8f); quadTo(4.5f, 19.5f, 6.2f, 19.5f); lineTo(17.8f, 19.5f); quadTo(19.5f, 19.5f, 19.5f, 17.8f); lineTo(19.5f, 14.5f)
+            }
+        }
+    }
+
+    /** 往下的箭头进托盘：从备份恢复。 */
+    val Download by lazy {
+        glyph("Download") {
+            trace {
+                moveTo(12f, 4.5f); lineTo(12f, 15f)
+                moveTo(7.8f, 10.8f); lineTo(12f, 15f); lineTo(16.2f, 10.8f)
+                moveTo(4.5f, 14.5f); lineTo(4.5f, 17.8f); quadTo(4.5f, 19.5f, 6.2f, 19.5f); lineTo(17.8f, 19.5f); quadTo(19.5f, 19.5f, 19.5f, 17.8f); lineTo(19.5f, 14.5f)
+            }
+        }
+    }
+
+    /** 圆里一个 i：关于。 */
+    val Info by lazy {
+        glyph("Info") {
+            trace {
+                moveTo(12f, 3.8f)
+                arcTo(8.2f, 8.2f, 0f, true, true, 11.99f, 3.8f)
+                moveTo(12f, 11f); lineTo(12f, 16.5f)
+            }
+            solid {
+                moveTo(12f, 7.1f)
+                arcTo(1.1f, 1.1f, 0f, true, true, 11.99f, 7.1f)
+                close()
+            }
+        }
+    }
+
+    /** 一本合着的书：书架空着时用。 */
+    val Book by lazy {
+        glyph("Book") {
+            trace {
+                moveTo(6f, 4.5f); lineTo(17.5f, 4.5f); quadTo(18.5f, 4.5f, 18.5f, 5.5f); lineTo(18.5f, 19.5f); lineTo(7.5f, 19.5f)
+                quadTo(5.5f, 19.5f, 5.5f, 17.5f); lineTo(5.5f, 5f); quadTo(5.5f, 4.5f, 6f, 4.5f)
+                moveTo(5.5f, 17.5f); quadTo(5.5f, 15.5f, 7.5f, 15.5f); lineTo(18.5f, 15.5f)
+                moveTo(9.5f, 8.5f); lineTo(14.5f, 8.5f)
+            }
+        }
+    }
+
+    /** AI：四角星，右上一颗小星。 */
+    val Sparkle by lazy {
+        glyph("Sparkle") {
+            trace {
+                moveTo(11f, 4f)
+                quadTo(11.9f, 12.1f, 19f, 13f)
+                quadTo(11.9f, 13.9f, 11f, 21f)
+                quadTo(10.1f, 13.9f, 3f, 13f)
+                quadTo(10.1f, 12.1f, 11f, 4f)
+                close()
+                moveTo(18.5f, 3f); lineTo(18.5f, 7f)
+                moveTo(16.5f, 5f); lineTo(20.5f, 5f)
+            }
+        }
+    }
+
+    /** 发送：向上的箭头。 */
+    val Send by lazy {
+        glyph("Send") {
+            trace { moveTo(12f, 19f); lineTo(12f, 5f); moveTo(6f, 11f); lineTo(12f, 5f); lineTo(18f, 11f) }
         }
     }
 }

@@ -27,7 +27,7 @@ import com.xycs.lingyuereader.data.FontStore
 import com.xycs.lingyuereader.data.TextRules
 import com.xycs.lingyuereader.data.DayStats
 import com.xycs.lingyuereader.data.ReadingStats
-import com.xycs.lingyuereader.data.HtmlText
+import com.xycs.lingyuereader.data.DictGloss
 import com.xycs.lingyuereader.data.VocabWord
 import com.xycs.lingyuereader.data.Vocabulary
 import com.xycs.lingyuereader.data.Prefs
@@ -38,6 +38,36 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.remote.Catalog
+import com.xycs.lingyuereader.remote.CatalogKind
+import com.xycs.lingyuereader.remote.CatalogStore
+import com.xycs.lingyuereader.remote.RemoteClient
+import com.xycs.lingyuereader.remote.RemoteFile
+import com.xycs.lingyuereader.remote.RemoteItem
+import com.xycs.lingyuereader.remote.RemotePage
+import androidx.compose.ui.graphics.asImageBitmap
+import com.xycs.lingyuereader.ai.AiAssistant
+import com.xycs.lingyuereader.ai.AiBook
+import com.xycs.lingyuereader.ai.AiConfig
+import com.xycs.lingyuereader.ai.AiGloss
+import com.xycs.lingyuereader.ai.AiTranslate
+import com.xycs.lingyuereader.ai.TranslateTarget
+import com.xycs.lingyuereader.ai.Translations
+import com.xycs.lingyuereader.ai.AiStudy
+import com.xycs.lingyuereader.ai.AiTurn
+import com.xycs.lingyuereader.ai.AiCharacters
+import com.xycs.lingyuereader.ai.AiException
+import com.xycs.lingyuereader.ai.AnswerLength
+import com.xycs.lingyuereader.ai.BookCharacter
+import com.xycs.lingyuereader.ai.CharacterTable
+import com.xycs.lingyuereader.ai.AiHistoryItem
+import com.xycs.lingyuereader.ai.AiTask
+import com.xycs.lingyuereader.ai.NoteRange
+import com.xycs.lingyuereader.ai.AiPrompts
+import com.xycs.lingyuereader.ai.AiSession
+import com.xycs.lingyuereader.ai.AiStore
+import com.xycs.lingyuereader.ai.QuickAsk
+import com.xycs.lingyuereader.ai.ReadPos
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,6 +110,14 @@ sealed interface Screen {
     data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
+    /** AI 助手设置：服务商、模型、密钥。 */
+    data object Ai : Screen
+    /** 书源列表：OPDS 书目、WebDAV 文件夹。 */
+    data object Catalogs : Screen
+    /** 浏览一个书源的某一页（[url] 为空时是书源的首页）。 */
+    /** 添加（[catalogId] 为空）或编辑书源。 */
+    data class CatalogEdit(val catalogId: String?) : Screen
+    data class CatalogBrowse(val catalogId: String, val url: String = "", val title: String = "") : Screen
     /** 主题设置（界面的深浅色、配色、玻璃效果等）。 */
     data object Theme : Screen
     data class BookRules(val bookId: String) : Screen
@@ -616,6 +654,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _messages.value = result.fold(
                 onSuccess = {
                     when {
+                        it.failed > 0 && entry.sources.any { s -> s.uri?.startsWith("http") == true } -> "有 ${it.failed} 份文件没能从书源重新下载（网络不通，或文件已移走）"
                         it.failed > 0 -> "有 ${it.failed} 份文件无法从原位置读取（授权可能已失效），请重新导入"
                         it.changed == 0 -> "已是最新"
                         else -> "已更新 ${it.changed} 份文件"
@@ -693,7 +732,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val mode = _settings.value.chineseConvert
                 val (loaded, marks) = withContext(Dispatchers.IO) {
                     val source = library.content(entry)
-                    val content = converted(source, mode)
+                    // AI 译文（开了对照显示时）接在段落后面，原文字位不变。
+                    val content = AiTranslate.apply(converted(source, mode), AiTranslate.read(library.bookFile(entry.id, AiTranslate.FILE)))
                     val stored = library.marks(entry.id)
                     val direct = stored.resolve(source)
                     val directProgress = entry.progress?.let { TextAnchors.rebaseProgress(source, it) }
@@ -807,6 +847,475 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
 
     fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
+
+    // ---------- 书源（OPDS、WebDAV） ----------
+
+    private val catalogStore = CatalogStore(app)
+    private val _catalogs = MutableStateFlow(catalogStore.load())
+    val catalogs: StateFlow<List<Catalog>> = _catalogs.asStateFlow()
+    private val remote = RemoteClient { _catalogs.value }.also { client -> library.remote = client::open }
+
+    /** 这次打开应用以来看过的页：返回上一层时不用重新加载。 */
+    private val remotePages = object : LinkedHashMap<String, RemotePage>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RemotePage>?) = size > 40
+    }
+    private val covers = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(80)
+
+    /** 正在从书源下载的文件地址。 */
+    private val _downloading = MutableStateFlow<String?>(null)
+    val downloading: StateFlow<String?> = _downloading.asStateFlow()
+
+    fun saveCatalog(c: Catalog) {
+        val list = _catalogs.value
+        val next = if (list.any { it.id == c.id }) list.map { if (it.id == c.id) c else it } else list + c
+        _catalogs.value = next
+        catalogStore.save(next)
+        synchronized(remotePages) { remotePages.keys.removeAll { it.startsWith(c.id + "|") } }
+    }
+
+    fun removeCatalog(id: String) {
+        val next = _catalogs.value.filterNot { it.id == id }
+        _catalogs.value = next
+        catalogStore.save(next)
+    }
+
+    /** “测试连接”：打开首页，回来就说明地址和账号都对。 */
+    suspend fun testCatalog(c: Catalog): String {
+        val probe = RemoteClient { _catalogs.value.filterNot { it.id == c.id } + c }
+        val page = probe.page(c, c.url.trim())
+        val books = page.items.count { it is RemoteItem.Book }
+        val folders = page.items.size - books
+        return "连接正常：「${page.title}」里有 " + listOfNotNull(
+            folders.takeIf { it > 0 }?.let { "$it 个${if (c.kind == CatalogKind.OPDS) "分类" else "文件夹"}" },
+            books.takeIf { it > 0 }?.let { "$it 本书" },
+        ).joinToString("、").ifEmpty { "0 项" }
+    }
+
+    /** 已经看过的页（没有时为空）。 */
+    fun cachedRemotePage(catalogId: String, url: String): RemotePage? = synchronized(remotePages) { remotePages["$catalogId|$url"] }
+
+    /** 打开书源的一页；[fresh] 时不用缓存。 */
+    suspend fun remotePage(catalog: Catalog, url: String, fresh: Boolean = false): RemotePage {
+        val key = "${catalog.id}|$url"
+        if (!fresh) cachedRemotePage(catalog.id, url)?.let { return it }
+        return remote.page(catalog, url).also { synchronized(remotePages) { remotePages[key] = it } }
+    }
+
+    /** OPDS 分页：取下一页，接在后面。 */
+    suspend fun remoteMore(catalog: Catalog, url: String, page: RemotePage): RemotePage {
+        val next = page.next ?: return page
+        val more = remote.page(catalog, next)
+        return page.copy(items = page.items + more.items, next = more.next).also { synchronized(remotePages) { remotePages["${catalog.id}|$url"] = it } }
+    }
+
+    suspend fun remoteSearch(page: RemotePage, query: String): RemotePage = remote.search(page, query)
+
+    /** 封面缩略图；取不到时为空。 */
+    suspend fun remoteCover(url: String): androidx.compose.ui.graphics.ImageBitmap? {
+        covers.get(url)?.let { return it }
+        val bytes = runCatching { remote.image(url) }.getOrNull() ?: return null
+        val bitmap = withContext(Dispatchers.Default) {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outHeight / (sample * 2) >= 240) sample *= 2
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+        } ?: return null
+        return bitmap.asImageBitmap().also { covers.put(url, it) }
+    }
+
+    /** 下载书源里的一本书，走和本地导入一样的流程加入书架。 */
+    fun downloadRemote(file: RemoteFile, title: String?) {
+        if (_downloading.value != null || _busy.value) {
+            _messages.value = "正在处理其他任务，稍后再下载"
+            return
+        }
+        _downloading.value = file.url
+        importBooks(listOf(Library.Picked(Uri.parse(file.url), file.name)), merge = false, title = title)
+        val job = importJob
+        viewModelScope.launch {
+            job?.join()
+            _downloading.value = null
+        }
+        if (job == null) _downloading.value = null
+    }
+
+    // ---------- AI ----------
+
+    private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
+    val aiConfig: StateFlow<AiConfig> = assistant.config
+    val ai: StateFlow<AiSession?> = assistant.session
+    val aiGloss: StateFlow<AiGloss?> = assistant.gloss
+
+    fun saveAiConfig(c: AiConfig) = assistant.saveConfig(c)
+
+    suspend fun testAi(c: AiConfig): String = assistant.test(c)
+
+    private fun aiBook(): AiBook? = _openBook.value?.let { AiBook(it.entry.id, it.entry.title, it.entry.author, it.content) }
+
+    /** 划选后问 AI：把选中的文字和所在段落带进面板，选区收起。 */
+    fun askAiAboutSelection() {
+        val sel = _selection.value ?: return
+        val text = selectionText()?.takeIf { it.isNotBlank() } ?: return
+        val book = aiBook() ?: return
+        val chapter = book.content.chapters.getOrNull(sel.chapterIndex)
+        // 上下文：选区所在的段落；太长时取选区前后各一截。
+        val paragraphs = (sel.start.block..sel.end.block).mapNotNull { blockText(sel.chapterIndex, it) }.joinToString("\n")
+        val context = if (paragraphs.length <= AiPrompts.CONTEXT_CHARS) {
+            paragraphs
+        } else {
+            val half = AiPrompts.CONTEXT_CHARS / 2
+            val at = sel.start.char.coerceIn(0, paragraphs.length)
+            val from = (at - half).coerceAtLeast(0)
+            paragraphs.substring(from, (from + AiPrompts.CONTEXT_CHARS).coerceAtMost(paragraphs.length))
+        }
+        val pieces = selectionPieces(sel).map { (b, r) -> NoteRange(b, r.first, r.last + 1) }
+        _selection.value = null
+        assistant.startSelection(book, text, context, chapter?.title.orEmpty(), sel.chapterIndex, pieces)
+    }
+
+    /** 这本书的 AI 对话记录，新的在前。 */
+    suspend fun aiHistory(): List<AiHistoryItem> {
+        val id = _openBook.value?.entry?.id ?: return emptyList()
+        return withContext(Dispatchers.IO) { assistant.history(id).list() }
+    }
+
+    /** 打开一段旧对话，接着问。 */
+    fun resumeAi(id: String) {
+        val book = aiBook() ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { assistant.resume(book, id) }
+            if (!ok) _messages.value = "这段对话打不开了"
+        }
+    }
+
+    fun removeAiHistory(id: String) {
+        val bookId = _openBook.value?.entry?.id ?: return
+        viewModelScope.launch(Dispatchers.IO) { assistant.history(bookId).remove(id) }
+    }
+
+    /** 把划选问 AI 的一段回答存成批注：选中的每段划上蓝线，回答记在最后一段上。 */
+    fun saveAiAsNote(answer: String) {
+        val task = ai.value?.task as? AiTask.Selection ?: return
+        val chapter = _openBook.value?.content?.chapters?.getOrNull(task.chapter)
+        if (chapter == null || task.pieces.isEmpty() || chapter.title != task.chapterTitle) {
+            _messages.value = "找不到原来选的那段文字，没能存成批注"
+            return
+        }
+        task.pieces.forEachIndexed { i, p ->
+            addNote(task.chapter, p.block, p.start, p.end, if (i == task.pieces.lastIndex) "AI：" + answer.trim().take(2000) else "", MarkColor.BLUE)
+        }
+        _messages.value = "已存为批注"
+    }
+
+    fun startRecap(chapterIndex: Int, block: Int) {
+        aiBook()?.let { assistant.startRecap(it, ReadPos(chapterIndex, block)) }
+    }
+
+    // ---------- 读书笔记 ----------
+
+    /** AI 整理的读书笔记：上次生成的（存在书目录里）、生成中边出边显示。 */
+    data class NotesState(
+        val bookId: String? = null,
+        val text: String = "",
+        val loading: Boolean = false,
+        val error: String? = null,
+        val at: Long = 0L,
+        /** 这本书有没有划线批注（没有就没法整理）。 */
+        val hasMarks: Boolean = false,
+    )
+
+    private val _readingNotes = MutableStateFlow(NotesState())
+    val readingNotes: StateFlow<NotesState> = _readingNotes.asStateFlow()
+    private var notesJob: Job? = null
+
+    fun loadReadingNotes() {
+        val book = _openBook.value ?: return
+        if (_readingNotes.value.bookId == book.entry.id && _readingNotes.value.loading) return
+        viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiStudy.NOTES_FILE)
+            val (text, at) = withContext(Dispatchers.IO) { if (file.isFile) file.readText() to file.lastModified() else "" to 0L }
+            _readingNotes.value = NotesState(book.entry.id, text, at = at, hasMarks = _marks.value.notes.isNotEmpty())
+        }
+    }
+
+    fun buildReadingNotes() {
+        val book = _openBook.value ?: return
+        val marks = notesMarkdown()
+        if (_marks.value.notes.isEmpty() || marks.isNullOrBlank()) {
+            _readingNotes.update { it.copy(error = "这本书还没有划线和批注") }
+            return
+        }
+        notesJob?.cancel()
+        val aiBook = aiBook() ?: return
+        _readingNotes.value = NotesState(book.entry.id, "", loading = true, hasMarks = true)
+        notesJob = viewModelScope.launch {
+            try {
+                val text = assistant.complete(aiBook, AiStudy.notes(book.entry.title, marks), AnswerLength.LONG) { piece ->
+                    _readingNotes.update { if (it.bookId == book.entry.id) it.copy(text = it.text + piece) else it }
+                }
+                val file = library.bookFile(book.entry.id, AiStudy.NOTES_FILE)
+                withContext(Dispatchers.IO) { runCatching { file.writeText(text) } }
+                _readingNotes.update { it.copy(text = text, loading = false, at = System.currentTimeMillis()) }
+            } catch (e: CancellationException) {
+                _readingNotes.update { it.copy(loading = false) }
+                throw e
+            } catch (e: Exception) {
+                _readingNotes.update { it.copy(loading = false, error = (e as? AiException)?.message ?: "整理失败：${e.message}") }
+            }
+        }
+    }
+
+    // ---------- 整章翻译 ----------
+
+    /** 翻译的状态：这本书的译文、正在翻译哪章、进度、出错。 */
+    data class TranslateState(
+        val bookId: String? = null,
+        val translations: Translations = Translations(),
+        val running: Int? = null,
+        val progress: String? = null,
+        val error: String? = null,
+    )
+
+    private val _translate = MutableStateFlow(TranslateState())
+    val translate: StateFlow<TranslateState> = _translate.asStateFlow()
+    private var translateJob: Job? = null
+
+    fun loadTranslations() {
+        val book = _openBook.value ?: return
+        if (_translate.value.bookId == book.entry.id) return
+        viewModelScope.launch {
+            val t = withContext(Dispatchers.IO) { AiTranslate.read(library.bookFile(book.entry.id, AiTranslate.FILE)) }
+            _translate.value = TranslateState(book.entry.id, t)
+        }
+    }
+
+    /** 默认译成什么：看这一章正文以什么文字为主。 */
+    fun defaultTranslateTarget(chapterIndex: Int): TranslateTarget =
+        _openBook.value?.let { AiTranslate.defaultTarget(it.sourceContent, chapterIndex) } ?: TranslateTarget.CHINESE
+
+    /** 翻译一章：分批发，全部译完存盘，再按对照显示重新排版（回到读到的位置）。 */
+    fun translateChapter(chapterIndex: Int, target: TranslateTarget) {
+        val book = _openBook.value ?: return
+        if (translateJob?.isActive == true) return
+        val aiBook = aiBook() ?: return
+        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
+        translateJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiTranslate.FILE)
+            val batches = withContext(Dispatchers.IO) { AiTranslate.batches(converted(book.sourceContent, _settings.value.chineseConvert).chapters[chapterIndex].blocks) }
+            _translate.update { it.copy(bookId = book.entry.id, running = chapterIndex, progress = "0/${batches.size}", error = null) }
+            val result = HashMap<Int, String>()
+            try {
+                batches.forEachIndexed { i, batch ->
+                    _translate.update { it.copy(progress = "${i}/${batches.size}") }
+                    val answer = assistant.complete(aiBook, AiTranslate.prompt(batch, target), AnswerLength.LONG)
+                    result.putAll(AiTranslate.parse(answer, batch))
+                }
+                val current = withContext(Dispatchers.IO) { AiTranslate.read(file) }
+                val next = current.copy(show = true, target = target, chapters = current.chapters + (chapterIndex to (chapter.title to result)))
+                withContext(Dispatchers.IO) { AiTranslate.write(file, next) }
+                _translate.update { it.copy(translations = next, running = null, progress = null) }
+                val missing = batches.sumOf { it.size } - result.size
+                _messages.value = if (missing > 0) "已翻译本章，有 $missing 段没译出来" else "已翻译本章"
+                reloadOpenBook()
+            } catch (e: CancellationException) {
+                _translate.update { it.copy(running = null, progress = null) }
+                throw e
+            } catch (e: Exception) {
+                _translate.update { it.copy(running = null, progress = null, error = (e as? AiException)?.message ?: "翻译失败：${e.message}") }
+            }
+        }
+    }
+
+    fun cancelTranslate() {
+        translateJob?.cancel()
+    }
+
+    /** 显示或隐藏译文（不删）。 */
+    fun setShowTranslation(show: Boolean) = updateTranslations { it.copy(show = show) }
+
+    fun deleteTranslation(chapterIndex: Int) = updateTranslations { it.copy(chapters = it.chapters - chapterIndex) }
+
+    private fun updateTranslations(transform: (Translations) -> Translations) {
+        val book = _openBook.value ?: return
+        viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiTranslate.FILE)
+            val next = withContext(Dispatchers.IO) { transform(AiTranslate.read(file)).also { AiTranslate.write(file, it) } }
+            _translate.update { it.copy(bookId = book.entry.id, translations = next) }
+            reloadOpenBook()
+        }
+    }
+
+    /** 重新打开当前这本书（排版要变时）：回到读到的位置。 */
+    private fun reloadOpenBook() {
+        val id = _openBook.value?.entry?.id ?: return
+        _openBook.value = null
+        cancelBookLoad()
+        ensureLoaded(id)
+    }
+
+    // ---------- 生词本 AI ----------
+
+    /** 正在生成的生词例句：词 → 进行中的回答。 */
+    private val _vocabAi = MutableStateFlow<Map<String, AiTurn>>(emptyMap())
+    val vocabAi: StateFlow<Map<String, AiTurn>> = _vocabAi.asStateFlow()
+    private val _vocabFilling = MutableStateFlow(false)
+    val vocabFilling: StateFlow<Boolean> = _vocabFilling.asStateFlow()
+
+    /** 生词的 AI 例句和用法：边出边显示，答完存进生词本。 */
+    fun vocabExample(word: String) {
+        val w = _vocab.value.firstOrNull { it.word == word } ?: return
+        if (_vocabAi.value[word]?.loading == true) return
+        _vocabAi.update { it + (word to AiTurn(word)) }
+        viewModelScope.launch {
+            try {
+                val text = assistant.complete(null, AiStudy.example(w.word, DictGloss.clean(w.gloss), w.context), AnswerLength.SHORT) { piece ->
+                    _vocabAi.update { m -> m[word]?.let { t -> m + (word to t.copy(answer = t.answer + piece)) } ?: m }
+                }
+                _vocab.value = withContext(Dispatchers.IO) { vocabulary.annotate(word, example = text.trim()); vocabulary.list() }
+                _vocabAi.update { it - word }
+            } catch (e: CancellationException) {
+                _vocabAi.update { it - word }
+                throw e
+            } catch (e: Exception) {
+                val message = (e as? AiException)?.message ?: "出错了：${e.message}"
+                _vocabAi.update { m -> m + (word to AiTurn(word, loading = false, error = message)) }
+            }
+        }
+    }
+
+    /** 给没有释义的生词一批批补上中文释义（带原句，按语境释义）。 */
+    fun fillVocabGlosses() {
+        if (_vocabFilling.value) return
+        val blanks = _vocab.value.filter { DictGloss.clean(it.gloss).isBlank() }
+        if (blanks.isEmpty()) {
+            _messages.value = "每个词都有释义了"
+            return
+        }
+        _vocabFilling.value = true
+        viewModelScope.launch {
+            var filled = 0
+            try {
+                for (batch in blanks.chunked(AiStudy.GLOSS_BATCH)) {
+                    val answer = assistant.complete(null, AiStudy.glosses(batch.map { it.word to it.context }), AnswerLength.SHORT)
+                    val got = AiStudy.parseGlosses(answer, batch.map { it.word }.toSet())
+                    withContext(Dispatchers.IO) { got.forEach { (w, rg) -> vocabulary.annotate(w, gloss = rg.second, reading = rg.first) } }
+                    filled += got.size
+                    _vocab.value = withContext(Dispatchers.IO) { vocabulary.list() }
+                }
+                _messages.value = if (filled > 0) "已给 $filled 个词补上释义" else "没能补上释义，请稍后再试"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.value = ((e as? AiException)?.message ?: "补释义失败：${e.message}") + if (filled > 0) "（已补 $filled 个）" else ""
+            } finally {
+                _vocabFilling.value = false
+            }
+        }
+    }
+
+    // ---------- 人物表 ----------
+
+    /** 人物表的状态：表（没整理过时为空）、正在整理时的进度、出错、读到处还有多少字没整理。 */
+    data class CharacterState(
+        val bookId: String? = null,
+        val table: CharacterTable? = null,
+        val running: Boolean = false,
+        val progress: String? = null,
+        val error: String? = null,
+        val pendingChars: Int = 0,
+        val pendingChunks: Int = 0,
+    )
+
+    private val _characters = MutableStateFlow(CharacterState())
+    val characters: StateFlow<CharacterState> = _characters.asStateFlow()
+    private var characterJob: Job? = null
+
+    /** 读这本书的人物表（打开书、打开人物表时调用）；[chapterIndex]、[block] 给出时顺便算还有多少没整理。 */
+    fun loadCharacters(chapterIndex: Int? = null, block: Int? = null) {
+        val book = _openBook.value ?: return
+        viewModelScope.launch {
+            val (table, pending) = withContext(Dispatchers.IO) {
+                val table = AiCharacters.read(library.bookFile(book.entry.id, AiCharacters.FILE))
+                val pending = if (chapterIndex != null && block != null) {
+                    AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
+                } else null
+                table to pending
+            }
+            _characters.update {
+                val base = if (it.bookId == book.entry.id) it else CharacterState(bookId = book.entry.id)
+                base.copy(
+                    table = if (base.running) base.table else table,
+                    pendingChars = pending?.sumOf { c -> c.text.length } ?: base.pendingChars,
+                    pendingChunks = pending?.size ?: base.pendingChunks,
+                )
+            }
+        }
+    }
+
+    /** 整理人物表：从上次整理到的地方到读者读到的地方，分段发，每段整理完就存盘。 */
+    fun buildCharacters(chapterIndex: Int, block: Int) {
+        val book = _openBook.value ?: return
+        if (characterJob?.isActive == true) return
+        val aiBook = aiBook() ?: return
+        characterJob = viewModelScope.launch {
+            val file = library.bookFile(book.entry.id, AiCharacters.FILE)
+            var table = withContext(Dispatchers.IO) { AiCharacters.read(file) }
+            val chunks = withContext(Dispatchers.IO) {
+                AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
+            }
+            _characters.value = CharacterState(book.entry.id, table, running = true, pendingChars = chunks.sumOf { it.text.length }, pendingChunks = chunks.size)
+            try {
+                chunks.forEachIndexed { i, chunk ->
+                    _characters.update { it.copy(progress = "正在整理第 ${i + 1}/${chunks.size} 段") }
+                    val answer = assistant.complete(aiBook, AiCharacters.prompt(table?.characters.orEmpty(), chunk.text), AnswerLength.LONG)
+                    val list = AiCharacters.parse(answer)
+                    val next = CharacterTable(list, chunk.end.chapter, chunk.end.block, System.currentTimeMillis())
+                    withContext(Dispatchers.IO) { AiCharacters.write(file, next) }
+                    table = next
+                    val rest = chunks.drop(i + 1)
+                    _characters.update { it.copy(table = next, pendingChars = rest.sumOf { c -> c.text.length }, pendingChunks = rest.size) }
+                }
+                _characters.update { it.copy(running = false, progress = null, error = null) }
+            } catch (e: CancellationException) {
+                _characters.update { it.copy(running = false, progress = null) }
+                throw e
+            } catch (e: Exception) {
+                _characters.update { it.copy(running = false, progress = null, error = (e as? AiException)?.message ?: "整理失败：${e.message}") }
+            }
+        }
+    }
+
+    fun cancelCharacters() {
+        characterJob?.cancel()
+    }
+
+    /** 查词时认出人名：这本书的人物表里有这个名字或别称。 */
+    fun characterFor(word: String): BookCharacter? {
+        val s = _characters.value
+        if (s.bookId != _openBook.value?.entry?.id) return null
+        return s.table?.find(word)
+    }
+
+    fun startAskBook(chapterIndex: Int, block: Int) {
+        aiBook()?.let { assistant.startAskBook(it, ReadPos(chapterIndex, block)) }
+    }
+
+    fun askAi(q: QuickAsk) = assistant.ask(q)
+
+    fun askAi(question: String) = assistant.ask(question)
+
+    fun regenerateRecap() = assistant.recap()
+
+    fun retryAi() = assistant.retry()
+
+    fun closeAi() = assistant.close()
+
+    /** 查词面板里的“AI 释义”。 */
+    fun glossLookup() {
+        val l = _lookup.value ?: return
+        assistant.gloss(aiBook(), l.word, l.context)
+    }
 
     // ---------- 查词 ----------
 
@@ -961,6 +1470,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun showLookup(l: Lookup) {
+        assistant.clearGloss(keep = l.word)
         _lookup.value = l
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching { dictionaries.lookup(l.word) }.getOrNull() }
@@ -981,11 +1491,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val r = l.result
         val word = r?.words?.firstOrNull()
         val char = r?.chars?.firstOrNull()?.takeIf { l.word.codePointCount(0, l.word.length) == 1 }
-        val reading = word?.pinyin ?: char?.readings?.firstOrNull() ?: ""
+        // 导入词典的一条往往先是目录、部首笔画，挑出读音和带义项编号的那几段。
+        val imported = r?.imported?.firstOrNull()?.second?.firstOrNull()?.html?.let { DictGloss.summarize(it) }
+        val reading = word?.pinyin ?: char?.readings?.firstOrNull() ?: imported?.reading ?: ""
         val gloss = when {
             word != null -> word.definitions.take(3).joinToString("；")
             char != null && char.definition.isNotBlank() -> char.definition
-            else -> r?.imported?.firstOrNull()?.second?.firstOrNull()?.html?.let { HtmlText.plain(it).take(120) } ?: ""
+            else -> imported?.gloss ?: ""
         }
         val entry = VocabWord(
             word = l.word,
@@ -1017,6 +1529,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun vocabularyMarkdown(words: List<VocabWord>): String = vocabulary.toMarkdown(words)
 
     fun closeLookup() {
+        assistant.clearGloss()
         _lookup.value = null
     }
 

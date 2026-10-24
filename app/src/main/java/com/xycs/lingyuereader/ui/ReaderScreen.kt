@@ -1,118 +1,120 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.getValue
-import com.xycs.lingyuereader.ui.glass.GlassSheet
-import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
-import com.xycs.lingyuereader.ui.glass.glassHighlight
-import com.xycs.lingyuereader.ui.glass.readerGlass
-import com.xycs.lingyuereader.ui.glass.recordGlass
-import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
-import com.xycs.lingyuereader.tts.ReadAloud
-import androidx.core.content.ContextCompat
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.compose.rememberLauncherForActivityResult
-import android.os.Build
-import android.content.pm.ActivityInfo
-import android.content.pm.PackageManager
 import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.os.Build
 import android.view.WindowManager
 import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.ui.geometry.isSpecified
-import androidx.compose.ui.unit.DpSize
-import androidx.compose.foundation.magnifier
-import androidx.compose.ui.unit.Dp
-import androidx.compose.foundation.Canvas
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.animation.core.Animatable
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
-import com.xycs.lingyuereader.data.TapZones
-import com.xycs.lingyuereader.data.ReadingOrientation
-import com.xycs.lingyuereader.data.TapAction
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import com.xycs.lingyuereader.ReturnPoint
-import top.yukonga.miuix.kmp.blur.Backdrop
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.magnifier
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.runtime.withFrameMillis
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerEventPass
-import kotlin.math.roundToInt
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -121,27 +123,50 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Lookup
 import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.ReturnPoint
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.ai.AiAssistant
+import com.xycs.lingyuereader.ai.AiSession
+import com.xycs.lingyuereader.ai.AiTask
 import com.xycs.lingyuereader.data.BookContent
-import com.xycs.lingyuereader.data.ReadingStats
 import com.xycs.lingyuereader.data.BookEntry
+import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
-import com.xycs.lingyuereader.data.layoutKey
-import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.ReadingOrientation
+import com.xycs.lingyuereader.data.ReadingStats
+import com.xycs.lingyuereader.data.TapAction
+import com.xycs.lingyuereader.data.TapZones
 import com.xycs.lingyuereader.data.TextAnchors
+import com.xycs.lingyuereader.data.displayText
+import com.xycs.lingyuereader.data.layoutKey
+import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.ui.glass.GlassMenu
+import com.xycs.lingyuereader.ui.glass.GlassSheet
+import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
+import com.xycs.lingyuereader.ui.glass.glassHighlight
+import com.xycs.lingyuereader.ui.glass.readerGlass
+import com.xycs.lingyuereader.ui.glass.recordGlass
+import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
+import top.yukonga.miuix.kmp.basic.ListPopupColumn
+import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
-import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
@@ -156,12 +181,16 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val systemDark = isSystemInDarkTheme()
     val theme = when {
         settings.theme == ReaderTheme.NIGHT -> ReaderTheme.NIGHT
+        // 自己选了深色的灰蓝，不再换成墨夜。
+        settings.theme == ReaderTheme.SLATE -> ReaderTheme.SLATE
         lightLevel == LightLevel.DARK -> ReaderTheme.NIGHT
         lightLevel == null && settings.autoNight && systemDark -> ReaderTheme.NIGHT
         else -> settings.theme
     }
     val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f
-    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(settings.paletteOf(theme).adjusted(dim, warmth))
+    // 亲手换的配色（主题、自定义颜色）快速过渡；环境光、变暖慢慢来。
+    val chosenPalette = Triple(settings.theme, settings.customBackground, settings.customText)
+    val palette = if (eInk) Effects.eInkPalette(settings.theme == ReaderTheme.NIGHT) else animatePalette(settings.paletteOf(theme).adjusted(dim, warmth), chosenPalette)
 
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -245,7 +274,8 @@ internal fun pageLayoutChar(chapter: com.xycs.lingyuereader.data.Chapter, block:
 
 private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
-    data object Settings : ReaderSheet
+    /** 阅读设置；[more] 为真时从“更多设置”那页开始（菜单里的“设置”），否则从“外观”开始。 */
+    data class Settings(val more: Boolean = false) : ReaderSheet
     data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
     /** 跨段落划线。 */
     data object MultiNote : ReaderSheet
@@ -270,6 +300,10 @@ private fun Reader(
     palette: ReaderPalette,
 ) {
     val marks by vm.marks.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val aiSession by vm.ai.collectAsStateWithLifecycle()
+    // 人物表在本机：打开书时读进来，查词时认人名。
+    LaunchedEffect(entry.id) { vm.loadCharacters() }
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
     // 注音要读字表，后台准备好再用。
@@ -277,12 +311,20 @@ private fun Reader(
         value = if (settings.pinyin) vm.pinyinAnnotator() else null
     }
     val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
+    // 翻页模式分好的页：换章时阅读区重建，这份留着，前后章不必重分。
+    val pageCache = remember(content) { PageCache() }
+    // 正在翻的那一页翻到哪：书页厚度跟着它走。
+    val pageTurn = remember(content) { PageTurn() }
     val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent) }
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
     val chapter = content.chapters[chapterIndex]
     var menuVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<ReaderSheet?>(null) }
+    // AI 工具面板（对话记录、人物表、读书笔记）。
+    var aiTool by remember { mutableStateOf<AiTool?>(null) }
+    // 面板一打开，菜单就收起：不然菜单的玻璃条压在面板后面，关掉面板时还挂在那儿。
+    LaunchedEffect(sheet) { if (sheet != null) menuVisible = false }
     val turner = remember { Turner() }
     val context = LocalContext.current
 
@@ -337,6 +379,11 @@ private fun Reader(
         readTracker.last = at
         readTracker.at = now
     }
+    // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
+    val bookFraction = run {
+        val total = chapterStarts.last().coerceAtLeast(1)
+        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+    }
     val readingStats by vm.readingStats.collectAsStateWithLifecycle()
     val speed = remember(readingStats) { ReadingStats.charsPerMinute(readingStats) }
     val chapterLeft = remember(pos.fraction, chapter, speed) {
@@ -344,7 +391,7 @@ private fun Reader(
         when {
             chapter.charCount == 0 -> null // 漫画、PDF 没有文字，估不出时间
             minutes < 1f -> "本章不到 1 分钟"
-            else -> "本章约剩 ${kotlin.math.ceil(minutes).toInt()} 分钟"
+            else -> "本章余 ${kotlin.math.ceil(minutes).toInt()} 分钟"
         }
     }
 
@@ -376,7 +423,7 @@ private fun Reader(
             delay(2000)
             landing.snapTo(0f)
         } else {
-            landing.animateTo(0f, tween(1600, delayMillis = 700, easing = Motion.Standard))
+            landing.animateTo(0f, tween(Motion.LANDING_FADE, delayMillis = Motion.LANDING_HOLD, easing = Motion.Standard))
         }
     }
     val returnPoint by vm.returnPoint.collectAsStateWithLifecycle()
@@ -646,73 +693,95 @@ private fun Reader(
                         speaking = speaking,
                     )
                 }
-            } else if (settings.pageMode == PageMode.VERTICAL) {
-                key(screen, content, settings.layoutKey) {
-                    val start = remember { pos }
-                    val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
-                    VerticalReader(
-                        content = content,
-                        chapterIndex = chapterIndex,
-                        start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
-                        styles = styles,
-                        typeface = typeface,
-                        marks = marks,
-                        topInset = topInset,
-                        bottomInset = bottomInset,
-                        onTap = onTap,
-                        onLongPress = { block, char -> vm.lookupAt(chapterIndex, block, char) },
-                        onPosition = { block, char, fraction, label ->
-                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
-                        },
-                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
-                        registerTurner = { turner.turn = it },
-                        speaking = speaking,
-                        selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
-                    )
-                }
             } else {
-                // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
-                // 只在排版设置变化时重新分页；配色随环境渐变时不必。
-                key(screen, content, settings.layoutKey) {
-                    val start = remember { pos }
-                    PagedReader(
-                        content = content,
-                        chapterIndex = chapterIndex,
-                        start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
-                        styles = styles,
+                // 书页夹在两摞纸中间（书页厚度），翻页时两摞跟着换。
+                val turnedReader: @Composable () -> Unit = {
+                    if (settings.pageMode == PageMode.VERTICAL) {
+                        key(screen, content, settings.layoutKey) {
+                            val start = remember { pos }
+                            val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
+                            VerticalReader(
+                                content = content,
+                                chapterIndex = chapterIndex,
+                                start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                                styles = styles,
+                                typeface = typeface,
+                                marks = marks,
+                                topInset = topInset,
+                                bottomInset = bottomInset,
+                                onTap = onTap,
+                                onLongPress = { block, char -> vm.lookupAt(chapterIndex, block, char) },
+                                onPosition = { block, char, fraction, label ->
+                                    pos = Position(chapterIndex, block + HEADER_ITEMS, 0, char, fraction, label)
+                                },
+                                onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                                registerTurner = { turner.turn = it },
+                                speaking = speaking,
+                                turn = pageTurn,
+                                selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
+                            )
+                        }
+                    } else {
+                        // 翻页模式的分页取决于排版设置，设置一变就从当前位置重新分页。
+                        // 只在排版设置变化时重新分页；配色随环境渐变时不必。
+                        key(screen, content, settings.layoutKey) {
+                            val start = remember { pos }
+                            PagedReader(
+                                content = content,
+                                chapterIndex = chapterIndex,
+                                start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
+                                styles = styles,
+                                mode = settings.pageMode,
+                                marks = marks,
+                                // 每页顶上留出页眉。
+                                topInset = topInset + PAGE_HEADER,
+                                bottomInset = bottomInset,
+                                onTap = onTap,
+                                selector = tracker,
+                                onFootnote = { footnote = it },
+                                selected = selected,
+                                onPosition = { block, char, fraction, label ->
+                                    pos = Position(chapterIndex, block + HEADER_ITEMS, 0, pageSourceChar(chapter, block, char, settings.indent), fraction, label)
+                                },
+                                onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
+                                registerTurner = { turner.turn = it },
+                                speaking = speaking,
+                                pageCache = pageCache,
+                                turn = pageTurn,
+                            )
+                        }
+                    }
+                }
+                if (settings.pageEdges) {
+                    BookEdges(
+                        fraction = bookFraction,
+                        pageShare = pageTurn.chapterShare * chapter.charCount / chapterStarts.last().coerceAtLeast(1),
+                        turn = pageTurn,
                         mode = settings.pageMode,
-                        marks = marks,
-                        topInset = topInset,
-                        bottomInset = bottomInset,
-                        onTap = onTap,
-                        selector = tracker,
-                        onFootnote = { footnote = it },
-                        selected = selected,
-                        onPosition = { block, char, fraction, label ->
-                            pos = Position(chapterIndex, block + HEADER_ITEMS, 0, pageSourceChar(chapter, block, char, settings.indent), fraction, label)
-                        },
-                        onChapterChange = { index, fromEnd -> vm.replaceTop(Screen.Reader(entry.id, index, null, fromEnd)) },
-                        registerTurner = { turner.turn = it },
-                        speaking = speaking,
+                        palette = palette,
+                        rightToLeft = settings.pageMode == PageMode.VERTICAL,
+                        thickness = remember(content) { bookThickness(chapterStarts.last()) },
+                        content = turnedReader,
                     )
+                } else {
+                    turnedReader()
                 }
             }
         }
 
-        // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
-        val bookFraction = run {
-            val total = chapterStarts.last().coerceAtLeast(1)
-            ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
-        }
-        if (settings.pageEdges && settings.pageMode != PageMode.SCROLL) {
-            PageEdges(bookFraction, palette, rightToLeft = settings.pageMode == PageMode.VERTICAL, topInset, bottomInset)
-        }
+        // 菜单的底栏盖在页脚上时，页脚淡掉，不在底栏下面露出半行字。
+        val footerAlpha by animateFloatAsState(if (menuVisible) 0f else 1f, Motion.standard(Motion.SHORT), label = "footer")
         StatusLine(
             chapter.title,
-            listOfNotNull("${chapterIndex + 1}/${content.chapters.size}", pos.label, chapterLeft).joinToString(" · "),
+            // 左边已经写了章名，右边只写本章第几页和还剩多久（不再写“第几章 / 共几章”，免得和页码挤成“1/3 · 1/3 页”）。
+            // 翻页模式的“N/M 页”前面加“第”；滚动模式的百分比原样写。
+            listOfNotNull(pos.label.ifEmpty { null }?.let { if (it.endsWith("页")) "第 $it" else it }, chapterLeft).joinToString(" · "),
             palette,
-            Modifier.align(Alignment.BottomCenter),
+            Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = footerAlpha },
             bookFraction,
+            // 系统状态栏藏起来时，页脚补上时间和电量。
+            clock = settings.fullscreen,
+            backdrop = settings.pageMode == PageMode.SCROLL,
         )
         }
 
@@ -793,9 +862,15 @@ private fun Reader(
                 IconButton(onClick = { vm.back() }) {
                     Icon(LingYueIcons.Back, contentDescription = "返回书架", tint = palette.text)
                 }
-                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(entry.title, color = palette.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                    Text(chapter.title, color = palette.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(entry.title, color = palette.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOfNotNull(entry.author?.takeIf { it.isNotBlank() }, "已读 ${(bookFraction * 100).toInt()}%").joinToString(" · "),
+                        color = palette.secondary,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 IconButton(onClick = { vm.toggleBookmark(chapterIndex, pos.block.coerceAtLeast(0), pos.char) }) {
                     Icon(
@@ -804,15 +879,61 @@ private fun Reader(
                         tint = if (bookmarked) palette.accent else palette.text,
                     )
                 }
-                IconButton(onClick = {
-                    autoScroll = true
-                    autoPaused = false
-                    menuVisible = false
-                }) {
-                    Icon(LingYueIcons.Play, contentDescription = "自动滚动", tint = if (autoScroll) palette.accent else palette.text)
+                // AI 工具都收在这个星星按钮里：开了 AI 助手、书里有文字时才有。
+                if (aiConfig.ready && !entry.format.imageOnly) {
+                    Box {
+                        var aiMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { aiMenu = true }) {
+                            Icon(LingYueIcons.Sparkle, contentDescription = "AI", tint = palette.text)
+                        }
+                        OverlayListPopup(show = aiMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { aiMenu = false }) {
+                            GlassMenu {
+                                ListPopupColumn {
+                                    val block = pos.block.coerceAtLeast(0)
+                                    AiMenuItems(
+                                        onPick = { item ->
+                                            aiMenu = false
+                                            menuVisible = false
+                                            when (item) {
+                                                AiMenuItem.RECAP -> vm.startRecap(chapterIndex, block)
+                                                AiMenuItem.ASK_BOOK -> vm.startAskBook(chapterIndex, block)
+                                                AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
+                                                AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
+                                                AiMenuItem.NOTES -> aiTool = AiTool.NOTES
+                                                AiMenuItem.TRANSLATE -> aiTool = AiTool.TRANSLATE
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
                     Icon(LingYueIcons.Search, contentDescription = "书内搜索", tint = palette.text)
+                }
+                // 不常用的收进“更多”：自动滚动 / 自动翻页、书籍详情。
+                Box {
+                    var more by remember { mutableStateOf(false) }
+                    IconButton(onClick = { more = true }) {
+                        Icon(LingYueIcons.More, contentDescription = "更多", tint = palette.text)
+                    }
+                    OverlayListPopup(show = more, alignment = PopupPositionProvider.Align.End, onDismissRequest = { more = false }) {
+                        GlassMenu {
+                            ListPopupColumn {
+                                LingYueMenuItem(if (settings.pageMode == PageMode.SCROLL) "自动滚动" else "自动翻页", selected = autoScroll) {
+                                    more = false
+                                    autoScroll = true
+                                    autoPaused = false
+                                    menuVisible = false
+                                }
+                                LingYueMenuItem("书籍详情", selected = false) {
+                                    more = false
+                                    vm.open(Screen.Detail(entry.id))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -828,42 +949,57 @@ private fun Reader(
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                    .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
-                    .padding(top = 8.dp, bottom = 6.dp),
+                    .readerGlass(RoundedCornerShape(30.dp), palette, glassBackdrop)
+                    .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
             ) {
-                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block, false) }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    BarButton("上一章", LingYueIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
-                        goTo(chapterIndex - 1, null, false)
+                BookProgress(
+                    content,
+                    pos.chapter,
+                    pos.fraction,
+                    pageLabel = pos.label.takeIf { settings.pageMode != PageMode.SCROLL },
+                    bookFraction = bookFraction,
+                    palette = palette,
+                    onPrev = { goTo(chapterIndex - 1, null, false) },
+                    onNext = { goTo(chapterIndex + 1, null, false) },
+                ) { ch, block -> jump(ch, block, false) }
+                Box(Modifier.padding(horizontal = 4.dp, vertical = 4.dp).fillMaxWidth().height(0.5.dp).background(palette.text.copy(alpha = 0.1f)))
+                Row(Modifier.fillMaxWidth()) {
+                    BarButton("目录", LingYueIcons.ListView, palette, Modifier.weight(1f)) { sheet = ReaderSheet.Catalog }
+                    BarButton(
+                        if (listening != null) "听书中" else "听书",
+                        LingYueIcons.VolumeUp,
+                        palette,
+                        Modifier.weight(1f),
+                        active = listening != null,
+                        // 漫画、PDF 没有文字可读。
+                        enabled = !entry.format.imageOnly,
+                    ) {
+                        if (listening != null) {
+                            menuVisible = false
+                            sheet = ReaderSheet.ReadAloud
+                        } else {
+                            startListening()
+                        }
                     }
-                    BarButton("目录", LingYueIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
-                    BarButton("设置", LingYueIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
-                BarButton(
-                    if (listening != null) "听书中" else "听书",
-                    LingYueIcons.VolumeUp,
-                    if (listening != null) palette.accent else palette.text,
-                    // 漫画、PDF 没有文字可读。
-                    enabled = !entry.format.imageOnly,
-                ) {
-                    if (listening != null) {
-                        menuVisible = false
-                        sheet = ReaderSheet.ReadAloud
-                    } else {
-                        startListening()
-                    }
-                }
-                    BarButton("下一章", LingYueIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
-                        goTo(chapterIndex + 1, null, false)
-                    }
+                    BarButton("外观", null, palette, Modifier.weight(1f), active = sheet == ReaderSheet.Settings(false)) { sheet = ReaderSheet.Settings(false) }
+                    BarButton("设置", LingYueIcons.Tune, palette, Modifier.weight(1f)) { sheet = ReaderSheet.Settings(true) }
                 }
             }
         }
         // 操作条贴着选区：优先放在首行上方，放不下就放在末行（和把手）下方。放在最后，盖在其他浮层之上。
         val bounds = selected?.takeIf { textSelection?.dragging == false }?.let(tracker::bounds)
-        if (bounds != null) {
+        // 选区没了时操作条还留在原处淡出，不一下子消失。
+        var lastBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+        if (bounds != null) lastBounds = bounds
+        val barBounds = bounds ?: lastBounds
+        if (barBounds != null) {
             SelectionBar(
-                palette,
+                visible = bounds != null,
+                palette = palette,
                 onLookup = vm::lookupSelection.takeIf { textSelection?.singleBlock == true },
+                onAskAi = vm::askAiAboutSelection.takeIf { aiConfig.ready },
+                // 划线：直接用黄色划上，不弹面板；要写批注、换颜色点“批注”。
+                onHighlight = { vm.annotateSelection(MarkColor.YELLOW, "") },
                 onAnnotate = {
                     textSelection?.let { sel ->
                         if (sel.chapterIndex != chapterIndex) return@let
@@ -885,15 +1021,15 @@ private fun Reader(
                     }
                     vm.clearSelection()
                 },
-                onCancel = vm::clearSelection,
                 modifier = Modifier.layout { measurable, constraints ->
                     val bar = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
                     val gap = with(density) { 10.dp.toPx() }
-                    val handle = with(density) { 22.dp.toPx() }
+                    // 起点的圆点在首行上方、终点的在末行下方，操作条让开它们。
+                    val handle = with(density) { HANDLE_DOT.toPx() }
                     val minTop = with(density) { topInset.toPx() }
                     val maxBottom = constraints.maxHeight - with(density) { bottomInset.toPx() }
-                    val above = bounds.top - gap - bar.height
-                    val below = bounds.bottom + handle + gap
+                    val above = barBounds.top - handle - gap - bar.height
+                    val below = barBounds.bottom + handle + gap
                     val y = when {
                         above >= minTop -> above
                         below + bar.height <= maxBottom -> below
@@ -911,11 +1047,13 @@ private fun Reader(
     }
     }
 
-    val appTint = MiuixTheme.colorScheme.primary
+    // 面板的强调色：没在“主题设置”里挑过强调色、也没开 Monet 时，跟着书页走（纸白朱砂、墨夜琥珀）；挑过就用挑的。
+    val appearance by vm.appearance.collectAsStateWithLifecycle()
+    val appTint = if (appearance.accent != 0 || appearance.monet) MiuixTheme.colorScheme.primary else palette.accent
     GlassSheet(
         show = sheet == ReaderSheet.Catalog,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -936,25 +1074,41 @@ private fun Reader(
             onDeleteNote = vm::deleteNote,
             onExportNotes = { vm.notesMarkdown()?.let { shareText(context, "《${entry.title}》批注", it) } },
             tint = appTint,
+            bookTitle = entry.title,
+            author = entry.author,
+            bookFraction = bookFraction,
+            chapterFraction = pos.fraction,
+            charsPerMinute = speed.toFloat(),
+            onClose = { sheet = null },
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
     val ambient = LocalAmbientLight.current
     // 阅读设置是苹果式的分组面板：底色用分组灰（深色书页用深灰），标题和返回在面板里面。
+    // 收起动画期间还按原来那一页显示。
+    var lastSettings by remember { mutableStateOf(ReaderSheet.Settings()) }
+    (sheet as? ReaderSheet.Settings)?.let { lastSettings = it }
     GlassSheet(
-        show = sheet == ReaderSheet.Settings,
+        show = sheet is ReaderSheet.Settings,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         val fonts by vm.fonts.collectAsStateWithLifecycle()
-        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient, tint = appTint)
+        key(lastSettings.more) {
+            SettingsSheet(
+                settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient,
+                tint = appTint,
+                startWithMore = lastSettings.more,
+                onDone = { sheet = null },
+            )
+        }
     }
     GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -965,7 +1119,7 @@ private fun Reader(
     GlassSheet(
         show = paragraph != null && paragraphText != null,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -995,7 +1149,7 @@ private fun Reader(
     GlassSheet(
         show = sheet == ReaderSheet.MultiNote,
         title = null,
-        background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
@@ -1009,14 +1163,14 @@ private fun Reader(
     (sheet as? ReaderSheet.Card)?.let { lastCard = it.content }
     GlassSheet(
         show = sheet is ReaderSheet.Card,
-        title = "书摘卡片",
-        background = palette.background,
+        title = null,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         lastCard?.let { c ->
             val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
-            QuoteCardSheet(c, typeface, palette)
+            QuoteCardSheet(c, typeface, palette, appTint)
         }
     }
     // 注释面板：收起动画期间还显示原来的内容。
@@ -1024,49 +1178,74 @@ private fun Reader(
     footnote?.let { lastFootnote = it }
     GlassSheet(
         show = footnote != null,
-        title = "注释",
-        background = palette.background,
+        title = null,
+        background = readerGroupedColors(palette, appTint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { footnote = null },
     ) {
-        Text(
-            lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。",
-            color = palette.text,
-            fontSize = 16.sp,
-            lineHeight = 26.sp,
-            fontFamily = styles.fontFamily,
-            modifier = Modifier.padding(bottom = 32.dp).verticalScroll(rememberScrollState()),
-        )
+        FootnoteSheet(lastFootnote?.let { content.notes[it] } ?: "这本书里找不到这条注释。", palette, styles.fontFamily, appTint) { footnote = null }
     }
-    LookupOverlay(vm, palette) { l ->
+    // AI 面板：收起动画期间还显示原来的内容。
+    var lastAi by remember { mutableStateOf<AiSession?>(null) }
+    aiSession?.let { lastAi = it }
+    GlassSheet(
+        show = aiSession != null,
+        title = null,
+        background = readerGroupedColors(palette, appTint).background,
+        highlight = glassHighlight(palette.isDark, big = true),
+        onDismissRequest = vm::closeAi,
+    ) {
+        lastAi?.let { s ->
+            AiSheet(
+                s,
+                aiConfig,
+                palette,
+                appTint,
+                AiActions(
+                    ask = vm::askAi,
+                    askKind = vm::askAi,
+                    retry = vm::retryAi,
+                    regenerate = vm::regenerateRecap,
+                    saveNote = vm::saveAiAsNote.takeIf { (s.task as? AiTask.Selection)?.pieces?.isNotEmpty() == true },
+                    jump = { ch, block ->
+                        vm.closeAi()
+                        jump(ch, block, true)
+                    },
+                ),
+            )
+        }
+    }
+    AiToolSheets(aiTool, vm, palette, appTint, chapterIndex, pos.block.coerceAtLeast(0), onClose = { aiTool = null })
+    LookupOverlay(vm, palette, appTint) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)
     }
 }
 
-/** 划选后的操作条。 */
+/** 划选后的操作条：一颗深色胶囊（墨色底、纸色字），点书页别处就收起；出现时从 0.9 倍弹出，收起时缩小淡出。 */
 @Composable
 private fun SelectionBar(
+    visible: Boolean,
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onAskAi: (() -> Unit)?,
+    onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
     onCard: () -> Unit,
-    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 出现时从 0.9 倍弹到原大小。
-    val appear = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
-    LaunchedEffect(Unit) { appear.animateTo(1f, Motion.pop()) }
-    Box(
-        modifier.graphicsLayer {
-            alpha = appear.value.coerceIn(0f, 1f)
-            val s = 0.9f + 0.1f * appear.value
-            scaleX = s
-            scaleY = s
-        },
-    ) {
-        SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCard, onCancel)
+    // 第一次出现也要弹出来（AnimatedVisibility 初始可见时不做进场动画），所以从“不可见”开始。
+    val state = remember { MutableTransitionState(false) }
+    state.targetState = visible
+    Box(modifier) {
+        AnimatedVisibility(
+            visibleState = state,
+            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.9f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.92f) + fadeOut(Motion.exit())),
+        ) {
+            SelectionBarRow(palette, onLookup, onAskAi, onHighlight, onAnnotate, onCopy, onCard)
+        }
     }
 }
 
@@ -1074,39 +1253,49 @@ private fun SelectionBar(
 private fun SelectionBarRow(
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onAskAi: (() -> Unit)?,
+    onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
     onCard: () -> Unit,
-    onCancel: () -> Unit,
 ) {
     Row(
         Modifier
-            .readerGlass(RoundedCornerShape(50), palette, LocalGlassBackdrop.current)
-            .padding(horizontal = 6.dp),
+            .shadow(12.dp, RoundedCornerShape(50))
+            .clip(RoundedCornerShape(50))
+            .background(palette.text)
+            .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 跨段落的选区不查词。
-        listOfNotNull(onLookup?.let { "查词" to it }, "划线·批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard, "取消" to onCancel).forEach { (label, action) ->
+        // 开了 AI 助手才有“问 AI”。
+        val actions = listOfNotNull(onLookup?.let { "查词" to it }, onAskAi?.let { "问 AI" to it }, "划线" to onHighlight, "批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard)
+        actions.forEachIndexed { i, (label, action) ->
+            if (i > 0) Box(Modifier.width(0.5.dp).height(18.dp).background(palette.background.copy(alpha = 0.25f)))
             Text(
                 label,
-                color = if (label == "取消") palette.secondary else palette.text,
-                fontSize = 15.sp,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = action).padding(horizontal = 12.dp, vertical = 11.dp),
+                color = palette.background,
+                fontSize = 14.sp,
+                fontWeight = if (i == 0) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(role = Role.Button, onClick = action)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
             )
         }
     }
 }
 
 @Composable
-private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: (Lookup) -> Unit) {
+private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, tint: Color, onAnnotate: (Lookup) -> Unit) {
     val lookup by vm.lookup.collectAsStateWithLifecycle()
     // 面板收起的动画期间还要显示内容，记住最后一次查的词。
     var last by remember { mutableStateOf<Lookup?>(null) }
     lookup?.let { last = it }
     GlassSheet(
         show = lookup != null,
-        title = "查词",
-        background = palette.background,
+        title = null,
+        background = readerGroupedColors(palette, tint).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = vm::closeLookup,
     ) {
@@ -1120,6 +1309,7 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: 
                     vm.closeLookup()
                     vm.open(Screen.Dictionaries)
                 },
+                tint = tint,
             )
         }
     }
@@ -1127,26 +1317,51 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, onAnnotate: 
 
 /** 全书进度条：按“第几章 + 章内比例”定位，拖动时显示将要跳到的章名，松手跳转。 */
 @Composable
-private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, palette: ReaderPalette, onJump: (Int, Int?) -> Unit) {
+private fun BookProgress(
+    content: BookContent,
+    chapter: Int,
+    fraction: Float,
+    pageLabel: String?,
+    /** 全书按字数读到哪；拖动时按拖到的章和章内位置现算。 */
+    bookFraction: Float,
+    palette: ReaderPalette,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onJump: (Int, Int?) -> Unit,
+) {
     val count = content.chapters.size
     var dragging by remember { mutableStateOf<Float?>(null) }
     val value = dragging ?: (chapter + fraction.coerceIn(0f, 0.999f))
     val target = value.toInt().coerceIn(0, count - 1)
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        Row(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+    val starts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + c.charCount } }
+    val percent = dragging?.let { v ->
+        val total = starts.last().coerceAtLeast(1)
+        ((starts[target] + (v - target).coerceIn(0f, 1f) * content.chapters[target].charCount) / total * 100).toInt()
+    } ?: (bookFraction * 100).toInt()
+    Column {
+        // 上一章 · 章名（拖动时是要跳到的那一章）· 下一章
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChapterStep("上一章", LingYueIcons.ChevronBackward, before = true, enabled = chapter > 0, palette, onPrev)
             Text(
                 content.chapters[target].title,
-                color = if (dragging != null) palette.accent else palette.secondary,
-                fontSize = 12.sp,
+                color = if (dragging != null) palette.accent else palette.text,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1f),
             )
-            Text("全书 ${(value / count * 100).toInt().coerceIn(0, 100)}%", color = palette.secondary, fontSize = 12.sp)
+            ChapterStep("下一章", LingYueIcons.ChevronForward, before = false, enabled = chapter < count - 1, palette, onNext)
         }
-        Slider(
+        // 细线进度条：读书时的菜单里它只是个位置指示，不用设置页那种粗滑块。
+        ThinSlider(
             value = value,
             onValueChange = { dragging = it },
+            valueRange = 0f..count.toFloat(),
+            label = "全书进度",
+            valueText = "全书 ${percent.coerceIn(0, 100)}%",
+            palette = palette,
             onValueChangeFinished = {
                 dragging?.let { v ->
                     val ch = v.toInt().coerceIn(0, count - 1)
@@ -1156,10 +1371,88 @@ private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, pa
                 }
                 dragging = null
             },
-            valueRange = 0f..count.toFloat(),
-            colors = SliderDefaults.sliderColors(foregroundColor = palette.accent, backgroundColor = palette.text.copy(alpha = 0.12f)),
-            modifier = Modifier.padding(bottom = 8.dp),
+            modifier = Modifier.padding(horizontal = 6.dp),
         )
+        Row(Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 4.dp)) {
+            Text("全书 ${percent.coerceIn(0, 100)}%", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            if (pageLabel != null) Text("本章 $pageLabel", color = palette.secondary, fontSize = 11.sp)
+        }
+    }
+}
+
+/** 细线滑块：3dp 的轨道、强调色的已读段、白色圆钮；整条 32dp 高都能按、能拖。读屏能读值、能调。 */
+@Composable
+private fun ThinSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    label: String,
+    valueText: String,
+    palette: ReaderPalette,
+    onValueChangeFinished: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val change by rememberUpdatedState(onValueChange)
+    val finish by rememberUpdatedState(onValueChangeFinished)
+    val span = valueRange.endInclusive - valueRange.start
+    val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+    val thumb = 18.dp
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .semantics {
+                contentDescription = label
+                stateDescription = valueText
+                progressBarRangeInfo = ProgressBarRangeInfo(value, valueRange)
+                setProgress { target -> change(target.coerceIn(valueRange.start, valueRange.endInclusive)); finish(); true }
+            }
+            .pointerInput(valueRange) {
+                val r = thumb.toPx() / 2
+                fun at(x: Float) = valueRange.start + ((x - r) / (size.width - 2 * r)).coerceIn(0f, 1f) * span
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    change(at(down.position.x))
+                    down.consume()
+                    while (true) {
+                        val e = awaitPointerEvent()
+                        val p = e.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!p.pressed) break
+                        change(at(p.position.x))
+                        p.consume()
+                    }
+                    finish()
+                }
+            }
+            .drawBehind {
+                val r = thumb.toPx() / 2
+                val y = size.height / 2
+                val track = 3.dp.toPx()
+                val x = r + fraction * (size.width - 2 * r)
+                drawRoundRect(palette.text.copy(alpha = 0.14f), Offset(r, y - track / 2), Size(size.width - 2 * r, track), CornerRadius(track / 2))
+                drawRoundRect(palette.accent, Offset(r, y - track / 2), Size(x - r, track), CornerRadius(track / 2))
+                // 圆钮：白底、一圈淡影，深色书页上也看得清。
+                drawCircle(Color.Black.copy(alpha = 0.18f), r + 1.dp.toPx(), Offset(x, y + 1.dp.toPx()))
+                drawCircle(if (palette.isDark) palette.text else Color.White, r, Offset(x, y))
+            },
+    )
+}
+
+/** 菜单里的“‹ 上一章”“下一章 ›”：强调色小字，到头了变灰。 */
+@Composable
+private fun ChapterStep(label: String, icon: ImageVector, before: Boolean, enabled: Boolean, palette: ReaderPalette, onClick: () -> Unit) {
+    val color = if (enabled) palette.accent else palette.secondary.copy(alpha = 0.5f)
+    Row(
+        Modifier
+            .heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+        Text(label, color = color, fontSize = 13.sp)
+        if (!before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
     }
 }
 
@@ -1198,7 +1491,7 @@ private class PressRing {
         job = scope.launch {
             progress.snapTo(1f)
             burst.snapTo(0f)
-            burst.animateTo(1f, tween(280, easing = Motion.Standard))
+            burst.animateTo(1f, tween(Motion.MEDIUM, easing = Motion.Standard))
             at = Offset.Unspecified
             burst.snapTo(0f)
             progress.snapTo(0f)
@@ -1230,33 +1523,6 @@ private fun PressRingOverlay(ring: PressRing, color: Color) {
             size = Size(r * 2, r * 2),
             style = Stroke(stroke, cap = StrokeCap.Round),
         )
-    }
-}
-
-/**
- * 书页厚度：屏幕两侧画几道细线，左边是读过的、右边是还没读的（竖排反过来），
- * 读得越多左边越厚。纸书拿在手里就能感到这个，电子书读者恰恰在“情节先后”上记得更差（Mangen 等 2019）。
- */
-@Composable
-private fun PageEdges(fraction: Float, palette: ReaderPalette, rightToLeft: Boolean, topInset: Dp, bottomInset: Dp) {
-    val shown by animateFloatAsState(fraction, Motion.standard(Motion.MEDIUM), label = "edges")
-    Canvas(Modifier.fillMaxSize()) {
-        val lines = 6
-        // 读满一份才多一道，刚翻开时左边没有。
-        val read = (shown * lines).toInt().coerceIn(0, lines)
-        val gap = 2.dp.toPx()
-        val stroke = 1.dp.toPx()
-        val top = topInset.toPx() + 12.dp.toPx()
-        val bottom = size.height - bottomInset.toPx() - 12.dp.toPx()
-        fun side(count: Int, fromLeft: Boolean) {
-            for (i in 0 until count) {
-                val x = if (fromLeft) gap + i * gap else size.width - gap - i * gap
-                // 越靠外越淡，像纸页一层层叠着。
-                drawLine(palette.secondary.copy(alpha = 0.32f - i * 0.04f), Offset(x, top + i * 1.5f), Offset(x, bottom - i * 1.5f), stroke)
-            }
-        }
-        side(if (rightToLeft) lines - read else read, fromLeft = true)
-        side(if (rightToLeft) read else lines - read, fromLeft = false)
     }
 }
 
@@ -1295,32 +1561,50 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
 }
 
 @Composable
-private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f) {
-    val time = rememberClock()
-    val battery = rememberBattery()
-    // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳。
-    val shown by animateFloatAsState(bookFraction, Motion.standard(Motion.MEDIUM), label = "book")
-    Row(
+private fun StatusLine(
+    title: String,
+    label: String,
+    palette: ReaderPalette,
+    modifier: Modifier,
+    bookFraction: Float = 0f,
+    clock: Boolean = false,
+    /** 滚动模式正文会滚到页脚底下，要垫一层底色；翻页模式书页本来就停在页脚上面，不垫，免得盖住两侧的书口。 */
+    backdrop: Boolean = true,
+) {
+    // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳：滚动时一小步一小步来，匀速跟上、不拖尾；跳章这种大步才缓动过去。
+    val shown = remember { Animatable(bookFraction) }
+    LaunchedEffect(bookFraction) {
+        val step = abs(bookFraction - shown.value)
+        when {
+            Effects.noMotion || step < 0.0005f -> shown.snapTo(bookFraction)
+            step < 0.02f -> shown.animateTo(bookFraction, tween(Motion.SHORT, easing = LinearEasing))
+            else -> shown.animateTo(bookFraction, Motion.standard(Motion.MEDIUM))
+        }
+    }
+    // 页脚：一根全书进度细线，下面一行小字——左边章名，右边页码和本章还剩多久。
+    Column(
         modifier
             .fillMaxWidth()
-            .background(palette.background.copy(alpha = 0.92f))
-            .drawBehind {
-                // 顶上一根细线：全书的进度。
-                val h = 1.5.dp.toPx()
-                val inset = 24.dp.toPx()
-                val w = size.width - inset * 2
-                drawRect(palette.secondary.copy(alpha = 0.18f), topLeft = Offset(inset, 0f), size = Size(w, h))
-                drawRect(palette.accent.copy(alpha = 0.55f), topLeft = Offset(inset, 0f), size = Size(w * shown, h))
-            }
+            .background(if (backdrop) palette.background.copy(alpha = 0.92f) else Color.Transparent)
             .semantics { contentDescription = "全书已读 ${(bookFraction * 100).toInt()}%" }
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 24.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = 28.dp, end = 28.dp, top = 6.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Text(title, color = palette.secondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text(label, color = palette.secondary, fontSize = 11.sp)
-        Text(time, color = palette.secondary, fontSize = 11.sp)
-        battery?.let { Text("电量 $it%", color = palette.secondary, fontSize = 11.sp) }
+        Box(
+            Modifier.fillMaxWidth().height(1.dp).drawBehind {
+                drawRect(palette.text.copy(alpha = 0.12f))
+                drawRect(palette.accent, size = Size(size.width * shown.value, size.height))
+            },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(label, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em)
+            if (clock) {
+                Text(rememberClock(), color = palette.secondary, fontSize = 11.sp)
+                rememberBattery()?.let { Text("$it%", color = palette.secondary, fontSize = 11.sp) }
+            }
+        }
     }
 }
 
@@ -1364,16 +1648,39 @@ private fun rememberBattery(): Int? {
 }
 
 @Composable
-private fun BarButton(label: String, icon: ImageVector, tint: Color, enabled: Boolean = true, onClick: () -> Unit) {
-    val color = if (enabled) tint else tint.copy(alpha = 0.3f)
+private fun BarButton(
+    label: String,
+    icon: ImageVector?,
+    palette: ReaderPalette,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val target = when {
+        !enabled -> palette.text.copy(alpha = 0.3f)
+        active -> palette.accent
+        else -> palette.text
+    }
+    val color by animateColorAsState(target, Motion.standard(Motion.SHORT), label = "barButton")
+    val fill by animateColorAsState(palette.accent.copy(alpha = if (active) 0.1f else 0f), Motion.standard(Motion.SHORT), label = "barButtonFill")
+    val source = remember { MutableInteractionSource() }
+    // 一格：上面图标（“外观”是衬线的 Aa），下面小字；开着的那项底下铺一层淡强调色。
     Column(
-        Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+        modifier
+            .height(60.dp)
+            .pressScale(source, 0.94f)
+            .clip(RoundedCornerShape(16.dp))
+            .background(fill)
+            .clickable(enabled = enabled, role = Role.Button, interactionSource = source, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+        } else {
+            Text("Aa", color = color, fontSize = 19.sp, lineHeight = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
+        }
         Text(label, color = color, fontSize = 12.sp)
     }
 }

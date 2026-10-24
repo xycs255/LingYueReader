@@ -32,6 +32,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -136,7 +139,7 @@ fun Bitmap.writePng(file: File): File {
 
 /** 书摘卡片面板：选配色、预览、分享或保存成图片。 */
 @Composable
-internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, palette: ReaderPalette) {
+internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, palette: ReaderPalette, tint: Color = palette.accent) {
     val context = LocalContext.current
     var style by rememberSaveable { mutableStateOf(CardStyle.PAPER) }
     val bitmap = remember(content, style, typeface) { renderQuoteCard(content, style, typeface) }
@@ -148,54 +151,26 @@ internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, pale
             context.contentResolver.openOutputStream(uri)!!.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
     }
-    Column(
-        Modifier
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 24.dp),
-    ) {
-        Row(
-            Modifier.padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            CardStyle.entries.forEach { s ->
-                val on = s == style
-                Text(
-                    s.label,
-                    color = if (on) palette.accent else palette.text,
-                    fontSize = 14.sp,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .clickable { style = s }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                )
+    // 标题栏右边“分享”；预览下面选配色，再下面“保存图片”。
+    ProvideReaderColors(palette, tint) {
+        val c = LocalGroupedColors.current
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            SheetNavBar("书摘卡片", back = null, action = "分享" to { shareCard(context, bitmap) }) {}
+            Image(
+                bitmap.asImageBitmap(),
+                contentDescription = "书摘卡片预览",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .padding(horizontal = 32.dp, vertical = 12.dp)
+                    .fillMaxWidth()
+                    .shadow(8.dp, RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp))
+                    .border(0.5.dp, c.separator, RoundedCornerShape(12.dp)),
+            )
+            SegmentedControl(CardStyle.entries.map { it to it.label }, style, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { style = it }
+            GroupedSection {
+                row { ActionRow("保存图片", centered = true) { save.launch("书摘-${content.bookTitle}-${System.currentTimeMillis() / 1000}.png") } }
             }
-        }
-        Image(
-            bitmap.asImageBitmap(),
-            contentDescription = "书摘卡片预览",
-            contentScale = ContentScale.FillWidth,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .border(1.dp, palette.secondary.copy(alpha = 0.3f), RoundedCornerShape(12.dp)),
-        )
-        Row(
-            Modifier.fillMaxWidth().padding(top = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            TextButton(
-                text = "保存图片",
-                onClick = { save.launch("书摘-${content.bookTitle}-${System.currentTimeMillis() / 1000}.png") },
-                colors = ButtonDefaults.textButtonColors(color = palette.text.copy(alpha = 0.06f), textColor = palette.text),
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(
-                text = "分享",
-                onClick = { shareCard(context, bitmap) },
-                colors = ButtonDefaults.textButtonColors(color = palette.accent, textColor = palette.background),
-                modifier = Modifier.weight(1f),
-            )
         }
     }
 }

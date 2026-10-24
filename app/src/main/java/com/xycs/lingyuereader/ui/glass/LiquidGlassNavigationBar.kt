@@ -8,6 +8,7 @@ package com.xycs.lingyuereader.ui.glass
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -74,6 +75,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
+import com.xycs.lingyuereader.ui.Effects
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BadgedBox
 import top.yukonga.miuix.kmp.basic.Icon
@@ -261,13 +263,13 @@ internal fun LiquidGlassNavigationBar(
                 }
                 updateValue(targetIndex.toFloat())
                 animationScope.launch {
-                    offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
+                    offsetAnimation.animateTo(0f, if (Effects.noMotion) snap() else spring(1f, 300f, 0.5f))
                 }
             },
             onDragCancelled = {
                 updateValue(currentIndex.toFloat())
                 animationScope.launch {
-                    offsetAnimation.animateTo(0f, spring(1f, 300f, 0.5f))
+                    offsetAnimation.animateTo(0f, if (Effects.noMotion) snap() else spring(1f, 300f, 0.5f))
                 }
             },
             onDrag = { _, dragAmount ->

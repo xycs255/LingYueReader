@@ -90,7 +90,7 @@ class CrossSelectionUiTest {
         openBook()
         val third = compose.onAllNodesWithText("第3段", substring = true)[0].fetchSemanticsNode().boundsInRoot
         dragFrom(1) { _, _ -> Offset(third.right - 4f, third.center.y) }
-        waitForText("划线·批注")
+        waitForText("批注")
         // 跨段落时不查词。
         compose.onNodeWithText("查词").assertDoesNotExist()
         compose.onNodeWithText("复制").performClick()
@@ -116,8 +116,8 @@ class CrossSelectionUiTest {
         openBook()
         val second = compose.onAllNodesWithText("第2段", substring = true)[0].fetchSemanticsNode().boundsInRoot
         dragFrom(1) { _, _ -> Offset(second.right - 4f, second.center.y) }
-        waitForText("划线·批注")
-        compose.onNodeWithText("划线·批注").performClick()
+        waitForText("批注")
+        compose.onNodeWithText("批注").performClick()
         waitForText("写点批注")
         compose.onNodeWithText("完成").performClick()
         // 批注在后台线程写盘，整套测试一起跑、机器忙时会慢一些。
@@ -136,7 +136,7 @@ class CrossSelectionUiTest {
         compose.mainClock.autoAdvance = false
         dragFrom(1, holdMillis = 3_000) { w, h -> Offset(w / 2, h - 4f) }
         compose.mainClock.autoAdvance = true
-        waitForText("划线·批注")
+        waitForText("批注")
         compose.onNodeWithText("复制").performClick()
         val copied = clipboard()
         // 一开始屏幕上只到十几段，自动滚动后选到了更后面。
@@ -151,7 +151,7 @@ class CrossSelectionUiTest {
         openBook()
         val third = compose.onAllNodesWithText("第3段", substring = true)[0].fetchSemanticsNode().boundsInRoot
         dragFrom(1) { _, _ -> Offset(third.right - 4f, third.center.y) }
-        waitForText("划线·批注")
+        waitForText("批注")
         val handle = compose.onNodeWithContentDescription("选区终点").fetchSemanticsNode().boundsInRoot
         compose.onRoot().performTouchInput {
             // 按在把手的下半部，往上拖到第 2 段。
@@ -179,7 +179,7 @@ class CrossSelectionUiTest {
         compose.mainClock.advanceTimeBy(1_500)
         compose.onRoot().performTouchInput { up() }
         compose.waitForIdle()
-        assertTrue(compose.onAllNodesWithText("划线·批注").fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodesWithText("批注").fetchSemanticsNodes().isEmpty())
         assertTrue(compose.onAllNodesWithText("查词").fetchSemanticsNodes().isEmpty())
     }
 }

@@ -81,6 +81,28 @@ class PaginatorTest {
         assertEquals(16, pageLayoutChar(chapter, 0, 16, false))
         assertEquals(16, pageSourceChar(chapter, 0, 16, false))
     }
+
+    @Test
+    fun pageCacheReusesChaptersUntilTheLayoutChanges() {
+        val cache = PageCache(keep = 3)
+        var runs = 0
+        fun pages(key: Any, chapter: Int) = cache.get(key, chapter) {
+            runs++
+            listOf(Page(listOf(PageItem.Title)))
+        }
+        // 读第 5 章：分 4、5、6 三章；翻进第 6 章：只多分第 7 章。
+        (4..6).forEach { pages("A", it) }
+        (5..7).forEach { pages("A", it) }
+        assertEquals(4, runs)
+        // 只留最近的三章：第 4 章已经丢掉。
+        pages("A", 4)
+        assertEquals(5, runs)
+        // 排版一变全部重分。
+        pages("B", 5)
+        assertEquals(6, runs)
+        // 章节不存在时不缓存。
+        assertEquals(null, cache.get("B", 99) { null })
+    }
 }
 
 class ChineseDetectionTest {

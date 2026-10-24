@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -36,6 +37,10 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.background
@@ -119,6 +124,9 @@ internal class ReaderStyles(
     val fontFamily: FontFamily = customFont ?: if (settings.serif) FontFamily.Serif else FontFamily.SansSerif
     private val size = settings.fontSize
 
+    /** 正文字重：打开“粗体文本”时半粗（系统字体取粗体，导入的单一字重字体由系统加粗）。 */
+    private val bodyWeight: FontWeight? = if (settings.boldText) FontWeight.SemiBold else null
+
     val gap: Dp = (size * settings.paragraphSpacing).dp
     val horizontalPadding: Dp = settings.margin.dp
 
@@ -131,6 +139,7 @@ internal class ReaderStyles(
     val para = TextStyle(
         color = palette.text,
         fontFamily = fontFamily,
+        fontWeight = bodyWeight,
         fontSize = size.sp,
         lineHeight = bodyLineHeight,
         lineHeightStyle = bodyLineStyle,
@@ -140,16 +149,32 @@ internal class ReaderStyles(
         fontFeatureSettings = CJK_FEATURES,
         localeList = locale,
     )
+    /** 章首：章名大字半粗。 */
     val title = TextStyle(
         color = palette.text,
         fontFamily = fontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = (size * 1.35f).sp,
-        lineHeight = (size * 1.35f * 1.4f).sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = (size * 1.55f).sp,
+        lineHeight = (size * 1.55f * 1.4f).sp,
+        letterSpacing = 0.04.em,
+        localeList = locale,
+    )
+    /** 章首：“第一章”这类序号，小字、强调色、字距拉开，放在章名上面。 */
+    val chapterNumber = TextStyle(
+        color = palette.accent,
+        fontSize = (size * 0.68f).sp,
+        lineHeight = (size * 0.68f * 1.5f).sp,
+        letterSpacing = 0.32.em,
         localeList = locale,
     )
     val titleTop: Dp = 24.dp
-    val titleBottom: Dp = 32.dp
+    /** 序号和章名之间。 */
+    val numberGap: Dp = 6.dp
+    /** 章名下面那道短线：离章名多远、多宽多粗。 */
+    val ruleTop: Dp = 14.dp
+    val ruleWidth: Dp = 28.dp
+    val ruleHeight: Dp = 2.dp
+    val titleBottom: Dp = 30.dp
 
     fun heading(level: Int) = TextStyle(
         color = palette.text,
@@ -162,6 +187,7 @@ internal class ReaderStyles(
     val quote = TextStyle(
         color = palette.secondary,
         fontFamily = fontFamily,
+        fontWeight = bodyWeight,
         fontSize = (size * 0.92f).sp,
         lineHeight = bodyLineHeight,
         lineHeightStyle = bodyLineStyle,
@@ -186,6 +212,7 @@ internal fun blockText(
     selectedColor: Color = Color.Unspecified,
     indent: Boolean = true,
     footnoteColor: Color = Color.Unspecified,
+    translationColor: Color = Color.Unspecified,
 ): AnnotatedString? {
     val raw = when (block) {
         is Block.Para -> block.text
@@ -200,6 +227,8 @@ internal fun blockText(
         if (shift > 0) append(INDENT)
         append(parsed.text)
         parsed.bold.forEach { addStyle(SpanStyle(fontWeight = FontWeight.Bold), it.first + shift, it.last + 1 + shift) }
+        // AI 译文：小一号、淡一些，接在原文下面。分页时按同样的字号算。
+        parsed.translation.forEach { addStyle(SpanStyle(fontSize = 0.88.em, color = translationColor), it.first + shift, it.last + 1 + shift) }
         // 注释角标：小号上标、强调色；点它弹出注释。
         parsed.footnotes.forEach { (r, key) ->
             val start = r.first + shift
@@ -262,7 +291,7 @@ internal fun BlockView(
     val gap = styles.gap
     val selected = highlight?.rangeIn(blockIndex, block.displayText?.length ?: 0)
     val text = remember(block, notes, speaking, selected, styles.settings.indent, palette.accent) {
-        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent)
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent, palette.secondary)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     val tap by rememberUpdatedState(onTap)
@@ -480,21 +509,32 @@ internal fun SelectionHandles(tracker: SelectionTracker, highlight: Highlight, c
     tracker.caret(highlight.endBlock, highlight.endChar + 1, atLineEnd = true)?.let { SelectionHandle(it, isStart = false, color, tracker) }
 }
 
+/** 把手圆点的直径；选字操作条也按它让出位置。 */
+internal val HANDLE_DOT = 11.dp
+
 /**
- * 一端的把手：起点挂在光标左下，终点挂在右下，像系统的选择把手。看上去 22dp，能按到的范围 44dp 见方，
- * 从行底往下，横向以把手为中心，手指不必按得很准，也不会盖住这一行的字。
+ * 一端的把手：一道和这一行一样高的细竖线，加一个小圆点——起点的圆点在行顶上，终点的在行底下（苹果的样子）。
+ * 圆点落在行与行之间的空白里，不像水滴形把手那样盖住下一行的字。能按到的范围是以圆点为中心 44dp 见方。
  */
 @Composable
 private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker: SelectionTracker) {
-    val visual = 22.dp
     val touch = 44.dp
     val current by rememberUpdatedState(caret)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val bar = 2.dp
+    // 竖线：贴着光标，和这一行的字一样高。
+    Box(
+        Modifier
+            .offset { IntOffset((caret.left - bar.toPx() / 2).roundToInt(), caret.top.roundToInt()) }
+            .size(bar, with(density) { caret.height.toDp() })
+            .background(color),
+    )
     Box(
         Modifier
             .offset {
-                val v = visual.toPx()
-                val center = if (isStart) caret.left - v / 2 else caret.left + v / 2
-                IntOffset((center - touch.toPx() / 2).roundToInt(), caret.bottom.roundToInt())
+                val dot = HANDLE_DOT.toPx()
+                val dotY = if (isStart) caret.top - dot / 2 else caret.bottom + dot / 2
+                IntOffset((caret.left - touch.toPx() / 2).roundToInt(), (dotY - touch.toPx() / 2).roundToInt())
             }
             .size(touch)
             .pointerInput(isStart, tracker) {
@@ -504,17 +544,9 @@ private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker
                 }
             }
             .semantics { contentDescription = if (isStart) "选区起点" else "选区终点" },
+        contentAlignment = androidx.compose.ui.Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .align(androidx.compose.ui.Alignment.TopCenter)
-                .size(visual)
-                .clip(
-                    if (isStart) RoundedCornerShape(topStart = 0.dp, topEnd = 50.dp, bottomStart = 50.dp, bottomEnd = 50.dp)
-                    else RoundedCornerShape(topStart = 50.dp, topEnd = 0.dp, bottomStart = 50.dp, bottomEnd = 50.dp),
-                )
-                .background(color),
-        )
+        Box(Modifier.size(HANDLE_DOT).clip(CircleShape).background(color))
     }
 }
 
@@ -607,4 +639,49 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRuby(layout: Te
         if (w > box.width * 1.08f) paint.textScaleX = (box.width * 1.08f / w).coerceAtLeast(0.55f)
         canvas.drawText(r, box.center.x, baseline - fontPx * 1.02f, paint)
     }
+}
+
+/** 章名拆成序号和名字：“第三章 相谈”→（“第三章”，“相谈”）；没有序号或只有序号时序号为空。 */
+internal fun splitChapterTitle(title: String): Pair<String?, String> {
+    val m = CHAPTER_NUMBER.find(title)
+    val name = m?.groupValues?.get(2)?.trim().orEmpty()
+    return if (m != null && name.isNotEmpty()) m.groupValues[1].replace(" ", "") to name else null to title.trim()
+}
+
+private val CHAPTER_NUMBER = Regex("""^\s*(第\s*[0-9０-９一二三四五六七八九十百千万零〇两]+\s*[章节回卷篇部集折幕])[\s:：、.·]*(.*)$""")
+
+/**
+ * 章首：序号小字（强调色）、章名大字、一道短线。读屏时整个念章名。
+ * 分页按 [chapterOpenerHeight] 量同样的几样，两边要一起改。
+ */
+@Composable
+internal fun ChapterOpener(title: String, styles: ReaderStyles) {
+    val (number, name) = remember(title) { splitChapterTitle(title) }
+    Column(
+        Modifier
+            .padding(top = styles.titleTop, bottom = styles.titleBottom)
+            .clearAndSetSemantics { text = AnnotatedString(title); heading() },
+    ) {
+        if (number != null) {
+            Text(number, style = styles.chapterNumber)
+            Spacer(Modifier.height(styles.numberGap))
+        }
+        Text(name, style = styles.title)
+        Box(
+            Modifier
+                .padding(top = styles.ruleTop)
+                .size(styles.ruleWidth, styles.ruleHeight)
+                .clip(RoundedCornerShape(styles.ruleHeight / 2))
+                .background(styles.palette.accent),
+        )
+    }
+}
+
+/** 章首占多高（像素），和 [ChapterOpener] 一致。 */
+internal fun chapterOpenerHeight(title: String, styles: ReaderStyles, fitter: TextFitter, widthPx: Int, density: Float): Float {
+    val (number, name) = splitChapterTitle(title)
+    fun px(dp: Dp) = dp.value * density
+    val numberHeight = number?.let { fitter.height(AnnotatedString(it), styles.chapterNumber, widthPx) + px(styles.numberGap) } ?: 0f
+    return px(styles.titleTop) + numberHeight + fitter.height(AnnotatedString(name), styles.title, widthPx) +
+        px(styles.ruleTop) + px(styles.ruleHeight) + px(styles.titleBottom)
 }

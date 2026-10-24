@@ -1,5 +1,11 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.style.TextOverflow
+import com.xycs.lingyuereader.data.DictGloss
 import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -60,10 +66,12 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.text.SimpleDateFormat
@@ -74,6 +82,17 @@ import java.util.Locale
 @Composable
 fun VocabularyScreen(vm: AppViewModel) {
     val words by vm.vocab.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val vocabAi by vm.vocabAi.collectAsStateWithLifecycle()
+    val filling by vm.vocabFilling.collectAsStateWithLifecycle()
+    val message by vm.messages.collectAsStateWithLifecycle()
+    val snackbar = remember { top.yukonga.miuix.kmp.basic.SnackbarHostState() }
+    LaunchedEffect(message) {
+        message?.let {
+            vm.consumeMessage()
+            snackbar.showSnackbar(it)
+        }
+    }
     var mastered by rememberSaveable { mutableStateOf(false) }
     var reviewing by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
@@ -84,12 +103,15 @@ fun VocabularyScreen(vm: AppViewModel) {
     val due = learning.filter { it.isDue(now) }.sortedWith(compareBy({ it.due }, { it.addedAt }))
     val shown = words.filter { it.mastered == mastered }
 
+    // 和书架、统计、我的一样用大标题，往上滚时收成小标题。
+    val scrollBehavior = MiuixScrollBehavior()
     GlassScaffold(
         topBar = {
-            SmallTopAppBar(
+            TopAppBar(
                 color = Color.Transparent,
                 modifier = Modifier.glassBar(),
                 title = if (reviewing) "复习生词" else "生词本",
+                scrollBehavior = scrollBehavior,
                 navigationIcon = {
                     if (reviewing) {
                         IconButton(onClick = { reviewing = false }, modifier = Modifier.padding(start = 12.dp)) {
@@ -98,6 +120,16 @@ fun VocabularyScreen(vm: AppViewModel) {
                     }
                 },
                 actions = {
+                    // 开了 AI 助手、有词还没释义时：一键补上中文释义。
+                    if (!reviewing && aiConfig.ready && words.any { DictGloss.clean(it.gloss).isBlank() }) {
+                        if (filling) {
+                            top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 20.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                        } else {
+                            IconButton(onClick = vm::fillVocabGlosses) {
+                                Icon(LingYueIcons.Sparkle, contentDescription = "AI 补释义")
+                            }
+                        }
+                    }
                     if (!reviewing && words.isNotEmpty()) {
                         IconButton(
                             onClick = { shareText(context, "生词本", vm.vocabularyMarkdown(words)) },
@@ -109,23 +141,42 @@ fun VocabularyScreen(vm: AppViewModel) {
                 },
             )
         },
+        snackbarHost = { top.yukonga.miuix.kmp.basic.SnackbarHost(snackbar, modifier = Modifier.padding(bottom = LocalTabBarInset.current)) },
     ) { padding ->
         if (reviewing) {
             Review(due, Modifier.padding(padding).padding(bottom = LocalTabBarInset.current), onAnswer = { w, known -> vm.reviewWord(w.word, known) }, onDone = { reviewing = false })
             return@GlassScaffold
         }
         LazyColumn(
-            Modifier.fillMaxSize().overScrollVertical(),
+            Modifier.fillMaxSize().overScrollVertical().nestedScroll(scrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
             overscrollEffect = null,
         ) {
             item {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Tab("学习中 ${learning.size}", !mastered) { mastered = false }
-                    Tab("已掌握 ${words.size - learning.size}", mastered) { mastered = true }
+                    ProvideGroupedColors {
+                        SegmentedControl(
+                            listOf(false to "学习中 ${learning.size}", true to "已掌握 ${words.size - learning.size}"),
+                            mastered,
+                            Modifier.width(220.dp),
+                            height = 36.dp,
+                        ) { mastered = it }
+                    }
                     Spacer(Modifier.weight(1f))
                     if (due.isNotEmpty()) {
-                        TextButton("复习 ${due.size}", onClick = { reviewing = true }, colors = ButtonDefaults.textButtonColorsPrimary())
+                        // 和左边的分段控件一样高的强调色小胶囊，不用一颗大按钮压过整行。
+                        Text(
+                            "复习 ${due.size}",
+                            color = MiuixTheme.colorScheme.onPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MiuixTheme.colorScheme.primary)
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { reviewing = true }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
                     } else if (learning.isNotEmpty()) {
                         val next = learning.minOf { it.due }
                         Text(
@@ -138,12 +189,11 @@ fun VocabularyScreen(vm: AppViewModel) {
             }
             if (shown.isEmpty()) {
                 item {
-                    Text(
-                        if (words.isEmpty()) "还没有生词。读书时长按选词，在查词面板里点“收入生词本”。" else "这里还没有词。",
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
-                    )
+                    when {
+                        words.isEmpty() -> EmptyState(LingYueIcons.Star, "还没有生词", "读书时长按一个词，在查词面板里点星号，就收进来了。")
+                        mastered -> EmptyState(LingYueIcons.Check, "还没有掌握的词", "复习时点“记得”，记牢的词会挪到这里。")
+                        else -> EmptyState(LingYueIcons.Check, "都掌握了", "学习中的词都记住了。")
+                    }
                 }
             }
             items(shown, key = { it.word }) { w ->
@@ -153,66 +203,109 @@ fun VocabularyScreen(vm: AppViewModel) {
                     modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()),
                     onToggleMastered = { vm.setMastered(w.word, !w.mastered) },
                     onRemove = { vm.removeFromVocabulary(w.word) },
+                    ai = vocabAi[w.word],
+                    onAi = { vm.vocabExample(w.word) }.takeIf { aiConfig.ready },
                 )
             }
         }
     }
 }
 
-@Composable
-private fun Tab(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        label,
-        fontSize = 15.sp,
-        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-        color = if (selected) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (selected) MiuixTheme.colorScheme.secondaryContainer else MiuixTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-    )
-}
-
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
 
+/**
+ * 一个生词：卡片里左右留 16dp。第一行词、读音，右边两个小图标（标为掌握 / 删除）；
+ * 下面释义、书里的原句（左边一道竖线，像引文），最后一行灰色小字写出处和下次复习。
+ */
 @Composable
-private fun WordCard(w: VocabWord, modifier: Modifier = Modifier, onToggleMastered: () -> Unit, onRemove: () -> Unit) {
-    GlassCard(modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
-        Row(verticalAlignment = Alignment.Bottom) {
+private fun WordCard(
+    w: VocabWord,
+    modifier: Modifier = Modifier,
+    onToggleMastered: () -> Unit,
+    onRemove: () -> Unit,
+    /** 正在生成的 AI 例句。 */
+    ai: com.xycs.lingyuereader.ai.AiTurn? = null,
+    /** 开了 AI 助手时：生成例句和用法。 */
+    onAi: (() -> Unit)? = null,
+) {
+    val scheme = MiuixTheme.colorScheme
+    GlassCard(modifier.padding(horizontal = 12.dp, vertical = 6.dp), insideMargin = PaddingValues(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(w.word, fontSize = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (w.reading.isNotBlank()) {
-                Text(w.reading, color = MiuixTheme.colorScheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp, bottom = 3.dp))
+                Text(w.reading, color = scheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp))
             }
             Spacer(Modifier.weight(1f))
-            if (w.lookups > 1) Text("查过 ${w.lookups} 次", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            if (onAi != null && ai == null) CardAction(LingYueIcons.Sparkle, if (w.example.isBlank()) "AI 例句" else "重新生成例句", onAi)
+            CardAction(if (w.mastered) LingYueIcons.Timer else LingYueIcons.Check, if (w.mastered) "重新学习" else "已掌握", onToggleMastered)
+            CardAction(LingYueIcons.Delete, "删除", onRemove)
         }
-        if (w.gloss.isNotBlank()) Text(w.gloss, style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(top = 6.dp))
-        if (w.context.isNotBlank()) {
-            Text(
-                highlighted(w.context, w.word),
-                style = MiuixTheme.textStyles.body2,
-                fontFamily = FontFamily.Serif,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(end = 8.dp)) {
+            val gloss = DictGloss.clean(w.gloss)
+            if (gloss.isNotBlank()) Text(gloss, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+            if (w.context.isNotBlank()) {
+                Row(Modifier.padding(top = 10.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                    Box(Modifier.width(2.dp).fillMaxHeight().clip(RoundedCornerShape(1.dp)).background(scheme.primary.copy(alpha = 0.4f)))
+                    Text(
+                        highlighted(w.context, w.word),
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                        fontFamily = FontFamily.Serif,
+                        color = scheme.onSurfaceVariantSummary,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+            }
+            // AI 例句：生成中边出边显示，存下的直接显示。
+            val example = ai?.answer?.takeIf { it.isNotBlank() } ?: w.example.takeIf { it.isNotBlank() }
+            if (example != null || ai != null) {
+                Column(
+                    Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(scheme.primary.copy(alpha = 0.07f)).padding(horizontal = 10.dp, vertical = 8.dp),
+                ) {
+                    Text("AI 例句", color = scheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    when {
+                        ai?.error != null -> Text(ai.error, color = scheme.error, fontSize = 13.sp)
+                        example != null -> Text(example.trim(), fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 2.dp))
+                        else -> Text("正在生成……", color = scheme.onSurfaceVariantSummary, fontSize = 13.sp)
+                    }
+                }
+            }
             Text(
                 listOfNotNull(
-                    w.bookTitle.takeIf { it.isNotBlank() }?.let { "《$it》" },
+                    shortTitle(w.bookTitle).takeIf { it.isNotBlank() }?.let { "《$it》" },
                     dateFormat.format(Date(w.addedAt)),
                     if (w.mastered) null else "下次复习 " + dueLabel(w.due, System.currentTimeMillis()),
                 ).joinToString(" · "),
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.weight(1f),
+                fontSize = 12.sp,
+                color = scheme.onSurfaceVariantActions,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 10.dp),
             )
-            TextButton(if (w.mastered) "重新学习" else "已掌握", onClick = onToggleMastered)
-            TextButton("删除", onClick = onRemove, modifier = Modifier.padding(start = 6.dp))
         }
     }
 }
+
+/** 卡片右上角的小图标按钮：图标 20dp，能点的范围 40dp。 */
+@Composable
+private fun CardAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** 书名太长时（“《覆汉》（校对版全本）作者：…”）只留书名号里的那段。 */
+private fun shortTitle(title: String): String =
+    Regex("《([^》]+)》").find(title)?.groupValues?.get(1)?.trim() ?: title.trim()
 
 private fun highlighted(text: String, word: String) = buildAnnotatedString {
     append(text)
@@ -339,6 +432,9 @@ private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
             if (back) {
                 if (w.reading.isNotBlank()) Text(w.reading, color = c.primary, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
                 Text(w.gloss.ifBlank { "（没有记下释义）" }, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+                if (w.example.isNotBlank()) {
+                    Text(w.example.trim(), color = c.onSurfaceVariantSummary, fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 14.dp))
+                }
             } else if (w.context.isNotBlank()) {
                 Text(
                     highlighted(w.context, w.word),

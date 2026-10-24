@@ -119,7 +119,7 @@ class PageEdgesUiTest : PageTurnUiBase("SLIDE") {
     @Test
     fun unreadPagesStackOnTheRight() {
         open()
-        waitForText("· 1/")
+        waitForText("第 1/")
         compose.waitForIdle()
         val map = compose.onRoot().captureToImage().toPixelMap()
         val y = map.height / 2

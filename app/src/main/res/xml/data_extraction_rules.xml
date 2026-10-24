@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 系统备份和换机迁移（Android 12 起）：AI 助手的密钥、书源的密码只留在这台手机上。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="ai.xml" />
+        <exclude domain="sharedpref" path="catalogs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="ai.xml" />
+        <exclude domain="sharedpref" path="catalogs.xml" />
+    </device-transfer>
+</data-extraction-rules>

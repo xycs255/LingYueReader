@@ -143,22 +143,37 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                         Text("正则有误：$tocError", color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 20.dp))
                     }
                     val list = chapters
-                    GroupedSection(
-                        header = when {
-                            list == null -> "正在试分章……"
-                            list.size <= 1 -> "按这个规则只分出 ${list.size} 章，可能没匹配到章名。"
-                            else -> "将分为 ${list.size} 章"
-                        },
-                    ) {
+                    // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
+                    GroupedSection(header = "预览") {
+                        row {
+                            Text(
+                                when {
+                                    list == null -> "正在试分章……"
+                                    list.size <= 1 -> "按这个规则只分出 ${list.size} 章，可能没匹配到章名。"
+                                    else -> "将分为 ${list.size} 章"
+                                },
+                                color = if (list != null && list.size <= 1) c.destructive else c.secondary,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            )
+                        }
                         if (list != null && list.size > 1) {
                             val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
                             shown.forEach { title -> row { Text(title, color = if (title == "……") c.secondary else c.label, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
                         }
                     }
-                    GroupedSection(
-                        header = "净化规则",
-                        footer = if (rules.isEmpty()) "还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。" else null,
-                    ) {
+                    GroupedSection(header = "净化规则") {
+                        if (rules.isEmpty()) {
+                            row {
+                                Text(
+                                    "还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。",
+                                    color = c.secondary,
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                )
+                            }
+                        }
                         rules.forEachIndexed { i, r ->
                             row {
                                 val preview = rememberPreview(r, source)
@@ -247,7 +262,7 @@ private fun RuleRow(rule: ReplaceRule, matches: String, samples: List<String>, o
             Icon(LingYueIcons.Delete, contentDescription = "删除这条", tint = c.destructive)
         }
         Box(Modifier.toggleable(value = rule.enabled, role = androidx.compose.ui.semantics.Role.Switch, onValueChange = onToggle).padding(4.dp)) {
-            IosSwitch(rule.enabled)
+            LingYueSwitch(rule.enabled)
         }
     }
 }

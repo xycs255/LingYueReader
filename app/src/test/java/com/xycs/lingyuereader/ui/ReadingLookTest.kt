@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.em
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReaderTheme
+import com.xycs.lingyuereader.data.layoutKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -44,6 +45,17 @@ class ReadingLookTest {
         assertEquals(40.dp, styles.horizontalPadding)
         assertEquals(0.1.em, styles.para.letterSpacing)
     }
+
+    @Test
+    fun boldTextThickensBodyTextAndReflows() {
+        val plain = ReaderStyles(ReaderSettings(), ReaderTheme.PAPER.palette())
+        val bold = ReaderStyles(ReaderSettings(boldText = true), ReaderTheme.PAPER.palette())
+        assertEquals(null, plain.para.fontWeight)
+        assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, bold.para.fontWeight)
+        assertEquals(androidx.compose.ui.text.font.FontWeight.SemiBold, bold.quote.fontWeight)
+        // 字变粗、字宽可能变，要重新排版分页。
+        assertTrue(ReaderSettings().layoutKey != ReaderSettings(boldText = true).layoutKey)
+    }
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -55,8 +67,8 @@ class CustomBackgroundUiTest : PageTurnUiBase("SCROLL") {
         open()
         waitForText("第1段")
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
-        compose.onNodeWithText("自定义").performScrollTo().performClick()
+        compose.onNodeWithText("外观").performClick()
+        compose.onNodeWithContentDescription("自定义背景").performScrollTo().performClick()
         // 选了“自定义”，下面出现“自定义配色”，点进去选颜色。
         compose.onNodeWithText("自定义配色").performScrollTo().performClick()
         compose.onNodeWithContentDescription("底色 #000000").performScrollTo().performClick()

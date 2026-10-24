@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
@@ -41,6 +42,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.MarkColor
@@ -67,13 +73,49 @@ internal fun CatalogSheet(
     onDeleteNote: (String) -> Unit,
     onExportNotes: () -> Unit,
     tint: Color = palette.accent,
+    /** 书名、作者，顶上那张小书封用。 */
+    bookTitle: String = "",
+    author: String? = null,
+    /** 全书读到哪、本章读到哪（0..1）。 */
+    bookFraction: Float = 0f,
+    chapterFraction: Float = 0f,
+    /** 每分钟读多少字，估每章、全书还要读多久。 */
+    charsPerMinute: Float = 400f,
+    onClose: () -> Unit = {},
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var tab by remember { mutableIntStateOf(0) }
         Column {
-            SheetNavBar("目录", back = null) {}
-            Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            // 顶上：小书封、书名、作者 · 已读 · 还剩多久，右边关闭。
+            Row(Modifier.padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                MiniCover(bookTitle)
+                Column(Modifier.weight(1f).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(bookTitle.ifBlank { "目录" }, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val left = chapters.sumOf { it.charCount.toLong() } * (1f - bookFraction.coerceIn(0f, 1f)) / charsPerMinute
+                    Text(
+                        listOfNotNull(author?.takeIf { it.isNotBlank() }, "已读 ${(bookFraction * 100).toInt()}%", readingTime(left)?.let { "还剩约 $it" })
+                            .joinToString(" · "),
+                        color = c.secondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .clickable(onClickLabel = "关闭目录", onClick = onClose)
+                        .semantics { contentDescription = "关闭目录" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+                        Icon(LingYueIcons.Close, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+            Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 SegmentedControl(
                     listOf(0 to "目录 ${chapters.size}", 1 to "书签 ${marks.bookmarks.size}", 2 to "批注 ${marks.notes.size}"),
                     tab,
@@ -85,25 +127,42 @@ internal fun CatalogSheet(
                         val state = rememberLazyListState((current - 3).coerceAtLeast(0))
                         LazyColumn(state = state, contentPadding = PaddingValues(bottom = 16.dp)) {
                             itemsIndexed(chapters) { index, chapter ->
-                                GroupedListCell(index, chapters.size) {
+                                val now = index == current
+                                GroupedListCell(index, chapters.size, separatorStart = 50.dp) {
+                                    // 一行：序号、章名（宋体）、右边本章要读多久；正在读的那章铺一层淡强调色，写读到百分之几。
                                     Row(
                                         Modifier
                                             .fillMaxWidth()
-                                            .heightIn(min = 48.dp)
+                                            .background(if (now) c.tint.copy(alpha = 0.07f) else Color.Transparent)
+                                            .heightIn(min = 56.dp)
                                             .clickable { onPickChapter(index) }
-                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                            .padding(horizontal = 16.dp, vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(
+                                            "%02d".format(index + 1),
+                                            color = if (now) c.tint else c.secondary,
+                                            fontSize = 13.sp,
+                                            modifier = Modifier.width(34.dp).clearAndSetSemantics { },
+                                        )
+                                        Text(
                                             chapter.title,
-                                            color = if (index == current) c.tint else c.label,
-                                            fontWeight = if (index == current) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = c.label,
+                                            fontFamily = FontFamily.Serif,
+                                            fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
                                             fontSize = 16.sp,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f),
                                         )
-                                        if (index == current) Text("正在读", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                                        if (now) {
+                                            Box(Modifier.padding(start = 8.dp, end = 6.dp).size(6.dp).clip(CircleShape).background(c.tint))
+                                            Text("正在读 · ${(chapterFraction * 100).toInt()}%", color = c.tint, fontSize = 12.sp)
+                                        } else {
+                                            readingTime(chapter.charCount / charsPerMinute)?.let {
+                                                Text(it, color = c.secondary, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -160,17 +219,17 @@ internal fun CatalogSheet(
 
 /** 长列表里的一格：同一组的格子连成一张圆角卡片（首尾圆角、中间细线），像分组列表但可以懒加载。 */
 @Composable
-private fun GroupedListCell(index: Int, count: Int, content: @Composable () -> Unit) {
+private fun GroupedListCell(index: Int, count: Int, @Suppress("UNUSED_PARAMETER") separatorStart: Dp = 0.dp, content: @Composable () -> Unit) {
     val c = LocalGroupedColors.current
-    val r = 12.dp
+    val r = 16.dp
     val shape = RoundedCornerShape(
         topStart = if (index == 0) r else 0.dp,
         topEnd = if (index == 0) r else 0.dp,
         bottomStart = if (index == count - 1) r else 0.dp,
         bottomEnd = if (index == count - 1) r else 0.dp,
     )
-    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(shape).background(c.cell)) {
-        if (index > 0) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
+    // miuix 卡片里不画分隔线，一行行靠留白分开。
+    Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
         content()
     }
 }
@@ -268,7 +327,7 @@ internal fun ParagraphSheet(
     initialSelection: IntRange? = null,
     tint: Color = palette.accent,
 ) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var selection by remember(text, initialSelection) {
             mutableStateOf(TextFieldValue(text, initialSelection?.let { TextRange(it.first, it.last + 1) } ?: TextRange(text.length)))
@@ -341,7 +400,7 @@ private fun NoteRow(quote: String, note: String?, color: Color, onDelete: () -> 
 /** 跨段落划线：选颜色、写批注（记在最后一段上），每段各存一条划线。 */
 @Composable
 internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color = palette.accent, onSave: (MarkColor, String) -> Unit) {
-    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+    ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var note by remember { mutableStateOf("") }
         var color by remember { mutableStateOf(MarkColor.YELLOW) }
@@ -366,5 +425,65 @@ internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color =
                 row { NoteField(note) { note = it } }
             }
         }
+    }
+}
+
+/** 注释面板：标题栏“注释”、右边“完成”，正文用书里的字体放在一张卡片里。 */
+@Composable
+internal fun FootnoteSheet(text: String, palette: ReaderPalette, fontFamily: FontFamily, tint: Color, onDone: () -> Unit) {
+    ProvideReaderColors(palette, tint) {
+        val c = LocalGroupedColors.current
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            SheetNavBar("注释", back = null, action = "完成" to onDone) {}
+            Spacer(Modifier.height(8.dp))
+            GroupedSection {
+                row {
+                    Text(
+                        text,
+                        color = c.label,
+                        fontSize = 17.sp,
+                        lineHeight = 28.sp,
+                        fontFamily = fontFamily,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 读多久：“3 分钟”“1 小时 20 分”；没有文字（漫画、PDF）或不到半分钟时为空。 */
+internal fun readingTime(minutes: Float): String? {
+    if (minutes.isNaN() || minutes < 0.5f) return null
+    val m = kotlin.math.ceil(minutes).toInt()
+    return when {
+        m < 60 -> "$m 分钟"
+        m % 60 == 0 -> "${m / 60} 小时"
+        else -> "${m / 60} 小时 ${m % 60} 分"
+    }
+}
+
+/** 目录顶上的小书封：纸色书面、书脊一道阴影，书名竖着写。 */
+@Composable
+private fun MiniCover(title: String) {
+    val c = LocalGroupedColors.current
+    Box(
+        Modifier
+            .size(44.dp, 62.dp)
+            .shadow(3.dp, RoundedCornerShape(topStart = 3.dp, bottomStart = 3.dp, topEnd = 6.dp, bottomEnd = 6.dp))
+            .clip(RoundedCornerShape(topStart = 3.dp, bottomStart = 3.dp, topEnd = 6.dp, bottomEnd = 6.dp))
+            .background(if (c.dark) Color(0xFF3A342C) else Color(0xFFE9DFCB))
+            .drawBehind { drawRect(Color.Black.copy(alpha = 0.12f), size = androidx.compose.ui.geometry.Size(4.dp.toPx(), size.height)) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            title.take(6).toList().joinToString("\n"),
+            color = if (c.dark) Color(0xFFE6DCC4) else Color(0xFF2B2620),
+            fontFamily = FontFamily.Serif,
+            fontSize = 9.sp,
+            lineHeight = 10.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.clearAndSetSemantics { },
+        )
     }
 }

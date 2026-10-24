@@ -2,8 +2,13 @@ package com.xycs.lingyuereader.ui.glass
 
 import android.os.Build
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,20 +17,30 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import com.xycs.lingyuereader.ui.Effects
 import com.xycs.lingyuereader.ui.ReaderPalette
 import androidx.compose.foundation.border
@@ -318,6 +333,23 @@ fun GlassSheet(
     val titleColor = if (contrastRatio(preferredTitle, background) >= 4.5f) preferredTitle
         else listOf(Color.Black, Color.White).maxBy { contrastRatio(it, background) }
     MiuixTheme(controller = controller) {
+        if (Effects.reduced) {
+            // 墨水屏 / 省电：miuix 的面板没有关动画的开关，换成一个直接出现、直接消失的面板。
+            StillSheet(show, background, radius, onDismissRequest) {
+                if (title != null) {
+                    Text(
+                        title,
+                        color = titleColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                    )
+                }
+                content()
+            }
+            return@MiuixTheme
+        }
         OverlayBottomSheet(
             show = show,
             title = null,
@@ -331,6 +363,8 @@ fun GlassSheet(
             ),
             backgroundColor = if (active) Color.Transparent else background,
             cornerRadius = radius,
+            // 面板里的卡片自己左右留 12dp，面板只留 4dp：卡片离屏幕边 16dp，和应用里的页面一致。
+            insideMargin = DpSize(4.dp, 0.dp),
             onDismissRequest = onDismissRequest,
         ) {
             if (title != null) {
@@ -343,9 +377,17 @@ fun GlassSheet(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
                 )
             }
-            content()
+            // miuix 在拖动条下面给（这里没用的）内置标题留了 18dp，往上收回来，标题栏紧贴拖动条。
+            Box(Modifier.pullUp(18.dp)) { content() }
         }
     }
+}
+
+/** 往上挪 [by]，并且不占那段高度。 */
+private fun Modifier.pullUp(by: Dp): Modifier = layout { measurable, constraints ->
+    val pull = by.roundToPx()
+    val placeable = measurable.measure(constraints)
+    layout(placeable.width, (placeable.height - pull).coerceAtLeast(0)) { placeable.place(0, -pull) }
 }
 
 /** 卡片玻璃：半透明底色加高光描边。 */
@@ -409,4 +451,47 @@ fun GlassCard(
         onLongPress = onLongPress,
         content = content,
     )
+}
+
+/** 不动的底部面板：没有滑入滑出，点面板外面或按返回就关。 */
+@Composable
+private fun StillSheet(
+    show: Boolean,
+    background: Color,
+    radius: Dp,
+    onDismissRequest: (() -> Unit)?,
+    content: @Composable () -> Unit,
+) {
+    if (!show) return
+    val dismiss = { onDismissRequest?.invoke(); Unit }
+    Dialog(
+        onDismissRequest = dismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        // 对话框窗口自带的淡入淡出也关掉。
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            window?.setWindowAnimations(0)
+            window?.setDimAmount(0f)
+        }
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.3f))
+                .clickable(interactionSource = null, indication = null, onClick = dismiss),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = 640.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight * 0.92f)
+                    .clip(RoundedCornerShape(topStart = radius, topEnd = radius))
+                    .background(background)
+                    .clickable(interactionSource = null, indication = null) {}
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(start = 4.dp, end = 4.dp, top = 16.dp, bottom = 16.dp),
+            ) { content() }
+        }
+    }
 }

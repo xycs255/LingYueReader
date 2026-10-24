@@ -117,7 +117,7 @@ fun DictionariesScreen(vm: AppViewModel) {
                         footer = if (settings.dicts.isEmpty()) {
                             "导入 MDict 词典（.mdx）。词典带的 .mdd（图片、发音）和 .css 样式请一起选上。"
                         } else {
-                            "查词结果按这里的顺序排列，点“编辑”可以调整顺序或删除。在线查询会打开浏览器，灵阅本身不联网。"
+                            "查词结果按这里的顺序排列，点“编辑”可以调整顺序或删除。在线查询会打开浏览器。"
                         },
                     ) {
                         if (busy) row { ValueRow("正在导入并建立索引……", "") }

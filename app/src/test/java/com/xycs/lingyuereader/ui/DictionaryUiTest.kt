@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -86,7 +87,8 @@ class DictionaryUiTest {
             // 按在“银”上（这一段太短，不加段首缩进）。
             longClick(Offset(8.dp.toPx(), centerY))
         }
-        waitForText("查词")
+        // 先弹出查词小卡片。
+        waitForText("完整释义")
     }
 
     @Test
@@ -94,7 +96,8 @@ class DictionaryUiTest {
         longPressWord()
         waitForText("yín háng")
         waitForText("bank")
-        // 能调整选区：结尾少一个字就成了“银”。
+        // 完整释义里能调整选区：结尾少一个字就成了“银”。
+        compose.onNodeWithText("完整释义").performClick()
         compose.onNodeWithContentDescription("选区结尾少一个字").performClick()
         waitForText("部首")
         // 从面板进词典管理。
@@ -110,7 +113,7 @@ class DictionaryUiTest {
         val body = compose.onAllNodesWithText("银行门口", substring = true)[0]
         dragSelect(body)
         // 松手后出现操作条和两端把手，不直接弹查词面板。
-        waitForText("划线·批注")
+        waitForText("批注")
         compose.onNodeWithContentDescription("选区起点").assertExists()
         // 操作条贴着选区（上方或下方），而不是沉在屏幕底部。
         val text = body.fetchSemanticsNode().boundsInRoot
@@ -123,7 +126,7 @@ class DictionaryUiTest {
 
         // 再选一次，把终点把手往左拖，选区变短。
         dragSelect(body)
-        waitForText("划线·批注")
+        waitForText("批注")
         compose.onNodeWithContentDescription("选区终点").performTouchInput {
             down(center)
             moveBy(Offset(-40.dp.toPx(), 0f))
@@ -159,7 +162,7 @@ class DictionaryUiTest {
             moveTo(Offset(men.center.x, centerY))
             up()
         }
-        waitForText("划线·批注")
+        waitForText("批注")
         compose.onNodeWithText("复制").performClick()
         assertEquals("银行门口", clipboard())
     }
@@ -172,7 +175,7 @@ class DictionaryUiTest {
         compose.onRoot().performTouchInput { click(Offset(centerX, bottom * 0.6f)) }
         waitForText("目录")
         dragSelect(compose.onAllNodesWithText("银行门口", substring = true)[0])
-        waitForText("划线·批注")
+        waitForText("批注")
         compose.waitUntil(5_000) { compose.onAllNodesWithText("目录").fetchSemanticsNodes().isEmpty() }
     }
 
@@ -196,8 +199,8 @@ class DictionaryUiTest {
         java.io.File(context.filesDir, "vocabulary.json").delete()
         longPressWord()
         waitForText("bank")
-        compose.onNodeWithText("收入生词本").performClick()
-        waitForText("已在生词本")
+        compose.onNodeWithContentDescription("收入生词本").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("已在生词本").fetchSemanticsNodes().isNotEmpty() }
         val saved = java.io.File(context.filesDir, "vocabulary.json").readText()
         assertTrue(saved, saved.contains("银行") && saved.contains("银行门口排着长队") && saved.contains("测试书"))
     }
@@ -207,6 +210,7 @@ class DictionaryUiTest {
         val result = importFixture("v2_zlib_utf8.mdx", "v2_zlib_utf8.mdd")
         assertEquals(listOf("测试词典"), result.added)
         longPressWord()
+        compose.onNodeWithText("完整释义").performClick()
         waitForText("测试词典")
     }
 

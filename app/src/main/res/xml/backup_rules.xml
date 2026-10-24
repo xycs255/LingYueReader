@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 系统备份（Android 11 及以前）：AI 助手的密钥、书源的密码只留在这台手机上。 -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="ai.xml" />
+    <exclude domain="sharedpref" path="catalogs.xml" />
+</full-backup-content>
