@@ -165,6 +165,10 @@ sealed interface Screen {
     data class WorkPack(val workId: String) : Screen
     /** 设定包里的一份文档。 */
     data class PackDoc(val workId: String, val docId: String) : Screen
+    /** 一章的细纲卡。 */
+    data class ChapterCard(val workId: String, val chapterId: String) : Screen
+    /** 一部作品的变更登记。 */
+    data class WorkChanges(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */

@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader
 
+import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.ChangeKind
+import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PackImportItem
@@ -184,6 +188,79 @@ class WritingModel(
                 store.setGoal(goal)
                 store.stats()
             }
+        }
+    }
+
+    // ---------- 状态、细纲卡、变更登记 ----------
+
+    private val _changes = MutableStateFlow<Map<String, List<ChangeEntry>>>(emptyMap())
+    /** 各作品的变更登记（打开过的才有），新的在前。 */
+    val changes: StateFlow<Map<String, List<ChangeEntry>>> = _changes.asStateFlow()
+
+    fun loadChanges(workId: String) {
+        scope.launch {
+            runCatching { withContext(disk) { store.changes(workId) } }.onSuccess { list -> _changes.update { it + (workId to list) } }
+        }
+    }
+
+    private fun refreshChanges(workId: String) {
+        _changes.update { it + (workId to store.changes(workId)) }
+    }
+
+    /** 改章节状态。从定稿改出去要写 [reason]；[canon] 为真表示改动涉及设定，登记里会提醒同步设定包。 */
+    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, then: () -> Unit = {}) {
+        scope.launch {
+            try {
+                val work = withContext(disk) {
+                    store.setStatus(workId, chapterId, status, reason, canon).also { refreshChanges(workId) }
+                }
+                publish(work)
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("改状态失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    /** 手动登记一条设定变更（和章节无关的也行）。 */
+    fun addCanonChange(workId: String, reason: String) {
+        scope.launch {
+            try {
+                withContext(disk) {
+                    store.addChange(workId, ChangeEntry(WorkStore.newId(), System.currentTimeMillis(), ChangeKind.CANON, reason = reason.trim(), canon = true))
+                    refreshChanges(workId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("登记失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun markSynced(workId: String, changeId: String, synced: Boolean = true) {
+        scope.launch {
+            runCatching {
+                withContext(disk) {
+                    store.markSynced(workId, changeId, synced)
+                    refreshChanges(workId)
+                }
+            }.onFailure { message("保存失败：${it.message ?: "写入出错"}") }
+        }
+    }
+
+    /** 这一章和上一章的细纲卡（上一章的钩子和承接边界写这一章时要接上）。 */
+    suspend fun cards(workId: String, chapterId: String): Pair<ChapterCard, Pair<WorkChapter, ChapterCard>?> = withContext(disk) {
+        val chapters = store.get(workId)?.chapters.orEmpty()
+        val i = chapters.indexOfFirst { it.id == chapterId }
+        store.card(workId, chapterId) to chapters.getOrNull(i - 1)?.let { it to store.card(workId, it.id) }
+    }
+
+    fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
+        scope.launch {
+            runCatching { withContext(disk) { store.saveCard(workId, chapterId, card) } }.onFailure { message("保存失败：${it.message ?: "写入出错"}") }
         }
     }
 

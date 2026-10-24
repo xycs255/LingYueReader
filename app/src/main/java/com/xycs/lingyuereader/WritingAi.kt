@@ -147,8 +147,14 @@ class WritingAi(
                     val i = chapters.indexOfFirst { it.id == chapterId }
                     chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
-                // 设定包里的常用文档（按优先级排好、限字数）：改稿、灵感、矛盾检查都带上。
-                val pack = withContext(Dispatchers.IO) { packContext(workId) }
+                // 设定包里的常用文档（按优先级排好、限字数），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
+                val pack = withContext(Dispatchers.IO) {
+                    val chapters = work.chapters
+                    val i = chapters.indexOfFirst { it.id == chapterId }
+                    val prev = chapters.getOrNull(i - 1)
+                    val card = WritePrompts.card(store.card(workId, chapterId), prev?.title, prev?.let { store.card(workId, it.id) })
+                    listOfNotNull(packContext(workId), card).joinToString("\n\n").ifEmpty { null }
+                }
                 val (system, prompt) = when (task) {
                     is WriteAiTask.Edit -> {
                         val before = text.substring(0, task.start.coerceIn(0, text.length))

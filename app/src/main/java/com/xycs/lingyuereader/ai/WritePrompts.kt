@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ai
 
+import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkAssist
 import org.json.JSONArray
@@ -60,6 +61,26 @@ object WritePrompts {
             }
         }
     }
+
+    /**
+     * 细纲卡带给 AI：本章的事实边界，加上一章留下的钩子和承接边界。都空着时为空。
+     * 细纲只管“发生了什么”，不管怎么写；写的内容不能和它冲突。
+     */
+    fun card(card: ChapterCard, previousTitle: String?, previous: ChapterCard?): String? = buildString {
+        val lines = listOf(
+            "本章事实与结果" to card.facts, "后文承接边界" to card.boundary, "视角人物" to card.pov,
+            "倒计时" to card.countdown, "章末钩子" to card.hook, "推进的线" to card.threads,
+        ).filter { it.second.isNotBlank() }
+        if (lines.isNotEmpty()) {
+            append("本章细纲卡（事实边界：写的内容不能和它冲突；场面怎么写可以自由发挥）：\n")
+            lines.forEach { (k, v) -> append("- ").append(k).append("：").append(v.trim()).append('\n') }
+        }
+        if (previous != null && (previous.hook.isNotBlank() || previous.boundary.isNotBlank())) {
+            append("上一章").append(previousTitle?.let { "「$it」" }.orEmpty()).append("留下的：\n")
+            if (previous.hook.isNotBlank()) append("- 钩子：").append(previous.hook.trim()).append('\n')
+            if (previous.boundary.isNotBlank()) append("- 承接边界：").append(previous.boundary.trim()).append('\n')
+        }
+    }.trim().ifEmpty { null }
 
     /** 改一段：[target] 是要改的文字（续写时是光标前的上文），[before]、[after] 是它前后的原文。 */
     fun edit(action: WriteAction, target: String, before: String, after: String, chapterTitle: String, instruction: String = ""): String = buildString {

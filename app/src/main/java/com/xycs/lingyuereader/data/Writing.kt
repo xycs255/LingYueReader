@@ -10,8 +10,57 @@ import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** 作品里的一章。正文另存一个文件，这里只记章名、字数和最后修改时间。 */
-data class WorkChapter(val id: String, val title: String, val words: Int = 0, val updatedAt: Long = 0)
+/**
+ * 一章的状态：先有细纲，再写草稿，改稿时是修订，定稿后正文锁定（要改先登记原因，见 [ChangeEntry]）。
+ */
+enum class ChapterStatus(val label: String) { OUTLINE("细纲"), DRAFT("草稿"), REVISION("修订"), FINAL("定稿") }
+
+/** 作品里的一章。正文另存一个文件，这里只记章名、字数、最后修改时间和状态。 */
+data class WorkChapter(
+    val id: String,
+    val title: String,
+    val words: Int = 0,
+    val updatedAt: Long = 0,
+    val status: ChapterStatus = ChapterStatus.OUTLINE,
+) {
+    val locked: Boolean get() = status == ChapterStatus.FINAL
+}
+
+/**
+ * 一章的细纲卡：细纲只划事实边界，不管怎么写。
+ * [facts] 本章发生了什么、结果是什么；[boundary] 后文承接时不能与之冲突的点；[pov] 视角人物；
+ * [countdown] 章首的倒计时；[hook] 章末钩子；[threads] 推进了哪几条线。
+ */
+data class ChapterCard(
+    val facts: String = "",
+    val boundary: String = "",
+    val pov: String = "",
+    val countdown: String = "",
+    val hook: String = "",
+    val threads: String = "",
+) {
+    val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
+}
+
+/** 变更登记的种类。 */
+enum class ChangeKind(val label: String) { UNLOCK("解锁修改"), FINALIZE("定稿"), CANON("设定变更") }
+
+/**
+ * 一条变更登记：哪一章、为什么改。[canon] 为真表示改动涉及不变量或设定，要同步改设定包（不变量、细纲、人物档案、察觉表），
+ * 改完标 [synced]。
+ */
+data class ChangeEntry(
+    val id: String,
+    val at: Long,
+    val kind: ChangeKind,
+    val chapterId: String = "",
+    val chapterTitle: String = "",
+    val reason: String = "",
+    val canon: Boolean = false,
+    val synced: Boolean = false,
+) {
+    val pending: Boolean get() = canon && !synced
+}
 
 /** 一卷：长篇常按卷分，只有一卷时就是“正文”。 */
 data class Volume(val id: String, val title: String, val chapters: List<WorkChapter> = emptyList())
@@ -211,7 +260,86 @@ class WorkStore(private val root: File) {
         if (text.isNotBlank()) snapshot(workId, chapterId, text)
         val work = update(workId) { w -> w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.filterNot { it.id == chapterId }) }) }
         chapterFile(workId, chapterId).delete()
+        cardFile(workId, chapterId).delete()
         return work
+    }
+
+    // ---------- 状态与变更登记 ----------
+
+    /**
+     * 改一章的状态。从定稿改出去（解锁）必须写原因，记一条登记；[canon] 为真表示改动涉及设定，要同步设定包。
+     * 定稿时把正文存一个历史版本，记一条登记。状态没变不记。
+     */
+    @Synchronized
+    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false): Work? {
+        val work = get(workId) ?: return null
+        val c = work.chapter(chapterId) ?: return null
+        if (c.status == status) return work
+        if (c.locked) require(reason.isNotBlank()) { "改定稿的章节要先写原因" }
+        when {
+            c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon))
+            status == ChapterStatus.FINAL -> {
+                text(workId, chapterId).takeIf { it.isNotBlank() }?.let { snapshot(workId, chapterId, it) }
+                addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.FINALIZE, c.id, c.title, reason.trim(), canon))
+            }
+        }
+        return update(workId) { w -> w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.map { if (it.id == chapterId) it.copy(status = status) else it }) }) }
+    }
+
+    private val changesFile get() = "changes.json"
+
+    @Synchronized
+    fun changes(workId: String): List<ChangeEntry> {
+        val file = File(dir(workId), changesFile)
+        if (!file.isFile) return emptyList()
+        return try {
+            val a = JSONArray(file.readText())
+            (0 until a.length()).mapNotNull { a.optJSONObject(it)?.toChange() }.sortedByDescending { it.at }
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            emptyList()
+        }
+    }
+
+    private fun writeChanges(workId: String, list: List<ChangeEntry>) {
+        check(DurableFiles.write(File(dir(workId), changesFile), JSONArray().apply { list.forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存变更登记" }
+    }
+
+    /** 记一条登记（也用于和章节无关的设定变更）。 */
+    @Synchronized
+    fun addChange(workId: String, entry: ChangeEntry) {
+        require(get(workId) != null) { "作品不在了" }
+        val list = changes(workId)
+        // 新登记排最前：同一毫秒里连记两条时，时间往后挪一毫秒。
+        val at = maxOf(entry.at, (list.maxOfOrNull { it.at } ?: 0L) + 1)
+        writeChanges(workId, list + entry.copy(at = at))
+    }
+
+    @Synchronized
+    fun markSynced(workId: String, changeId: String, synced: Boolean = true) =
+        writeChanges(workId, changes(workId).map { if (it.id == changeId) it.copy(synced = synced) else it })
+
+    private fun cardFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.card.json")
+    }
+
+    @Synchronized
+    fun card(workId: String, chapterId: String): ChapterCard {
+        val file = cardFile(workId, chapterId)
+        if (!file.isFile) return ChapterCard()
+        return try {
+            JSONObject(file.readText()).toCard()
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            ChapterCard()
+        }
+    }
+
+    @Synchronized
+    fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        check(DurableFiles.write(cardFile(workId, chapterId), card.toJson().toString().toByteArray())) { "无法保存细纲卡" }
     }
 
     /** 删一卷，连同卷里的章。至少留一卷。 */
@@ -264,11 +392,17 @@ class WorkStore(private val root: File) {
         val old = work.chapter(chapterId) ?: return null
         val file = chapterFile(workId, chapterId)
         if (file.isFile && file.readText() == text) return work
+        check(!old.locked) { "这一章已定稿，先解锁再改" }
         check(DurableFiles.write(file, text.toByteArray())) { "无法保存正文" }
         val words = WordCount.of(text)
         if (count && words != old.words) addWords(today, words - old.words)
         return update(workId) { w ->
-            w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.map { if (it.id == chapterId) it.copy(words = words, updatedAt = clock()) else it }) })
+            w.copy(volumes = w.volumes.map { v ->
+                v.copy(chapters = v.chapters.map {
+                    if (it.id != chapterId) it
+                    else it.copy(words = words, updatedAt = clock(), status = if (it.status == ChapterStatus.OUTLINE && words > 0) ChapterStatus.DRAFT else it.status)
+                })
+            })
         }
     }
 
@@ -455,6 +589,8 @@ class WorkStore(private val root: File) {
                     val work = get(workId) ?: return@forEach
                     val (_, c) = addChapter(workId, work.volumes.last().id, title) ?: return@forEach
                     saveText(workId, c.id, body, count = false)
+                    // 文件名写着“已定”“定稿”的正文，导进来就是定稿。
+                    if (Regex("已定|定稿").containsMatchIn(item.fileName)) setStatus(workId, c.id, ChapterStatus.FINAL, "导入已定正文")
                     chapters++
                 }
                 return@forEach
@@ -521,7 +657,9 @@ class WorkStore(private val root: File) {
             val texts = JSONObject()
             w.chapters.forEach { c -> texts.put(c.id, text(w.id, c.id)) }
             val pack = JSONArray().apply { pack(w.id).forEach { d -> put(d.toJson().put("text", packText(w.id, d.id))) } }
-            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()).put("pack", pack))
+            val cards = JSONObject().apply { w.chapters.forEach { c -> card(w.id, c.id).takeIf { !it.isEmpty }?.let { put(c.id, it.toJson()) } } }
+            val changes = JSONArray().apply { changes(w.id).forEach { put(it.toJson()) } }
+            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()).put("pack", pack).put("cards", cards).put("changes", changes))
         }
         val stats = stats()
         val days = JSONObject()
@@ -550,7 +688,17 @@ class WorkStore(private val root: File) {
             incoming.chapters.forEach { c ->
                 check(DurableFiles.write(chapterFile(incoming.id, c.id), texts.optString(c.id).toByteArray())) { "无法写入正文" }
             }
-            local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach { chapterFile(local.id, it.id).delete() }
+            local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach {
+                chapterFile(local.id, it.id).delete()
+                cardFile(local.id, it.id).delete()
+            }
+            val cards = o.optJSONObject("cards") ?: JSONObject()
+            incoming.chapters.forEach { c ->
+                val card = cards.optJSONObject(c.id)
+                if (card != null) check(DurableFiles.write(cardFile(incoming.id, c.id), card.toString().toByteArray())) { "无法写入细纲卡" }
+                else cardFile(incoming.id, c.id).delete()
+            }
+            o.optJSONArray("changes")?.let { a -> writeChanges(incoming.id, (0 until a.length()).mapNotNull { a.optJSONObject(it)?.toChange() }) }
             // 设定包整份换成备份里的（本机的文档正文先存历史版本）；备份里没有设定包（旧版备份）就按设定集重新迁移。
             local?.let { l -> pack(l.id).forEach { d -> packText(l.id, d.id).takeIf { it.isNotBlank() }?.let { snapshot(l.id, docKey(d.id), it) } } }
             packDir(incoming.id).deleteRecursively()
@@ -599,10 +747,25 @@ class WorkStore(private val root: File) {
             .put("volumes", JSONArray().apply {
                 volumes.forEach { v ->
                     put(JSONObject().put("id", v.id).put("title", v.title).put("chapters", JSONArray().apply {
-                        v.chapters.forEach { c -> put(JSONObject().put("id", c.id).put("title", c.title).put("words", c.words).put("updatedAt", c.updatedAt)) }
+                        v.chapters.forEach { c -> put(JSONObject().put("id", c.id).put("title", c.title).put("words", c.words).put("updatedAt", c.updatedAt).put("status", c.status.name)) }
                     }))
                 }
             })
+
+        private fun ChapterCard.toJson(): JSONObject = JSONObject()
+            .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
+
+        private fun JSONObject.toCard() = ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"))
+
+        private fun ChangeEntry.toJson(): JSONObject = JSONObject()
+            .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
+            .put("reason", reason).put("canon", canon).put("synced", synced)
+
+        private fun JSONObject.toChange(): ChangeEntry? {
+            val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
+            val kind = runCatching { ChangeKind.valueOf(optString("kind")) }.getOrDefault(ChangeKind.CANON)
+            return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"))
+        }
 
         private fun PackDoc.toJson(): JSONObject = JSONObject()
             .put("id", id).put("kind", kind.name).put("title", title).put("priority", priority).put("always", always)
@@ -653,7 +816,11 @@ class WorkStore(private val root: File) {
                     val cs = v.getJSONArray("chapters")
                     Volume(v.getString("id"), v.getString("title"), (0 until cs.length()).map { j ->
                         val c = cs.getJSONObject(j)
-                        WorkChapter(c.getString("id"), c.getString("title"), c.optInt("words"), c.optLong("updatedAt"))
+                        val words = c.optInt("words")
+                        // 旧数据没有状态：有字的算草稿，没字的算细纲。
+                        val status = runCatching { ChapterStatus.valueOf(c.optString("status")) }.getOrNull()
+                            ?: if (words > 0) ChapterStatus.DRAFT else ChapterStatus.OUTLINE
+                        WorkChapter(c.getString("id"), c.getString("title"), words, c.optLong("updatedAt"), status)
                     })
                 },
             )

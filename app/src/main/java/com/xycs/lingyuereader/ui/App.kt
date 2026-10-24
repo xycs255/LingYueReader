@@ -213,6 +213,8 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WorkAi -> WorkAiScreen(vm, screen.workId)
             is Screen.WorkPack -> WorkPackScreen(vm, screen.workId)
             is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId)
+            is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
         }
     }
 }

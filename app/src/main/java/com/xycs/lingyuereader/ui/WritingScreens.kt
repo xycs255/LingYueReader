@@ -71,6 +71,7 @@ import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Snapshot
 import com.xycs.lingyuereader.data.Volume
 import com.xycs.lingyuereader.data.WordCount
@@ -311,6 +312,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     LaunchedEffect(workId) {
         vm.writingAi.loadAssist(workId)
         vm.writing.loadPack(workId)
+        vm.writing.loadChanges(workId)
     }
     val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
@@ -319,6 +321,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var addingVolume by remember { mutableStateOf(false) }
     var chapterMenu by remember { mutableStateOf<WorkChapter?>(null) }
     var volumeMenu by remember { mutableStateOf<Volume?>(null) }
+    var statusFor by remember { mutableStateOf<WorkChapter?>(null) }
+    val allChanges by vm.writing.changes.collectAsStateWithLifecycle()
+    val pendingChanges = allChanges[workId].orEmpty().count { it.pending }
 
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
@@ -382,6 +387,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                         append("${work.chapters.size} 章")
                                         if (work.volumes.size > 1) append(" · ${work.volumes.size} 卷")
                                         if (work.author.isNotBlank()) append(" · ${work.author}")
+                                        // 各状态多少章：定稿 12 · 修订 1 · 草稿 3 · 细纲 5
+                                        val counts = ChapterStatus.entries.reversed().mapNotNull { st -> work.chapters.count { it.status == st }.takeIf { it > 0 }?.let { "${st.label} $it" } }
+                                        if (counts.isNotEmpty()) append("\n").append(counts.joinToString(" · "))
                                     },
                                     color = c.secondary,
                                     fontSize = 14.sp,
@@ -413,6 +421,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 vm.open(Screen.WorkAi(workId))
                             }
                         }
+                        row {
+                            NavRow(
+                                "变更登记",
+                                value = if (pendingChanges > 0) "$pendingChanges 条待同步设定" else allChanges[workId]?.size?.takeIf { it > 0 }?.let { "$it 条" },
+                                icon = LingYueIcons.History,
+                                iconBackground = Color(0xFF8E8E93),
+                            ) { vm.open(Screen.WorkChanges(workId)) }
+                        }
                     }
                     work.volumes.forEach { v ->
                         GroupedSection {
@@ -432,7 +448,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         }
                     }
                     Text(
-                        "长按章节可以改名、调整顺序或删除。",
+                        "长按章节可以改名、改状态、写细纲卡、调整顺序或删除。定稿的章节正文锁定，要改先登记原因。",
                         color = c.secondary,
                         fontSize = 13.sp,
                         modifier = Modifier.padding(horizontal = 28.dp),
@@ -471,7 +487,21 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     onRename = { vm.writing.renameChapter(workId, ch.id, it) },
                     onMove = { vm.writing.moveChapter(workId, ch.id, it) },
                     onDelete = { vm.writing.deleteChapter(workId, ch.id) },
+                    onStatus = {
+                        chapterMenu = null
+                        statusFor = ch
+                    },
+                    onCard = {
+                        chapterMenu = null
+                        vm.open(Screen.ChapterCard(workId, ch.id))
+                    },
                 )
+            }
+            statusFor?.let { ch ->
+                StatusDialog(ch, onDismiss = { statusFor = null }) { st, reason, canon ->
+                    statusFor = null
+                    vm.writing.setStatus(workId, ch.id, st, reason, canon)
+                }
             }
             volumeMenu?.let { v ->
                 VolumeDialog(
@@ -512,7 +542,8 @@ private fun ChapterRow(ch: WorkChapter, onClick: () -> Unit, onLongClick: () -> 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(ch.title, color = c.label, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text(if (ch.words == 0) "空" else words(ch.words), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+        StatusLabel(ch.status)
+        Text(if (ch.words == 0) "空" else words(ch.words), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 8.dp))
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
     }
 }
@@ -538,13 +569,21 @@ private fun NameDialog(title: String, initial: String, confirm: String, onDismis
 
 /** 长按一章：改名、上移下移、删除（删除要再点一次确认）。 */
 @Composable
-private fun ChapterDialog(ch: WorkChapter, onDismiss: () -> Unit, onRename: (String) -> Unit, onMove: (Int) -> Unit, onDelete: () -> Unit) {
+private fun ChapterDialog(
+    ch: WorkChapter,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+    onMove: (Int) -> Unit,
+    onDelete: () -> Unit,
+    onStatus: () -> Unit,
+    onCard: () -> Unit,
+) {
     var name by remember { mutableStateOf(ch.title) }
     var confirmDelete by remember { mutableStateOf(false) }
     GlassDialog(
         show = true,
         title = if (confirmDelete) "删除“${ch.title}”" else ch.title,
-        summary = if (confirmDelete) "这一章（${words(ch.words)}）会从作品里删除。删除前的正文会留一份在历史版本文件里。" else null,
+        summary = if (confirmDelete) (if (ch.locked) "这一章已定稿。" else "") + "这一章（${words(ch.words)}）会从作品里删除。删除前的正文会留一份在历史版本文件里。" else null,
         onDismissRequest = onDismiss,
     ) {
         if (confirmDelete) {
@@ -555,6 +594,10 @@ private fun ChapterDialog(ch: WorkChapter, onDismiss: () -> Unit, onRename: (Str
             return@GlassDialog
         }
         TextField(value = name, onValueChange = { name = it }, label = "章名", singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton(text = "状态：${ch.status.label}", onClick = onStatus, modifier = Modifier.weight(1f))
+            TextButton(text = "细纲卡", onClick = onCard, modifier = Modifier.weight(1f))
+        }
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(text = "上移", onClick = { onMove(-1) }, modifier = Modifier.weight(1f))
             TextButton(text = "下移", onClick = { onMove(1) }, modifier = Modifier.weight(1f))
@@ -636,7 +679,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val realtime by vm.writingAi.realtime.collectAsStateWithLifecycle()
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
-    val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready
+    val locked = chapter?.locked == true
+    var statusDialog by remember { mutableStateOf(false) }
+    // 定稿的章不做实时检查（反正不能改）。
+    val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
 
     LaunchedEffect(workId, chapterId) {
@@ -686,6 +732,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
     /** 改稿类：选中的文字或光标所在的段。 */
     fun runEdit(action: WriteAction, instruction: String = "") {
         val st = current ?: return
+        if (locked) {
+            vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+            return
+        }
         val target = editTarget(st.text.toString(), st.selection, action, instruction)
         if (target == null) vm.showMessage(if (action == WriteAction.CONTINUE) "先写一点，再让 AI 接着写" else "先选中文字，或把光标放在要改的那段")
         else runAi(target)
@@ -727,7 +777,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
                         Text(
-                            "$count 字 · " + (if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
+                            (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · " +
+                                (if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
                                 if (realtimeOn) " · 实时检查已开" else "",
                             color = c.secondary,
                             fontSize = 12.sp,
@@ -754,6 +805,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                             current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
                                             vm.open(Screen.WorkHistory(workId, chapterId))
                                         })
+                                        add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
+                                        add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
                                         add("改章名" to { renaming = true })
                                         chapters.getOrNull(index - 1)?.let { p -> add("上一章" to { vm.replaceTop(Screen.Editor(workId, p.id)) }) }
                                         chapters.getOrNull(index + 1)?.let { n -> add("下一章" to { vm.replaceTop(Screen.Editor(workId, n.id)) }) }
@@ -784,6 +837,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         LaunchedEffect(current) { if (current.text.isEmpty()) runCatching { focus.requestFocus() } }
                         BasicTextField(
                             state = current,
+                            // 定稿的正文锁定：只能看、能选中复制，不能改。
+                            readOnly = locked,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .focusRequester(focus)
@@ -804,6 +859,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         )
                     }
                 }
+                if (locked && chapter != null) {
+                    Row(
+                        Modifier.fillMaxWidth().background(c.background).padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("已定稿，正文锁定。要改先登记原因。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        TextButton(text = "解锁修改", onClick = { statusDialog = true })
+                    }
+                }
                 // AI 的结果面板、实时检查的问题，都在键盘上方，不挡正在写的地方。
                 val panel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
                 if (panel != null && current != null) {
@@ -816,8 +880,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             else vm.showMessage("那段原文已经改动，没找到要替换的地方")
                         },
                         onInsert = { result ->
-                            current.edit { replace(selection.min, selection.max, result) }
-                            vm.writingAi.close()
+                            if (locked) {
+                                vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                            } else {
+                                current.edit { replace(selection.min, selection.max, result) }
+                                vm.writingAi.close()
+                            }
                         },
                         onRetry = { vm.writingAi.retry() },
                         onClose = { vm.writingAi.close() },
@@ -890,7 +958,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     Modifier
                                         .padding(horizontal = 2.dp)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .combinedClickableCompat { current?.let { insert(it, s) } }
+                                        .combinedClickableCompat { if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else current?.let { insert(it, s) } }
                                         .semantics { contentDescription = "插入$s" }
                                         .padding(horizontal = 12.dp, vertical = 8.dp),
                                 ) {
@@ -906,6 +974,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 NameDialog("章名", chapter.title, "保存", onDismiss = { renaming = false }) {
                     renaming = false
                     vm.writing.renameChapter(workId, chapterId, it)
+                }
+            }
+            if (statusDialog && chapter != null) {
+                StatusDialog(chapter, onDismiss = { statusDialog = false }) { st, reason, canon ->
+                    statusDialog = false
+                    vm.writing.setStatus(workId, chapterId, st, reason, canon)
                 }
             }
             if (ideas) {
