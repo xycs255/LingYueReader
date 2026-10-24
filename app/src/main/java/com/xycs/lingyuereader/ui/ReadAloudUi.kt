@@ -1,33 +1,35 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
 import com.xycs.lingyuereader.ui.glass.LocalGlassBackdrop
 import com.xycs.lingyuereader.ui.glass.readerGlass
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -39,8 +41,6 @@ import com.xycs.lingyuereader.tts.ReadAloudState
 import com.xycs.lingyuereader.tts.SleepTimer
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 听书时浮在底部的控制条：播放/暂停、设置、停止。 */
@@ -109,7 +109,10 @@ private fun timerLabel(timer: SleepTimer): String? = when (timer) {
     }
 }
 
-/** 听书设置：进度与上下句、语速、语音、定时关闭。 */
+/**
+ * 听书设置，苹果分组面板的样子：顶上是进度和大号的上一句 / 播放 / 下一句，
+ * 下面是语速滑块、语音和定时关闭两个单选列表。
+ */
 @Composable
 internal fun ReadAloudSheet(
     state: ReadAloudState,
@@ -117,96 +120,81 @@ internal fun ReadAloudSheet(
     onRate: (Float) -> Unit,
     onVoice: (String?) -> Unit = {},
     onTimer: (Int?) -> Unit = ReadAloud::setTimer,
+    tint: Color = palette.accent,
 ) {
-    var rate by remember(state.bookId) { mutableStateOf(state.rate) }
-    Column(Modifier.padding(bottom = 24.dp)) {
-        Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = ReadAloud::previousSentence) {
-                Icon(LingYueIcons.ChevronBackward, contentDescription = "上一句", tint = palette.text)
-            }
-            IconButton(onClick = ReadAloud::toggle) {
-                Icon(if (state.playing) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = if (state.playing) "暂停听书" else "继续听书", tint = palette.accent)
-            }
-            IconButton(onClick = ReadAloud::nextSentence) {
-                Icon(LingYueIcons.ChevronForward, contentDescription = "下一句", tint = palette.text)
-            }
+    ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
+        val c = LocalGroupedColors.current
+        var rate by remember(state.bookId) { mutableStateOf(state.rate) }
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+            SheetNavBar("听书", back = null) {}
             Text(
-                if (state.sentences > 0) "第 ${state.sentence + 1} / ${state.sentences} 句 · ${progressLabel(state)}" else state.chapterTitle,
-                color = palette.secondary,
+                if (state.sentences > 0) "${state.chapterTitle} · 第 ${state.sentence + 1} / ${state.sentences} 句" else state.chapterTitle,
+                color = c.secondary,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                textAlign = TextAlign.Center,
             )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("语速", color = palette.text, fontSize = 14.sp, modifier = Modifier.width(48.dp))
-            Box(Modifier.weight(1f)) {
-                Slider(
-                    value = rate,
-                    onValueChange = { rate = it },
-                    onValueChangeFinished = { onRate(rate) },
-                    valueRange = 0.5f..2f,
-                    steps = 14,
-                    colors = SliderDefaults.sliderColors(foregroundColor = palette.accent, backgroundColor = palette.text.copy(alpha = 0.12f)),
-                )
-            }
-            Text("%.1f×".format(rate), color = palette.text, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
-        }
-        if (state.voices.size > 1) {
-            Text("语音", color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
-            FlowRow(
-                modifier = Modifier.selectableGroup(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Row(
+                Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 22.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
-                    val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
-                    Box(
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                            .selectable(selected = on, role = Role.RadioButton) { onVoice(name) }
-                            .padding(horizontal = 12.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(label, color = if (on) palette.accent else palette.text, fontSize = 13.sp)
+                IconButton(onClick = ReadAloud::previousSentence) {
+                    Icon(LingYueIcons.ChevronBackward, contentDescription = "上一句", tint = c.label, modifier = Modifier.size(30.dp))
+                }
+                Box(
+                    Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(c.tint)
+                        .clickable(role = Role.Button, onClick = ReadAloud::toggle)
+                        .semantics { contentDescription = if (state.playing) "暂停听书" else "继续听书" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(if (state.playing) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                }
+                IconButton(onClick = ReadAloud::nextSentence) {
+                    Icon(LingYueIcons.ChevronForward, contentDescription = "下一句", tint = c.label, modifier = Modifier.size(30.dp))
+                }
+            }
+            GroupedSection {
+                row {
+                    LabeledSliderRow(
+                        "语速",
+                        rate,
+                        "%.1f×".format(rate),
+                        0.5f..2f,
+                        steps = 14,
+                        onValueChangeFinished = { onRate(rate) },
+                    ) { rate = it }
+                }
+            }
+            if (state.voices.size > 1) {
+                GroupedSection(header = "语音") {
+                    (listOf(null to "默认") + state.voices.map { it.name to it.label }).forEach { (name, label) ->
+                        val on = name == state.voice || (name == null && state.voices.none { it.name == state.voice })
+                        row { CheckRow(label, on) { onVoice(name) } }
                     }
                 }
             }
-        }
-        Text("定时关闭", color = palette.text, fontSize = 14.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
-        val options = listOf<Pair<Int?, String>>(null to "不定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟", 0 to "本章结束")
-        val selected = when (val t = state.timer) {
-            SleepTimer.Off -> null
-            SleepTimer.EndOfChapter -> 0
-            is SleepTimer.At -> t.minutes
-        }
-        FlowRow(
-            modifier = Modifier.selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            options.forEach { (minutes, label) ->
-                val on = minutes == selected
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) palette.accent.copy(alpha = 0.15f) else palette.text.copy(alpha = 0.06f))
-                        .selectable(selected = on, role = Role.RadioButton) { onTimer(minutes) }
-                        .padding(horizontal = 12.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(label, color = if (on) palette.accent else palette.text, fontSize = 13.sp)
+            val selected = when (val t = state.timer) {
+                SleepTimer.Off -> null
+                SleepTimer.EndOfChapter -> 0
+                is SleepTimer.At -> t.minutes
+            }
+            GroupedSection(
+                header = "定时关闭",
+                footer = listOfNotNull(
+                    timerLabel(state.timer)?.let { "$it。" },
+                    "使用系统的“文字转语音”引擎。锁屏后继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
+                ).joinToString(""),
+            ) {
+                listOf<Pair<Int?, String>>(null to "不定时", 15 to "15 分钟", 30 to "30 分钟", 60 to "60 分钟", 0 to "本章结束").forEach { (minutes, label) ->
+                    row { CheckRow(label, minutes == selected) { onTimer(minutes) } }
                 }
             }
         }
-        timerLabel(state.timer)?.let { Text(it, color = palette.secondary, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp)) }
-        Text(
-            "使用系统的“文字转语音”引擎。锁屏后会继续朗读，可在通知栏、耳机或蓝牙按键上暂停、切换上下句。",
-            color = palette.secondary,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 18.dp),
-        )
     }
 }

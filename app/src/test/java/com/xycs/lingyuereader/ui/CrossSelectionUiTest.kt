@@ -119,7 +119,7 @@ class CrossSelectionUiTest {
         waitForText("划线·批注")
         compose.onNodeWithText("划线·批注").performClick()
         waitForText("写点批注")
-        compose.onAllNodesWithText("划线")[1].performClick()
+        compose.onNodeWithText("完成").performClick()
         // 批注在后台线程写盘，整套测试一起跑、机器忙时会慢一些。
         val marks = File(context.filesDir, "books/b1/marks.json")
         fun saved() = if (marks.isFile) marks.readText() else "（没有 marks.json）"

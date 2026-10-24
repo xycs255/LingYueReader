@@ -23,6 +23,7 @@ enum class PageMode(val label: String) {
     SLIDE("平移"),
     COVER("覆盖"),
     CURL("仿真"),
+    NONE("无动画"),
     VERTICAL("竖排"),
 }
 

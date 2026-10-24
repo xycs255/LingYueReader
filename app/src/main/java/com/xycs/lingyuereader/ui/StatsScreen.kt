@@ -1,10 +1,10 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.runtime.getValue
+import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.clickable
-import com.xycs.lingyuereader.ui.glass.GlassCard
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.foundation.Canvas
@@ -24,11 +24,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,20 +43,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.DayStats
 import com.xycs.lingyuereader.data.ReadingStats
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
 
-/** 阅读统计：今天、本周、本月、今年的时长，连续天数，阅读速度，近 20 周的热力图和各本书的时长。 */
+/**
+ * 阅读统计：今天、本周、本月、今年的时长，连续天数，阅读速度，每日目标，近 20 周的热力图和各本书的时长。
+ * 分组列表的样子，和“我的”一致。
+ */
 @Composable
 fun StatsScreen(vm: AppViewModel) {
     val days by vm.readingStats.collectAsStateWithLifecycle()
@@ -66,75 +60,71 @@ fun StatsScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) { vm.reloadStats() }
     val today = LocalDate.now()
 
-    GlassScaffold(
-        topBar = {
-            SmallTopAppBar(
-                color = Color.Transparent,
-                modifier = Modifier.glassBar(),
-                title = "阅读统计",
-            )
-        },
-    ) { padding ->
-        LazyColumn(
-            Modifier.fillMaxSize().overScrollVertical(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
-            overscrollEffect = null,
-        ) {
-            item {
-                val week = ReadingStats.total(days, today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), today)
-                val month = ReadingStats.total(days, today.withDayOfMonth(1), today)
-                val year = ReadingStats.total(days, today.withDayOfYear(1), today)
-                GlassCard(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), insideMargin = PaddingValues(16.dp)) {
-                    Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Figure("今天", days[today]?.millis ?: 0)
-                        Figure("本周", week)
-                        Figure("本月", month)
-                        Figure("今年", year)
-                    }
-                    Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(
-                            "连续阅读 ${ReadingStats.streak(days, today)} 天 · 阅读速度约每分钟 ${ReadingStats.charsPerMinute(days, today)} 字",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                    }
-                }
-                SmallTitle("每日目标")
-                GoalCard(vm, todayMinutes = ((days[today]?.millis ?: 0) / 60_000).toInt())
-                SmallTitle("近 20 周")
-                GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
-                    Heatmap(days, today, weeks = 20)
-                    Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("少", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                        HEAT_LEVELS.indices.forEach { i ->
-                            Box(Modifier.padding(horizontal = 2.dp).size(10.dp).clip(RoundedCornerShape(2.dp)).background(heatColor(i)))
-                        }
-                        Text("多", style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                    }
-                }
-                SmallTitle("各本书")
-            }
-            val books = shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis }
-            if (books.isEmpty()) {
+    ProvideGroupedColors {
+        val c = LocalGroupedColors.current
+        val scrollBehavior = MiuixScrollBehavior()
+        GlassScaffold(
+            containerColor = c.background,
+            topBar = {
+                TopAppBar(
+                    color = Color.Transparent,
+                    modifier = Modifier.glassBar(),
+                    title = "阅读统计",
+                    scrollBehavior = scrollBehavior,
+                )
+            },
+        ) { padding ->
+            LazyColumn(
+                Modifier.fillMaxSize().overScrollVertical().nestedScroll(scrollBehavior.nestedScrollConnection),
+                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
+                overscrollEffect = null,
+            ) {
                 item {
-                    Text(
-                        "还没有阅读记录。",
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(horizontal = 28.dp),
-                    )
-                }
-            }
-            val longest = books.firstOrNull()?.readMillis ?: 1
-            items(books, key = { it.id }) { b ->
-                Column(Modifier.padding(horizontal = 28.dp, vertical = 6.dp)) {
-                    Row {
-                        Text(b.title, modifier = Modifier.weight(1f), maxLines = 1)
-                        Text(durationLabel(b.readMillis), color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 13.sp)
+                    val week = ReadingStats.total(days, today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), today)
+                    val month = ReadingStats.total(days, today.withDayOfMonth(1), today)
+                    val year = ReadingStats.total(days, today.withDayOfYear(1), today)
+                    GroupedSection(footer = "连续阅读 ${ReadingStats.streak(days, today)} 天 · 阅读速度约每分钟 ${ReadingStats.charsPerMinute(days, today)} 字") {
+                        row {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Figure("今天", days[today]?.millis ?: 0)
+                                Figure("本周", week)
+                                Figure("本月", month)
+                                Figure("今年", year)
+                            }
+                        }
                     }
-                    val grown = animateFromZero(b.readMillis.toFloat() / longest)
-                    Box(Modifier.padding(top = 4.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(MiuixTheme.colorScheme.secondaryContainer)) {
-                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(MiuixTheme.colorScheme.primary))
+                    GoalSection(vm, todayMinutes = ((days[today]?.millis ?: 0) / 60_000).toInt())
+                    GroupedSection(header = "近 20 周") {
+                        row {
+                            Column(Modifier.padding(16.dp)) {
+                                Heatmap(days, today, weeks = 20)
+                                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("少", fontSize = 13.sp, color = c.secondary)
+                                    HEAT_LEVELS.indices.forEach { i ->
+                                        Box(Modifier.padding(horizontal = 2.dp).size(10.dp).clip(RoundedCornerShape(2.dp)).background(heatColor(i)))
+                                    }
+                                    Text("多", fontSize = 13.sp, color = c.secondary)
+                                }
+                            }
+                        }
+                    }
+                    val books = shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis }
+                    val longest = books.firstOrNull()?.readMillis ?: 1
+                    GroupedSection(header = "各本书", footer = if (books.isEmpty()) "还没有阅读记录。" else null) {
+                        books.forEach { b ->
+                            row {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                    Row {
+                                        Text(b.title, color = c.label, fontSize = 17.sp, modifier = Modifier.weight(1f), maxLines = 1)
+                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 15.sp)
+                                    }
+                                    val grown = animateFromZero(b.readMillis.toFloat() / longest)
+                                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
+                                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -146,9 +136,10 @@ fun StatsScreen(vm: AppViewModel) {
 private fun Figure(label: String, millis: Long) {
     // 打开统计页时数字从 0 往上数。
     val shown = animateFromZero(millis.toFloat(), 900)
+    val c = LocalGroupedColors.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(minutes(shown.toLong()), fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text(label, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        Text(minutes(shown.toLong()), color = c.label, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -162,8 +153,8 @@ private val HEAT_LEVELS = listOf(0L, 1L, 10L, 30L, 60L)
 
 @Composable
 private fun heatColor(level: Int): Color {
-    val base = MiuixTheme.colorScheme.primary
-    return if (level == 0) MiuixTheme.colorScheme.secondaryContainer else base.copy(alpha = 0.2f + 0.2f * level)
+    val c = LocalGroupedColors.current
+    return if (level == 0) c.fill else c.tint.copy(alpha = 0.2f + 0.2f * level)
 }
 
 /** 每列一周（周一到周日），最右一列是本周。 */
@@ -208,7 +199,8 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
 
 /** 每日目标：选几分钟，看今天读了多少；可以让它晚上 9 点还没读够时提醒一下。 */
 @Composable
-private fun GoalCard(vm: AppViewModel, todayMinutes: Int) {
+private fun GoalSection(vm: AppViewModel, todayMinutes: Int) {
+    val c = LocalGroupedColors.current
     val settings by vm.settings.collectAsStateWithLifecycle()
     val goal = settings.dailyGoal
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -221,63 +213,48 @@ private fun GoalCard(vm: AppViewModel, todayMinutes: Int) {
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) askPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
     }
-    GlassCard(Modifier.padding(horizontal = 12.dp), insideMargin = PaddingValues(16.dp)) {
-        if (goal > 0) {
-            val done = todayMinutes >= goal
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text("${animateFromZero(todayMinutes.toFloat()).toInt()}", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text(" / $goal 分钟", style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(bottom = 4.dp))
-                Spacer(Modifier.weight(1f))
-                Text(
-                    if (done) "今天的目标完成了" else "还差 ${goal - todayMinutes} 分钟",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = if (done) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
-            Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(MiuixTheme.colorScheme.secondaryContainer)) {
-                val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f), 900)
-                Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(MiuixTheme.colorScheme.primary))
-            }
+    GroupedSection(
+        header = "每日目标",
+        footer = if (goal > 0) {
+            "还没读够目标时，晚上 ${com.xycs.lingyuereader.reminder.GoalReminder.HOUR} 点发一条通知；连续读了好几天、今天还没读的，提醒别断了。"
         } else {
-            Text("设一个每天的阅读目标，统计页会显示今天读到哪了。", style = MiuixTheme.textStyles.body2)
+            "设一个每天的阅读目标，这里会显示今天读到哪了。"
+        },
+    ) {
+        if (goal > 0) {
+            row {
+                val done = todayMinutes >= goal
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text("${animateFromZero(todayMinutes.toFloat()).toInt()}", color = c.label, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
+                        Text(" / $goal 分钟", color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp))
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (done) "今天的目标完成了" else "还差 ${goal - todayMinutes} 分钟",
+                            fontSize = 13.sp,
+                            color = if (done) c.tint else c.secondary,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    }
+                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.fill)) {
+                        val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f), 900)
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(c.tint))
+                    }
+                }
+            }
         }
-        Row(Modifier.padding(top = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(0, 15, 30, 45, 60, 90).forEach { m ->
-                val on = goal == m
-                Text(
-                    if (m == 0) "不设" else "$m 分钟",
-                    fontSize = 14.sp,
-                    color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer)
-                        .clickable {
-                            vm.updateSettings { it.copy(dailyGoal = m) }
-                            if (m > 0 && settings.goalReminder) ensureNotifications()
-                        }
-                        .padding(horizontal = 14.dp, vertical = 7.dp),
-                )
+        row {
+            PickerRow("每天读", listOf(0, 15, 30, 45, 60, 90).map { it to if (it == 0) "不设目标" else "$it 分钟" }, goal) { m ->
+                vm.updateSettings { it.copy(dailyGoal = m) }
+                if (m > 0 && settings.goalReminder) ensureNotifications()
             }
         }
         if (goal > 0) {
-            Row(Modifier.padding(top = 12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("晚上 ${com.xycs.lingyuereader.reminder.GoalReminder.HOUR} 点提醒", style = MiuixTheme.textStyles.body1)
-                    Text(
-                        "还没读够目标时发一条通知；连续读了好几天、今天还没读的，提醒别断了",
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
+            row {
+                ToggleRow("晚上 ${com.xycs.lingyuereader.reminder.GoalReminder.HOUR} 点提醒", settings.goalReminder) { on ->
+                    vm.updateSettings { it.copy(goalReminder = on) }
+                    if (on) ensureNotifications()
                 }
-                top.yukonga.miuix.kmp.basic.Switch(
-                    checked = settings.goalReminder,
-                    onCheckedChange = { on ->
-                        vm.updateSettings { it.copy(goalReminder = on) }
-                        if (on) ensureNotifications()
-                    },
-                    modifier = Modifier.padding(start = 12.dp),
-                )
             }
         }
     }

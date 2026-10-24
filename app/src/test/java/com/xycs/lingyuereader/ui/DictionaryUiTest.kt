@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.test.onLast
 import android.content.Context
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -217,9 +218,11 @@ class DictionaryUiTest {
         waitForText("导入 1 本")
         compose.onNodeWithText("词典").performClick()
         waitForText("3004 个词条")
-        compose.onNodeWithText("删除").performClick()
+        // 苹果式编辑：先点“编辑”，每行出现删除。
+        compose.onNodeWithText("编辑").performClick()
+        compose.onNodeWithContentDescription("删除").performClick()
         waitForText("删除词典")
-        compose.onAllNodesWithText("删除")[1].performClick()
+        compose.onAllNodesWithText("删除").onLast().performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("3004 个词条").fetchSemanticsNodes().isEmpty() }
         assertTrue(File(context.filesDir, "dicts").listFiles()!!.none { it.isDirectory && it.name != "builtin" })
     }

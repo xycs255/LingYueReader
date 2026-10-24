@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.onLast
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
@@ -157,7 +159,8 @@ class EyeCareUiTest {
         compose.mainClock.advanceTimeBy(2_000)
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()
-        // 设置面板画在最外层，也要拿到阅读页的光线读数。
+        // 设置面板画在最外层，也要拿到阅读页的光线读数；读数写在“护眼”页。
+        compose.onAllNodesWithText("护眼").onLast().performScrollTo().performClick()
         waitForText("当前环境光约")
         compose.onNodeWithText("没有光线传感器", substring = true).assertDoesNotExist()
     }

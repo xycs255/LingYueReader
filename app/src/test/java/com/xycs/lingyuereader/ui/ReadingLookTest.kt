@@ -57,9 +57,13 @@ class CustomBackgroundUiTest : PageTurnUiBase("SCROLL") {
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("设置").performClick()
         compose.onNodeWithText("自定义").performScrollTo().performClick()
+        // 选了“自定义”，下面出现“自定义配色”，点进去选颜色。
+        compose.onNodeWithText("自定义配色").performScrollTo().performClick()
         compose.onNodeWithContentDescription("底色 #000000").performScrollTo().performClick()
         compose.onNodeWithContentDescription("字色 #FFFFFF").performScrollTo().performClick()
         waitForText("适合长时间阅读")
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        compose.waitForIdle()
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
         // 配色渐变约 3 秒。
         compose.mainClock.advanceTimeBy(4_000)

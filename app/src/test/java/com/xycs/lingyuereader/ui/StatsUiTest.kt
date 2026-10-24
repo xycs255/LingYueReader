@@ -72,6 +72,8 @@ class StatsUiTest {
         waitForText("测试书")
         compose.onNodeWithText("统计").performClick()
         waitForText("设一个每天的阅读目标")
+        // 苹果式菜单选择：点“每天读”弹出选项。
+        compose.onNodeWithText("每天读").performClick()
         compose.onNodeWithText("30 分钟").performClick()
         // 今天读了 25 分钟。
         waitForText("/ 30 分钟")
