@@ -19,9 +19,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
 /** 阅读页的强调色。界面其余部分用 miuix 默认配色，随系统深浅色切换。 */
-private val Cinnabar = Color(0xFFA23B2A)
+private val Cinnabar = Color(0xFFB5432F)
 /** 夜间强调色用琥珀色：深底上红、绿文字最易累眼（Fan 等，2024）。 */
-private val Amber = Color(0xFFD49A57)
+private val Amber = Color(0xFFE0905F)
 
 @Composable
 fun LingYueTheme(appearance: Appearance = Appearance(), content: @Composable () -> Unit) {
@@ -63,11 +63,13 @@ data class ReaderPalette(
 
 fun ReaderTheme.palette(): ReaderPalette = (when (this) {
     // 浅灰暖白而不是近乎纯白：亮处更柔和，对比度仍在 13:1 左右。
-    ReaderTheme.PAPER -> ReaderPalette(Color(0xFFF4F2EC), Color(0xFF2A2724), Color(0xFF857D73), Cinnabar, Color(0xFFEAE6DD), false)
+    ReaderTheme.PAPER -> ReaderPalette(Color(0xFFF5F0E6), Color(0xFF2B2620), Color(0xFF6F665A), Cinnabar, Color(0xFFEDE6D8), false)
     ReaderTheme.PARCHMENT -> ReaderPalette(Color(0xFFF2E6CC), Color(0xFF3E3222), Color(0xFF8C7A5E), Color(0xFF9A3A22), Color(0xFFE8D9B9), false)
     ReaderTheme.GREEN -> ReaderPalette(Color(0xFFDCEBD2), Color(0xFF26331F), Color(0xFF6C7D62), Color(0xFF3E6B2E), Color(0xFFCCDFC0), false)
     // 深底配偏暖的浅黄字（不用纯白），对比度约 9:1。
-    ReaderTheme.NIGHT -> ReaderPalette(Color(0xFF151413), Color(0xFFC4B48E), Color(0xFF7D7565), Amber, Color(0xFF22201E), true)
+    ReaderTheme.NIGHT -> ReaderPalette(Color(0xFF191714), Color(0xFFD6CDBB), Color(0xFF8E8676), Amber, Color(0xFF24211E), true)
+    // 灰蓝：不那么黑的深色，夜里开着灯读。
+    ReaderTheme.SLATE -> ReaderPalette(Color(0xFF3A3F47), Color(0xFFDCE1E8), Color(0xFFA9B1BC), Color(0xFF9CC3F0), Color(0xFF454B54), true)
     ReaderTheme.CUSTOM -> customPalette(Color(ReaderSettings().customBackground), Color(ReaderSettings().customText))
 }).withReadableSecondary()
 

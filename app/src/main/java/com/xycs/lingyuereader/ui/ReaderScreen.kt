@@ -75,6 +75,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.padding
@@ -112,6 +113,18 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.width
+import com.xycs.lingyuereader.data.MarkColor
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.style.TextAlign
+import com.xycs.lingyuereader.ui.glass.GlassMenu
+import top.yukonga.miuix.kmp.basic.ListPopupColumn
+import top.yukonga.miuix.kmp.basic.PopupPositionProvider
+import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -156,6 +169,8 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val systemDark = isSystemInDarkTheme()
     val theme = when {
         settings.theme == ReaderTheme.NIGHT -> ReaderTheme.NIGHT
+        // 自己选了深色的灰蓝，不再换成墨夜。
+        settings.theme == ReaderTheme.SLATE -> ReaderTheme.SLATE
         lightLevel == LightLevel.DARK -> ReaderTheme.NIGHT
         lightLevel == null && settings.autoNight && systemDark -> ReaderTheme.NIGHT
         else -> settings.theme
@@ -245,7 +260,8 @@ internal fun pageLayoutChar(chapter: com.xycs.lingyuereader.data.Chapter, block:
 
 private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
-    data object Settings : ReaderSheet
+    /** 阅读设置；[more] 为真时从“更多设置”那页开始（菜单里的“设置”），否则从“外观”开始。 */
+    data class Settings(val more: Boolean = false) : ReaderSheet
     data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
     /** 跨段落划线。 */
     data object MultiNote : ReaderSheet
@@ -341,6 +357,11 @@ private fun Reader(
         readTracker.last = at
         readTracker.at = now
     }
+    // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
+    val bookFraction = run {
+        val total = chapterStarts.last().coerceAtLeast(1)
+        ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
+    }
     val readingStats by vm.readingStats.collectAsStateWithLifecycle()
     val speed = remember(readingStats) { ReadingStats.charsPerMinute(readingStats) }
     val chapterLeft = remember(pos.fraction, chapter, speed) {
@@ -348,7 +369,7 @@ private fun Reader(
         when {
             chapter.charCount == 0 -> null // 漫画、PDF 没有文字，估不出时间
             minutes < 1f -> "本章不到 1 分钟"
-            else -> "本章约剩 ${kotlin.math.ceil(minutes).toInt()} 分钟"
+            else -> "本章余 ${kotlin.math.ceil(minutes).toInt()} 分钟"
         }
     }
 
@@ -613,11 +634,6 @@ private fun Reader(
                 }
             },
     ) {
-        // 全书读到哪：纸书靠手里两边的厚度知道，屏幕上只能看（Mangen 等 2019）。
-        val bookFraction = run {
-            val total = chapterStarts.last().coerceAtLeast(1)
-            ((chapterStarts[chapterIndex] + pos.fraction.coerceIn(0f, 1f) * chapter.charCount) / total).coerceIn(0f, 1f)
-        }
         // 书页（正文和状态行）记录成玻璃的取样源，菜单栏、控制条、操作条和底部面板都透出它。
         Box(Modifier.fillMaxSize().recordGlass(glassBackdrop)) {
         val landingBlock = screen.blockIndex ?: -1
@@ -695,7 +711,8 @@ private fun Reader(
                                 styles = styles,
                                 mode = settings.pageMode,
                                 marks = marks,
-                                topInset = topInset,
+                                // 每页顶上留出页眉。
+                                topInset = topInset + PAGE_HEADER,
                                 bottomInset = bottomInset,
                                 onTap = onTap,
                                 selector = tracker,
@@ -736,6 +753,8 @@ private fun Reader(
             palette,
             Modifier.align(Alignment.BottomCenter),
             bookFraction,
+            // 系统状态栏藏起来时，页脚补上时间和电量。
+            clock = settings.fullscreen,
         )
         }
 
@@ -816,9 +835,15 @@ private fun Reader(
                 IconButton(onClick = { vm.back() }) {
                     Icon(LingYueIcons.Back, contentDescription = "返回书架", tint = palette.text)
                 }
-                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(entry.title, color = palette.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                    Text(chapter.title, color = palette.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(entry.title, color = palette.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOfNotNull(entry.author?.takeIf { it.isNotBlank() }, "已读 ${(bookFraction * 100).toInt()}%").joinToString(" · "),
+                        color = palette.secondary,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 IconButton(onClick = { vm.toggleBookmark(chapterIndex, pos.block.coerceAtLeast(0), pos.char) }) {
                     Icon(
@@ -827,15 +852,31 @@ private fun Reader(
                         tint = if (bookmarked) palette.accent else palette.text,
                     )
                 }
-                IconButton(onClick = {
-                    autoScroll = true
-                    autoPaused = false
-                    menuVisible = false
-                }) {
-                    Icon(LingYueIcons.Play, contentDescription = "自动滚动", tint = if (autoScroll) palette.accent else palette.text)
-                }
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
                     Icon(LingYueIcons.Search, contentDescription = "书内搜索", tint = palette.text)
+                }
+                // 不常用的收进“更多”：自动滚动 / 自动翻页、书籍详情。
+                Box {
+                    var more by remember { mutableStateOf(false) }
+                    IconButton(onClick = { more = true }) {
+                        Icon(LingYueIcons.More, contentDescription = "更多", tint = palette.text)
+                    }
+                    OverlayListPopup(show = more, alignment = PopupPositionProvider.Align.End, onDismissRequest = { more = false }) {
+                        GlassMenu {
+                            ListPopupColumn {
+                                LingYueMenuItem(if (settings.pageMode == PageMode.SCROLL) "自动滚动" else "自动翻页", selected = autoScroll) {
+                                    more = false
+                                    autoScroll = true
+                                    autoPaused = false
+                                    menuVisible = false
+                                }
+                                LingYueMenuItem("书籍详情", selected = false) {
+                                    more = false
+                                    vm.open(Screen.Detail(entry.id))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -851,33 +892,40 @@ private fun Reader(
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                    .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
-                    .padding(top = 8.dp, bottom = 6.dp),
+                    .readerGlass(RoundedCornerShape(30.dp), palette, glassBackdrop)
+                    .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
             ) {
-                BookProgress(content, pos.chapter, pos.fraction, palette) { ch, block -> jump(ch, block, false) }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    BarButton("上一章", LingYueIcons.ChevronBackward, palette.text, enabled = chapterIndex > 0) {
-                        goTo(chapterIndex - 1, null, false)
+                BookProgress(
+                    content,
+                    pos.chapter,
+                    pos.fraction,
+                    pageLabel = pos.label.takeIf { settings.pageMode != PageMode.SCROLL },
+                    bookFraction = bookFraction,
+                    palette = palette,
+                    onPrev = { goTo(chapterIndex - 1, null, false) },
+                    onNext = { goTo(chapterIndex + 1, null, false) },
+                ) { ch, block -> jump(ch, block, false) }
+                Box(Modifier.padding(horizontal = 4.dp, vertical = 4.dp).fillMaxWidth().height(0.5.dp).background(palette.text.copy(alpha = 0.1f)))
+                Row(Modifier.fillMaxWidth()) {
+                    BarButton("目录", LingYueIcons.ListView, palette, Modifier.weight(1f)) { sheet = ReaderSheet.Catalog }
+                    BarButton(
+                        if (listening != null) "听书中" else "听书",
+                        LingYueIcons.VolumeUp,
+                        palette,
+                        Modifier.weight(1f),
+                        active = listening != null,
+                        // 漫画、PDF 没有文字可读。
+                        enabled = !entry.format.imageOnly,
+                    ) {
+                        if (listening != null) {
+                            menuVisible = false
+                            sheet = ReaderSheet.ReadAloud
+                        } else {
+                            startListening()
+                        }
                     }
-                    BarButton("目录", LingYueIcons.ListView, palette.text) { sheet = ReaderSheet.Catalog }
-                    BarButton("设置", LingYueIcons.Tune, palette.text) { sheet = ReaderSheet.Settings }
-                BarButton(
-                    if (listening != null) "听书中" else "听书",
-                    LingYueIcons.VolumeUp,
-                    if (listening != null) palette.accent else palette.text,
-                    // 漫画、PDF 没有文字可读。
-                    enabled = !entry.format.imageOnly,
-                ) {
-                    if (listening != null) {
-                        menuVisible = false
-                        sheet = ReaderSheet.ReadAloud
-                    } else {
-                        startListening()
-                    }
-                }
-                    BarButton("下一章", LingYueIcons.ChevronForward, palette.text, enabled = chapterIndex < content.chapters.lastIndex) {
-                        goTo(chapterIndex + 1, null, false)
-                    }
+                    BarButton("外观", null, palette, Modifier.weight(1f), active = sheet == ReaderSheet.Settings(false)) { sheet = ReaderSheet.Settings(false) }
+                    BarButton("设置", LingYueIcons.Tune, palette, Modifier.weight(1f)) { sheet = ReaderSheet.Settings(true) }
                 }
             }
         }
@@ -887,6 +935,8 @@ private fun Reader(
             SelectionBar(
                 palette,
                 onLookup = vm::lookupSelection.takeIf { textSelection?.singleBlock == true },
+                // 划线：直接用黄色划上，不弹面板；要写批注、换颜色点“批注”。
+                onHighlight = { vm.annotateSelection(MarkColor.YELLOW, "") },
                 onAnnotate = {
                     textSelection?.let { sel ->
                         if (sel.chapterIndex != chapterIndex) return@let
@@ -908,7 +958,6 @@ private fun Reader(
                     }
                     vm.clearSelection()
                 },
-                onCancel = vm::clearSelection,
                 modifier = Modifier.layout { measurable, constraints ->
                     val bar = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
                     val gap = with(density) { 10.dp.toPx() }
@@ -934,7 +983,9 @@ private fun Reader(
     }
     }
 
-    val appTint = MiuixTheme.colorScheme.primary
+    // 面板的强调色：没在“主题设置”里挑过强调色、也没开 Monet 时，跟着书页走（纸白朱砂、墨夜琥珀）；挑过就用挑的。
+    val appearance by vm.appearance.collectAsStateWithLifecycle()
+    val appTint = if (appearance.accent != 0 || appearance.monet) MiuixTheme.colorScheme.primary else palette.accent
     GlassSheet(
         show = sheet == ReaderSheet.Catalog,
         title = null,
@@ -959,20 +1010,36 @@ private fun Reader(
             onDeleteNote = vm::deleteNote,
             onExportNotes = { vm.notesMarkdown()?.let { shareText(context, "《${entry.title}》批注", it) } },
             tint = appTint,
+            bookTitle = entry.title,
+            author = entry.author,
+            bookFraction = bookFraction,
+            chapterFraction = pos.fraction,
+            charsPerMinute = speed.toFloat(),
+            onClose = { sheet = null },
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
     val ambient = LocalAmbientLight.current
     // 阅读设置是苹果式的分组面板：底色用分组灰（深色书页用深灰），标题和返回在面板里面。
+    // 收起动画期间还按原来那一页显示。
+    var lastSettings by remember { mutableStateOf(ReaderSheet.Settings()) }
+    (sheet as? ReaderSheet.Settings)?.let { lastSettings = it }
     GlassSheet(
-        show = sheet == ReaderSheet.Settings,
+        show = sheet is ReaderSheet.Settings,
         title = null,
         background = groupedColors(palette.background.luminance() < 0.5f, appTint, elevated = true).background,
         highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         val fonts by vm.fonts.collectAsStateWithLifecycle()
-        SettingsSheet(settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient, tint = appTint)
+        key(lastSettings.more) {
+            SettingsSheet(
+                settings, palette, vm::updateSettings, fonts, vm::importFonts, vm::deleteFont, ambient,
+                tint = appTint,
+                startWithMore = lastSettings.more,
+                onDone = { sheet = null },
+            )
+        }
     }
     GlassSheet(
         show = sheet == ReaderSheet.ReadAloud && aloud != null,
@@ -1060,15 +1127,15 @@ private fun Reader(
     }
 }
 
-/** 划选后的操作条。 */
+/** 划选后的操作条：一颗深色胶囊（墨色底、纸色字），点书页别处就收起。 */
 @Composable
 private fun SelectionBar(
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
     onCard: () -> Unit,
-    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 出现时从 0.9 倍弹到原大小。
@@ -1082,7 +1149,7 @@ private fun SelectionBar(
             scaleY = s
         },
     ) {
-        SelectionBarRow(palette, onLookup, onAnnotate, onCopy, onCard, onCancel)
+        SelectionBarRow(palette, onLookup, onHighlight, onAnnotate, onCopy, onCard)
     }
 }
 
@@ -1090,24 +1157,32 @@ private fun SelectionBar(
 private fun SelectionBarRow(
     palette: ReaderPalette,
     onLookup: (() -> Unit)?,
+    onHighlight: () -> Unit,
     onAnnotate: () -> Unit,
     onCopy: () -> Unit,
     onCard: () -> Unit,
-    onCancel: () -> Unit,
 ) {
     Row(
         Modifier
-            .readerGlass(RoundedCornerShape(50), palette, LocalGlassBackdrop.current)
-            .padding(horizontal = 6.dp),
+            .shadow(12.dp, RoundedCornerShape(50))
+            .clip(RoundedCornerShape(50))
+            .background(palette.text)
+            .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 跨段落的选区不查词。
-        listOfNotNull(onLookup?.let { "查词" to it }, "划线·批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard, "取消" to onCancel).forEach { (label, action) ->
+        val actions = listOfNotNull(onLookup?.let { "查词" to it }, "划线" to onHighlight, "批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard)
+        actions.forEachIndexed { i, (label, action) ->
+            if (i > 0) Box(Modifier.width(0.5.dp).height(18.dp).background(palette.background.copy(alpha = 0.25f)))
             Text(
                 label,
-                color = if (label == "取消") palette.secondary else palette.text,
-                fontSize = 15.sp,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = action).padding(horizontal = 12.dp, vertical = 11.dp),
+                color = palette.background,
+                fontSize = 14.sp,
+                fontWeight = if (i == 0) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(role = Role.Button, onClick = action)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
             )
         }
     }
@@ -1144,39 +1219,84 @@ private fun LookupOverlay(vm: AppViewModel, palette: ReaderPalette, tint: Color,
 
 /** 全书进度条：按“第几章 + 章内比例”定位，拖动时显示将要跳到的章名，松手跳转。 */
 @Composable
-private fun BookProgress(content: BookContent, chapter: Int, fraction: Float, palette: ReaderPalette, onJump: (Int, Int?) -> Unit) {
+private fun BookProgress(
+    content: BookContent,
+    chapter: Int,
+    fraction: Float,
+    pageLabel: String?,
+    /** 全书按字数读到哪；拖动时按拖到的章和章内位置现算。 */
+    bookFraction: Float,
+    palette: ReaderPalette,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onJump: (Int, Int?) -> Unit,
+) {
     val count = content.chapters.size
     var dragging by remember { mutableStateOf<Float?>(null) }
     val value = dragging ?: (chapter + fraction.coerceIn(0f, 0.999f))
     val target = value.toInt().coerceIn(0, count - 1)
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        Row(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+    val starts = remember(content) { content.chapters.runningFold(0L) { acc, c -> acc + c.charCount } }
+    val percent = dragging?.let { v ->
+        val total = starts.last().coerceAtLeast(1)
+        ((starts[target] + (v - target).coerceIn(0f, 1f) * content.chapters[target].charCount) / total * 100).toInt()
+    } ?: (bookFraction * 100).toInt()
+    Column {
+        // 上一章 · 章名（拖动时是要跳到的那一章）· 下一章
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChapterStep("上一章", LingYueIcons.ChevronBackward, before = true, enabled = chapter > 0, palette, onPrev)
             Text(
                 content.chapters[target].title,
-                color = if (dragging != null) palette.accent else palette.secondary,
-                fontSize = 12.sp,
+                color = if (dragging != null) palette.accent else palette.text,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1f),
             )
-            Text("全书 ${(value / count * 100).toInt().coerceIn(0, 100)}%", color = palette.secondary, fontSize = 12.sp)
+            ChapterStep("下一章", LingYueIcons.ChevronForward, before = false, enabled = chapter < count - 1, palette, onNext)
         }
-        Slider(
-            value = value,
-            onValueChange = { dragging = it },
-            onValueChangeFinished = {
-                dragging?.let { v ->
-                    val ch = v.toInt().coerceIn(0, count - 1)
-                    val blocks = content.chapters[ch].blocks.size
-                    val within = v - ch
-                    onJump(ch, if (within < 0.01f || blocks == 0) null else (within * blocks).toInt().coerceIn(0, blocks - 1))
-                }
-                dragging = null
-            },
-            valueRange = 0f..count.toFloat(),
-            colors = SliderDefaults.sliderColors(foregroundColor = palette.accent, backgroundColor = palette.text.copy(alpha = 0.12f)),
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
+        ProvideGroupedColors(dark = palette.isDark, tint = palette.accent) {
+            IosSlider(
+                value = value,
+                onValueChange = { dragging = it },
+                valueRange = 0f..count.toFloat(),
+                label = "全书进度",
+                valueText = "全书 ${percent.coerceIn(0, 100)}%",
+                onValueChangeFinished = {
+                    dragging?.let { v ->
+                        val ch = v.toInt().coerceIn(0, count - 1)
+                        val blocks = content.chapters[ch].blocks.size
+                        val within = v - ch
+                        onJump(ch, if (within < 0.01f || blocks == 0) null else (within * blocks).toInt().coerceIn(0, blocks - 1))
+                    }
+                    dragging = null
+                },
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 4.dp)) {
+            Text("全书 ${percent.coerceIn(0, 100)}%", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            if (pageLabel != null) Text("本章 $pageLabel", color = palette.secondary, fontSize = 11.sp)
+        }
+    }
+}
+
+/** 菜单里的“‹ 上一章”“下一章 ›”：强调色小字，到头了变灰。 */
+@Composable
+private fun ChapterStep(label: String, icon: ImageVector, before: Boolean, enabled: Boolean, palette: ReaderPalette, onClick: () -> Unit) {
+    val color = if (enabled) palette.accent else palette.secondary.copy(alpha = 0.5f)
+    Row(
+        Modifier
+            .heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+        Text(label, color = color, fontSize = 13.sp)
+        if (!before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
     }
 }
 
@@ -1285,32 +1405,33 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
 }
 
 @Composable
-private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f) {
-    val time = rememberClock()
-    val battery = rememberBattery()
+private fun StatusLine(title: String, label: String, palette: ReaderPalette, modifier: Modifier, bookFraction: Float = 0f, clock: Boolean = false) {
     // 读到下一处时，全书进度线顺滑地走过去，而不是一格格跳。
     val shown by animateFloatAsState(bookFraction, Motion.standard(Motion.MEDIUM), label = "book")
-    Row(
+    // 页脚：一根全书进度细线，下面一行小字——左边章名，右边页码和本章还剩多久。
+    Column(
         modifier
             .fillMaxWidth()
             .background(palette.background.copy(alpha = 0.92f))
-            .drawBehind {
-                // 顶上一根细线：全书的进度。
-                val h = 1.5.dp.toPx()
-                val inset = 24.dp.toPx()
-                val w = size.width - inset * 2
-                drawRect(palette.secondary.copy(alpha = 0.18f), topLeft = Offset(inset, 0f), size = Size(w, h))
-                drawRect(palette.accent.copy(alpha = 0.55f), topLeft = Offset(inset, 0f), size = Size(w * shown, h))
-            }
             .semantics { contentDescription = "全书已读 ${(bookFraction * 100).toInt()}%" }
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 24.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = 28.dp, end = 28.dp, top = 6.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Text(title, color = palette.secondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text(label, color = palette.secondary, fontSize = 11.sp)
-        Text(time, color = palette.secondary, fontSize = 11.sp)
-        battery?.let { Text("电量 $it%", color = palette.secondary, fontSize = 11.sp) }
+        Box(
+            Modifier.fillMaxWidth().height(1.dp).drawBehind {
+                drawRect(palette.text.copy(alpha = 0.12f))
+                drawRect(palette.accent, size = Size(size.width * shown, size.height))
+            },
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(label, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em)
+            if (clock) {
+                Text(rememberClock(), color = palette.secondary, fontSize = 11.sp)
+                rememberBattery()?.let { Text("$it%", color = palette.secondary, fontSize = 11.sp) }
+            }
+        }
     }
 }
 
@@ -1354,16 +1475,35 @@ private fun rememberBattery(): Int? {
 }
 
 @Composable
-private fun BarButton(label: String, icon: ImageVector, tint: Color, enabled: Boolean = true, onClick: () -> Unit) {
-    val color = if (enabled) tint else tint.copy(alpha = 0.3f)
+private fun BarButton(
+    label: String,
+    icon: ImageVector?,
+    palette: ReaderPalette,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val color = when {
+        !enabled -> palette.text.copy(alpha = 0.3f)
+        active -> palette.accent
+        else -> palette.text
+    }
+    // 一格：上面图标（“外观”是衬线的 Aa），下面小字；开着的那项底下铺一层淡强调色。
     Column(
-        Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+        modifier
+            .height(60.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (active) palette.accent.copy(alpha = 0.1f) else Color.Transparent)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+        } else {
+            Text("Aa", color = color, fontSize = 19.sp, lineHeight = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
+        }
         Text(label, color = color, fontSize = 12.sp)
     }
 }

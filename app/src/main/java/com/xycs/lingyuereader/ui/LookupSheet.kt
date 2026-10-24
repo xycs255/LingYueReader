@@ -18,6 +18,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateListOf
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.luminance
@@ -82,6 +88,13 @@ internal fun LookupSheet(
     val vocab by vm.vocab.collectAsStateWithLifecycle()
     ProvideGroupedColors(dark = palette.background.luminance() < 0.5f, tint = tint, elevated = true) {
         val c = LocalGroupedColors.current
+        // 先是一张小卡片：词、读音、头几条释义、原句；“完整释义”再展开成整页（各本词典、微调选区、相关词语）。
+        // 微调选区时词会变，展开了就一直展开；换一段再查才回到小卡片。
+        var full by remember(lookup.chapterIndex, lookup.block) { mutableStateOf(false) }
+        if (!full) {
+            CompactLookup(lookup, vocab.any { it.word == lookup.word }, vm, onAnnotate) { full = true }
+            return@ProvideGroupedColors
+        }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("查词", back = null, action = "管理词典" to onManage) {}
             Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -105,7 +118,7 @@ internal fun LookupSheet(
             }
             Row(Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 val inVocab = vocab.any { it.word == lookup.word }
-                ActionTile(if (inVocab) "已在生词本" else "收入生词本", if (inVocab) LingYueIcons.FavoritesFill else LingYueIcons.Favorites, Modifier.weight(1f)) {
+                ActionTile(if (inVocab) "已在生词本" else "收入生词本", if (inVocab) LingYueIcons.StarFill else LingYueIcons.Star, Modifier.weight(1f)) {
                     if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
                 }
                 ActionTile("复制", LingYueIcons.Copy, Modifier.weight(1f)) { copyText(context, lookup.word) }
@@ -172,6 +185,92 @@ internal fun LookupSheet(
             }
         }
     }
+}
+
+/** 查词小卡片：照样稿，词和读音大字，右上角划线、收入生词本，下面头几条释义、原句，最底下在线查询和“完整释义”。 */
+@Composable
+private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, onAnnotate: () -> Unit, onExpand: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val context = LocalContext.current
+    val result = lookup.result
+    val word = result?.words?.firstOrNull()
+    val ch = result?.chars?.firstOrNull()
+    val reading = word?.pinyin ?: ch?.readings?.joinToString("  ")
+    val definitions = word?.definitions?.take(3) ?: ch?.definition?.takeIf { it.isNotEmpty() }?.let { listOf(it) }.orEmpty()
+    Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 6.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(lookup.word, color = c.label, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold, fontSize = 32.sp, lineHeight = 40.sp)
+            if (reading != null) Text(reading, color = c.tint, fontSize = 16.sp, modifier = Modifier.padding(start = 12.dp, bottom = 5.dp))
+            Spacer(Modifier.weight(1f))
+            if (lookup.range != null) RoundIcon(LingYueIcons.Highlight, "划线·批注", active = false, onClick = onAnnotate)
+            RoundIcon(if (inVocab) LingYueIcons.StarFill else LingYueIcons.Star, if (inVocab) "已在生词本" else "收入生词本", active = true) {
+                if (inVocab) vm.removeFromVocabulary(lookup.word) else vm.addToVocabulary()
+            }
+        }
+        when {
+            result == null -> Text("正在查……", color = c.secondary, fontSize = 15.sp)
+            definitions.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                definitions.forEachIndexed { i, d ->
+                    Row {
+                        Text("${i + 1}", color = c.tint, fontSize = 13.sp, modifier = Modifier.width(18.dp).padding(top = 2.dp))
+                        Text(d, color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                    }
+                }
+            }
+            result.imported.isNotEmpty() -> Text("在「${result.imported.first().first.title}」里查到了，点“完整释义”看。", color = c.secondary, fontSize = 14.sp)
+            else -> Text("词典里没有查到“${lookup.word}”。可以用下面的在线查询，或在完整释义里微调选区。", color = c.secondary, fontSize = 14.sp)
+        }
+        if (lookup.context.isNotBlank()) {
+            Text("原句：${lookup.context.trim()}", color = c.secondary, fontSize = 12.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Pill("汉典") { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) }
+            Pill("百度汉语") { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") }
+            Spacer(Modifier.weight(1f))
+            Row(
+                Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onExpand).padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("完整释义", color = c.tint, fontSize = 14.sp)
+                Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tint, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+}
+
+/** 卡片右上角的圆钮：44dp，[active] 时铺一层淡强调色。 */
+@Composable
+private fun RoundIcon(icon: ImageVector, description: String, active: Boolean, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Box(
+        Modifier
+            .padding(start = 6.dp)
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (active) c.tint.copy(alpha = 0.1f) else c.fill)
+            .clickable(onClickLabel = description, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = if (active) c.tint else c.label, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** 灰底小胶囊按钮（在线查询）。 */
+@Composable
+private fun Pill(label: String, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Text(
+        label,
+        color = c.label,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(c.fill)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    )
 }
 
 /** 词头两边微调选区的小圆钮：看上去 34dp，能按到的 48dp。 */

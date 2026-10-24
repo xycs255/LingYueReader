@@ -36,6 +36,10 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.background
@@ -144,16 +148,32 @@ internal class ReaderStyles(
         fontFeatureSettings = CJK_FEATURES,
         localeList = locale,
     )
+    /** 章首：章名大字半粗。 */
     val title = TextStyle(
         color = palette.text,
         fontFamily = fontFamily,
-        fontWeight = FontWeight.Bold,
-        fontSize = (size * 1.35f).sp,
-        lineHeight = (size * 1.35f * 1.4f).sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = (size * 1.55f).sp,
+        lineHeight = (size * 1.55f * 1.4f).sp,
+        letterSpacing = 0.04.em,
+        localeList = locale,
+    )
+    /** 章首：“第一章”这类序号，小字、强调色、字距拉开，放在章名上面。 */
+    val chapterNumber = TextStyle(
+        color = palette.accent,
+        fontSize = (size * 0.68f).sp,
+        lineHeight = (size * 0.68f * 1.5f).sp,
+        letterSpacing = 0.32.em,
         localeList = locale,
     )
     val titleTop: Dp = 24.dp
-    val titleBottom: Dp = 32.dp
+    /** 序号和章名之间。 */
+    val numberGap: Dp = 6.dp
+    /** 章名下面那道短线：离章名多远、多宽多粗。 */
+    val ruleTop: Dp = 14.dp
+    val ruleWidth: Dp = 28.dp
+    val ruleHeight: Dp = 2.dp
+    val titleBottom: Dp = 30.dp
 
     fun heading(level: Int) = TextStyle(
         color = palette.text,
@@ -612,4 +632,49 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRuby(layout: Te
         if (w > box.width * 1.08f) paint.textScaleX = (box.width * 1.08f / w).coerceAtLeast(0.55f)
         canvas.drawText(r, box.center.x, baseline - fontPx * 1.02f, paint)
     }
+}
+
+/** 章名拆成序号和名字：“第三章 相谈”→（“第三章”，“相谈”）；没有序号或只有序号时序号为空。 */
+internal fun splitChapterTitle(title: String): Pair<String?, String> {
+    val m = CHAPTER_NUMBER.find(title)
+    val name = m?.groupValues?.get(2)?.trim().orEmpty()
+    return if (m != null && name.isNotEmpty()) m.groupValues[1].replace(" ", "") to name else null to title.trim()
+}
+
+private val CHAPTER_NUMBER = Regex("""^\s*(第\s*[0-9０-９一二三四五六七八九十百千万零〇两]+\s*[章节回卷篇部集折幕])[\s:：、.·]*(.*)$""")
+
+/**
+ * 章首：序号小字（强调色）、章名大字、一道短线。读屏时整个念章名。
+ * 分页按 [chapterOpenerHeight] 量同样的几样，两边要一起改。
+ */
+@Composable
+internal fun ChapterOpener(title: String, styles: ReaderStyles) {
+    val (number, name) = remember(title) { splitChapterTitle(title) }
+    Column(
+        Modifier
+            .padding(top = styles.titleTop, bottom = styles.titleBottom)
+            .clearAndSetSemantics { text = AnnotatedString(title); heading() },
+    ) {
+        if (number != null) {
+            Text(number, style = styles.chapterNumber)
+            Spacer(Modifier.height(styles.numberGap))
+        }
+        Text(name, style = styles.title)
+        Box(
+            Modifier
+                .padding(top = styles.ruleTop)
+                .size(styles.ruleWidth, styles.ruleHeight)
+                .clip(RoundedCornerShape(styles.ruleHeight / 2))
+                .background(styles.palette.accent),
+        )
+    }
+}
+
+/** 章首占多高（像素），和 [ChapterOpener] 一致。 */
+internal fun chapterOpenerHeight(title: String, styles: ReaderStyles, fitter: TextFitter, widthPx: Int, density: Float): Float {
+    val (number, name) = splitChapterTitle(title)
+    fun px(dp: Dp) = dp.value * density
+    val numberHeight = number?.let { fitter.height(AnnotatedString(it), styles.chapterNumber, widthPx) + px(styles.numberGap) } ?: 0f
+    return px(styles.titleTop) + numberHeight + fitter.height(AnnotatedString(name), styles.title, widthPx) +
+        px(styles.ruleTop) + px(styles.ruleHeight) + px(styles.titleBottom)
 }

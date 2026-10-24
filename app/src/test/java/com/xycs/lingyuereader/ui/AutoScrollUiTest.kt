@@ -67,10 +67,12 @@ class AutoScrollUiTest {
         compose.onAllNodesWithText("测试书")[0].performClick()
         waitForText("第1段")
         compose.onRoot().performTouchInput { click(center) }
+        // 自动滚动收在顶栏的“更多”里。
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("自动滚动").fetchSemanticsNodes().isNotEmpty() }
         // 自动滚动一直在动，界面不会“空闲”：之后手动拨时钟，直接检查。
-        compose.onNodeWithContentDescription("自动滚动").assertExists()
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithContentDescription("自动滚动").performClick()
+        compose.onNodeWithText("自动滚动").performClick()
         compose.mainClock.advanceTimeBy(500)
         compose.onNodeWithText("每分钟 60 行", substring = true).assertExists()
         compose.mainClock.advanceTimeBy(20_000)
@@ -115,9 +117,10 @@ class AutoPageUiTest {
         compose.onAllNodesWithText("测试书")[0].performClick()
         waitForText("· 1/")
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithContentDescription("自动滚动").assertExists()
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("自动翻页").fetchSemanticsNodes().isNotEmpty() }
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithContentDescription("自动滚动").performClick()
+        compose.onNodeWithText("自动翻页").performClick()
         compose.mainClock.advanceTimeBy(500)
         compose.onNodeWithText("自动翻页").assertExists()
         // 每分钟 60 行，一页十几行：二十多秒内至少翻一页。

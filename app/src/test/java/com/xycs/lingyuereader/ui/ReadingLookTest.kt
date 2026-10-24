@@ -67,8 +67,8 @@ class CustomBackgroundUiTest : PageTurnUiBase("SCROLL") {
         open()
         waitForText("第1段")
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
-        compose.onNodeWithText("自定义").performScrollTo().performClick()
+        compose.onNodeWithText("外观").performClick()
+        compose.onNodeWithContentDescription("自定义背景").performScrollTo().performClick()
         // 选了“自定义”，下面出现“自定义配色”，点进去选颜色。
         compose.onNodeWithText("自定义配色").performScrollTo().performClick()
         compose.onNodeWithContentDescription("底色 #000000").performScrollTo().performClick()

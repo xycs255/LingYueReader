@@ -351,6 +351,44 @@ object LingYueIcons {
         }
     }
 
+    /** 星：收入生词本。 */
+    val Star by lazy {
+        glyph("Star") {
+            trace {
+                moveTo(12f, 3.6f)
+                lineTo(14.6f, 8.9f)
+                lineTo(20.4f, 9.7f)
+                lineTo(16.2f, 13.8f)
+                lineTo(17.2f, 19.6f)
+                lineTo(12f, 16.9f)
+                lineTo(6.8f, 19.6f)
+                lineTo(7.8f, 13.8f)
+                lineTo(3.6f, 9.7f)
+                lineTo(9.4f, 8.9f)
+                close()
+            }
+        }
+    }
+
+    /** 实心星：已在生词本。 */
+    val StarFill by lazy {
+        glyph("StarFill") {
+            solid {
+                moveTo(12f, 3.6f)
+                lineTo(14.6f, 8.9f)
+                lineTo(20.4f, 9.7f)
+                lineTo(16.2f, 13.8f)
+                lineTo(17.2f, 19.6f)
+                lineTo(12f, 16.9f)
+                lineTo(6.8f, 19.6f)
+                lineTo(7.8f, 13.8f)
+                lineTo(3.6f, 9.7f)
+                lineTo(9.4f, 8.9f)
+                close()
+            }
+        }
+    }
+
     /** 复制：后面一张纸露出左上角，前面一张完整的圆角纸。 */
     val Copy by lazy {
         glyph("Copy") {

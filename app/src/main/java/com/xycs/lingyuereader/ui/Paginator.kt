@@ -87,8 +87,7 @@ internal class Paginator(
             used += height
         }
 
-        val titleHeight = px(styles.titleTop.value) +
-            fitter.height(AnnotatedString(chapter.title), styles.title, widthPx) + px(styles.titleBottom.value)
+        val titleHeight = chapterOpenerHeight(chapter.title, styles, fitter, widthPx, density.density)
         place(PageItem.Title, titleHeight)
 
         val gap = px(styles.gap.value)

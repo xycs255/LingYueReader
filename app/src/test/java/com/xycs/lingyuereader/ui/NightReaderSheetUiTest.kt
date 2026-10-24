@@ -126,7 +126,8 @@ class NightReaderSheetUiTest {
         compose.onNodeWithText("目录").performClick()
         waitForText("目录 2")
         val tabTop = compose.onNodeWithText("目录 2").fetchSemanticsNode().boundsInRoot.top
-        val title = compose.onAllNodesWithText("目录").fetchSemanticsNodes()
+        // 目录顶上是书名（小书封旁边）。
+        val title = compose.onAllNodesWithText("测试书").fetchSemanticsNodes()
             .filter { it.boundsInRoot.bottom <= tabTop }.maxBy { it.boundsInRoot.top }.boundsInRoot
         val chapter = compose.onNodeWithText("第二章 路上").fetchSemanticsNode().boundsInRoot
         captureAndCheck("night-catalog", title, chapter)
@@ -136,14 +137,15 @@ class NightReaderSheetUiTest {
     @Test
     fun typographySheetIsDarkAndReadableAndClosesOnBack() {
         openReaderMenu()
-        compose.onNodeWithText("设置").performClick()
-        waitForText("阅读设置")
-        waitForText("字号")
-        val title = compose.onNodeWithText("阅读设置").fetchSemanticsNode().boundsInRoot
-        val label = compose.onNodeWithText("字号").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithText("外观").performClick()
+        waitForText("宋体")
+        val label = compose.onNodeWithText("宋体").fetchSemanticsNode().boundsInRoot
+        // 面板标题“外观”在“宋体”上方（菜单里也有一个“外观”按钮，在屏幕最底下）。
+        val title = compose.onAllNodesWithText("外观").fetchSemanticsNodes()
+            .filter { it.boundsInRoot.bottom <= label.top }.maxBy { it.boundsInRoot.top }.boundsInRoot
         captureAndCheck("night-typography", title, label)
         // 排版面板几乎铺满全屏，没有可点的遮罩区域；系统返回键应关闭它。
         compose.activity.onBackPressedDispatcher.onBackPressed()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("阅读设置").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("宋体").fetchSemanticsNodes().isEmpty() }
     }
 }

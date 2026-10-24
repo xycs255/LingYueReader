@@ -43,6 +43,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.Chapter
 import com.xycs.lingyuereader.data.Marks
@@ -254,13 +255,7 @@ internal fun ScrollReader(
             bottom = bottomInset + 12.dp,
         ),
     ) {
-        item {
-            Text(
-                chapter.title,
-                style = styles.title,
-                modifier = Modifier.padding(top = styles.titleTop, bottom = styles.titleBottom),
-            )
-        }
+        item { ChapterOpener(chapter.title, styles) }
         itemsIndexed(chapter.blocks) { index, block ->
             BlockView(
                 block,
@@ -279,7 +274,7 @@ internal fun ScrollReader(
                 Modifier.fillMaxWidth().padding(vertical = 48.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("— 本章完 —", color = palette.secondary, fontFamily = styles.fontFamily, fontSize = 14.sp)
+                Text("· 本章完 ·", color = palette.secondary, fontSize = 13.sp, letterSpacing = 0.3.em)
                 Spacer(Modifier.height(24.dp))
                 if (nextTitle != null) {
                     Button(onClick = onNext, colors = ButtonDefaults.buttonColors(color = palette.bar)) {

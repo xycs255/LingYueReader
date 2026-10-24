@@ -128,8 +128,8 @@ class MarksUiTest {
         openBook()
         // 长按先选词查词，再从查词面板进划线。
         compose.onAllNodesWithText("第1段", substring = true)[0].performTouchInput { longClick() }
-        waitForText("划线·批注")
-        compose.onNodeWithText("划线·批注").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("划线·批注").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("划线·批注").performClick()
         waitForText("拖动选中要划线的文字")
         compose.onNodeWithText("划线").performClick()
         compose.waitForIdle()
@@ -350,13 +350,7 @@ class ListenUiTest {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performClick()
         waitForText("第1段")
-        // 状态行显示时间（HH:mm）
-        compose.waitUntil(5_000) {
-            compose.onAllNodes(androidx.compose.ui.test.SemanticsMatcher("clock") { n ->
-                n.config.getOrElseNullable(androidx.compose.ui.semantics.SemanticsProperties.Text) { null }
-                    ?.any { t -> Regex("""^\d{2}:\d{2}$""").matches(t.text) } == true
-            }).fetchSemanticsNodes().isNotEmpty()
-        }
+        // 不是全屏时系统状态栏里有时间和电量，页脚不再重复。
         compose.onRoot().performTouchInput { click(center) }
         compose.onNodeWithText("听书").performClick()
         waitForText("正在听书")

@@ -13,8 +13,9 @@ enum class ReadingOrientation(val label: String) {
 enum class ReaderTheme(val label: String) {
     PAPER("纸白"),
     PARCHMENT("宣黄"),
-    GREEN("护眼"),
-    NIGHT("夜间"),
+    GREEN("竹青"),
+    SLATE("灰蓝"),
+    NIGHT("墨夜"),
     CUSTOM("自定义"),
 }
 

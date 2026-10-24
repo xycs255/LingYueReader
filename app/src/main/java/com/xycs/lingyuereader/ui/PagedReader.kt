@@ -34,6 +34,16 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.GenericShape
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.zIndex
 import com.xycs.lingyuereader.data.layoutKey
 import com.xycs.lingyuereader.data.BookContent
@@ -43,6 +53,19 @@ import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
+
+/** 书签丝带：长条，下端剪一个燕尾。 */
+private val RibbonShape = GenericShape { size, _ ->
+    moveTo(0f, 0f)
+    lineTo(size.width, 0f)
+    lineTo(size.width, size.height)
+    lineTo(size.width / 2, size.height * 0.78f)
+    lineTo(0f, size.height)
+    close()
+}
+
+/** 页眉（章名那一行小字）占的高度：阅读页把正文往下挪这么多，页眉画在挪出来的地方。 */
+internal val PAGE_HEADER = 28.dp
 
 /** 翻页模式的起点：指定块与块内字，或从章末（向前翻进上一章时）。 */
 internal data class PageStart(val block: Int?, val char: Int, val fromEnd: Boolean)
@@ -253,6 +276,40 @@ internal fun PagedReader(
                     .background(styles.palette.background)
                     .pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) },
             ) {
+                // 加了书签的页，右上角垂下一条书签丝带。
+                val pageChapterContent = content.chapters[pageChapter]
+                val bookmarked = marks.bookmarks.any { bm ->
+                    bm.chapterIndex == pageChapter && !bm.lost && spread.any { page ->
+                        val block = bm.itemIndex - HEADER_ITEMS
+                        page.contains(block, pageLayoutChar(pageChapterContent, block, bm.charOffset, styles.settings.indent))
+                    }
+                }
+                if (bookmarked) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = styles.horizontalPadding)
+                            .size(14.dp, 36.dp)
+                            .background(styles.palette.accent, RibbonShape)
+                            .semantics { contentDescription = "本页有书签" },
+                    )
+                }
+                // 页眉：每页顶上一行小字写章名，跟着书页一起翻。
+                if (topInset > PAGE_HEADER) {
+                    Text(
+                        content.chapters[pageChapter].title,
+                        color = styles.palette.secondary,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.12.em,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset - PAGE_HEADER)
+                            .clearAndSetSemantics { },
+                    )
+                }
                 // 插图最高一页，与分页时的估算一致（再减去段距）。
                 CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
                     Row(Modifier.fillMaxSize()) {
@@ -294,11 +351,7 @@ private fun PageContent(
     Column(Modifier.fillMaxWidth().padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset)) {
         page.items.forEach { item ->
             when (item) {
-                PageItem.Title -> Text(
-                    chapter.title,
-                    style = styles.title,
-                    modifier = Modifier.padding(top = styles.titleTop, bottom = styles.titleBottom),
-                )
+                PageItem.Title -> ChapterOpener(chapter.title, styles)
                 is PageItem.Slice -> BlockView(
                     chapter.blocks[item.block],
                     styles,
