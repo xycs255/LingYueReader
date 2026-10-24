@@ -16,10 +16,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
@@ -71,14 +68,21 @@ internal fun PagedReader(
     /** 正在查的词：第几块、哪一段。 */
     selected: Highlight? = null,
 ) {
-    // 仿真翻页按手指按下的高度决定掀起哪个角。
-    var touchY by remember { mutableFloatStateOf(-1f) }
+    // 仿真翻页：按下的高度决定掀哪个角，之后角跟着手指上下走。
+    val touch = remember { CurlTouch() }
     BoxWithConstraints(
         Modifier.fillMaxSize().pointerInput(Unit) {
             awaitPointerEventScope {
                 while (true) {
                     val e = awaitPointerEvent(PointerEventPass.Initial)
-                    if (e.type == PointerEventType.Press) touchY = e.changes.first().position.y
+                    val y = e.changes.first().position.y
+                    when (e.type) {
+                        PointerEventType.Press -> {
+                            touch.pressY = y
+                            touch.fingerY = y
+                        }
+                        PointerEventType.Move -> touch.fingerY = y
+                    }
                 }
             }
         },
@@ -122,13 +126,16 @@ internal fun PagedReader(
         val pager = key(per) { rememberPagerState(initialPage = lead + startPage / per) { count } }
         val scope = rememberCoroutineScope()
 
+        // 墨水屏上、选了“无动画”时翻页直接换过去，免得一页页地闪。
+        suspend fun turnTo(target: Int) {
+            if (Effects.noMotion || mode == PageMode.NONE) pager.scrollToPage(target) else pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
+        }
+
         DisposableEffect(pager) {
             registerTurner { forward ->
-                scope.launch {
-                    val target = (pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)
-                    // 墨水屏上翻页不带动画，免得一页页地闪。
-                    if (Effects.noMotion) pager.scrollToPage(target) else pager.animateScrollToPage(target, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
-                }
+                // 点按、音量键翻页从右下角掀起。
+                touch.reset()
+                scope.launch { turnTo((pager.currentPage + if (forward) 1 else -1).coerceIn(0, count - 1)) }
             }
             onDispose { }
         }
@@ -140,7 +147,8 @@ internal fun PagedReader(
             val target = pages.indexOfFirst { it.contains(u.block, u.start + indent) }
             val spread = lead + target / per
             if (target >= 0 && pager.currentPage != spread && !pager.isScrollInProgress) {
-                if (Effects.noMotion) pager.scrollToPage(spread) else pager.animateScrollToPage(spread, animationSpec = tween(Motion.TURN, easing = Motion.Standard))
+                touch.reset()
+                turnTo(spread)
             }
         }
 
@@ -181,12 +189,17 @@ internal fun PagedReader(
                             PageMode.COVER -> if (r > 0f) translationX = -r * size.width
                             // 仿真：两页都不动，前一页原地掀起来。
                             PageMode.CURL -> if (r > -1f && r < 1f) translationX = -r * size.width
+                            // 无动画：拖动时书页不动，松手停稳后直接换成下一页。
+                            PageMode.NONE -> {
+                                if (r > -1f && r < 1f) translationX = -r * size.width
+                                alpha = if (p == pager.settledPage) 1f else 0f
+                            }
                             else -> {}
                         }
                     }
                     .then(
                         if (mode == PageMode.CURL) {
-                            Modifier.pageCurl({ offset().let { if (it < 0f && it > -1f) -it else 0f } }, { touchY }, styles.palette.background)
+                            Modifier.pageCurl({ offset().let { if (it < 0f && it > -1f) -it else 0f } }, touch, styles.palette.background)
                         } else {
                             Modifier
                         },

@@ -377,7 +377,7 @@ private fun LayoutPage(settings: ReaderSettings, update: ((ReaderSettings) -> Re
 
 @Composable
 private fun PagingPage(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
-    GroupedSection(footer = "滚动和翻页读起来没有明显差别，选顺手的就好。仿真翻页按下的高度决定掀起哪个角。") {
+    GroupedSection(footer = "滚动和翻页读起来没有明显差别，选顺手的就好。仿真：在上、下三分之一处按住掀起那个角，在中间按住整页卷过去。") {
         PageMode.entries.forEach { mode ->
             row { CheckRow(mode.label, settings.pageMode == mode) { update { it.copy(pageMode = mode) } } }
         }
