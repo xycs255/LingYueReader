@@ -184,7 +184,96 @@ class WritingBriefTest {
             listOf(ReviewIssue("林月早就知道", "林月第五章才知道", "改成觉得眼熟")),
             WritePrompts.parseReview("好的：\n```json\n{\"issues\":[{\"quote\":\"“林月早就知道”\",\"problem\":\"林月第五章才知道\",\"fix\":\"改成觉得眼熟\"},{\"quote\":\"x\",\"problem\":\"\"}]}\n```"),
         )
-        assertEquals(emptyList<ReviewIssue>(), WritePrompts.parseReview("没有问题"))
+        assertNull(WritePrompts.parseReview("没有问题"))
         assertEquals(PackKind.FORESHADOW, PackImport.classify("伏笔表.md").kind)
+    }
+
+    @Test
+    fun laterFactsAndSecretsAreKeptApartFromTheCards() {
+        val people = """
+            | 人物 | 想要 | 结局 | 怎么变 |
+            |---|---|---|---|
+            | 林月 | 一个家 | 第九章嫁给沈默 | 从怕事到敢说 |
+            - **老周（门房）：** 话少。第二章起守夜。第九章战死。
+        """.trimIndent()
+        val seen = """
+            ### 林月
+            | 卷 | 线索 | 沈默这一面 |
+            | --- | --- | --- |
+            | 一 | 看见玉佩 | 他早认出了林月 |
+        """.trimIndent()
+        val docs = listOf(
+            PackDoc("c", PackKind.CHARACTER, "人物", 3, false) to people,
+            PackDoc("a", PackKind.AWARENESS, "察觉表", 4, false) to seen,
+        )
+        val b = ChapterBriefs.build(docs, "林月看着老周。", "", chapter = 3, volume = 1)
+        val lin = b.items.first { it.title == "林月" }.text
+        assertTrue("想要：一个家" in lin)
+        assertFalse("结局" in lin || "嫁给" in lin || "怎么变" in lin)
+        val zhou = b.items.first { it.title == "老周" }.text
+        assertTrue("第二章起守夜" in zhou)
+        assertFalse("战死" in zhou)
+        val known = b.items.first { it.group == "察觉" }.text
+        assertTrue("看见玉佩" in known)
+        assertFalse("早认出" in known)
+        assertTrue(b.hidden.any { "结局：第九章嫁给沈默" in it })
+        assertTrue(b.hidden.any { it.startsWith("老周——") && "第九章战死" in it })
+        assertTrue(b.hidden.any { "沈默这一面：他早认出了林月" in it })
+        assertTrue("【只有作者知道的" in b.render()!!)
+        assertEquals("他来了。" to "第九章他走了。", ChapterBriefs.splitByChapter("他来了。第九章他走了。", 3))
+    }
+
+    @Test
+    fun earlierChaptersComeInAsSummaries() {
+        val docs = listOf(PackDoc("c", PackKind.CHARACTER, "人物", 3, false) to characters)
+        val summaries = (1..9).map { ChapterSummary(it, "第${it}章", "第${it}章发生的事" + if (it == 2) "，杜娘收留了林月" else "") }
+        val b = ChapterBriefs.build(docs, "杜娘开了门。", "", chapter = 10, volume = 1, summaries = summaries)
+        val past = b.items.filter { it.group == "前情" }
+        // 最近 5 章都带；更早的只带写到出场人物的那章。
+        assertEquals(listOf(9, 8, 7, 6, 5, 2), past.map { it.title.substringAfter("第 ").substringBefore(" 章").toInt() })
+        assertEquals("写到杜娘", past.last().reason)
+        // 后面的章不算前情。
+        assertTrue(ChapterBriefs.build(docs, "", "", chapter = 1, volume = 1, summaries = summaries).items.none { it.group == "前情" })
+    }
+
+    @Test
+    fun summariesAndDraftsAreStored() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("长夜")
+        val c1 = w.chapters[0].id
+        val (_, two) = s.addChapter(w.id, w.volumes[0].id)!!
+        s.saveCard(w.id, c1, ChapterCard(facts = "进城", summary = "沈默进了城，在杜娘的茶馆落脚。"))
+        assertEquals("沈默进了城，在杜娘的茶馆落脚。", s.card(w.id, c1).summary)
+        assertTrue(s.card(w.id, c1).copy(facts = "").isEmpty)
+        // 摘要随备份走。
+        val b = WorkStore(tmp.newFolder())
+        b.restoreBackup(String(s.backup()!!))
+        assertEquals("沈默进了城，在杜娘的茶馆落脚。", b.card(w.id, c1).summary)
+        // 本章资料带上前一章的摘要。
+        s.addPackDoc(w.id, PackKind.OUTLINE, "总纲", "主线。", priority = 1)
+        assertTrue(s.brief(w.id, two.id)!!.items.any { it.group == "前情" && "茶馆" in it.text })
+
+        s.saveDraft(w.id, two.id, "草稿第一段。")
+        assertEquals("草稿第一段。", s.draft(w.id, two.id))
+        s.saveDraft(w.id, two.id, "")
+        assertEquals("", s.draft(w.id, two.id))
+        s.saveDraft(w.id, two.id, "又一版。")
+        s.deleteChapter(w.id, two.id)
+        assertEquals("", s.draft(w.id, two.id))
+    }
+
+    @Test
+    fun answersThatAreNotTheRightShapeAreNotIgnored() {
+        assertNull(WritePrompts.parseReview("这一章写得不错，没什么问题。"))
+        assertNull(WritePrompts.parseReview("{\"result\":\"ok\"}"))
+        assertEquals(emptyList<ReviewIssue>(), WritePrompts.parseReview("{\"issues\":[]}"))
+        assertEquals(
+            "灯下，林月看着玉佩。\n“你回来了。”",
+            WritePrompts.cleanDraft("```\n第三章 玉佩\n\n　　灯下，林月看着玉佩。\n\n“你回来了。”\n（本章完）\n```"),
+        )
+        val draft = WritePrompts.draft("第三章", "上一章的结尾", "【检查规则】\n字数：3000-6000", "3000 到 6000 字", "多写对白")
+        assertTrue("上一章结尾：\n上一章的结尾" in draft && "篇幅3000 到 6000 字" in draft && "作者这次的要求：多写对白" in draft)
+        assertTrue("请从最后一句接着往下写" in WritePrompts.draftMore("第三章", "已经写了的。", "", "3000 到 6000 字"))
+        assertTrue("150 到 300 字" in WritePrompts.summary("正文", "第三章"))
     }
 }

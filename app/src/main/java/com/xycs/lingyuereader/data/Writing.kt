@@ -38,7 +38,10 @@ data class ChapterCard(
     val countdown: String = "",
     val hook: String = "",
     val threads: String = "",
+    /** 写完以后的本章摘要（发生了什么、结果、留下什么）：写后面的章时当前情带给 AI。 */
+    val summary: String = "",
 ) {
+    /** 细纲（写之前的六项）是不是空的；摘要不算。 */
     val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
 }
 
@@ -262,6 +265,7 @@ class WorkStore(private val root: File) {
         chapterFile(workId, chapterId).delete()
         cardFile(workId, chapterId).delete()
         reviewFile(workId, chapterId).delete()
+        draftFile(workId, chapterId).delete()
         return work
     }
 
@@ -335,6 +339,22 @@ class WorkStore(private val root: File) {
             DurableFiles.keepDamaged(file)
             ChapterCard()
         }
+    }
+
+    private fun draftFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.draft.txt")
+    }
+
+    /** AI 写的本章草稿（还没放进正文的；离开页面再回来还在）。 */
+    @Synchronized
+    fun draft(workId: String, chapterId: String): String = draftFile(workId, chapterId).takeIf { it.isFile }?.readText().orEmpty()
+
+    @Synchronized
+    fun saveDraft(workId: String, chapterId: String, text: String) {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        if (text.isEmpty()) draftFile(workId, chapterId).delete()
+        else check(DurableFiles.write(draftFile(workId, chapterId), text.toByteArray())) { "无法保存草稿" }
     }
 
     private fun reviewFile(workId: String, chapterId: String): File {
@@ -712,6 +732,7 @@ class WorkStore(private val root: File) {
                 chapterFile(local.id, it.id).delete()
                 cardFile(local.id, it.id).delete()
                 reviewFile(local.id, it.id).delete()
+                draftFile(local.id, it.id).delete()
             }
             val cards = o.optJSONObject("cards") ?: JSONObject()
             incoming.chapters.forEach { c ->
@@ -775,8 +796,10 @@ class WorkStore(private val root: File) {
 
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
+            .put("summary", summary)
 
-        private fun JSONObject.toCard() = ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"))
+        private fun JSONObject.toCard() =
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
