@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- AI 助手：读者开启并点了 AI 功能时，连读者自己设置的服务商。不开启时不联网。 -->
+    <!-- 联网只在读者操作时：AI 助手连读者设置的服务商；书源连读者添加的 OPDS 书目、WebDAV 文件夹。 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 阅读目标：开机后重新排上晚间提醒。 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -29,6 +29,7 @@
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"

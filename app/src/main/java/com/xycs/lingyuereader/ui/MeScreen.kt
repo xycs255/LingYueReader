@@ -61,6 +61,7 @@ fun MeScreen(vm: AppViewModel) {
     val appearance by vm.appearance.collectAsStateWithLifecycle()
     val auto by vm.autoBackup.collectAsStateWithLifecycle()
     val ai by vm.aiConfig.collectAsStateWithLifecycle()
+    val catalogs by vm.catalogs.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     var confirmRestore by remember { mutableStateOf<Uri?>(null) }
@@ -131,6 +132,14 @@ fun MeScreen(vm: AppViewModel) {
                                 icon = LingYueIcons.Tune,
                                 iconBackground = Color(0xFF007AFF),
                             ) { vm.open(Screen.Theme) }
+                        }
+                        iconRow {
+                            NavRow(
+                                "书源",
+                                value = if (catalogs.isEmpty()) "OPDS、WebDAV" else "${catalogs.size} 个",
+                                icon = LingYueIcons.Folder,
+                                iconBackground = Color(0xFF34C759),
+                            ) { vm.open(Screen.Catalogs) }
                         }
                         iconRow {
                             NavRow(

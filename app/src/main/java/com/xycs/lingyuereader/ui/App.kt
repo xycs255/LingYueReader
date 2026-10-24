@@ -201,6 +201,9 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Detail -> DetailScreen(vm, screen.bookId)
             Screen.Dictionaries -> DictionariesScreen(vm)
             Screen.Ai -> AiScreen(vm)
+            Screen.Catalogs -> CatalogsScreen(vm)
+            is Screen.CatalogEdit -> CatalogEditScreen(vm, screen.catalogId)
+            is Screen.CatalogBrowse -> CatalogBrowseScreen(vm, screen)
             Screen.Theme -> ThemeScreen(vm)
             is Screen.BookRules -> BookRulesScreen(vm, screen.bookId)
         }
@@ -250,8 +253,26 @@ internal fun ShelfScreen(vm: AppViewModel) {
                     }) {
                         Icon(LingYueIcons.Search, contentDescription = "搜索书架")
                     }
-                    IconButton(onClick = pickFiles, enabled = !busy) {
-                        Icon(LingYueIcons.Add, contentDescription = "导入")
+                    // “+”：从手机里选文件导入，或到书源（OPDS、WebDAV）里下载。
+                    Box {
+                        var addMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { addMenu = true }, enabled = !busy) {
+                            Icon(LingYueIcons.Add, contentDescription = "添加书")
+                        }
+                        OverlayListPopup(show = addMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { addMenu = false }) {
+                            GlassMenu {
+                                ListPopupColumn {
+                                    LingYueMenuItem("导入手机里的文件", selected = false) {
+                                        addMenu = false
+                                        pickFiles()
+                                    }
+                                    LingYueMenuItem("从书源下载", selected = false) {
+                                        addMenu = false
+                                        vm.open(Screen.Catalogs)
+                                    }
+                                }
+                            }
+                        }
                     }
                     Box(Modifier.padding(end = 12.dp)) {
                         IconButton(onClick = { moreMenu = true }) {
@@ -462,7 +483,7 @@ private fun EmptyShelf(modifier: Modifier, onImport: () -> Unit) {
     EmptyState(
         LingYueIcons.Book,
         "书架还是空的",
-        "支持 TXT、EPUB、Markdown、MOBI / AZW3、FB2，以及 PDF 和漫画 CBZ。一次选多个文件，可以合成一本书。",
+        "支持 TXT、EPUB、Markdown、MOBI / AZW3、FB2，以及 PDF 和漫画 CBZ。一次选多个文件，可以合成一本书；也可以在“我的 → 书源”里从 OPDS 书库、WebDAV 文件夹下载。",
         modifier,
         action = "导入书籍" to onImport,
     )

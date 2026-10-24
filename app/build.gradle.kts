@@ -90,6 +90,8 @@ dependencies {
     implementation(libs.miuix.ui)
     implementation(libs.miuix.preference)
     implementation(libs.miuix.blur)
+    // 书源（OPDS、WebDAV）：WebDAV 要用 PROPFIND，HttpURLConnection 不支持。
+    implementation(libs.okhttp)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)
     testImplementation(libs.robolectric)

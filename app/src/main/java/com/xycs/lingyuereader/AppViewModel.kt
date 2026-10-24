@@ -38,6 +38,14 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
 import com.xycs.lingyuereader.data.ShelfSort
 import com.xycs.lingyuereader.tts.ReadAloud
+import com.xycs.lingyuereader.remote.Catalog
+import com.xycs.lingyuereader.remote.CatalogKind
+import com.xycs.lingyuereader.remote.CatalogStore
+import com.xycs.lingyuereader.remote.RemoteClient
+import com.xycs.lingyuereader.remote.RemoteFile
+import com.xycs.lingyuereader.remote.RemoteItem
+import com.xycs.lingyuereader.remote.RemotePage
+import androidx.compose.ui.graphics.asImageBitmap
 import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiBook
 import com.xycs.lingyuereader.ai.AiConfig
@@ -91,6 +99,12 @@ sealed interface Screen {
     data object Dictionaries : Screen
     /** AI 助手设置：服务商、模型、密钥。 */
     data object Ai : Screen
+    /** 书源列表：OPDS 书目、WebDAV 文件夹。 */
+    data object Catalogs : Screen
+    /** 浏览一个书源的某一页（[url] 为空时是书源的首页）。 */
+    /** 添加（[catalogId] 为空）或编辑书源。 */
+    data class CatalogEdit(val catalogId: String?) : Screen
+    data class CatalogBrowse(val catalogId: String, val url: String = "", val title: String = "") : Screen
     /** 主题设置（界面的深浅色、配色、玻璃效果等）。 */
     data object Theme : Screen
     data class BookRules(val bookId: String) : Screen
@@ -627,6 +641,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _messages.value = result.fold(
                 onSuccess = {
                     when {
+                        it.failed > 0 && entry.sources.any { s -> s.uri?.startsWith("http") == true } -> "有 ${it.failed} 份文件没能从书源重新下载（网络不通，或文件已移走）"
                         it.failed > 0 -> "有 ${it.failed} 份文件无法从原位置读取（授权可能已失效），请重新导入"
                         it.changed == 0 -> "已是最新"
                         else -> "已更新 ${it.changed} 份文件"
@@ -818,6 +833,98 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
 
     fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
+
+    // ---------- 书源（OPDS、WebDAV） ----------
+
+    private val catalogStore = CatalogStore(app)
+    private val _catalogs = MutableStateFlow(catalogStore.load())
+    val catalogs: StateFlow<List<Catalog>> = _catalogs.asStateFlow()
+    private val remote = RemoteClient { _catalogs.value }.also { client -> library.remote = client::open }
+
+    /** 这次打开应用以来看过的页：返回上一层时不用重新加载。 */
+    private val remotePages = object : LinkedHashMap<String, RemotePage>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RemotePage>?) = size > 40
+    }
+    private val covers = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(80)
+
+    /** 正在从书源下载的文件地址。 */
+    private val _downloading = MutableStateFlow<String?>(null)
+    val downloading: StateFlow<String?> = _downloading.asStateFlow()
+
+    fun saveCatalog(c: Catalog) {
+        val list = _catalogs.value
+        val next = if (list.any { it.id == c.id }) list.map { if (it.id == c.id) c else it } else list + c
+        _catalogs.value = next
+        catalogStore.save(next)
+        synchronized(remotePages) { remotePages.keys.removeAll { it.startsWith(c.id + "|") } }
+    }
+
+    fun removeCatalog(id: String) {
+        val next = _catalogs.value.filterNot { it.id == id }
+        _catalogs.value = next
+        catalogStore.save(next)
+    }
+
+    /** “测试连接”：打开首页，回来就说明地址和账号都对。 */
+    suspend fun testCatalog(c: Catalog): String {
+        val probe = RemoteClient { _catalogs.value.filterNot { it.id == c.id } + c }
+        val page = probe.page(c, c.url.trim())
+        val books = page.items.count { it is RemoteItem.Book }
+        val folders = page.items.size - books
+        return "连接正常：「${page.title}」里有 " + listOfNotNull(
+            folders.takeIf { it > 0 }?.let { "$it 个${if (c.kind == CatalogKind.OPDS) "分类" else "文件夹"}" },
+            books.takeIf { it > 0 }?.let { "$it 本书" },
+        ).joinToString("、").ifEmpty { "0 项" }
+    }
+
+    /** 已经看过的页（没有时为空）。 */
+    fun cachedRemotePage(catalogId: String, url: String): RemotePage? = synchronized(remotePages) { remotePages["$catalogId|$url"] }
+
+    /** 打开书源的一页；[fresh] 时不用缓存。 */
+    suspend fun remotePage(catalog: Catalog, url: String, fresh: Boolean = false): RemotePage {
+        val key = "${catalog.id}|$url"
+        if (!fresh) cachedRemotePage(catalog.id, url)?.let { return it }
+        return remote.page(catalog, url).also { synchronized(remotePages) { remotePages[key] = it } }
+    }
+
+    /** OPDS 分页：取下一页，接在后面。 */
+    suspend fun remoteMore(catalog: Catalog, url: String, page: RemotePage): RemotePage {
+        val next = page.next ?: return page
+        val more = remote.page(catalog, next)
+        return page.copy(items = page.items + more.items, next = more.next).also { synchronized(remotePages) { remotePages["${catalog.id}|$url"] = it } }
+    }
+
+    suspend fun remoteSearch(page: RemotePage, query: String): RemotePage = remote.search(page, query)
+
+    /** 封面缩略图；取不到时为空。 */
+    suspend fun remoteCover(url: String): androidx.compose.ui.graphics.ImageBitmap? {
+        covers.get(url)?.let { return it }
+        val bytes = runCatching { remote.image(url) }.getOrNull() ?: return null
+        val bitmap = withContext(Dispatchers.Default) {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outHeight / (sample * 2) >= 240) sample *= 2
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+        } ?: return null
+        return bitmap.asImageBitmap().also { covers.put(url, it) }
+    }
+
+    /** 下载书源里的一本书，走和本地导入一样的流程加入书架。 */
+    fun downloadRemote(file: RemoteFile, title: String?) {
+        if (_downloading.value != null || _busy.value) {
+            _messages.value = "正在处理其他任务，稍后再下载"
+            return
+        }
+        _downloading.value = file.url
+        importBooks(listOf(Library.Picked(Uri.parse(file.url), file.name)), merge = false, title = title)
+        val job = importJob
+        viewModelScope.launch {
+            job?.join()
+            _downloading.value = null
+        }
+        if (job == null) _downloading.value = null
+    }
 
     // ---------- AI ----------
 
