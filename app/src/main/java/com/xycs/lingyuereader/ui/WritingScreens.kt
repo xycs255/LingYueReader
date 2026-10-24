@@ -74,6 +74,7 @@ import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.RuleReport
 import com.xycs.lingyuereader.data.RuleSet
 import com.xycs.lingyuereader.data.Snapshot
@@ -334,6 +335,17 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     // 检查规则有几条（设定包改过就重读）；改状态时顺便看看这一章合不合规则。
     var ruleCount by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
+    var foreshadowNote by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(workId, pack) {
+        val (list, latest) = vm.writing.foreshadows(workId)
+        val open = list.filter { !it.done }
+        val due = open.count { it.payoff != null && it.payoff <= latest }
+        foreshadowNote = when {
+            pack?.none { it.kind == PackKind.FORESHADOW } != false -> null
+            due > 0 -> "$due 条该回收了"
+            else -> "${open.size} 条没回收"
+        }
+    }
     var statusHits by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(statusFor) { statusHits = statusFor?.let { ch -> vm.writing.checkChapter(workId, ch.id)?.hits?.size } }
 
@@ -440,6 +452,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 icon = LingYueIcons.History,
                                 iconBackground = Color(0xFF8E8E93),
                             ) { vm.open(Screen.WorkChanges(workId)) }
+                        }
+                        row {
+                            NavRow("伏笔", value = foreshadowNote, icon = LingYueIcons.Star, iconBackground = Color(0xFFFF9500)) { vm.open(Screen.Foreshadows(workId)) }
                         }
                         row {
                             NavRow(
@@ -737,6 +752,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             }
         }
     }
+    // 计划在这一章回收的伏笔：编辑器上方提醒一句。
+    var due by remember(workId, chapterId) { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(workId, chapterId, packs[workId]) { due = vm.writing.brief(workId, chapterId)?.due?.map { it.what }.orEmpty() }
     val rules = ruleSet
     LaunchedEffect(current, rules) {
         if (current == null || rules == null || rules.isEmpty) {
@@ -846,6 +864,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                             vm.open(Screen.WorkHistory(workId, chapterId))
                                         })
                                         add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
+                                        add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
+                                        add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
                                         add("改章名" to { renaming = true })
@@ -873,6 +893,25 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         ) { padding ->
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 val focus = remember { FocusRequester() }
+                // 从审稿页点回来：选中那一句（找不到整句就找开头几个字）。
+                if (current != null) {
+                    LaunchedEffect(current) {
+                        vm.writing.jump.collect { j ->
+                            if (j == null || j.first != chapterId) return@collect
+                            vm.writing.jump.value = null
+                            val text = current.text.toString()
+                            val quote = j.second
+                            val at = text.indexOf(quote).takeIf { it >= 0 } ?: text.indexOf(quote.take(12)).takeIf { quote.length > 12 && it >= 0 }
+                            if (at == null) {
+                                vm.showMessage("正文里没找到这一句，可能已经改过了")
+                            } else {
+                                current.edit { selection = TextRange(at, at + minOf(quote.length, text.length - at)) }
+                                runCatching { focus.requestFocus() }
+                            }
+                        }
+                    }
+                }
+
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     if (current != null) {
                         LaunchedEffect(current) { if (current.text.isEmpty()) runCatching { focus.requestFocus() } }
@@ -976,6 +1015,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         )
                         if (realtime.issues.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
                     }
+                }
+                if (due.isNotEmpty() && panel == null && !rulesOpen && !issuesOpen) {
+                    EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
                 // 键盘上方的条：左边 ✦ 在标点和 AI 操作之间切换；上面一道细线和正文隔开。
                 Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))

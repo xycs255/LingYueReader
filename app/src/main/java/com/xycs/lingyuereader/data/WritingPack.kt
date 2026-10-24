@@ -20,6 +20,7 @@ enum class PackKind(val label: String, val priority: Int, val always: Boolean, v
     CANON("硬性设定", 3, false, "年代、制度、地理、势力、资源等事实"),
     CHARACTER("人物档案", 3, true, "人物卡：想要、害怕、怎么说话、标志物、怎么变"),
     AWARENESS("察觉表", 4, false, "谁从第几章起知道什么、消息从哪来"),
+    FORESHADOW("伏笔表", 4, false, "埋下了什么、第几章埋、计划第几章回收、回收了没有"),
     STYLE("写作规范", 5, true, "怎么把事实写成小说：篇幅、对白、旁白、禁用词"),
     VOICE("称谓与语气", 5, false, "称谓边界、各人物说话的腔调"),
     RULES("检查规则", 5, false, "灵阅在本机逐章检查：篇幅、口头禅次数、禁用词和句式、段落长短"),
@@ -60,6 +61,7 @@ object PackImport {
 
     private val rules: List<Pair<Regex, PackKind>> = listOf(
         Regex("检查规则|自查清单|口癖清单") to PackKind.RULES,
+        Regex("伏笔") to PackKind.FORESHADOW,
         Regex("不变量") to PackKind.INVARIANT,
         Regex("察觉|知情") to PackKind.AWARENESS,
         // 称谓、语气放在人物前面：“对白与人物语气”是语气规范，不是人物档案。
@@ -188,6 +190,7 @@ object PackImport {
         PackKind.AWARENESS -> "| 人物 | 知道什么 | 从第几章起 | 消息从哪来 |\n| --- | --- | --- | --- |\n"
         PackKind.OUTLINE -> "## 一句话\n\n## 主线\n\n## 结局\n"
         PackKind.RULES -> CheckRules.TEMPLATE
+        PackKind.FORESHADOW -> "| 伏笔 | 埋下 | 回收 | 状态 |\n| --- | --- | --- | --- |\n| （例）半块玉佩 | 第3章 | 第20章 | |\n"
         else -> ""
     }
 }

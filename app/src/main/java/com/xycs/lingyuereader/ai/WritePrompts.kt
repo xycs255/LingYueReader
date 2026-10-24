@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkAssist
 import org.json.JSONArray
@@ -147,6 +148,41 @@ object WritePrompts {
         if (names.isNotEmpty()) append("设定集里已有：").append(names.joinToString("、")).append("。已有的人物如果正文里有了新信息，也列出来（用同样的名字）。")
         append("\n只收有名字的、有戏份的人物，最多 20 个。text 一两句话写身份、性格、外貌特征和与他人的关系，只依据正文，不要编。\n")
         append("只输出 JSON：{\"entries\":[{\"name\":\"\",\"text\":\"\"}]}")
+    }
+
+    /** 事实关：对照设定资料（系统提示里）、细纲卡、上一章结尾，只挑事实、因果、视角、承接上的问题。 */
+    fun factReview(text: String, title: String, previous: String): String = buildString {
+        if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
+        append("下面是这一章「").append(title).append("」的正文：\n\n").append(text).append("\n\n")
+        append("请做事实审稿，对照上面的设定资料（包括到这一章为止人物知道什么、还不知道什么、没回收的伏笔）和本章细纲卡，找出：\n")
+        append("1. 和设定、不变量、细纲卡的事实边界矛盾的；\n")
+        append("2. 人物知道了这时还不该知道的事，或者说破了不该说破的；\n")
+        append("3. 视角越界，写进了不该进的人物心里；\n")
+        append("4. 和上一章结尾、钩子接不上的；\n")
+        append("5. 因果断裂、前后说法不一的。\n")
+        append("只挑确实有问题的，没有就返回空列表；不要提文笔和写法。")
+        append(REVIEW_JSON)
+    }
+
+    /** 写法关：只按作者自己的写作规范审，不用模型自己的口味。 */
+    fun craftReview(text: String, title: String, rules: String): String = buildString {
+        append("下面是作者的写作规范：\n\n").append(rules).append("\n\n")
+        append("下面是这一章「").append(title).append("」的正文：\n\n").append(text).append("\n\n")
+        append("请只按上面的写作规范审这一章的写法：对白像不像人说话、旁白、场面展开和概述的取舍、重复和套话、节奏。")
+        append("规范里没写的不提，不要用你自己的审美标准；不要改动事实。只挑最值得改的，至多 12 条。")
+        append(REVIEW_JSON)
+    }
+
+    private const val REVIEW_JSON = "\n只输出 JSON：{\"issues\":[{\"quote\":\"原文里有问题的那一句，原样摘出，不超过 40 字\",\"problem\":\"问题在哪、依据哪一条\",\"fix\":\"怎么改，一句话\"}]}"
+
+    /** 审稿结果：容忍多余的话和 ``` 包裹；没写问题的条目丢掉。 */
+    fun parseReview(answer: String): List<ReviewIssue> {
+        val issues = runCatching { json(answer).optJSONArray("issues") }.getOrNull() ?: return emptyList()
+        return (0 until issues.length()).mapNotNull { i ->
+            val o = issues.optJSONObject(i) ?: return@mapNotNull null
+            val problem = o.optString("problem").trim()
+            if (problem.isEmpty()) null else ReviewIssue(o.optString("quote").trim().trim('“', '”', '「', '」', '"'), problem, o.optString("fix").trim())
+        }
     }
 
     /** 从写作规范里挑出能逐章数出来的硬规则，改写成灵阅的检查规则格式（见 [com.xycs.lingyuereader.data.CheckRules]）。 */

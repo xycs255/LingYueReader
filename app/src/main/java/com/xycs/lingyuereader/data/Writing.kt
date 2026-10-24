@@ -261,6 +261,7 @@ class WorkStore(private val root: File) {
         val work = update(workId) { w -> w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.filterNot { it.id == chapterId }) }) }
         chapterFile(workId, chapterId).delete()
         cardFile(workId, chapterId).delete()
+        reviewFile(workId, chapterId).delete()
         return work
     }
 
@@ -334,6 +335,25 @@ class WorkStore(private val root: File) {
             DurableFiles.keepDamaged(file)
             ChapterCard()
         }
+    }
+
+    private fun reviewFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.review.json")
+    }
+
+    /** 这一章最近一次审稿的结果（可以重新审，不进备份）。 */
+    @Synchronized
+    fun review(workId: String, chapterId: String): ChapterReview? {
+        val file = reviewFile(workId, chapterId)
+        if (!file.isFile) return null
+        return runCatching { ChapterReview.fromJson(JSONObject(file.readText())) }.getOrNull()
+    }
+
+    @Synchronized
+    fun saveReview(workId: String, chapterId: String, review: ChapterReview) {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        check(DurableFiles.write(reviewFile(workId, chapterId), review.toJson().toString().toByteArray())) { "无法保存审稿结果" }
     }
 
     @Synchronized
@@ -691,6 +711,7 @@ class WorkStore(private val root: File) {
             local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach {
                 chapterFile(local.id, it.id).delete()
                 cardFile(local.id, it.id).delete()
+                reviewFile(local.id, it.id).delete()
             }
             val cards = o.optJSONObject("cards") ?: JSONObject()
             incoming.chapters.forEach { c ->

@@ -6,10 +6,16 @@ import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
-import com.xycs.lingyuereader.data.PackContext
+import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.GateResult
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReviewGate
+import com.xycs.lingyuereader.data.ReviewIssue
+import com.xycs.lingyuereader.data.RuleSet
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.brief
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -147,14 +153,8 @@ class WritingAi(
                     val i = chapters.indexOfFirst { it.id == chapterId }
                     chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
-                // 设定包里的常用文档（按优先级排好、限字数），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
-                val pack = withContext(Dispatchers.IO) {
-                    val chapters = work.chapters
-                    val i = chapters.indexOfFirst { it.id == chapterId }
-                    val prev = chapters.getOrNull(i - 1)
-                    val card = WritePrompts.card(store.card(workId, chapterId), prev?.title, prev?.let { store.card(workId, it.id) })
-                    listOfNotNull(packContext(workId), card).joinToString("\n\n").ifEmpty { null }
-                }
+                // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
+                val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
                 val (system, prompt) = when (task) {
                     is WriteAiTask.Edit -> {
                         val before = text.substring(0, task.start.coerceIn(0, text.length))
@@ -301,9 +301,109 @@ class WritingAi(
     private fun characterNames(workId: String): List<String> =
         characterDocs(workId).flatMap { WritePrompts.characterNames(store.packText(workId, it.id)) }.distinct()
 
-    /** 设定包里常用的文档，拼成给 AI 的资料。 */
-    private fun packContext(workId: String): String? =
-        PackContext.build(store.pack(workId).filter { it.always }.map { it to store.packText(workId, it.id) })
+    /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。 */
+    private fun chapterContext(workId: String, chapterId: String, text: String): String? {
+        val work = store.get(workId) ?: return null
+        val chapters = work.chapters
+        val i = chapters.indexOfFirst { it.id == chapterId }
+        val prev = chapters.getOrNull(i - 1)
+        val card = WritePrompts.card(store.card(workId, chapterId), prev?.title, prev?.let { store.card(workId, it.id) })
+        return listOfNotNull(store.brief(workId, chapterId, text)?.render(), card).joinToString("\n\n").ifEmpty { null }
+    }
+
+    // ---------- 三道审稿 ----------
+
+    private val _review = MutableStateFlow<ReviewRun?>(null)
+    /** 正在看或正在审的那一章的审稿。 */
+    val review: StateFlow<ReviewRun?> = _review.asStateFlow()
+    private var reviewJob: Job? = null
+
+    /** 读这一章上次的审稿结果（审稿进行中就不动）。 */
+    fun loadReview(workId: String, chapterId: String) {
+        val r = _review.value
+        if (r != null && r.workId == workId && r.chapterId == chapterId && r.running != null) return
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { runCatching { store.review(workId, chapterId) }.getOrNull() }
+            _review.value = ReviewRun(workId, chapterId, null, saved)
+        }
+    }
+
+    /**
+     * 按次序审 [text]（存盘的正文）：事实关、写法关请 AI（没设置 AI 就跳过），规则关在本机算。
+     * 每道审完就显示出来；全部审完存下，下次打开还在。
+     */
+    fun startReview(workId: String, chapterId: String, text: String) {
+        reviewJob?.cancel()
+        val results = mutableListOf<GateResult>()
+        fun publish(running: ReviewGate?) {
+            _review.value = ReviewRun(workId, chapterId, running, ChapterReview(text.hashCode(), System.currentTimeMillis(), results.toList()))
+        }
+        publish(ReviewGate.FACT)
+        reviewJob = scope.launch {
+            val work = withContext(Dispatchers.IO) { store.get(workId) } ?: return@launch
+            val title = work.chapter(chapterId)?.title.orEmpty()
+            val assist = assistOf(workId)
+            for (gate in ReviewGate.entries) {
+                publish(gate)
+                val result = try {
+                    when (gate) {
+                        ReviewGate.FACT -> {
+                            if (!ready) GateResult(gate, error = "没有设置 AI，跳过", at = System.currentTimeMillis())
+                            else {
+                                val (pack, previous) = withContext(Dispatchers.IO) {
+                                    val i = work.chapters.indexOfFirst { it.id == chapterId }
+                                    chapterContext(workId, chapterId, text) to (work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
+                                }
+                                val answer = ai.ask(WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true)
+                                GateResult(gate, WritePrompts.parseReview(answer), at = System.currentTimeMillis())
+                            }
+                        }
+                        ReviewGate.CRAFT -> {
+                            val rules = withContext(Dispatchers.IO) {
+                                store.pack(workId).filter { it.kind == PackKind.STYLE || it.kind == PackKind.VOICE }
+                                    .map { "【${it.title}】\n" + store.packText(workId, it.id).trim() }
+                                    .filter { it.substringAfter('\n').isNotBlank() }
+                                    .joinToString("\n\n").take(RULE_SOURCE_CHARS)
+                            }
+                            when {
+                                !ready -> GateResult(gate, error = "没有设置 AI，跳过", at = System.currentTimeMillis())
+                                rules.isBlank() -> GateResult(gate, error = "设定包里没有写作规范，跳过", at = System.currentTimeMillis())
+                                else -> {
+                                    val answer = ai.ask(WritePrompts.system(work.title, assist), WritePrompts.craftReview(text, title, rules), whole = true)
+                                    GateResult(gate, WritePrompts.parseReview(answer), at = System.currentTimeMillis())
+                                }
+                            }
+                        }
+                        ReviewGate.RULES -> {
+                            val rules = withContext(Dispatchers.IO) {
+                                store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+                            }
+                            if (rules.isEmpty) GateResult(gate, error = "没有检查规则，跳过", at = System.currentTimeMillis())
+                            else {
+                                val hits = withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits }
+                                GateResult(gate, hits.map { h -> ReviewIssue(h.ranges.firstOrNull()?.let { text.substring(it.first, it.last + 1) }.orEmpty(), h.message) }, at = System.currentTimeMillis())
+                            }
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    GateResult(gate, error = e.message ?: "审稿失败", at = System.currentTimeMillis())
+                }
+                results += result
+                publish(gate)
+            }
+            publish(null)
+            val done = _review.value?.review ?: return@launch
+            withContext(Dispatchers.IO) { runCatching { store.saveReview(workId, chapterId, done) } }
+        }
+    }
+
+    /** 停下正在审的（已经审完的几道留着，不存）。 */
+    fun stopReview() {
+        reviewJob?.cancel()
+        _review.update { it?.copy(running = null) }
+    }
 
     /** 把勾选的建议写进设定包的人物档案（没有就新建一份）。旧的文字先存一个历史版本。 */
     fun addProposals(workId: String, picked: List<BibleProposal>, then: () -> Unit = {}) {
@@ -337,3 +437,6 @@ class WritingAi(
         const val RULE_SOURCE_CHARS = 30_000
     }
 }
+
+/** 一章的审稿：[running] 是正在审的那一道（审完是 null），[review] 是已经有的结果（可能是上次存下的）。 */
+data class ReviewRun(val workId: String, val chapterId: String, val running: ReviewGate?, val review: ChapterReview?)

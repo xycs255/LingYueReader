@@ -1,0 +1,168 @@
+package com.xycs.lingyuereader.ui
+
+import android.content.Context
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.text.TextRange
+import androidx.lifecycle.ViewModelProvider
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sun.net.httpserver.HttpServer
+import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReviewGate
+import com.xycs.lingyuereader.data.WorkStore
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLooper
+import java.io.File
+import java.net.InetSocketAddress
+import java.util.Collections
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36], qualifiers = "w411dp-h891dp")
+class WritingReviewUiTest {
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private val writingDir get() = File(context.filesDir, "writing")
+    private var workId = ""
+    private var chapterId = ""
+    private lateinit var server: HttpServer
+    /** 发给假服务商的（系统提示，用户消息）。 */
+    private val asked: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
+    private val chapterText = "林月早就知道玉佩的来历。她笑了笑，把门闩上。"
+
+    private val seed = object : ExternalResource() {
+        override fun before() {
+            server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                createContext("/v1/chat/completions") { ex ->
+                    val msgs = JSONObject(ex.requestBody.readBytes().decodeToString()).getJSONArray("messages")
+                    val system = (0 until msgs.length()).map { msgs.getJSONObject(it) }.firstOrNull { it.getString("role") == "system" }?.getString("content").orEmpty()
+                    val user = msgs.getJSONObject(msgs.length() - 1).getString("content")
+                    asked += system to user
+                    val answer = when {
+                        "请做事实审稿" in user ->
+                            """{"issues":[{"quote":"林月早就知道玉佩的来历","problem":"察觉表里林月第五章才知道玉佩来历","fix":"改成她只觉得眼熟"}]}"""
+                        else -> """{"issues":[]}"""
+                    }
+                    val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
+                        .toString().toByteArray()
+                    ex.responseHeaders.add("Content-Type", "application/json")
+                    ex.sendResponseHeaders(200, bytes.size.toLong())
+                    ex.responseBody.use { it.write(bytes) }
+                }
+                start()
+            }
+            val files = context.filesDir
+            File(files, "books").deleteRecursively()
+            File(files, "books").mkdirs()
+            File(files, "books/index.json").writeText("[]")
+            writingDir.deleteRecursively()
+            context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+            context.getSharedPreferences("ai", Context.MODE_PRIVATE).edit().clear()
+                .putBoolean("enabled", true).putString("preset", "local").putString("protocol", "OPENAI")
+                .putString("baseUrl", "http://127.0.0.1:${server.address.port}/v1").putString("model", "test-model").commit()
+            val store = WorkStore(writingDir)
+            val w = store.create("长夜")
+            val v = w.volumes[0].id
+            store.saveText(w.id, w.chapters[0].id, "沈默进了城。")
+            store.addChapter(w.id, v)
+            val (_, three) = store.addChapter(w.id, v)!!
+            store.saveText(w.id, three.id, chapterText)
+            store.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 想要 |\n|---|---|\n| 林月（原创） | 一个家 |\n| 沈默 | 查清旧案 |\n")
+            store.addPackDoc(
+                w.id, PackKind.AWARENESS, "察觉表",
+                "### 林月\n\n| 卷 | 线索 |\n| --- | --- |\n| 一 | 沈默腰间有半块玉佩，只觉得眼熟 |\n| 一（第五章） | 杜娘说出玉佩来历 |\n",
+            )
+            store.addPackDoc(w.id, PackKind.FORESHADOW, "伏笔表", "| 伏笔 | 埋下 | 回收 | 状态 |\n| --- | --- | --- | --- |\n| 半块玉佩 | 第1章 | 第3章 | |\n")
+            store.addPackDoc(w.id, PackKind.STYLE, "写作规范", "对白要像人说话。")
+            store.addPackDoc(w.id, PackKind.RULES, "检查规则", "禁用：笑了笑\n")
+            workId = w.id
+            chapterId = three.id
+        }
+
+        override fun after() {
+            server.stop(0)
+        }
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
+        ShadowLooper.idleMainLooper()
+        condition()
+    }
+
+    private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+    @Test
+    fun threeGatesThenJumpBackToTheSentence() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
+        // 这一章计划回收的伏笔，编辑器上方提醒。
+        waitForText("这一章计划回收的伏笔：半块玉佩")
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("三道审稿").performClick()
+        waitForText("还没有审过")
+        compose.onNodeWithText("开始审稿").performClick()
+        waitForText("一、事实关 · 1 处")
+        waitForText("二、写法关 · 没发现问题")
+        waitForText("三、规则关 · 1 处")
+        waitForText("「笑了笑」1 处，不用")
+
+        // 事实关带上了本章资料：出场人物的人物卡、还不该知道的事、该回收的伏笔、上一章结尾。
+        val (system, user) = asked.first { "请做事实审稿" in it.second }
+        assertTrue("【人物·林月】" in system)
+        assertFalse("【人物·沈默】" in system)
+        assertTrue("杜娘说出玉佩来历" in system.substringAfter("还没发生"))
+        assertTrue("【计划在这一章回收的伏笔】\n- 半块玉佩" in system)
+        assertTrue(chapterText in user)
+        // 写法关只拿写作规范，不拿设定。
+        assertTrue(asked.first { "只按上面的写作规范" in it.second }.second.contains("对白要像人说话"))
+        // 审完存下来了。
+        val store = WorkStore(writingDir)
+        waitFor { store.review(workId, chapterId)?.gate(ReviewGate.RULES) != null }
+        assertEquals(chapterText.hashCode(), store.review(workId, chapterId)!!.textHash)
+
+        // 点事实关的问题：回到编辑器，选中那一句。
+        compose.onNodeWithText("察觉表里林月第五章才知道玉佩来历").performScrollTo().performClick()
+        waitFor {
+            runCatching { compose.onNodeWithContentDescription("正文").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange] }.getOrNull() == TextRange(0, 11)
+        }
+    }
+
+    @Test
+    fun briefAndForeshadowScreens() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterBrief(workId, chapterId)) }
+        waitForText("第 3 章 · 第 1 卷")
+        waitForText("出场：林月")
+        waitForText("还不该知道的")
+        waitForText("计划这一章回收")
+
+        compose.runOnUiThread { vm.open(Screen.Foreshadows(workId)) }
+        waitForText("该回收了")
+        compose.onNodeWithText("半块玉佩").performClick()
+        compose.onNodeWithText("标为已回收").performClick()
+        val store = WorkStore(writingDir)
+        waitFor { store.pack(workId).first { it.kind == PackKind.FORESHADOW }.let { "已回收" in store.packText(workId, it.id) } }
+        waitForText("已回收")
+    }
+}

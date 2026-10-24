@@ -172,6 +172,12 @@ sealed interface Screen {
     data class WorkChanges(val workId: String) : Screen
 
     data class WorkRules(val workId: String) : Screen
+
+    data class ChapterBrief(val workId: String, val chapterId: String) : Screen
+
+    data class ChapterReview(val workId: String, val chapterId: String) : Screen
+
+    data class Foreshadows(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */

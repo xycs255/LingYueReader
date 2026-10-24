@@ -216,6 +216,9 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
             is Screen.WorkRules -> WorkRulesScreen(vm, screen.workId)
+            is Screen.ChapterBrief -> ChapterBriefScreen(vm, screen.workId, screen.chapterId)
+            is Screen.ChapterReview -> ChapterReviewScreen(vm, screen.workId, screen.chapterId)
+            is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
         }
     }
 }

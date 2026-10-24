@@ -2,9 +2,12 @@ package com.xycs.lingyuereader
 
 import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChangeKind
+import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PackImportItem
@@ -18,6 +21,8 @@ import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.data.WorkExport
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WritingStats
+import com.xycs.lingyuereader.data.brief
+import com.xycs.lingyuereader.data.chapterNumber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -367,6 +372,35 @@ class WritingModel(
     suspend fun exportPack(workId: String, out: java.io.OutputStream) = withContext(disk) {
         PackImport.writeZip(store.pack(workId).map { it to store.packText(workId, it.id) }, out)
     }
+
+    // ---------- 本章资料、伏笔、审稿跳转 ----------
+
+    /** 写这一章时带给 AI 的资料（[text] 为空时用存盘的正文）。 */
+    suspend fun brief(workId: String, chapterId: String, text: String? = null): ChapterBrief? = withContext(disk) { store.brief(workId, chapterId, text) }
+
+    /** 存盘的正文（排在还没写完的保存后面读）。 */
+    suspend fun savedText(workId: String, chapterId: String): String = withContext(disk) { store.text(workId, chapterId) }
+
+    /** 从审稿页点了一处问题：回到编辑器，选中原文里的这一句（章 id、原文）。编辑器用掉后清空。 */
+    val jump = MutableStateFlow<Pair<String, String>?>(null)
+
+    /** 伏笔表里的伏笔（[Foreshadow.doc] 是文档 id），以及写到了第几章（有字的章里最大的章号）。 */
+    suspend fun foreshadows(workId: String): Pair<List<Foreshadow>, Int> = withContext(disk) {
+        val docs = store.pack(workId).filter { it.kind == PackKind.FORESHADOW }.map { it.id to store.packText(workId, it.id) }
+        val work = store.get(workId)
+        val latest = work?.chapters?.filter { it.words > 0 }?.mapNotNull { work.chapterNumber(it.id) }?.maxOrNull() ?: 0
+        ChapterBriefs.foreshadows(docs) to latest
+    }
+
+    /** 把一条伏笔标为已回收：改伏笔表那一行（原来的文字先存一版）。 */
+    fun markForeshadow(workId: String, f: Foreshadow, then: () -> Unit = {}) = changePack(workId, "保存失败", {
+        val old = store.packText(workId, f.doc)
+        val new = ChapterBriefs.markDone(old, f, null)
+        if (new != old) {
+            store.snapshot(workId, store.docKey(f.doc), old)
+            store.savePackText(workId, f.doc, new)
+        }
+    }, then)
 
     // ---------- 检查规则 ----------
 
