@@ -34,6 +34,32 @@ data class Work(
     fun volumeOf(chapterId: String): Volume? = volumes.firstOrNull { v -> v.chapters.any { it.id == chapterId } }
 }
 
+/** 设定集里的条目类别。 */
+enum class BibleKind(val label: String) { CHARACTER("人物"), WORLD("世界观"), OUTLINE("大纲"), FORESHADOW("伏笔"), OTHER("其他") }
+
+/** 设定集里的一条：人物、地点势力、大纲、伏笔……写作时作为 AI 的参考。 */
+data class BibleEntry(val id: String, val kind: BibleKind, val name: String, val text: String)
+
+/** 作者采纳过的一次 AI 修改：润色时拿最近几条当例子，让 AI 贴近作者的改法。 */
+data class StyleExample(val action: String, val before: String, val after: String, val at: Long)
+
+/**
+ * 一部作品的 AI 设置和资料：实时检查开没开（默认关，开了才会自动把刚写的段落发给服务商）、
+ * 作者写的文风偏好、设定集、采纳过的修改。
+ */
+data class WorkAssist(
+    val realtime: Boolean = false,
+    val style: String = "",
+    val entries: List<BibleEntry> = emptyList(),
+    val accepted: List<StyleExample> = emptyList(),
+    val rejected: Int = 0,
+) {
+    companion object {
+        /** 采纳的修改最多记这么多条。 */
+        const val KEEP_EXAMPLES = 20
+    }
+}
+
 /** 历史版本：[at] 是存下的时间，也是文件名。 */
 data class Snapshot(val at: Long, val words: Int)
 
@@ -280,6 +306,29 @@ class WorkStore(private val root: File) {
         return saveText(workId, chapterId, text)
     }
 
+    // ---------- AI 设置与设定集 ----------
+
+    @Synchronized
+    fun assist(workId: String): WorkAssist {
+        val file = File(dir(workId), ASSIST)
+        if (!file.isFile) return WorkAssist()
+        return try {
+            JSONObject(file.readText()).toAssist()
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            WorkAssist()
+        }
+    }
+
+    @Synchronized
+    fun updateAssist(workId: String, transform: (WorkAssist) -> WorkAssist): WorkAssist {
+        val d = dir(workId)
+        require(File(d, WORK).isFile) { "作品不在了" }
+        val next = transform(assist(workId))
+        check(DurableFiles.write(File(d, ASSIST), next.toJson().toString().toByteArray())) { "无法保存设定" }
+        return next
+    }
+
     // ---------- 码字统计 ----------
 
     @Synchronized
@@ -326,7 +375,7 @@ class WorkStore(private val root: File) {
         all.forEach { w ->
             val texts = JSONObject()
             w.chapters.forEach { c -> texts.put(c.id, text(w.id, c.id)) }
-            array.put(w.toJson().put("texts", texts))
+            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()))
         }
         val stats = stats()
         val days = JSONObject()
@@ -356,6 +405,11 @@ class WorkStore(private val root: File) {
                 check(DurableFiles.write(chapterFile(incoming.id, c.id), texts.optString(c.id).toByteArray())) { "无法写入正文" }
             }
             local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach { chapterFile(local.id, it.id).delete() }
+            o.optJSONObject("assist")?.let { a ->
+                runCatching { a.toAssist() }.getOrNull()?.let { assist ->
+                    check(DurableFiles.write(File(dir(incoming.id), ASSIST), assist.toJson().toString().toByteArray())) { "无法写入设定" }
+                }
+            }
             write(incoming.copy(previewBookId = local?.previewBookId ?: incoming.previewBookId))
             restored++
         }
@@ -373,9 +427,10 @@ class WorkStore(private val root: File) {
         const val DEFAULT_VOLUME = "正文"
         const val KEEP_SNAPSHOTS = 40
         private const val WORK = "work.json"
+        private const val ASSIST = "assist.json"
         private val ID = Regex("""[A-Za-z0-9-]{1,64}""")
 
-        private fun newId() = UUID.randomUUID().toString()
+        internal fun newId() = UUID.randomUUID().toString()
 
         private fun Work.toJson(): JSONObject = JSONObject()
             .put("id", id).put("title", title).put("author", author).put("synopsis", synopsis)
@@ -388,6 +443,30 @@ class WorkStore(private val root: File) {
                     }))
                 }
             })
+
+        private fun WorkAssist.toJson(): JSONObject = JSONObject()
+            .put("realtime", realtime).put("style", style).put("rejected", rejected)
+            .put("entries", JSONArray().apply { entries.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("name", e.name).put("text", e.text)) } })
+            .put("accepted", JSONArray().apply { accepted.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
+
+        private fun JSONObject.toAssist(): WorkAssist {
+            val es = optJSONArray("entries") ?: JSONArray()
+            val ac = optJSONArray("accepted") ?: JSONArray()
+            return WorkAssist(
+                realtime = optBoolean("realtime"),
+                style = optString("style"),
+                rejected = optInt("rejected"),
+                entries = (0 until es.length()).mapNotNull { i ->
+                    val e = es.optJSONObject(i) ?: return@mapNotNull null
+                    val kind = runCatching { BibleKind.valueOf(e.optString("kind")) }.getOrDefault(BibleKind.OTHER)
+                    BibleEntry(e.optString("id").ifEmpty { newId() }, kind, e.optString("name"), e.optString("text"))
+                },
+                accepted = (0 until ac.length()).mapNotNull { i ->
+                    val e = ac.optJSONObject(i) ?: return@mapNotNull null
+                    StyleExample(e.optString("action"), e.optString("before"), e.optString("after"), e.optLong("at"))
+                },
+            )
+        }
 
         private fun JSONObject.toWork(): Work {
             val vs = getJSONArray("volumes")

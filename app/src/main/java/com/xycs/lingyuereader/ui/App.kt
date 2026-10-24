@@ -210,6 +210,8 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Work -> WorkScreen(vm, screen.workId)
             is Screen.Editor -> EditorScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkHistory -> WorkHistoryScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkAi -> WorkAiScreen(vm, screen.workId)
+            is Screen.WorkBible -> WorkBibleScreen(vm, screen.workId)
         }
     }
 }

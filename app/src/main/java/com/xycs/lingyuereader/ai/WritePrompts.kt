@@ -1,0 +1,272 @@
+package com.xycs.lingyuereader.ai
+
+import com.xycs.lingyuereader.data.BibleEntry
+import com.xycs.lingyuereader.data.BibleKind
+import com.xycs.lingyuereader.data.StyleExample
+import com.xycs.lingyuereader.data.WorkAssist
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** 改一段文字的几种做法。[instruction] 是发给模型的要求。 */
+enum class WriteAction(val label: String, val instruction: String) {
+    POLISH("润色", "润色这段文字：让句子更通顺、用词更准确、节奏更好，改掉啰嗦和重复。不改变意思、情节和人称，保留作者的口吻和风格，能不改的地方就不改。"),
+    VIVID("更生动", "把这段写得更生动：多用具体的动作、感官细节和画面，少用概括和形容词堆砌。不改变情节，篇幅可以略长一些。"),
+    EXPAND("扩写", "扩写这段：补充动作、神态、环境和心理细节，篇幅扩到原来的一倍半到两倍。不添加新的情节转折，不改变人物性格。"),
+    CONDENSE("缩写", "精简这段：删去重复、拖沓和可有可无的话，篇幅减到原来的一半到三分之二，保留关键情节和对话。"),
+    PROOFREAD("挑错", "只改错：错别字、用错的词、病句、标点错误。没有错的地方一个字也不要动，不要做文风上的修改。"),
+    CONTINUE("续写", "接着上文往下写大约 300 字。顺着已有的情节和人物性格，不要跳到大结局，不要另起炉灶，也不要重复上文。只写续写的部分。"),
+    CUSTOM("按要求改", ""),
+}
+
+/** 灵感面板里的几种问法。 */
+enum class IdeaKind(val label: String) {
+    NEXT("接下来怎么写"),
+    DETAIL("细节和描写"),
+    NAMES("起名"),
+    STUCK("卡文了"),
+    ASK("随便问"),
+}
+
+/** 实时检查找出的一处问题：在哪段（段落原文）、哪几个字、改成什么、为什么。 */
+data class WriteIssue(val paragraph: String, val wrong: String, val right: String, val reason: String)
+
+/** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
+data class BibleProposal(val name: String, val text: String, val existing: Boolean)
+
+/**
+ * 写作助手发给模型的话。原则：保留作者的文风，不擅自改情节；改稿类只输出结果；
+ * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
+ */
+object WritePrompts {
+    /** 设定集最多带这么多字进系统提示。 */
+    const val BIBLE_CHARS = 4_000
+    /** 改稿时带上前文多少字、后文多少字。 */
+    const val BEFORE_CHARS = 1_500
+    const val AFTER_CHARS = 300
+    /** 整章点评、矛盾检查最多发多少字。 */
+    const val CHAPTER_CHARS = 14_000
+
+    fun system(title: String, assist: WorkAssist, withBible: Boolean = true, examples: Boolean = false): String = buildString {
+        append("你是写作软件“灵阅”里的编辑助手，在帮作者写长篇小说")
+        if (title.isNotBlank()) append("《").append(title).append("》")
+        append("。\n")
+        append("- 用简体中文。尊重作者：保留作者的文风、人称、时态和用词习惯，不擅自改变情节和人物设定，不说教。\n")
+        append("- 要你改写或续写时，只输出正文本身：不要解释，不要加标题、引号、序号或“修改后：”之类的话，不用 Markdown。\n")
+        append("- 一行就是一段，段与段之间换行，不要空行，段首不要空格。\n")
+        if (assist.style.isNotBlank()) append("\n作者对文风的要求：").append(assist.style.trim()).append('\n')
+        if (withBible) bible(assist.entries)?.let { append("\n作品设定（供参考，不要和它矛盾）：\n").append(it).append('\n') }
+        if (examples) {
+            val picked = assist.accepted.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(3)
+            if (picked.isNotEmpty()) {
+                append("\n作者以前采纳过的修改（照这个分寸来改）：\n")
+                picked.forEach { e -> append("原文：").append(e.before).append("\n改为：").append(e.after).append('\n') }
+            }
+        }
+    }
+
+    /** 设定集压成几行：按类别分组，超出 [limit] 字就截断。 */
+    fun bible(entries: List<BibleEntry>, limit: Int = BIBLE_CHARS): String? {
+        if (entries.isEmpty()) return null
+        val out = StringBuilder()
+        BibleKind.entries.forEach { kind ->
+            val list = entries.filter { it.kind == kind && (it.name.isNotBlank() || it.text.isNotBlank()) }
+            if (list.isEmpty()) return@forEach
+            out.append('【').append(kind.label).append("】\n")
+            list.forEach { e ->
+                out.append(e.name.trim())
+                if (e.text.isNotBlank()) out.append(if (e.name.isBlank()) "" else "：").append(e.text.trim().replace('\n', ' '))
+                out.append('\n')
+            }
+        }
+        return out.toString().let { if (it.length > limit) it.take(limit) + "……（设定集太长，后面省略）" else it }.trim().ifEmpty { null }
+    }
+
+    /** 改一段：[target] 是要改的文字（续写时是光标前的上文），[before]、[after] 是它前后的原文。 */
+    fun edit(action: WriteAction, target: String, before: String, after: String, chapterTitle: String, instruction: String = ""): String = buildString {
+        if (chapterTitle.isNotBlank()) append("章节：").append(chapterTitle).append('\n')
+        if (action == WriteAction.CONTINUE) {
+            append("上文：\n").append((before + target).takeLast(BEFORE_CHARS * 2)).append("\n\n")
+            if (after.isNotBlank()) append("（光标后面还有：").append(after.take(AFTER_CHARS)).append("）\n\n")
+            append(action.instruction)
+            if (instruction.isNotBlank()) append("\n作者的要求：").append(instruction.trim())
+            return@buildString
+        }
+        if (before.isNotBlank()) append("前文（只作语境，不要改）：\n").append(before.takeLast(BEFORE_CHARS)).append("\n\n")
+        append("要改的文字：\n").append(target).append("\n\n")
+        if (after.isNotBlank()) append("后文（只作语境，不要改）：\n").append(after.take(AFTER_CHARS)).append("\n\n")
+        append(if (action == WriteAction.CUSTOM) "按作者的要求改这段文字：" + instruction.trim() else action.instruction)
+        append("\n只输出改好的“要改的文字”这一部分。")
+    }
+
+    /** 灵感：[recent] 是写到这里的原文（本章已写的部分，前面接上一章的结尾）。 */
+    fun idea(kind: IdeaKind, recent: String, chapterTitle: String, extra: String = ""): String = buildString {
+        if (chapterTitle.isNotBlank()) append("正在写的章节：").append(chapterTitle).append('\n')
+        append("写到这里的原文：\n").append(recent.ifBlank { "（这一章还没开始写）" }).append("\n\n")
+        when (kind) {
+            IdeaKind.NEXT -> append("给出接下来剧情的 3 个不同走向，每个两三句话，写清楚冲突在哪、能带来什么看点；再用一句话说你更推荐哪个、为什么。")
+            IdeaKind.DETAIL -> append("针对最后一段场景，给出 5 条可以加进去的具体细节（动作、神态、环境、声音气味、心理），每条一句话，作者可以直接拿去用。")
+            IdeaKind.NAMES -> append("帮作者起名：").append(extra.ifBlank { "给接下来可能出场的人物" }).append("。给 8 个候选，贴合作品的时代和风格，每个后面用几个字说寓意或感觉。")
+            IdeaKind.STUCK -> append("作者卡文了。不要替他写，而是像编辑一样问 3 到 5 个能帮他理清思路的问题（比如这一章要完成什么、人物此刻想要什么、什么在阻碍他），每个问题后面给一个可能的方向。")
+            IdeaKind.ASK -> append("作者的问题：").append(extra.trim())
+        }
+        append("\n用纯文本分条回答，简洁，不要客套话。")
+    }
+
+    /** 读者视角点评一章。 */
+    fun review(chapter: String, chapterTitle: String): String = buildString {
+        append("下面是作者新写的一章「").append(chapterTitle).append("」：\n\n").append(chapter.take(CHAPTER_CHARS)).append("\n\n")
+        append("请你以网文老读者的身份读完这一章，直说感受：\n")
+        append("1. 节奏：哪里拖、哪里赶；\n2. 看点：最吸引人的地方，有没有让人想往下翻的钩子；\n")
+        append("3. 弃书风险：哪些地方可能让读者失去耐心或出戏；\n4. 三条最值得改的具体建议（指出是哪一段）。\n")
+        append("说真话，不要客套，也不要全盘否定。纯文本分条，总共不超过 500 字。")
+    }
+
+    /** 前后矛盾检查：设定集在系统提示里，这里给上一章结尾和本章。 */
+    fun consistency(previous: String, chapter: String, chapterTitle: String): String = buildString {
+        if (previous.isNotBlank()) append("上一章的结尾：\n").append(previous).append("\n\n")
+        append("本章「").append(chapterTitle).append("」：\n").append(chapter.take(CHAPTER_CHARS)).append("\n\n")
+        append("检查本章和作品设定、和上一章之间有没有前后矛盾：人名地名写法不一致、人物的年龄身份能力关系对不上、")
+        append("已经死去或离开的人物又出现、时间线和季节天气冲突、物品下落不一致、伏笔被遗忘等。\n")
+        append("逐条列出发现的问题，每条写明本章原文的哪句话、和什么矛盾。只列有把握的；没有发现就只回答“没有发现明显的前后矛盾”。")
+    }
+
+    /** 实时检查：几段刚写的文字，让模型挑出明显的错字、用词和标点错误，回 JSON。 */
+    fun proofread(paragraphs: List<String>): String = buildString {
+        append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")
+        paragraphs.forEachIndexed { i, p -> append(i + 1).append(". ").append(p).append('\n') }
+        append("\n只找明显的错误：错别字、用错的词、漏字多字、标点误用、明显的病句。不要管文风、不要提修改建议、不要改对话里人物故意的说法。\n")
+        append("wrong 必须是原文里一字不差的一小段（尽量短，三五个字到一句话），right 是改好的这一小段，reason 用几个字说原因。\n")
+        append("每段最多 3 处；没有问题的段不要列。只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\"}]}，全都没问题就输出 {\"issues\":[]}。")
+    }
+
+    /** 从正文整理人物到设定集。 */
+    fun extract(text: String, existing: List<BibleEntry>): String = buildString {
+        val names = existing.filter { it.kind == BibleKind.CHARACTER }.map { it.name }.filter { it.isNotBlank() }
+        append("下面是作者写的小说正文：\n\n").append(text).append("\n\n")
+        append("请整理其中的人物，给作者的设定集用。")
+        if (names.isNotEmpty()) append("设定集里已有：").append(names.joinToString("、")).append("。已有的人物如果正文里有了新信息，也列出来（用同样的名字）。")
+        append("\n只收有名字的、有戏份的人物，最多 20 个。text 一两句话写身份、性格、外貌特征和与他人的关系，只依据正文，不要编。\n")
+        append("只输出 JSON：{\"entries\":[{\"name\":\"\",\"text\":\"\"}]}")
+    }
+
+    /** 从模型回答里取出 JSON 对象：容忍前后多余的话和 ```json 包裹。 */
+    private fun json(answer: String): JSONObject {
+        val start = answer.indexOf('{')
+        val end = answer.lastIndexOf('}')
+        if (start < 0 || end <= start) throw AiException("模型没有按格式回答")
+        return runCatching { JSONObject(answer.substring(start, end + 1)) }.getOrElse { throw AiException("模型没有按格式回答") }
+    }
+
+    /** 实时检查的回答：只留原文里真找得到、确实有改动的。 */
+    fun parseIssues(answer: String, paragraphs: List<String>): List<WriteIssue> {
+        val a = json(answer).optJSONArray("issues") ?: JSONArray()
+        return (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val p = paragraphs.getOrNull(o.optInt("p") - 1) ?: return@mapNotNull null
+            val wrong = o.optString("wrong").trim()
+            val right = o.optString("right").trim()
+            if (wrong.isEmpty() || wrong == right || wrong !in p) return@mapNotNull null
+            WriteIssue(p, wrong, right, o.optString("reason").trim())
+        }.distinctBy { it.paragraph to it.wrong }
+    }
+
+    fun parseProposals(answer: String, existing: List<BibleEntry>): List<BibleProposal> {
+        val a = json(answer).optJSONArray("entries") ?: JSONArray()
+        val names = existing.filter { it.kind == BibleKind.CHARACTER }.map { it.name.trim() }.toSet()
+        return (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            val name = o.optString("name").trim()
+            val text = o.optString("text").trim()
+            if (name.isEmpty() || text.isEmpty()) null else BibleProposal(name, text, name in names)
+        }.distinctBy { it.name }.take(20)
+    }
+
+    /** 模型有时还是会加“修改后：”或把整段包进引号：去掉。 */
+    fun clean(answer: String, original: String): String {
+        var t = answer.trim()
+        t = t.removePrefix("```").removeSuffix("```").trim()
+        t = Regex("""^(修改后|改写后|润色后|改后|续写|结果)[：:]\s*""").replace(t, "")
+        val quoted = (t.startsWith("「") && t.endsWith("」")) || (t.startsWith("“") && t.endsWith("”")) || (t.startsWith("\"") && t.endsWith("\""))
+        val originallyQuoted = original.trim().let { it.isNotEmpty() && it.first() == t.first() && it.last() == t.last() }
+        if (quoted && !originallyQuoted && t.length > 2) t = t.substring(1, t.length - 1).trim()
+        // 一行一段：去掉空行和段首空格。
+        return t.lines().map { it.trim().trim('　').trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+    }
+
+    /** 记一条采纳的修改：只留最近 [WorkAssist.KEEP_EXAMPLES] 条，太长的截断。 */
+    fun remember(assist: WorkAssist, action: WriteAction, before: String, after: String, at: Long): WorkAssist {
+        if (action == WriteAction.CONTINUE || before.isBlank()) return assist
+        val e = StyleExample(action.label, before.take(300), after.take(400), at)
+        return assist.copy(accepted = (assist.accepted + e).takeLast(WorkAssist.KEEP_EXAMPLES))
+    }
+}
+
+/** 文字对比：按字比，标出删掉的和加上的，给“采纳前看看改了哪里”用。 */
+object TextDiff {
+    enum class Kind { SAME, DELETED, INSERTED }
+    data class Piece(val kind: Kind, val text: String)
+
+    /** 改动太多（编辑距离超过 [maxEdits]）时返回空，界面就只显示改后的全文。 */
+    fun diff(a: String, b: String, maxEdits: Int = 3_000): List<Piece>? {
+        // 去掉相同的头尾，只比中间。
+        var start = 0
+        while (start < a.length && start < b.length && a[start] == b[start]) start++
+        var endA = a.length
+        var endB = b.length
+        while (endA > start && endB > start && a[endA - 1] == b[endB - 1]) { endA--; endB-- }
+        val mid = myers(a.substring(start, endA), b.substring(start, endB), maxEdits) ?: return null
+        val out = mutableListOf<Piece>()
+        fun add(kind: Kind, s: String) {
+            if (s.isEmpty()) return
+            val last = out.lastOrNull()
+            if (last != null && last.kind == kind) out[out.lastIndex] = Piece(kind, last.text + s) else out += Piece(kind, s)
+        }
+        add(Kind.SAME, a.substring(0, start))
+        mid.forEach { add(it.kind, it.text) }
+        add(Kind.SAME, a.substring(endA))
+        return out
+    }
+
+    /** Myers 差分：最少的删和加。 */
+    private fun myers(a: String, b: String, maxEdits: Int): List<Piece>? {
+        val n = a.length
+        val m = b.length
+        if (n == 0) return listOf(Piece(Kind.INSERTED, b))
+        if (m == 0) return listOf(Piece(Kind.DELETED, a))
+        val max = minOf(n + m, maxEdits)
+        val offset = max + 1
+        var v = IntArray(2 * max + 3)
+        val trace = ArrayList<IntArray>()
+        var found = -1
+        loop@ for (d in 0..max) {
+            trace += v.copyOf()
+            for (k in -d..d step 2) {
+                var x = if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1])) v[offset + k + 1] else v[offset + k - 1] + 1
+                var y = x - k
+                while (x < n && y < m && a[x] == b[y]) { x++; y++ }
+                v[offset + k] = x
+                if (x >= n && y >= m) { found = d; break@loop }
+            }
+        }
+        if (found < 0) return null
+        trace += v
+        // 倒着走回去。
+        val ops = ArrayList<Piece>()
+        var x = n
+        var y = m
+        for (d in found downTo 1) {
+            val vd = trace[d]
+            val k = x - y
+            val prevK = if (k == -d || (k != d && vd[offset + k - 1] < vd[offset + k + 1])) k + 1 else k - 1
+            val prevX = vd[offset + prevK]
+            val prevY = prevX - prevK
+            while (x > prevX && y > prevY) { ops += Piece(Kind.SAME, a[x - 1].toString()); x--; y-- }
+            if (x == prevX) ops += Piece(Kind.INSERTED, b[y - 1].toString()) else ops += Piece(Kind.DELETED, a[x - 1].toString())
+            x = prevX
+            y = prevY
+        }
+        while (x > 0 && y > 0) { ops += Piece(Kind.SAME, a[x - 1].toString()); x--; y-- }
+        ops.reverse()
+        return ops
+    }
+}

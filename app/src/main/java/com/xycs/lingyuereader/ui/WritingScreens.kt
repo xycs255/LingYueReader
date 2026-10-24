@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -66,6 +67,9 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ExportFormat
+import com.xycs.lingyuereader.WriteAiTask
+import com.xycs.lingyuereader.ai.IdeaKind
+import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.Snapshot
 import com.xycs.lingyuereader.data.Volume
@@ -120,7 +124,7 @@ internal fun whenLabel(at: Long, now: Long = System.currentTimeMillis()): String
 
 /** 页面上方显示 [AppViewModel.messages] 的提示条。 */
 @Composable
-private fun rememberMessages(vm: AppViewModel): SnackbarHostState {
+internal fun rememberWritingMessages(vm: AppViewModel): SnackbarHostState {
     val snackbar = remember { SnackbarHostState() }
     val message by vm.messages.collectAsStateWithLifecycle()
     LaunchedEffect(message) {
@@ -141,7 +145,7 @@ fun WritingHomeScreen(vm: AppViewModel) {
     val stats by vm.writing.stats.collectAsStateWithLifecycle()
     val loaded by vm.writing.loaded.collectAsStateWithLifecycle()
     var creating by remember { mutableStateOf(false) }
-    val snackbar = rememberMessages(vm)
+    val snackbar = rememberWritingMessages(vm)
     val today = LocalDate.now()
 
     ProvideGroupedColors {
@@ -300,7 +304,10 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val loaded by vm.writing.loaded.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val work = works.firstOrNull { it.id == workId }
-    val snackbar = rememberMessages(vm)
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    val assist = assists[workId]
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
     var editingInfo by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
@@ -391,6 +398,16 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 }
                             }
                         }
+                        row {
+                            NavRow("设定集", value = assist?.entries?.size?.let { if (it == 0) "空" else "$it 条" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
+                                vm.open(Screen.WorkBible(workId))
+                            }
+                        }
+                        row {
+                            NavRow("写作 AI", value = if (assist?.realtime == true) "实时检查已开" else null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) {
+                                vm.open(Screen.WorkAi(workId))
+                            }
+                        }
                     }
                     work.volumes.forEach { v ->
                         GroupedSection {
@@ -417,49 +434,49 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     )
                 }
             }
-        }
-        if (editingInfo) {
-            WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
-                editingInfo = false
-                vm.writing.updateInfo(workId, t, a, s)
-            }
-        }
-        if (addingVolume) {
-            NameDialog("新建一卷", "第${work.volumes.size + 1}卷", "新建", onDismiss = { addingVolume = false }) {
-                addingVolume = false
-                vm.writing.addVolume(workId, it)
-            }
-        }
-        if (deleting) {
-            GlassDialog(
-                show = true,
-                title = "删除《${work.title}》",
-                summary = "作品的全部章节和历史版本都会删除，不能恢复。要留底的话先导出一份。",
-                onDismissRequest = { deleting = false },
-            ) {
-                DialogButtons(confirm = "删除", onDismiss = { deleting = false }) {
-                    deleting = false
-                    vm.writing.delete(workId)
+            if (editingInfo) {
+                WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
+                    editingInfo = false
+                    vm.writing.updateInfo(workId, t, a, s)
                 }
             }
-        }
-        chapterMenu?.let { ch ->
-            ChapterDialog(
-                ch,
-                onDismiss = { chapterMenu = null },
-                onRename = { vm.writing.renameChapter(workId, ch.id, it) },
-                onMove = { vm.writing.moveChapter(workId, ch.id, it) },
-                onDelete = { vm.writing.deleteChapter(workId, ch.id) },
-            )
-        }
-        volumeMenu?.let { v ->
-            VolumeDialog(
-                v,
-                canDelete = work.volumes.size > 1,
-                onDismiss = { volumeMenu = null },
-                onRename = { vm.writing.renameVolume(workId, v.id, it) },
-                onDelete = { vm.writing.deleteVolume(workId, v.id) },
-            )
+            if (addingVolume) {
+                NameDialog("新建一卷", "第${work.volumes.size + 1}卷", "新建", onDismiss = { addingVolume = false }) {
+                    addingVolume = false
+                    vm.writing.addVolume(workId, it)
+                }
+            }
+            if (deleting) {
+                GlassDialog(
+                    show = true,
+                    title = "删除《${work.title}》",
+                    summary = "作品的全部章节和历史版本都会删除，不能恢复。要留底的话先导出一份。",
+                    onDismissRequest = { deleting = false },
+                ) {
+                    DialogButtons(confirm = "删除", onDismiss = { deleting = false }) {
+                        deleting = false
+                        vm.writing.delete(workId)
+                    }
+                }
+            }
+            chapterMenu?.let { ch ->
+                ChapterDialog(
+                    ch,
+                    onDismiss = { chapterMenu = null },
+                    onRename = { vm.writing.renameChapter(workId, ch.id, it) },
+                    onMove = { vm.writing.moveChapter(workId, ch.id, it) },
+                    onDelete = { vm.writing.deleteChapter(workId, ch.id) },
+                )
+            }
+            volumeMenu?.let { v ->
+                VolumeDialog(
+                    v,
+                    canDelete = work.volumes.size > 1,
+                    onDismiss = { volumeMenu = null },
+                    onRename = { vm.writing.renameVolume(workId, v.id, it) },
+                    onDelete = { vm.writing.deleteVolume(workId, v.id) },
+                )
+            }
         }
     }
 }
@@ -600,11 +617,22 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val work = works.firstOrNull { it.id == workId }
     val chapter = work?.chapter(chapterId)
-    val snackbar = rememberMessages(vm)
+    val snackbar = rememberWritingMessages(vm)
     var state by remember(workId, chapterId) { mutableStateOf<TextFieldState?>(null) }
     var savedText by remember(workId, chapterId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    // AI：键盘上方的条换成 AI 操作；灵感、按要求改等要先问一句；实时检查的问题列表展开没有。
+    var aiBar by rememberSaveable { mutableStateOf(false) }
+    var ideas by remember { mutableStateOf(false) }
+    var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
+    var issuesOpen by remember { mutableStateOf(false) }
+    val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
+    val realtime by vm.writingAi.realtime.collectAsStateWithLifecycle()
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
 
     LaunchedEffect(workId, chapterId) {
         val text = vm.writing.open(workId, chapterId)
@@ -621,6 +649,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
             }
         }
     }
+    // 实时检查（作品里开了才有）：停笔 3 秒，把改过的段落发去挑错。
+    if (current != null && realtimeOn) {
+        LaunchedEffect(current, realtimeOn) {
+            snapshotFlow { current.text.toString() }.debounce(3_000).collect { text ->
+                vm.writingAi.checkRealtime(workId, chapterId, text)
+            }
+        }
+    }
     val latest by rememberUpdatedState(current)
     // 切到后台（可能被系统杀掉）时马上存。
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
@@ -628,7 +664,41 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
     // 离开这一章：存，并存一个历史版本。
     DisposableEffect(workId, chapterId) {
-        onDispose { latest?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) } }
+        onDispose {
+            latest?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
+            vm.writingAi.stopRealtime()
+            if (vm.writingAi.state.value?.chapterId == chapterId) vm.writingAi.close()
+        }
+    }
+
+    /** 跑一个 AI 任务：用编辑框里现在的全文（可能还没存盘）。 */
+    fun runAi(task: WriteAiTask) {
+        val st = current ?: return
+        issuesOpen = false
+        vm.writingAi.run(workId, chapterId, st.text.toString(), task)
+    }
+
+    /** 改稿类：选中的文字或光标所在的段。 */
+    fun runEdit(action: WriteAction, instruction: String = "") {
+        val st = current ?: return
+        val target = editTarget(st.text.toString(), st.selection, action, instruction)
+        if (target == null) vm.showMessage(if (action == WriteAction.CONTINUE) "先写一点，再让 AI 接着写" else "先选中文字，或把光标放在要改的那段")
+        else runAi(target)
+    }
+
+    fun onAiItem(item: AiBarItem) {
+        val st = current ?: return
+        when (item) {
+            is AiBarItem.Edit -> runEdit(item.action)
+            AiBarItem.Custom -> {
+                if (editTarget(st.text.toString(), st.selection, WriteAction.CUSTOM) == null) vm.showMessage("先选中文字，或把光标放在要改的那段")
+                else asking = "想怎么改？" to { req -> runEdit(WriteAction.CUSTOM, req) }
+            }
+            AiBarItem.Ideas -> ideas = true
+            AiBarItem.Review, AiBarItem.Consistency ->
+                if (st.text.isBlank()) vm.showMessage("这一章还没有内容")
+                else runAi(if (item == AiBarItem.Review) WriteAiTask.Review else WriteAiTask.Consistency)
+        }
     }
 
     val chapters = work?.chapters.orEmpty()
@@ -652,7 +722,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
                         Text(
-                            "$count 字 · " + if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中",
+                            "$count 字 · " + (if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
+                                if (realtimeOn) " · 实时检查已开" else "",
                             color = c.secondary,
                             fontSize = 12.sp,
                         )
@@ -728,32 +799,125 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         )
                     }
                 }
-                // 键盘上方的标点条，上面一道细线和正文隔开。
-                Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
-                Row(
-                    Modifier.fillMaxWidth().background(c.background).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    QUICK_INSERTS.forEach { s ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = 2.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .combinedClickableCompat { current?.let { insert(it, s) } }
-                                .semantics { contentDescription = "插入$s" }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                        ) {
-                            Text(s, color = c.label, fontSize = 17.sp)
-                        }
+                // AI 的结果面板、实时检查的问题，都在键盘上方，不挡正在写的地方。
+                val panel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
+                if (panel != null && current != null) {
+                    WriteAiPanel(
+                        panel,
+                        model = "${aiConfig.providerLabel} · ${aiConfig.model}",
+                        onAccept = { result ->
+                            val task = panel.task as WriteAiTask.Edit
+                            if (applyEdit(current, task, result)) vm.writingAi.accepted(workId, task.action, task.original, result)
+                            else vm.showMessage("那段原文已经改动，没找到要替换的地方")
+                        },
+                        onInsert = { result ->
+                            current.edit { replace(selection.min, selection.max, result) }
+                            vm.writingAi.close()
+                        },
+                        onRetry = { vm.writingAi.retry() },
+                        onClose = { vm.writingAi.close() },
+                    )
+                } else if (issuesOpen && realtimeOn && current != null) {
+                    IssuesPanel(
+                        realtime,
+                        onFix = { i ->
+                            if (!applyIssue(current, i)) vm.showMessage("那段已经改动了")
+                            vm.writingAi.dismissIssue(i)
+                        },
+                        onIgnore = { vm.writingAi.dismissIssue(it) },
+                        onClose = { issuesOpen = false },
+                    )
+                } else if (realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null) && realtime.chapterId == chapterId) {
+                    Row(
+                        Modifier.fillMaxWidth().background(c.background).combinedClickableCompat { if (realtime.issues.isNotEmpty()) issuesOpen = true }
+                            .padding(horizontal = 18.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
+                        Text(
+                            when {
+                                realtime.issues.isNotEmpty() -> "发现 ${realtime.issues.size} 处可能的问题"
+                                realtime.checking -> "正在检查刚写的段落……"
+                                else -> "实时检查出错：${realtime.error}"
+                            },
+                            color = if (realtime.issues.isNotEmpty()) c.tint else c.secondary,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(start = 6.dp),
+                        )
+                        if (realtime.issues.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
                     }
-                    Spacer(Modifier.width(8.dp))
+                }
+                // 键盘上方的条：左边 ✦ 在标点和 AI 操作之间切换；上面一道细线和正文隔开。
+                Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
+                Row(Modifier.fillMaxWidth().background(c.background), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .padding(start = 8.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (aiBar) c.tint.copy(alpha = 0.15f) else Color.Transparent)
+                            .combinedClickableCompat { aiBar = !aiBar }
+                            .semantics { contentDescription = if (aiBar) "换回标点" else "AI 写作" }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = if (aiBar) c.tint else c.secondary, modifier = Modifier.size(20.dp))
+                    }
+                    Row(
+                        Modifier.weight(1f).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (aiBar) {
+                            AI_BAR.forEach { item ->
+                                Box(
+                                    Modifier
+                                        .padding(horizontal = 2.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .combinedClickableCompat { onAiItem(item) }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                ) {
+                                    Text(item.label, color = c.label, fontSize = 15.sp)
+                                }
+                            }
+                        } else {
+                            QUICK_INSERTS.forEach { s ->
+                                Box(
+                                    Modifier
+                                        .padding(horizontal = 2.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .combinedClickableCompat { current?.let { insert(it, s) } }
+                                        .semantics { contentDescription = "插入$s" }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Text(s, color = c.label, fontSize = 17.sp)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
                 }
             }
-        }
-        if (renaming && chapter != null) {
-            NameDialog("章名", chapter.title, "保存", onDismiss = { renaming = false }) {
-                renaming = false
-                vm.writing.renameChapter(workId, chapterId, it)
+            if (renaming && chapter != null) {
+                NameDialog("章名", chapter.title, "保存", onDismiss = { renaming = false }) {
+                    renaming = false
+                    vm.writing.renameChapter(workId, chapterId, it)
+                }
+            }
+            if (ideas) {
+                IdeasDialog(onDismiss = { ideas = false }) { kind ->
+                    ideas = false
+                    when (kind) {
+                        IdeaKind.NAMES -> asking = "给什么起名？" to { what -> runAi(WriteAiTask.Idea(kind, what)) }
+                        IdeaKind.ASK -> asking = "想问什么？" to { q -> runAi(WriteAiTask.Idea(kind, q)) }
+                        else -> runAi(WriteAiTask.Idea(kind))
+                    }
+                }
+            }
+            asking?.let { (title, then) ->
+                AskDialog(title, hint = if (title.startsWith("给")) "比如：女主角的师父、一座边城" else "", confirm = "好", onDismiss = { asking = null }) {
+                    asking = null
+                    then(it)
+                }
             }
         }
     }
@@ -834,15 +998,15 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
             }
-        }
-        open?.let { (s, text) ->
-            GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
-                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
-                }
-                DialogButtons(confirm = "换回这一版", onDismiss = { open = null }) {
-                    open = null
-                    vm.writing.restore(workId, chapterId, s.at) { vm.back() }
+            open?.let { (s, text) ->
+                GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
+                    Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                        Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
+                    }
+                    DialogButtons(confirm = "换回这一版", onDismiss = { open = null }) {
+                        open = null
+                        vm.writing.restore(workId, chapterId, s.at) { vm.back() }
+                    }
                 }
             }
         }

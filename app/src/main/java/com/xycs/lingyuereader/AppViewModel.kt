@@ -158,6 +158,10 @@ sealed interface Screen {
     data class Editor(val workId: String, val chapterId: String) : Screen
     /** 一章的历史版本。 */
     data class WorkHistory(val workId: String, val chapterId: String) : Screen
+    /** 一部作品的 AI 设置：实时检查、文风、学到的改法。 */
+    data class WorkAi(val workId: String) : Screen
+    /** 一部作品的设定集。 */
+    data class WorkBible(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
@@ -251,8 +255,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val vocab: StateFlow<List<VocabWord>> = _vocab.asStateFlow()
     private val dictionaries = Dictionaries(app)
 
+    private val workStore = com.xycs.lingyuereader.data.WorkStore(java.io.File(app.filesDir, "writing"))
+
     /** 写作：作品、正文、码字统计。 */
-    val writing = WritingModel(com.xycs.lingyuereader.data.WorkStore(java.io.File(app.filesDir, "writing")), viewModelScope) { _messages.value = it }
+    val writing = WritingModel(workStore, viewModelScope) { _messages.value = it }
 
     private val _dictSettings = MutableStateFlow(DictSettings())
     val dictSettings: StateFlow<DictSettings> = _dictSettings.asStateFlow()
@@ -1255,6 +1261,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- AI ----------
 
     private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
+
+    /** 写作的 AI：改稿、灵感、点评、矛盾检查、实时检查、设定集。 */
+    val writingAi = WritingAi(workStore, assistant, viewModelScope) { _messages.value = it }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss
@@ -2228,7 +2237,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.IO) {
                         data["vocabulary.json"]?.let(vocabulary::merge)
                         data["stats.json"]?.let(stats::merge)
-                        data["writing.json"]?.let(writing::restoreBackup)
+                        data["writing.json"]?.let(writing::restoreBackup)?.also { writingAi.forget() }
                     }
                     reloadVocabulary()
                     reloadStats()
@@ -2330,6 +2339,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (changedSource) _messages.value = "原文件有改动，打开的是书架上的版本；要更新可在书架长按这本书选“刷新”"
             }.onFailure { _messages.value = "打不开 ${picked.single().name}：${it.message ?: "读取失败"}" }
         }
+    }
+
+    /** 在页面底部提示一句。 */
+    fun showMessage(text: String) {
+        _messages.value = text
     }
 
     fun consumeMessage() {
