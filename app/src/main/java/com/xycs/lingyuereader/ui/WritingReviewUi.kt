@@ -41,6 +41,8 @@ import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.BriefItem
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.Foreshadow
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerSnapshot
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewGate
 import com.xycs.lingyuereader.data.ReviewIssue
@@ -82,8 +84,8 @@ internal fun TwoLine(title: String, subtitle: String?, maxLines: Int = 3, traili
 }
 
 /**
- * 本章资料：写这一章时带给 AI 的设定——常用文档、出场人物的人物卡、到这一章为止知道的事、还不该知道的事、
- * 伏笔、提到这一章的细纲和设定。只是看，按章自动挑，不用手动选。
+ * 本章资料：写这一章时带给 AI 的设定——常用文档、前情、故事账本到这一章为止的快照、出场人物的人物卡、
+ * 到这一章为止知道的事、还不该知道的事、伏笔、提到这一章的细纲和设定。只是看，按章自动挑，不用手动选。
  */
 @Composable
 fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
@@ -139,7 +141,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 GroupedSection(
                     header = if (p != null) "随这一章带的提示" else null,
                     footer = if (p != null) {
-                        "设定包里写这一章的原文、出场人物、前情、伏笔、还不该知道的事，随每次请求带上，AI 不用自己去找。"
+                        "设定包里写这一章的原文、出场人物、前情、故事账本、伏笔、还不该知道的事，随每次请求带上，AI 不用自己去找。"
                     } else {
                         "本机模型上下文小、不能自己查，按章挑着带，约 $total 字。人物按名字、称呼在正文和细纲卡里认；" +
                             "察觉表按“第几章”“第几卷”分已知道和还不该知道；前几章没写摘要的用它们的细纲当前情。" +
@@ -153,12 +155,26 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                 }
-                // 联网的服务商：设定包整份给了，按块挑的那些不再带，只列前情。
-                b.items.filter { p == null || it.group == "前情" }.groupBy { it.group }.forEach { (group, list) ->
+                // 联网的服务商：设定包整份给了，按块挑的那些不再带，只列前情。故事账本放在前情之后，和发给 AI 的顺序一样。
+                @Composable
+                fun groups(list: List<BriefItem>) = list.filter { p == null || it.group == "前情" }.groupBy { it.group }.forEach { (group, items) ->
                     GroupedSection(header = group) {
-                        list.forEach { item -> row { NavRow(item.title, subtitle = item.reason + " · ${item.text.length} 字", subtitleMaxLines = 1) { open = item } } }
+                        items.forEach { item -> row { NavRow(item.title, subtitle = item.reason + " · ${item.text.length} 字", subtitleMaxLines = 1) { open = item } } }
                     }
                 }
+                groups(b.items.take(b.ledgerAt))
+                b.ledger?.let { s ->
+                    val rows = ledgerRows(s)
+                    GroupedSection(
+                        header = "故事账本 · 到第 ${s.chapter} 章为止",
+                        footer = "账本里到这一章为止的进展，放在前情后面带给 AI（约 ${b.ledgerText?.length ?: 0} 字，放不下的按离这一章远近省略）；" +
+                            "和察觉表、伏笔表重复的条目以账本为准，只有作者知道的另列，不进正文。",
+                    ) {
+                        rows.take(LEDGER_ROWS).forEach { r -> row { TwoLine(r.title, r.subtitle, trailing = r.tag?.let { t -> { Tag(t, c.warning) } }) } }
+                        if (rows.size > LEDGER_ROWS) row { EmptyRow("还有 ${rows.size - LEDGER_ROWS} 条没列出") }
+                    }
+                }
+                groups(b.items.drop(b.ledgerAt))
                 if (b.due.isNotEmpty() || b.open.isNotEmpty()) {
                     GroupedSection(header = "伏笔") {
                         b.due.forEach { f -> row { TwoLine(f.what, "计划这一章回收" + ChapterBrief.foreshadowWhen(f), trailing = { Tag("该回收", c.warning) }) } }
@@ -183,6 +199,28 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             }
         }
     }
+}
+
+/** 本章资料页里账本那一组最多列几行。 */
+private const val LEDGER_ROWS = 40
+
+/** 账本那一组的一行：内容、类别和时间、右边的小标签（该收、过期）。 */
+internal data class LedgerRow(val title: String, val subtitle: String, val tag: String? = null)
+
+/** 账本快照拆成一行行：时间、人物状态、该收的伏笔、发生的事、知情、开着的伏笔、还不知道的事。 */
+internal fun ledgerRows(s: LedgerSnapshot): List<LedgerRow> {
+    fun at(e: LedgerEntry) = e.whenLabel.let { if (it.isEmpty()) "" else " · $it" }
+    fun who(e: LedgerEntry) = if (e.subject.isBlank()) "" else e.subject + (if (e.aspect.isNotBlank()) "·" + e.aspect else "") + "："
+    val out = mutableListOf<LedgerRow>()
+    s.time.forEach { out += LedgerRow(it.text, "时间" + at(it)) }
+    s.states.forEach { out += LedgerRow(who(it) + it.text, "人物状态" + at(it)) }
+    s.due.forEach { out += LedgerRow(it.text, "该收的伏笔" + at(it), "该收") }
+    s.overdue.forEach { out += LedgerRow(it.text, "该收的伏笔" + at(it), "过了计划") }
+    s.events.forEach { out += LedgerRow(it.text, "发生的事" + at(it)) }
+    s.known.forEach { out += LedgerRow(who(it) + it.text, "知情" + at(it) + (if (it.via.isNotBlank()) " · 消息来自" + it.via else "")) }
+    (s.open - s.due.toSet() - s.overdue.toSet()).forEach { out += LedgerRow(it.text, "开着的伏笔" + at(it)) }
+    s.notYet.forEach { out += LedgerRow(who(it) + it.text, "还不知道" + at(it)) }
+    return out
 }
 
 /** 审稿问题对话框里的动作。 */
