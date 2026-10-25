@@ -368,7 +368,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         vm.writingAi.loadAssist(workId)
         vm.writing.loadPack(workId)
         vm.writing.loadChanges(workId)
+        vm.writing.loadLedger(workId)
     }
+    val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
     val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
     var editingInfo by remember { mutableStateOf(false) }
@@ -542,6 +544,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             NavRow("设定包", value = pack?.let { if (it.isEmpty()) "空" else "${it.size} 份" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
                                 vm.open(Screen.WorkPack(workId))
                             }
+                        }
+                        row {
+                            NavRow(
+                                "故事账本",
+                                value = ledgers[workId]?.let { if (it.isEmpty()) "空" else "${it.size} 条" },
+                                icon = LingYueIcons.ListView,
+                                iconBackground = Color(0xFF5856D6),
+                            ) { vm.open(Screen.WorkLedger(workId)) }
                         }
                         row {
                             NavRow("写作 AI", value = if (assist?.realtime == true) "写作建议已开" else null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) {
@@ -1089,6 +1099,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
                                         add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
+                                        add("故事账本" to { vm.open(Screen.WorkLedger(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
                                         add("自动排版" to {
                                             when {

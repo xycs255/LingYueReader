@@ -9,6 +9,13 @@ import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.FormatKind
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerOp
+import com.xycs.lingyuereader.data.LedgerVersion
+import com.xycs.lingyuereader.data.exportLedgerToPack
+import com.xycs.lingyuereader.data.importLedger
+import com.xycs.lingyuereader.data.ledgerImportPreview
+import com.xycs.lingyuereader.data.volumeNumber
 import com.xycs.lingyuereader.data.FormatResult
 import com.xycs.lingyuereader.data.FormatSettings
 import com.xycs.lingyuereader.data.TextFormat
@@ -510,6 +517,75 @@ class WritingModel(
         PackImport.writeZip(store.pack(workId).map { it to store.packText(workId, it.id) }, out)
     }
 
+    // ---------- 故事账本 ----------
+
+    private val _ledgers = MutableStateFlow<Map<String, List<LedgerEntry>>>(emptyMap())
+    /** 各作品的故事账本（打开过的才有）。 */
+    val ledgers: StateFlow<Map<String, List<LedgerEntry>>> = _ledgers.asStateFlow()
+
+    fun loadLedger(workId: String) {
+        scope.launch {
+            try {
+                val list = withContext(disk) { store.ledger(workId) }
+                _ledgers.update { it + (workId to list) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("读取故事账本失败：${e.message ?: "读取出错"}")
+            }
+        }
+    }
+
+    /** 在写盘队列里改账本，改完重读刷新页面；[then] 拿到 [block] 的结果。 */
+    private fun <T> changeLedger(workId: String, failure: String, block: () -> T, then: (T) -> Unit = {}) {
+        scope.launch {
+            try {
+                val (result, list) = withContext(disk) { block() to store.ledger(workId) }
+                _ledgers.update { it + (workId to list) }
+                then(result)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("$failure：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    /** 手动改账本（加、改、删一条）；[then] 拿到实际新加了几条（重复的不加）。 */
+    fun editLedger(workId: String, ops: List<LedgerOp>, label: String, then: (Int) -> Unit = {}) =
+        changeLedger(workId, "保存失败", { store.applyLedger(workId, ops, label) }, then)
+
+    /** 设定包的察觉表、伏笔表里有、账本里还没有的条目（导入前给作者勾选）。 */
+    suspend fun ledgerImportPreview(workId: String): List<LedgerEntry> = withContext(disk) { store.ledgerImportPreview(workId) }
+
+    fun importLedger(workId: String, entries: List<LedgerEntry>, then: (Int) -> Unit) =
+        changeLedger(workId, "导入失败", { store.importLedger(workId, entries) }, then)
+
+    /** 把账本导出成设定包里的一份资料；设定包也跟着刷新。 */
+    fun exportLedger(workId: String, then: (PackDoc) -> Unit) {
+        var docs: List<PackDoc> = emptyList()
+        changeLedger(workId, "导出失败", {
+            store.exportLedgerToPack(workId).also { docs = store.pack(workId) }
+        }) { doc ->
+            _packs.update { it + (workId to docs) }
+            then(doc)
+        }
+    }
+
+    suspend fun ledgerVersions(workId: String): List<LedgerVersion> = withContext(disk) { store.ledgerVersions(workId) }
+
+    suspend fun ledgerVersion(workId: String, at: Long): List<LedgerEntry>? = withContext(disk) { store.ledgerVersion(workId, at) }
+
+    /** 换回某个历史版本（现在的样子也存进历史）。 */
+    fun restoreLedger(workId: String, at: Long, then: () -> Unit) =
+        changeLedger(workId, "换回失败", { check(store.restoreLedger(workId, at)) { "那个版本读不出来了" } }) { then() }
+
+    /** 账本页“看到第几章”能选的章：按目录顺序，带按设定算的章号（见 [chapterNo]）和第几卷。 */
+    suspend fun ledgerChapters(workId: String): List<LedgerChapter> = withContext(disk) {
+        val work = store.get(workId) ?: return@withContext emptyList()
+        work.chapters.mapNotNull { c -> store.chapterNo(work, c.id)?.let { LedgerChapter(c.id, c.title, it, work.volumeNumber(c.id)) } }
+    }
+
     // ---------- 本章资料、伏笔、审稿跳转 ----------
 
     /** 写这一章时带给 AI 的资料（[text] 为空时用存盘的正文）。 */
@@ -664,3 +740,6 @@ data class FormatRun(
 
 /** 回到编辑器要选中的一句：哪一章、原文、要不要按一条意见让 AI 改。 */
 data class Jump(val chapterId: String, val quote: String, val instruction: String? = null)
+
+/** 账本页能翻到的一章：[no] 是按设定算的章号，[volume] 是第几卷。 */
+data class LedgerChapter(val id: String, val title: String, val no: Int, val volume: Int)

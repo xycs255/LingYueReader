@@ -3,6 +3,9 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -171,6 +174,11 @@ class WritingUiTest {
 
         // 加一章：接在这一卷最后（章节一格一格懒加载，新的那格淡入）。
         compose.runOnUiThread { vm.writing.addChapter(w.id, w.volumes[0].id) }
+        compose.waitUntil(10_000) { store.get(w.id)!!.chapters.size == 3 }
+        // 作品页上面的入口多，新的一格可能在屏幕下面：滚过去再看。
+        compose.waitUntil(10_000) {
+            runCatching { compose.onNode(hasScrollAction() and hasAnyDescendant(hasText("第一章 雪夜"))).performScrollToNode(hasText("第3章") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)) }.isSuccess
+        }
         compose.waitUntil(10_000) { shown("第3章") }
         assertTrue(top("第一章 雪夜") < top("第二章 天亮") && top("第二章 天亮") < top("第3章"))
 
