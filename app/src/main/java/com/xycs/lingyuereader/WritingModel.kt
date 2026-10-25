@@ -8,6 +8,10 @@ import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.Foreshadow
+import com.xycs.lingyuereader.data.FormatKind
+import com.xycs.lingyuereader.data.FormatResult
+import com.xycs.lingyuereader.data.FormatSettings
+import com.xycs.lingyuereader.data.TextFormat
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PlannedCard
@@ -156,7 +160,12 @@ class WritingModel(
         scope.launch {
             try {
                 val work = withContext(disk) {
-                    val saved = requireNotNull(store.saveText(workId, chapterId, text)) { "章节不在了" }
+                    // 撤销、重做一次排版（正文在排版前后两版之间来回）：不算码字数。
+                    val count = formatSteps[chapterId]?.let { steps ->
+                        val old = store.text(workId, chapterId)
+                        steps.none { (a, b) -> (old == a && text == b) || (old == b && text == a) }
+                    } ?: true
+                    val saved = requireNotNull(store.saveText(workId, chapterId, text, count = count)) { "章节不在了" }
                     val now = System.currentTimeMillis()
                     if (text.isNotBlank() && (closing || now - (lastSnapshot[chapterId] ?: 0) >= SNAPSHOT_EVERY)) {
                         store.snapshot(workId, chapterId, text)
@@ -173,6 +182,105 @@ class WritingModel(
                 message("保存失败：${e.message ?: "写入出错"}")
             }
         }
+    }
+
+    // ---------- 自动排版 ----------
+
+    /** 每章最近几次排版的前后两版（只在写盘队列里读写）：撤销、重做排版时认出来，不算码字数。 */
+    private val formatSteps = HashMap<String, ArrayDeque<Pair<String, String>>>()
+
+    /**
+     * 一键排版写进正文：先把排版前的正文照常存（这之前打的字照常算码字数），存一个历史版本，
+     * 再存排好的——排版改的标点、空格不算码字数。[then] 在写好以后调用。
+     */
+    fun applyFormat(workId: String, chapterId: String, before: String, after: String, then: () -> Unit = {}) {
+        scope.launch {
+            try {
+                val (work, stats) = withContext(disk) {
+                    requireNotNull(store.saveText(workId, chapterId, before)) { "章节不在了" }
+                    if (before.isNotBlank()) store.snapshot(workId, chapterId, before)
+                    val saved = requireNotNull(store.saveText(workId, chapterId, after, count = false)) { "章节不在了" }
+                    formatSteps.getOrPut(chapterId) { ArrayDeque() }.apply {
+                        addLast(before to after)
+                        while (size > KEEP_FORMAT_STEPS) removeFirst()
+                    }
+                    saved to store.stats()
+                }
+                publish(work)
+                _stats.value = stats
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("排版没存上：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    /** 全书排版前先看看：各章排出来的样子（存盘的正文），定稿的章单列（不排）。 */
+    suspend fun previewFormat(workId: String, settings: FormatSettings, kinds: Set<FormatKind> = settings.kinds): BookFormat {
+        val (chapters, texts) = withContext(disk) {
+            val work = store.get(workId) ?: return@withContext emptyList<WorkChapter>() to emptyMap()
+            work.chapters to work.chapters.filter { !it.locked }.associate { it.id to store.text(workId, it.id) }
+        }
+        return withContext(Dispatchers.Default) {
+            BookFormat(
+                chapters.filter { !it.locked }.map { c -> ChapterFormat(c, TextFormat.format(texts[c.id].orEmpty(), settings, kinds)) },
+                chapters.filter { it.locked },
+            )
+        }
+    }
+
+    private val _formatRun = MutableStateFlow<FormatRun?>(null)
+    /** 全书排版的进度（没在排、也没排完等着看结果时为空）。 */
+    val formatRun: StateFlow<FormatRun?> = _formatRun.asStateFlow()
+    private var formatJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 全书排版：按目录顺序一章章排（读存盘的正文，排之前存一个历史版本，排版改的不算码字数），跳过定稿的章；中途可以停（[stopFormat]）。
+     */
+    fun formatAll(workId: String, settings: FormatSettings, kinds: Set<FormatKind> = settings.kinds) {
+        if (formatJob?.isActive == true) return
+        val work = work(workId) ?: return
+        val todo = work.chapters.filter { !it.locked }
+        _formatRun.value = FormatRun(workId, total = todo.size, skipped = work.chapters.filter { it.locked }.map { it.title })
+        formatJob = scope.launch {
+            try {
+                todo.forEachIndexed { i, c ->
+                    _formatRun.update { it?.copy(done = i, current = c.title) }
+                    val result = withContext(disk) {
+                        val now = store.get(workId)?.chapter(c.id)
+                        // 排到这一章时刚好被定稿了：也跳过。
+                        if (now == null || now.locked) return@withContext null
+                        val old = store.text(workId, c.id)
+                        val r = TextFormat.format(old, settings, kinds)
+                        if (!r.changed) return@withContext r to null
+                        if (old.isNotBlank()) store.snapshot(workId, c.id, old)
+                        r to store.saveText(workId, c.id, r.text, count = false)
+                    }
+                    result?.second?.let(::publish)
+                    if (result != null && result.first.changed) {
+                        _formatRun.update { it?.copy(changed = it.changed + 1, edits = it.edits + result.first.changes.size) }
+                    }
+                }
+                _formatRun.update { it?.copy(done = todo.size, current = null) }
+            } catch (e: CancellationException) {
+                _formatRun.update { it?.copy(current = null, stopped = true) }
+                throw e
+            } catch (e: Exception) {
+                _formatRun.update { it?.copy(current = null, stopped = true) }
+                message("全书排版没排完：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    fun stopFormat() {
+        formatJob?.cancel()
+    }
+
+    /** 看过结果了：收起进度。 */
+    fun clearFormatRun() {
+        if (formatJob?.isActive != true) _formatRun.value = null
     }
 
     /** 等前面排着的保存都写完（预览、导出前用）。 */
@@ -526,7 +634,32 @@ class WritingModel(
 
     companion object {
         const val SNAPSHOT_EVERY = 10 * 60_000L
+        /** 每章记着最近几次排版的前后两版。 */
+        const val KEEP_FORMAT_STEPS = 5
     }
+}
+
+/** 全书排版前的预览：要排的各章、定稿不排的章。 */
+data class BookFormat(val chapters: List<ChapterFormat>, val locked: List<WorkChapter>)
+
+/** 一章排出来的样子。 */
+data class ChapterFormat(val chapter: WorkChapter, val result: FormatResult)
+
+/**
+ * 全书排版的进度：排到第 [done] 章（共 [total] 章），正在排 [current]；改了 [changed] 章、[edits] 处；
+ * [skipped] 是定稿没排的章；[stopped] 为真表示中途停了。[current] 为空且没停时表示排完了。
+ */
+data class FormatRun(
+    val workId: String,
+    val done: Int = 0,
+    val total: Int = 0,
+    val current: String? = null,
+    val changed: Int = 0,
+    val edits: Int = 0,
+    val skipped: List<String> = emptyList(),
+    val stopped: Boolean = false,
+) {
+    val running: Boolean get() = current != null || (done < total && !stopped)
 }
 
 /** 回到编辑器要选中的一句：哪一章、原文、要不要按一条意见让 AI 改。 */

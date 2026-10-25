@@ -383,6 +383,30 @@ class WritingAi(
         }
     }
 
+    /**
+     * 正文排过版：写作建议是按段落原文认的，段落文字变了就对不上。查过的段换成排好的样子也算查过（不为排版多花一次请求）；
+     * 找出的问题在排好的段里还找得到的留着（错的字也排过的按排好的认），找不到的去掉，那段重查。[reformat] 把一段排成排好的样子。
+     */
+    fun afterFormat(workId: String, chapterId: String, reformat: (String) -> String) {
+        val seen = checked.getOrPut(workId to chapterId) { HashSet() }
+        seen += seen.map(reformat)
+        dismissed += dismissed.map { (p, w) -> reformat(p) to w }
+        _realtime.update { r ->
+            if (r.chapterId != chapterId) return@update r
+            r.copy(issues = r.issues.mapNotNull { i ->
+                val p = reformat(i.paragraph)
+                when {
+                    i.wrong in p -> i.copy(paragraph = p)
+                    reformat(i.wrong).let { it.isNotEmpty() && it in p } -> i.copy(paragraph = p, wrong = reformat(i.wrong), right = reformat(i.right))
+                    else -> {
+                        seen -= p
+                        null
+                    }
+                }
+            })
+        }
+    }
+
     /** 这一类建议以后不提（作品的 AI 设置里能再打开）。 */
     fun muteKind(workId: String, kind: String) {
         updateAssist(workId) { a -> a.copy(suggestKinds = a.suggestKinds - kind) }

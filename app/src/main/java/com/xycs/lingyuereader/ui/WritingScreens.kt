@@ -87,6 +87,10 @@ import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.FormatKind
+import com.xycs.lingyuereader.data.FormatResult
+import com.xycs.lingyuereader.data.FormatSettings
+import com.xycs.lingyuereader.data.TextFormat
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.RuleReport
 import com.xycs.lingyuereader.data.RuleSet
@@ -434,6 +438,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 "新建一卷" to { addingVolume = true },
                                 "作品信息" to { editingInfo = true },
                                 "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
+                                "全书排版" to { vm.open(Screen.WorkFormat(workId)) },
+                                "排版设置" to { vm.open(Screen.WorkFormatSettings(workId)) },
                                 "整理没整理的章节" to {
                                     val blocked = vm.writingAi.syncBlocked
                                     when {
@@ -891,6 +897,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     // 定稿的章不给写作建议（反正不能改）。
     val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    // 自动排版：先在键盘上方给预览（按类勾掉的不排），排好作为一步编辑写进正文。
+    val formatSettings = assists[workId]?.format ?: FormatSettings()
+    var formatOpen by remember(workId, chapterId) { mutableStateOf(false) }
+    var formatSkip by remember(workId, chapterId) { mutableStateOf(emptySet<FormatKind>()) }
+    // 定稿了、AI 开始写了：收起排版预览（这时不能排）。
+    LaunchedEffect(locked, inline != null) { if (locked || inline != null) formatOpen = false }
 
     LaunchedEffect(workId, chapterId) {
         val text = vm.writing.open(workId, chapterId)
@@ -1078,6 +1090,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
+                                        add("自动排版" to {
+                                            when {
+                                                locked -> vm.showMessage("这一章已定稿：要排版先解锁")
+                                                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
+                                                else -> formatOpen = true
+                                            }
+                                        })
                                         // 先把现在的正文存成一版，历史列表里就有“刚才”这一版。
                                         add("历史版本" to {
                                             current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
@@ -1151,6 +1170,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 val markFades = remember(current) { MarkFades(effects) }
                 SideEffect { markFades.update(marks) }
+                // 排版预览：正文一改就重算（在后台算，长章也不卡）。
+                val formatResult by androidx.compose.runtime.produceState<FormatResult?>(null, formatOpen, textNow, formatSettings) {
+                    if (formatOpen) value = withContext(Dispatchers.Default) { TextFormat.format(textNow, formatSettings) }
+                }
+                // 输入时自动排版：定稿、只读时不换。
+                val formatNow by rememberUpdatedState(formatSettings.takeIf { !readOnly })
+                val typing = remember(current) { current?.let { st -> TypingFormatInput(st, effects) { formatNow } } }
                 // AI 写的字：新来的一截淡入；采纳后那一段从浅色过渡到正文色。
                 val inlineFade = remember(current) { InlineFade(effects) }
                 val inlineLength = inline?.text?.length ?: 0
@@ -1207,6 +1233,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             state = current,
                             // 定稿的正文锁定：只能看、能选中复制，不能改。AI 在写（或写完等采纳）时也先不能改。
                             readOnly = readOnly,
+                            inputTransformation = typing,
                             outputTransformation = output,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1244,6 +1271,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
                     inline != null -> EditorPanel.Inline(inline)
+                    formatOpen -> EditorPanel.Format
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
                     shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
@@ -1290,6 +1318,43 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             },
                             onRetry = { vm.writingAi.retryInline() },
                             onDiscard = { vm.writingAi.discardInline() },
+                        )
+                        EditorPanel.Format -> FormatPanel(
+                            formatResult,
+                            skip = formatSkip,
+                            onToggle = { k -> formatSkip = if (k in formatSkip) formatSkip - k else formatSkip + k },
+                            onApply = apply@{
+                                when {
+                                    locked -> vm.showMessage("这一章已定稿：要排版先解锁")
+                                    inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
+                                    else -> {
+                                        val before = st.text.toString()
+                                        val kinds = formatSettings.kinds - formatSkip
+                                        val r = TextFormat.format(before, formatSettings, kinds)
+                                        formatOpen = false
+                                        if (!r.changed) return@apply
+                                        // 一次编辑换掉改了的那一截（撤销一下整步回去），光标跟着挪到排好的位置。
+                                        val sel = st.selection
+                                        var head = 0
+                                        val after = r.text
+                                        while (head < before.length && head < after.length && before[head] == after[head]) head++
+                                        var tail = 0
+                                        while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] == after[after.length - 1 - tail]) tail++
+                                        // 写作建议、规则的标记按位置画：先收掉旧的，等按新正文重算，不错位。
+                                        markFades.reset()
+                                        report = null
+                                        st.edit {
+                                            replace(head, before.length - tail, after.substring(head, after.length - tail))
+                                            selection = TextRange(r.map(sel.start), r.map(sel.end))
+                                        }
+                                        vm.writing.applyFormat(workId, chapterId, before, after)
+                                        vm.writingAi.afterFormat(workId, chapterId) { p -> TextFormat.formatParagraph(p, formatSettings, kinds) }
+                                        vm.showMessage("排好了 ${r.changes.size} 处；撤销一下能回到排版前")
+                                    }
+                                }
+                            },
+                            onSettings = { vm.open(Screen.WorkFormatSettings(workId)) },
+                            onClose = { formatOpen = false },
                         )
                         is EditorPanel.Ai -> WriteAiPanel(
                             p.state,
@@ -1487,6 +1552,7 @@ private sealed interface EditorPanel {
     data class Suggestion(val issue: WriteIssue) : EditorPanel
     data class Rule(val hit: RuleHit) : EditorPanel
     data object Issues : EditorPanel
+    data object Format : EditorPanel
     data object Rules : EditorPanel
     data object Realtime : EditorPanel
     data object None : EditorPanel
@@ -1583,6 +1649,14 @@ private class MarkFades(private val scope: CoroutineScope) {
             a.animateTo(to, Motion.standard(Motion.SHORT))
             then()
         }
+    }
+
+    /** 正文整个换了样子（排版）：旧标记的位置都不算数了，直接收掉，不在原处淡出；新的按新正文淡入。 */
+    fun reset() {
+        alpha.clear()
+        leaving.clear()
+        marks = emptyList()
+        shown = emptyMap()
     }
 
     /** 每处标记和它现在的透明度：还在的用现在的位置，去掉的用最后的位置。 */

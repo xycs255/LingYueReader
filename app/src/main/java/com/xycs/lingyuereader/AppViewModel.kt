@@ -189,6 +189,12 @@ sealed interface Screen {
 
     /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
     data class ChapterSync(val workId: String) : Screen
+
+    /** 一部作品的排版设置：各条规则、引号风格、输入时自动排版。 */
+    data class WorkFormatSettings(val workId: String) : Screen
+
+    /** 全书排版：先看各章要改几处，再按章排（跳过定稿的章）。 */
+    data class WorkFormat(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
