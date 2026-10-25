@@ -28,8 +28,38 @@ enum class IdeaKind(val label: String) {
     ASK("随便问"),
 }
 
-/** 实时检查找出的一处问题：在哪段（段落原文）、哪几个字、改成什么、为什么。 */
-data class WriteIssue(val paragraph: String, val wrong: String, val right: String, val reason: String)
+/** 写作建议找出的一处问题：在哪段（段落原文）、哪几个字、改成什么、为什么。 */
+data class WriteIssue(
+    val paragraph: String,
+    val wrong: String,
+    val right: String,
+    val reason: String,
+    /** 哪类建议（[SuggestKind] 的名字）。 */
+    val kind: String = SuggestKind.TYPO.name,
+    /** 依据：出自设定包哪份文档、哪一节（AI 写的，可能为空）。 */
+    val source: String = "",
+)
+
+/** 写作建议的几类：作者可以分别开关。 */
+enum class SuggestKind(val label: String, val ask: String) {
+    TYPO("错字", "错别字、用错的词、漏字多字、标点误用、明显的病句"),
+    CANON("设定", "和设定包冲突的：人数、生死、日期、地点、官职、称呼、物件；人物知道了按察觉表这时还不该知道的事；提前写出后面才发生的事"),
+    STYLE("规范", "违反作者写作约定、写作规范的：禁用词、对白写法、旁白腔、篇幅节奏这类明写了的规矩（只按作者写明的规矩，不按你自己的口味）"),
+    VOICE("口吻", "人物说话不像他：和设定包里这个人的身份、称谓、说话方式不符"),
+    ;
+
+    companion object {
+        fun of(name: String): SuggestKind = entries.firstOrNull { it.name == name } ?: TYPO
+    }
+}
+
+/** 在编辑器里让 AI 接着写：写多少。 */
+enum class InlineMode(val label: String) {
+    SCENE("写下一场"),
+    TO_END("写到本章结尾"),
+    WORDS("写 500 字左右"),
+    CUSTOM("按要求写…"),
+}
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
 data class BibleProposal(val name: String, val text: String, val existing: Boolean)
@@ -142,7 +172,45 @@ object WritePrompts {
         append("逐条列出发现的问题，每条写明本章原文的哪句话、和什么矛盾。只列有把握的；没有发现就只回答“没有发现明显的前后矛盾”。")
     }
 
-    /** 实时检查：几段刚写的文字，让模型挑出明显的错字、用词和标点错误，回 JSON。 */
+    /** 没有设定包时的写作建议：几段刚写的文字，让模型挑出明显的错字、用词和标点错误，回 JSON。 */
+    /**
+     * 写作建议：作者刚写的几段，按开着的几类挑问题。设定、规范、口吻都要有依据（设定包里写明的），
+     * 拿不准的不提；只挑问题，不改文风。
+     */
+    fun suggest(paragraphs: List<String>, kinds: Set<SuggestKind>): String = buildString {
+        append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")
+        paragraphs.forEachIndexed { i, p -> append(i + 1).append(". ").append(p).append('\n') }
+        append("\n只找下面这几类问题，别的不要管（不要改文风、不要提“可以写得更好”的建议、不要改人物故意的说法）：\n")
+        kinds.forEach { append("- ").append(it.label).append("：").append(it.ask).append('\n') }
+        append("设定、规范、口吻这几类必须在设定包里有明确依据，拿不准就不提；需要核对时可以用工具查设定包和前面的章。\n")
+        append("wrong 必须是原文里一字不差的一小段（尽量短，三五个字到一句话），right 是改好的这一小段，reason 用一句话说原因，")
+        append("kind 是 ").append(kinds.joinToString("、") { it.name + "（" + it.label + "）" }).append(" 之一，source 写依据出自哪份文档哪一节（错字不用写）。\n")
+        append("每段最多 3 处；没有问题的段不要列。只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\",\"kind\":\"\",\"source\":\"\"}]}，全都没问题就输出 {\"issues\":[]}。")
+    }
+
+    /**
+     * 在编辑器里接着光标往下写：[before] 是光标前的正文（前面不够时接上一章结尾），[after] 是光标后面已经写了的。
+     * [length] 是全章篇幅要求，[instruction] 是作者这次的要求。
+     */
+    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String): String = buildString {
+        if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
+        append("这一章「").append(title).append("」写到光标处的正文：\n").append(before).append("\n【光标在这里】\n")
+        if (after.isNotBlank()) append("光标后面已经写了（只作语境，不要重复它，写的内容要能接上它）：\n").append(after).append('\n')
+        append("\n请从光标处接着往下写正文。")
+        append(
+            when (mode) {
+                InlineMode.SCENE -> "写完眼下这一场就停，停在场面自然收住的地方。"
+                InlineMode.TO_END -> "按细纲卡把这一章剩下的事写完，停在章末钩子上；全章篇幅$length。"
+                InlineMode.WORDS -> "写 500 字左右，停在一句话说完的地方。"
+                InlineMode.CUSTOM -> ""
+            },
+        )
+        if (instruction.isNotBlank()) append("\n作者的要求：").append(instruction.trim())
+        append("\n- 接着上文最后一个字写：上文最后一段没写完就接着写这一段，要另起一段就换行。不要重复上文。")
+        append("\n- 细纲卡里的事实、人物知道什么不知道什么，以设定资料为准；拿不准就先用工具查。")
+        append("\n- 只输出接下去的正文：一行一段，段首不空格；不要章名、小标题、解释。")
+    }
+
     fun proofread(paragraphs: List<String>): String = buildString {
         append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")
         paragraphs.forEachIndexed { i, p -> append(i + 1).append(". ").append(p).append('\n') }
@@ -324,7 +392,7 @@ object WritePrompts {
         return runCatching { JSONObject(answer.substring(start, end + 1)) }.getOrElse { throw AiException("模型没有按格式回答") }
     }
 
-    /** 实时检查的回答：只留原文里真找得到、确实有改动的。 */
+    /** 写作建议的回答：只留原文里真找得到、确实有改动的。 */
     fun parseIssues(answer: String, paragraphs: List<String>): List<WriteIssue> {
         val a = json(answer).optJSONArray("issues") ?: JSONArray()
         return (0 until a.length()).mapNotNull { i ->
@@ -333,7 +401,7 @@ object WritePrompts {
             val wrong = o.optString("wrong").trim()
             val right = o.optString("right").trim()
             if (wrong.isEmpty() || wrong == right || wrong !in p) return@mapNotNull null
-            WriteIssue(p, wrong, right, o.optString("reason").trim())
+            WriteIssue(p, wrong, right, o.optString("reason").trim(), SuggestKind.of(o.optString("kind").trim().uppercase()).name, o.optString("source").trim())
         }.distinctBy { it.paragraph to it.wrong }
     }
 

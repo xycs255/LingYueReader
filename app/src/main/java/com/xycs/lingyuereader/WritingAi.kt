@@ -11,6 +11,8 @@ import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterReview
 import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.ai.AiProtocol
+import com.xycs.lingyuereader.ai.SuggestKind
+import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.PackKnowledge
 import com.xycs.lingyuereader.data.PackTools
@@ -33,6 +35,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,17 +78,39 @@ data class WriteAiState(
     val error: String? = null,
 )
 
-/** 实时检查的状态：哪一章、找出的问题、正在查没有、上次出的错。 */
+/**
+ * 在编辑器里直接写：AI 写的字先显示在 [at]（开始时的光标处），浅色，不进正文；作者采纳才插进去。
+ * [base] 是开始时的正文：采纳时正文没变就插在 [at]，变了（不该发生，写的时候正文只读）就不插。
+ */
+data class InlineWrite(
+    val workId: String,
+    val chapterId: String,
+    val at: Int,
+    val base: String,
+    val mode: InlineMode,
+    val instruction: String = "",
+    val text: String = "",
+    val loading: Boolean = true,
+    val error: String? = null,
+    /** 写完以后的说明（被截断了、停下了）。 */
+    val note: String? = null,
+)
+
+/** 写作建议的状态：哪一章、找出的问题、正在查没有、上次出的错。 */
 data class RealtimeState(
     val chapterId: String = "",
     val issues: List<WriteIssue> = emptyList(),
     val checking: Boolean = false,
     val error: String? = null,
+    /** 没查是因为什么（离上次太近、今天的次数用完了）。 */
+    val waiting: String? = null,
+    /** 今天发了几次。 */
+    val today: Int = 0,
 )
 
 /**
- * 写作的 AI：选中文字改写、灵感、读者点评、矛盾检查、实时检查、整理设定集。
- * 除了实时检查（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
+ * 写作的 AI：选中文字改写、灵感、读者点评、矛盾检查、写作建议、整理设定集。
+ * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
  */
 class WritingAi(
     private val store: WorkStore,
@@ -237,31 +262,64 @@ class WritingAi(
         updateAssist(workId) { WritePrompts.remember(it, action, before, after, System.currentTimeMillis()) }
     }
 
-    // ---------- 实时检查 ----------
+    // ---------- 写作建议 ----------
 
     /**
      * 查这一章里改过、还没查过的段落（最多 [REALTIME_BATCH] 段，从后往前，刚写的多在后面）。
-     * 只在作品开了实时检查、AI 可用时调用；上一次还没查完就不发新的。
+     * 只在作品开了写作建议、AI 可用时调用；上一次还没查完就不发新的。
      */
+    /** 写作建议今天发了几次（按天记，换天清零）。 */
+    private var suggestDay = java.time.LocalDate.now()
+    private var suggestCount = 0
+    private var lastSuggest = 0L
+    /** 作者标了“不改”的（段落、那几个字）：同一处不再提。 */
+    private val dismissed = HashSet<Pair<String, String>>()
+
     fun checkRealtime(workId: String, chapterId: String, text: String) {
         if (!ready || realtimeJob?.isActive == true) return
         val paragraphs = text.lines().map { it.trim() }.filter { it.length >= MIN_PARAGRAPH }
         // 换了一章：问题清空。还在的问题里，段落已经改掉、错的字不在了的去掉。
         _realtime.update { r ->
-            if (r.chapterId != chapterId) RealtimeState(chapterId)
+            if (r.chapterId != chapterId) RealtimeState(chapterId, today = suggestCount)
             else r.copy(issues = r.issues.filter { i -> i.paragraph in paragraphs && i.wrong in i.paragraph })
         }
         val seen = checked.getOrPut(workId to chapterId) { HashSet() }
         val todo = paragraphs.filter { it !in seen }.takeLast(REALTIME_BATCH)
         if (todo.isEmpty()) return
         realtimeJob = scope.launch {
-            _realtime.update { it.copy(checking = true) }
+            val assist = assistOf(workId)
+            if (!assist.realtime) return@launch
+            val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k } }.toSet()
+            if (kinds.isEmpty()) return@launch
+            // 省钱：两次至少隔几秒，一天最多几次。
+            val today = java.time.LocalDate.now()
+            if (today != suggestDay) {
+                suggestDay = today
+                suggestCount = 0
+            }
+            if (assist.suggestCap > 0 && suggestCount >= assist.suggestCap) {
+                _realtime.update { it.copy(waiting = "今天的 ${assist.suggestCap} 次用完了，明天再查（作品的 AI 设置里能改）") }
+                return@launch
+            }
+            val wait = lastSuggest + assist.suggestGap * 1_000L - System.currentTimeMillis()
+            if (wait > 0) {
+                _realtime.update { it.copy(waiting = null) }
+                delay(wait)
+            }
+            suggestCount++
+            lastSuggest = System.currentTimeMillis()
+            _realtime.update { it.copy(checking = true, waiting = null, today = suggestCount) }
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) }
-                val assist = assistOf(workId)
-                if (!assist.realtime) return@launch
-                val answer = ask("实时检查", WritePrompts.system(work?.title.orEmpty(), assist), WritePrompts.proofread(todo), whole = true)
+                // 能查设定包的模型：带上设定包和本章提示，设定、规范、口吻都能查；本机模型只查错字。
+                val answer = if (canUsePack) {
+                    val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
+                    askWithPack("写作建议", workId, WritePrompts.system(work?.title.orEmpty(), assist, hints), WritePrompts.suggest(todo, kinds), whole = true)
+                } else {
+                    ask("写作建议", WritePrompts.system(work?.title.orEmpty(), assist), WritePrompts.proofread(todo), whole = true)
+                }
                 val found = WritePrompts.parseIssues(answer, todo)
+                    .filter { (it.paragraph to it.wrong) !in dismissed && SuggestKind.of(it.kind) in (if (canUsePack) kinds else setOf(SuggestKind.TYPO)) }
                 seen += todo
                 _realtime.update { r ->
                     if (r.chapterId != chapterId) r else r.copy(issues = (r.issues + found).distinctBy { it.paragraph to it.wrong }, error = null)
@@ -276,15 +334,147 @@ class WritingAi(
         }
     }
 
-    /** 改了或忽略了一处：从列表里拿掉（忽略的那段已经算查过，不会再报）。 */
+    /** 这一类建议以后不提（作品的 AI 设置里能再打开）。 */
+    fun muteKind(workId: String, kind: String) {
+        updateAssist(workId) { a -> a.copy(suggestKinds = a.suggestKinds - kind) }
+        _realtime.update { r -> r.copy(issues = r.issues.filter { it.kind != kind }) }
+    }
+
     fun dismissIssue(issue: WriteIssue) {
         _realtime.update { r -> r.copy(issues = r.issues - issue) }
     }
 
-    /** 离开编辑器、关了实时检查：停下正在查的。 */
+    /** 作者看了说“不改”：去掉，同一处以后也不再提。 */
+    fun ignoreIssue(issue: WriteIssue) {
+        dismissed += issue.paragraph to issue.wrong
+        dismissIssue(issue)
+    }
+
+    /** 离开编辑器、关了写作建议：停下正在查的。 */
     fun stopRealtime() {
         realtimeJob?.cancel()
         _realtime.value = RealtimeState()
+    }
+
+    // ---------- 在编辑器里写 ----------
+
+    private val _inline = MutableStateFlow<InlineWrite?>(null)
+    /** 在编辑器里正在写（或写完等作者采纳）的那一段。 */
+    val inline: StateFlow<InlineWrite?> = _inline.asStateFlow()
+    private var inlineJob: Job? = null
+
+    /**
+     * 从光标 [at] 处接着写：[text] 是编辑框里现在的全文。带设定包、细纲卡、写作规范和检查规则；
+     * 写的字一段段显示在光标处，作者采纳才进正文。
+     */
+    fun writeInline(workId: String, chapterId: String, text: String, at: Int, mode: InlineMode, instruction: String = "") {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        inlineJob?.cancel()
+        val cursor = at.coerceIn(0, text.length)
+        val start = InlineWrite(workId, chapterId, cursor, text, mode, instruction)
+        _inline.value = start
+        inlineJob = scope.launch {
+            try {
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+                val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+                if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val (pack, rules, length, previous) = withContext(Dispatchers.IO) {
+                    val i = work.chapters.indexOfFirst { it.id == chapterId }
+                    listOf(
+                        chapterContext(workId, chapterId, text).orEmpty(),
+                        writingRules(workId, chapterId, text),
+                        lengthOf(workId),
+                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
+                    )
+                }
+                val head = text.substring(0, cursor)
+                // 光标前不够长：前面接上一章的结尾。
+                val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
+                val after = text.substring(cursor).take(800)
+                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
+                val prompt = WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules)
+                var written = ""
+                val answer = askWithPack(
+                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens,
+                    onReset = {
+                        written = ""
+                        _inline.update { d -> d?.takeIf { it === start || it.chapterId == chapterId }?.copy(text = "") ?: d }
+                    },
+                ) { piece ->
+                    written += piece
+                    _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(text = joinAt(head, written)) ?: d }
+                }
+                val note = when {
+                    answer.endsWith("（回答太长，后面被截断了。）") -> "写到长度上限停了，可以采纳后再接着写"
+                    answer.endsWith("（模型中途停止了回答。）") -> "模型中途停了"
+                    else -> null
+                }
+                val clean = WritePrompts.cleanDraft(answer.removeSuffix("\n\n（回答太长，后面被截断了。）").removeSuffix("\n\n（模型中途停止了回答。）"))
+                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(text = joinAt(head, clean), loading = false, note = note) ?: d }
+                log(workId, chapterId, "在编辑器里写", mode.label + instruction.let { if (it.isBlank()) "" else "：$it" }, clean)
+            } catch (e: CancellationException) {
+                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(loading = false, note = if (d.text.isEmpty()) null else "停下了") ?: d }
+                throw e
+            } catch (e: Exception) {
+                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(loading = false, error = e.message ?: "请求失败") ?: d }
+            }
+        }
+    }
+
+    /**
+     * 写的字接在光标处怎么接：光标前一段已经说完（句号、问号、引号收尾）、AI 又没换行，就另起一段；
+     * 光标前是一段没写完的话，就接着写。
+     */
+    private fun joinAt(head: String, written: String): String {
+        val w = written.trimEnd()
+        if (w.isEmpty() || head.isEmpty() || head.endsWith("\n")) return w.trimStart('\n')
+        val done = head.trimEnd().lastOrNull()?.let { it in "。！？…”」』）" } == true
+        return if (done && !w.startsWith("\n")) "\n" + w else w
+    }
+
+    /** 停下：已经写出来的留着，作者可以采纳或撤回。 */
+    fun stopInline() {
+        inlineJob?.cancel()
+    }
+
+    /** 撤回：AI 写的不要了。 */
+    fun discardInline() {
+        inlineJob?.cancel()
+        _inline.value = null
+    }
+
+    /** 重写：同样的位置、同样的要求再写一次。 */
+    fun retryInline() {
+        val d = _inline.value ?: return
+        writeInline(d.workId, d.chapterId, d.base, d.at, d.mode, d.instruction)
+    }
+
+    /**
+     * 采纳：AI 写的插进正文，存一版（采纳前的正文先存进历史），AI 写的字不算码字数。
+     * 返回插好以后的全文和光标位置；正文已经变了、插不进去时返回空。
+     */
+    fun acceptInline(current: String): Pair<String, Int>? {
+        val d = _inline.value ?: return null
+        if (d.loading || d.text.isBlank()) return null
+        if (current != d.base) return null
+        val text = current.substring(0, d.at) + d.text + current.substring(d.at)
+        _inline.value = null
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    if (current.isNotBlank()) store.snapshot(d.workId, d.chapterId, current)
+                    store.saveText(d.workId, d.chapterId, text, count = false)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存失败：${e.message ?: "写入出错"}")
+            }
+        }
+        return text to d.at + d.text.length
     }
 
     // ---------- 设定集 ----------
@@ -798,7 +988,7 @@ class WritingAi(
     }
 
     companion object {
-        /** 实时检查一次最多发几段。 */
+        /** 写作建议一次最多发几段。 */
         const val REALTIME_BATCH = 6
         /** 太短的段（一两个字、一句短对话）不查。 */
         const val MIN_PARAGRAPH = 8

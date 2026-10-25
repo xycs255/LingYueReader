@@ -100,7 +100,7 @@ data class BibleEntry(val id: String, val kind: BibleKind, val name: String, val
 data class StyleExample(val action: String, val before: String, val after: String, val at: Long)
 
 /**
- * 一部作品的 AI 设置和资料：实时检查开没开（默认关，开了才会自动把刚写的段落发给服务商）、
+ * 一部作品的 AI 设置和资料：写作建议开没开（默认关，开了才会自动把刚写的段落发给服务商）、
  * 作者写的文风偏好、设定集、采纳过的修改。
  */
 data class WorkAssist(
@@ -115,6 +115,12 @@ data class WorkAssist(
     val briefLimit: Int = 12_000,
     /** 设定包的知识库最多整份放多少字；0 按模型的上下文算。 */
     val knowledgeLimit: Int = 0,
+    /** 写作建议查哪几类（SuggestKind 的名字）。 */
+    val suggestKinds: List<String> = SUGGEST_KINDS,
+    /** 写作建议两次请求至少隔多少秒。 */
+    val suggestGap: Int = 20,
+    /** 写作建议一天最多发多少次（0 不限）。 */
+    val suggestCap: Int = 200,
 ) {
     companion object {
         /** 采纳的修改最多记这么多条。 */
@@ -122,6 +128,9 @@ data class WorkAssist(
         const val KEEP_REJECTED = 10
         val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
         val KNOWLEDGE_LIMITS = listOf(0, 30_000, 60_000, 100_000, 150_000, 300_000)
+        val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
+        val SUGGEST_GAPS = listOf(10, 20, 40, 60, 120)
+        val SUGGEST_CAPS = listOf(50, 100, 200, 500, 0)
     }
 }
 
@@ -886,6 +895,9 @@ class WorkStore(private val root: File) {
             .put("declined", JSONArray().apply { declined.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
             .put("briefLimit", briefLimit)
             .put("knowledgeLimit", knowledgeLimit)
+            .put("suggestKinds", JSONArray(suggestKinds))
+            .put("suggestGap", suggestGap)
+            .put("suggestCap", suggestCap)
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -911,6 +923,9 @@ class WorkStore(private val root: File) {
                 },
                 briefLimit = optInt("briefLimit", 12_000),
                 knowledgeLimit = optInt("knowledgeLimit", 0),
+                suggestKinds = optJSONArray("suggestKinds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: WorkAssist.SUGGEST_KINDS,
+                suggestGap = optInt("suggestGap", 20),
+                suggestCap = optInt("suggestCap", 200),
             )
         }
 

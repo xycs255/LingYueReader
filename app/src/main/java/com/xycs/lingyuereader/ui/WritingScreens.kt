@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.placeCursorAtEnd
@@ -57,6 +58,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,6 +73,7 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ExportFormat
 import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.IdeaKind
+import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
@@ -449,7 +453,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                         row {
-                            NavRow("写作 AI", value = if (assist?.realtime == true) "实时检查已开" else null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) {
+                            NavRow("写作 AI", value = if (assist?.realtime == true) "写作建议已开" else null, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) {
                                 vm.open(Screen.WorkAi(workId))
                             }
                         }
@@ -713,13 +717,17 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var savedText by remember(workId, chapterId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
-    // AI：键盘上方的条换成 AI 操作；灵感、按要求改等要先问一句；实时检查的问题列表展开没有。
+    // AI：键盘上方的条换成 AI 操作；灵感、按要求改等要先问一句；写作建议的列表展开没有。
     var aiBar by rememberSaveable { mutableStateOf(false) }
     var ideas by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var issuesOpen by remember { mutableStateOf(false) }
     val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
     val aiLookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
+    // AI 在编辑器里写的那一段（这一章的才显示）；写的时候正文只读。
+    val inlineAll by vm.writingAi.inline.collectAsStateWithLifecycle()
+    val inline = inlineAll?.takeIf { it.workId == workId && it.chapterId == chapterId }
+    var inlineDialog by remember { mutableStateOf(false) }
     val realtime by vm.writingAi.realtime.collectAsStateWithLifecycle()
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -734,7 +742,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var report by remember(workId, chapterId) { mutableStateOf<RuleReport?>(null) }
     // 点同一条，依次选中它在正文里的下一处。
     var lastJump by remember { mutableStateOf<Pair<String, Int>?>(null) }
-    // 定稿的章不做实时检查（反正不能改）。
+    // 定稿的章不给写作建议（反正不能改）。
     val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
 
@@ -753,7 +761,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             }
         }
     }
-    // 实时检查（作品里开了才有）：停笔 3 秒，把改过的段落发去挑错。
+    // 写作建议（作品里开了才有）：停笔 3 秒，把改过的段落发给 AI 看。
     if (current != null && realtimeOn) {
         LaunchedEffect(current, realtimeOn) {
             snapshotFlow { current.text.toString() }.debounce(3_000).collect { text ->
@@ -807,9 +815,22 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         else runAi(target)
     }
 
+    /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
+    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false) {
+        val st = current ?: return
+        if (locked) {
+            vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+            return
+        }
+        val text = st.text.toString()
+        val at = if (atEnd) text.length else st.selection.max
+        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction)
+    }
+
     fun onAiItem(item: AiBarItem) {
         val st = current ?: return
         when (item) {
+            AiBarItem.Write -> if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else inlineDialog = true
             is AiBarItem.Edit -> runEdit(item.action)
             AiBarItem.Custom -> {
                 if (editTarget(st.text.toString(), st.selection, WriteAction.CUSTOM) == null) vm.showMessage("先选中文字，或把光标放在要改的那段")
@@ -846,7 +867,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · " +
                                 (if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
                                 (report?.hits?.size?.takeIf { it > 0 }?.let { " · $it 条不合规则" } ?: "") +
-                                if (realtimeOn) " · 实时检查已开" else "",
+                                if (realtimeOn) " · 写作建议已开" else "",
                             color = c.secondary,
                             fontSize = 12.sp,
                         )
@@ -868,7 +889,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         // 常用的在前：这一章的细纲和状态，再是 AI，最后是预览、历史、改名。
                                         add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
-                                        add("AI 写本章" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
+                                        // AI 写本章：在正文末尾接着写到本章结尾，写的字先显示，采纳才进正文。
+                                        add("AI 写本章" to { startInline(InlineMode.TO_END, atEnd = true) })
+                                        add("AI 写一版草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
@@ -925,13 +948,49 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     }
                 }
 
+                // 正文里标出来的：写作建议（按类上色、划线）、不合检查规则的（黄底）。只是显示，不改正文。
+                val textNow = current?.text?.toString().orEmpty()
+                val issueSpans = remember(textNow, realtime.issues, realtimeOn) {
+                    if (!realtimeOn || realtime.chapterId != chapterId) emptyList() else locateIssues(textNow, realtime.issues)
+                }
+                val ruleSpans = remember(textNow, report) {
+                    report?.hits.orEmpty().flatMap { h -> h.ranges.filter { it.last < textNow.length }.map { it to h } }.take(300)
+                }
+                val marks = remember(issueSpans, ruleSpans) {
+                    ruleSpans.map { (r, _) -> Triple(r.first, r.last + 1, SpanStyle(background = Color(0x33FFCC00))) } +
+                        issueSpans.map { (r, i) ->
+                            val col = suggestColor(i.kind)
+                            Triple(r.first, r.last + 1, SpanStyle(textDecoration = TextDecoration.Underline, background = col.copy(alpha = 0.14f)))
+                        }
+                }
+                val pendingStyle = SpanStyle(color = scheme.primary, background = scheme.primary.copy(alpha = 0.08f))
+                val inlineNow by rememberUpdatedState(inline)
+                val marksNow by rememberUpdatedState(marks)
+                val pendingNow by rememberUpdatedState(pendingStyle)
+                val output = remember(current) {
+                    OutputTransformation {
+                        val d = inlineNow
+                        if (d != null && d.text.isNotEmpty() && d.at <= length) {
+                            replace(d.at, d.at, d.text)
+                            addStyle(pendingNow, d.at, d.at + d.text.length)
+                        } else {
+                            marksNow.forEach { (start, end, style) -> if (start in 0 until end && end <= length) addStyle(style, start, end) }
+                        }
+                    }
+                }
+                // 光标落在一条建议、一处不合规则的地方：键盘上方显示它。
+                val caret = current?.selection?.takeIf { it.collapsed }?.start
+                val focusIssue = caret?.let { at -> issueSpans.firstOrNull { (r, _) -> at in r.first..r.last + 1 }?.second }
+                val focusRule = caret?.takeIf { focusIssue == null }?.let { at -> ruleSpans.firstOrNull { (r, _) -> at in r.first..r.last + 1 }?.second }
+
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     if (current != null) {
                         LaunchedEffect(current) { if (current.text.isEmpty()) runCatching { focus.requestFocus() } }
                         BasicTextField(
                             state = current,
-                            // 定稿的正文锁定：只能看、能选中复制，不能改。
-                            readOnly = locked,
+                            // 定稿的正文锁定：只能看、能选中复制，不能改。AI 在写（或写完等采纳）时也先不能改。
+                            readOnly = locked || inline != null,
+                            outputTransformation = output,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .focusRequester(focus)
@@ -961,9 +1020,29 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         TextButton(text = "解锁修改", onClick = { statusDialog = true })
                     }
                 }
-                // AI 的结果面板、实时检查的问题，都在键盘上方，不挡正在写的地方。
+                // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。
                 val panel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
-                if (panel != null && current != null) {
+                if (inline != null && current != null) {
+                    InlineBar(
+                        inline,
+                        lookup = aiLookup,
+                        onStop = { vm.writingAi.stopInline() },
+                        onAccept = {
+                            val done = vm.writingAi.acceptInline(current.text.toString())
+                            if (done == null) {
+                                vm.showMessage("正文已经改动，没法插进去")
+                            } else {
+                                current.edit {
+                                    replace(0, length, done.first)
+                                    selection = TextRange(done.second)
+                                }
+                                savedText = done.first
+                            }
+                        },
+                        onRetry = { vm.writingAi.retryInline() },
+                        onDiscard = { vm.writingAi.discardInline() },
+                    )
+                } else if (panel != null && current != null) {
                     WriteAiPanel(
                         panel,
                         lookup = aiLookup,
@@ -984,6 +1063,18 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         onRetry = { vm.writingAi.retry() },
                         onClose = { vm.writingAi.close() },
                     )
+                } else if (focusIssue != null && current != null && !locked) {
+                    SuggestionBar(
+                        focusIssue,
+                        onFix = {
+                            if (!applyIssue(current, focusIssue)) vm.showMessage("那段已经改动了")
+                            vm.writingAi.dismissIssue(focusIssue)
+                        },
+                        onIgnore = { vm.writingAi.ignoreIssue(focusIssue) },
+                        onMute = { vm.writingAi.muteKind(workId, focusIssue.kind) },
+                    )
+                } else if (focusRule != null && !rulesOpen) {
+                    RuleNote(focusRule.message) { rulesOpen = true }
                 } else if (issuesOpen && realtimeOn && current != null) {
                     IssuesPanel(
                         realtime,
@@ -991,7 +1082,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             if (!applyIssue(current, i)) vm.showMessage("那段已经改动了")
                             vm.writingAi.dismissIssue(i)
                         },
-                        onIgnore = { vm.writingAi.dismissIssue(it) },
+                        onIgnore = { vm.writingAi.ignoreIssue(it) },
                         onClose = { issuesOpen = false },
                     )
                 } else if (rulesOpen && current != null) {
@@ -1008,7 +1099,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         onOpenRules = { vm.open(Screen.WorkRules(workId)) },
                         onClose = { rulesOpen = false },
                     )
-                } else if (realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null) && realtime.chapterId == chapterId) {
+                } else if (realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null || realtime.waiting != null) && realtime.chapterId == chapterId) {
                     Row(
                         Modifier.fillMaxWidth().background(c.background).combinedClickableCompat { if (realtime.issues.isNotEmpty()) issuesOpen = true }
                             .padding(horizontal = 18.dp, vertical = 8.dp),
@@ -1017,9 +1108,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
                         Text(
                             when {
-                                realtime.issues.isNotEmpty() -> "发现 ${realtime.issues.size} 处可能的问题"
-                                realtime.checking -> "正在检查刚写的段落……"
-                                else -> "实时检查出错：${realtime.error}"
+                                realtime.issues.isNotEmpty() -> "${realtime.issues.size} 条写作建议（正文里划线的地方，光标点上去看）"
+                                realtime.checking -> "正在看刚写的段落……"
+                                realtime.waiting != null -> realtime.waiting.orEmpty()
+                                else -> "写作建议出错：${realtime.error}"
                             },
                             color = if (realtime.issues.isNotEmpty()) c.tint else c.secondary,
                             fontSize = 14.sp,
@@ -1091,6 +1183,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
                     vm.writing.setStatus(workId, chapterId, st, reason, canon)
+                }
+            }
+            if (inlineDialog) {
+                InlineModeDialog(onDismiss = { inlineDialog = false }) { mode ->
+                    inlineDialog = false
+                    if (mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> startInline(mode, req) }
+                    else startInline(mode)
                 }
             }
             if (ideas) {

@@ -394,7 +394,7 @@ fun ForeshadowScreen(vm: AppViewModel, workId: String) {
     }
 }
 
-/** 编辑器底部的一条提示（比如“计划这一章回收的伏笔”），和实时检查那一行一样放在键盘上方。 */
+/** 编辑器底部的一条提示（比如“计划这一章回收的伏笔”），和写作建议那一行一样放在键盘上方。 */
 @Composable
 internal fun EditorNote(text: String, onClick: () -> Unit) {
     val c = LocalGroupedColors.current

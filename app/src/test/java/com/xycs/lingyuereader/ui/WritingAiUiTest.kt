@@ -64,7 +64,7 @@ class WritingAiUiTest {
                     val user = msgs.getJSONObject(msgs.length() - 1).getString("content")
                     prompts += user
                     val answer = when {
-                        "只找明显的错误" in user -> """{"issues":[{"p":1,"wrong":"再门口","right":"在门口","reason":"错别字"}]}"""
+                        "只找明显的错误" in user || "只找下面这几类问题" in user -> """{"issues":[{"p":1,"wrong":"再门口","right":"在门口","reason":"错别字"}]}"""
                         "润色这段文字" in user -> "修改后：风刮得很猛。"
                         else -> "1. 让他听见门外的脚步声。"
                     }
@@ -158,13 +158,13 @@ class WritingAiUiTest {
     @Test
     fun realtimeCheckFindsATypoAndFixesIt() {
         openEditor()
-        // 作品开了实时检查：停笔几秒，自动把够长的段落发去挑错（短段不发）。
-        waitForText("发现 1 处可能的问题")
+        // 作品开了写作建议：停笔几秒，自动把够长的段落发去挑错（短段不发）。
+        waitForText("1 条写作建议")
         val prompt = prompts.single()
         assertTrue("1. 他再门口等着，天色以晚。" in prompt)
         assertFalse("风很大。" in prompt)
-        waitForText("实时检查已开")
-        compose.onNodeWithText("发现 1 处可能的问题").performClick()
+        waitForText("写作建议已开")
+        compose.onNodeWithText("1 条写作建议", substring = true).performClick()
         waitForText("错别字")
         compose.onNodeWithText("改").performClick()
         val store = WorkStore(writingDir)

@@ -160,7 +160,7 @@ sealed interface Screen {
     /** 一章的历史版本。 */
     /** 一章（或设定包里一份文档，[docId] 不为空时）的历史版本。 */
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
-    /** 一部作品的 AI 设置：实时检查、文风、学到的改法。 */
+    /** 一部作品的 AI 设置：写作建议、文风、学到的改法。 */
     data class WorkAi(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
@@ -1282,7 +1282,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
 
-    /** 写作的 AI：改稿、灵感、点评、矛盾检查、实时检查、设定集。 */
+    /** 写作的 AI：改稿、灵感、点评、矛盾检查、写作建议、设定集。 */
     val writingAi = WritingAi(workStore, assistant, viewModelScope) { _messages.value = it }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
