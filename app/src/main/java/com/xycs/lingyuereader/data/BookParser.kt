@@ -4,15 +4,22 @@ object BookParser {
     private const val MAX_TEXT_SOURCE = 128L * 1024 * 1024
     private const val MAX_EPUB_SOURCE = 256L * 1024 * 1024
 
-    /** 一份来源文件。给了 [file] 时内容按需读取：漫画、PDF 不必整个读进内存。 */
-    class SourceBytes private constructor(val name: String, val file: java.io.File?, private val data: ByteArray?) {
-        constructor(name: String, bytes: ByteArray) : this(name, null, bytes)
-        constructor(name: String, file: java.io.File) : this(name, file, null)
+    /**
+     * 一份来源文件。给了 [file] 时内容按需读取：漫画、PDF 不必整个读进内存。
+     * [onShelf]：已在书架上的书（旧版导入过超过现在上限的大文件）不受新的导入上限约束，只要读得进内存就照常打开。
+     */
+    class SourceBytes private constructor(val name: String, val file: java.io.File?, private val data: ByteArray?, private val onShelf: Boolean) {
+        constructor(name: String, bytes: ByteArray) : this(name, null, bytes, false)
+        constructor(name: String, file: java.io.File, onShelf: Boolean = false) : this(name, file, null, onShelf)
 
         val bytes: ByteArray by lazy {
-            val limit = if (formatOf(name) == BookFormat.EPUB) MAX_EPUB_SOURCE else MAX_TEXT_SOURCE
             val length = data?.size?.toLong() ?: file!!.length()
-            require(length <= limit) { "${name} 文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）" }
+            if (onShelf) {
+                require(length <= Int.MAX_VALUE - 8L) { "${name} 文件过大，无法读入内存" }
+            } else {
+                val limit = if (formatOf(name) == BookFormat.EPUB) MAX_EPUB_SOURCE else MAX_TEXT_SOURCE
+                require(length <= limit) { "${name} 文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）" }
+            }
             data ?: file!!.readBytes()
         }
     }
@@ -121,7 +128,7 @@ object BookParser {
             BookFormat.CBZ -> PageBooks.comic(source)
             BookFormat.PDF -> PageBooks.pdf(source, pdfAspects(requireNotNull(source.file) { "PDF 需要先存成文件" }))
             BookFormat.MARKDOWN -> BookContent(null, null, MarkdownParser.parse(rules.clean(TextDecoder.decode(source.bytes)), fallback))
-            else -> BookContent(null, null, TxtParser.parse(rules.clean(TextDecoder.decode(source.bytes)), rules.titleMatcher()))
+            else -> rules.clean(TextDecoder.decode(source.bytes)).let { text -> BookContent(null, null, TxtParser.parse(text, rules.titleMatcher(text))) }
         }
     }
 

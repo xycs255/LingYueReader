@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -161,7 +162,7 @@ internal fun LookupSheet(
             }
             val result = lookup.result
             if (result == null) {
-                GroupedSection { row { ValueRow("正在查……", "") } }
+                GroupedSection { row { LoadingRow("正在查……") } }
             } else {
                 // 查单字时先看字典（读音、部首），查词时先看词典。
                 val chars: @Composable () -> Unit = {
@@ -245,7 +246,10 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
         if (person != null) CharacterCard(person)
         when {
             person != null && definitions.isEmpty() -> {}
-            result == null -> Text("正在查……", color = c.secondary, fontSize = 15.sp)
+            result == null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spinner()
+                Text("正在查……", color = c.secondary, fontSize = 15.sp)
+            }
             definitions.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 definitions.forEachIndexed { i, d ->
                     Row {
@@ -270,11 +274,17 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
             Text("原句：${lookup.context.trim()}", color = c.secondary, fontSize = 12.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Pill("汉典") { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) }
-            Pill("百度汉语") { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") }
-            if (ai.enabled && ai.turn == null) AiPill(ai.request)
-            Spacer(Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 胶囊放不下时左右滑，“完整释义”总在最右边。
+            Row(
+                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PillButton("汉典", { openUrl(context, "https://www.zdic.net/hans/" + encode(lookup.word)) })
+                PillButton("百度汉语", { openUrl(context, "https://hanyu.baidu.com/s?wd=" + encode(lookup.word) + "&ptype=zici") })
+                if (ai.enabled && ai.turn == null) AiPill(ai.request)
+            }
             Row(
                 Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onExpand).padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -297,32 +307,21 @@ private fun AiGlossText(turn: com.xycs.lingyuereader.ai.AiTurn, retry: () -> Uni
         if (turn.answer.isNotEmpty()) Text(turn.answer.trim(), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
         when {
             turn.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(turn.error, color = c.destructive, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.weight(1f))
+                ErrorText(turn.error, Modifier.weight(1f))
                 Text("重试", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = retry).padding(horizontal = 10.dp, vertical = 8.dp))
             }
             turn.loading && turn.answer.isEmpty() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 14.dp, color = c.tint)
+                Spinner()
                 Text("正在问 AI……", color = c.secondary, fontSize = 13.sp)
             }
         }
     }
 }
 
-/** 小卡片底部的“AI 释义”胶囊：强调色，带星星图标。 */
+/** 小卡片底部的“AI 释义”胶囊：淡强调色（[PillStyle.Tinted]），比旁边灰底的在线查询显眼一点。 */
 @Composable
 private fun AiPill(onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(50))
-            .background(c.tint.copy(alpha = 0.1f))
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(start = 10.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
-        Text("AI 释义", color = c.tint, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
-    }
+    PillButton("AI 释义", onClick, style = PillStyle.Tinted)
 }
 
 /** 卡片右上角的圆钮：44dp，[active] 时铺一层淡强调色。 */
@@ -341,22 +340,6 @@ private fun RoundIcon(icon: ImageVector, description: String, active: Boolean, o
     ) {
         Icon(icon, contentDescription = null, tint = if (active) c.tint else c.label, modifier = Modifier.size(20.dp))
     }
-}
-
-/** 灰底小胶囊按钮（在线查询）。 */
-@Composable
-private fun Pill(label: String, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Text(
-        label,
-        color = c.label,
-        fontSize = 13.sp,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(c.fill)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    )
 }
 
 /** 词头两边微调选区的小圆钮：看上去 34dp，能按到的 48dp。 */
@@ -437,7 +420,7 @@ private fun ImportedSection(dict: DictInfo, entries: List<MdictEntry>, vm: AppVi
     }
     val loaded = inlined
     if (loaded == null) {
-        GroupedSection(header = dict.title) { row { ValueRow("正在载入释义……", "") } }
+        GroupedSection(header = dict.title) { row { LoadingRow("正在载入释义……") } }
         return
     }
     val (body, notFound) = loaded

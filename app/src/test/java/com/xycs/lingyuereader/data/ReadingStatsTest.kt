@@ -213,4 +213,53 @@ class ReadingStatsTest {
         stats.validateBackup("""{"days":{"2026-10-23":{}}}""")
         assertArrayEquals(original, file.readBytes())
     }
+
+    /** 本机统计坏了：从备份恢复直接采用备份里的数，坏文件先另存；之后照常记录。 */
+    @Test
+    fun mergeReplacesADamagedLocalFileWithTheBackupAndKeepsTheDamagedCopy() {
+        val file = File(tmp.root, "s.json")
+        file.writeText("""{"days":[]}""")
+        val damaged = file.readBytes()
+        val stats = ReadingStats(file)
+        assertTrue(runCatching { stats.days() }.isFailure)
+
+        stats.merge("""{"days":{"2026-10-23":{"ms":120000,"chars":800,"books":{"b1":120000}}}}""")
+
+        assertEquals(DayStats(120_000, 800, mapOf("b1" to 120_000L)), stats.days().getValue(today))
+        assertArrayEquals(damaged, File(tmp.root, "s.json.damaged").readBytes())
+        stats.addChars(100, today)
+        assertEquals(900L, stats.days().getValue(today).chars)
+    }
+
+    /** 早先已另存过一份不同的坏文件：这次的坏内容另存成带时间的副本，不覆盖原来那份。 */
+    @Test
+    fun mergeKeepsEveryDamagedVersion() {
+        val file = File(tmp.root, "s.json")
+        File(tmp.root, "s.json.damaged").writeText("更早的坏文件")
+        file.writeText("""{"days":{"2026-10-23":{"ms":"bad"}}}""")
+        val damaged = file.readBytes()
+
+        ReadingStats(file).merge("""{"days":{"2026-10-23":{"ms":60000}}}""")
+
+        assertEquals("更早的坏文件", File(tmp.root, "s.json.damaged").readText())
+        val dated = tmp.root.listFiles().orEmpty().single { it.name.startsWith("s.json.damaged-") }
+        assertArrayEquals(damaged, dated.readBytes())
+        assertEquals(60_000L, ReadingStats(file).days().getValue(today).millis)
+    }
+
+    /** 读盘本身失败（不是内容坏）时不能当成坏文件覆盖；坏的备份也不碰本机文件。 */
+    @Test
+    fun mergeDoesNotOverwriteWhenTheLocalFileCannotBeReadOrTheBackupIsBad() {
+        val file = File(tmp.root, "s.json")
+        ReadingStats(file).addTime("b1", 60_000L, today)
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            override fun readFully(): ByteArray = throw IOException("injected read failure")
+        }
+
+        assertTrue(runCatching { ReadingStats(file, injected).merge("""{"days":{}}""") }.exceptionOrNull() is IOException)
+        assertArrayEquals(original, file.readBytes())
+        assertTrue(runCatching { ReadingStats(file).merge("""{"days":[]}""") }.isFailure)
+        assertArrayEquals(original, file.readBytes())
+    }
 }

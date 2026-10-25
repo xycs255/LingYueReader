@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.clickable
@@ -120,7 +121,7 @@ fun DictionariesScreen(vm: AppViewModel) {
                             "查词结果按这里的顺序排列，点“编辑”可以调整顺序或删除。在线查询会打开浏览器。"
                         },
                     ) {
-                        if (busy) row { ValueRow("正在导入并建立索引……", "") }
+                        if (busy) row { LoadingRow("正在导入并建立索引……") }
                         settings.dicts.forEachIndexed { i, d ->
                             row {
                                 val detail = buildString {
@@ -148,17 +149,22 @@ fun DictionariesScreen(vm: AppViewModel) {
             // 弹窗要放在 Scaffold 里面才显示得出来。
             removing?.let { d ->
                 GlassDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
-                    DialogButtons(confirm = "删除", onDismiss = { removing = null }) {
-                        vm.removeDict(d.id)
-                        removing = null
-                    }
+                    DialogButtons(
+                        onDismiss = { removing = null },
+                        onConfirm = {
+                            vm.removeDict(d.id)
+                            removing = null
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }
     }
 }
 
-/** 编辑状态下的一行：左边红色删除，右边上移、下移。 */
+/** 编辑状态下的一行：左边红色删除，右边上移、下移；名字和说明的字号、行高同 [NavRow]。 */
 @Composable
 private fun EditingDictRow(
     title: String,
@@ -182,9 +188,9 @@ private fun EditingDictRow(
                 Box(Modifier.size(width = 10.dp, height = 2.dp).background(Color.White))
             }
         }
-        Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
-            Text(title, color = c.label, fontSize = 17.sp)
-            Text(detail, color = c.secondary, fontSize = 13.sp)
+        Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(detail, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
         }
         listOf(true to canMoveUp, false to canMoveDown).forEach { (up, enabled) ->
             Box(

@@ -101,9 +101,9 @@ class WritingPackAiUiTest {
     fun theAiReadsWhatItNeedsThenWrites() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.writingAi.writeDraft(workId, chapterId) }
-        waitFor { vm.writingAi.draft.value?.let { !it.loading && it.text.isNotEmpty() } == true }
+        waitFor { vm.writingAi.drafts.value[workId to chapterId]?.let { !it.loading && it.text.isNotEmpty() } == true }
         // 查之前说的“我先看看第一章。”不算正文。
-        assertEquals("沈默推开茶馆的门，雪还在下。", vm.writingAi.draft.value!!.text)
+        assertEquals("沈默推开茶馆的门，雪还在下。", vm.writingAi.drafts.value.getValue(workId to chapterId).text)
 
         val first = bodies.first()
         val system = first.getJSONArray("messages").getJSONObject(0).getString("content")

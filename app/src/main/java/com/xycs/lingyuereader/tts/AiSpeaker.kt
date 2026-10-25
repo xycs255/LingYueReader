@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.tts
 
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.PowerManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -30,6 +31,11 @@ class AiSpeaker(
     private val onStart: (id: String) -> Unit,
     private val onDone: (id: String) -> Unit,
     private val onError: (id: String, message: String) -> Unit,
+    /**
+     * 听书时不让 CPU 睡下（不计引用次数的 PARTIAL_WAKE_LOCK）：锁屏后句子之间还要合成下一句，离线语音在手机上合成，慢时要好几秒，
+     * 只靠播放器的唤醒锁，句与句之间就会停住。开始读时拿，每句续一次时限，停下、出错、释放时放；忘了放也会到时自己失效。
+     */
+    private val wakeLock: PowerManager.WakeLock? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var job: Job? = null
@@ -51,6 +57,7 @@ class AiSpeaker(
     fun playItems(items: List<Item>) {
         stop()
         if (items.isEmpty()) return
+        keepAwake()
         job = scope.launch {
             // 预取的句子出错只记在它自己的结果里：后面的句子先失败时不能连带取消整个朗读，轮到它时再报。
             val pending = HashMap<Int, Deferred<Result<File>>>()
@@ -68,6 +75,7 @@ class AiSpeaker(
                 }
             }
             for (i in items.indices) {
+                keepAwake()
                 for (k in i..i + AHEAD) prefetch(k)
                 val id = items[i].id
                 val file = pending.remove(i)!!.await().getOrElse { e ->
@@ -90,6 +98,12 @@ class AiSpeaker(
         job = null
         player?.let { runCatching { it.stop() }; it.release() }
         player = null
+        wakeLock?.let { lock -> runCatching { if (lock.isHeld) lock.release() } }
+    }
+
+    /** 拿住（或续上）唤醒锁，每次最多 [AWAKE_MS]。 */
+    private fun keepAwake() {
+        wakeLock?.let { lock -> runCatching { lock.acquire(AWAKE_MS) } }
     }
 
     fun release() {
@@ -174,6 +188,8 @@ class AiSpeaker(
 
     companion object {
         const val AHEAD = 3
+        /** 唤醒锁每句续的时限：合成加播放一句用不了这么久，出了岔子也不会一直耗电。 */
+        const val AWAKE_MS = 10 * 60 * 1000L
         const val MAX_CACHE = 80L * 1024 * 1024
     }
 }

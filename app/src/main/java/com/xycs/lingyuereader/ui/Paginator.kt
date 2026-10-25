@@ -3,19 +3,24 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.Chapter
+import com.xycs.lingyuereader.data.InlineText
 
 /** 一页上的一项。 */
 internal sealed interface PageItem {
     data object Title : PageItem
 
-    /** 某块文字的一段：[start] 到 [end]（不含）是显示文字（含段首缩进）里的下标。 */
+    /**
+     * 某块文字的一段：[start] 到 [end]（不含）是显示文字（含段首缩进）里的下标。
+     * 表格按行切，这时 [start] 到 [end]（不含）是行号。
+     */
     data class Slice(val block: Int, val start: Int, val end: Int, val isStart: Boolean, val isEnd: Boolean) : PageItem
 
-    /** 不拆分的块：标题、引用、表格、分隔线等。 */
+    /** 不拆分的块：插图、分隔线等，以及放得进一页、不必拆开的标题。 */
     data class Whole(val block: Int) : PageItem
 }
 
@@ -58,8 +63,8 @@ internal class ComposeTextFitter(private val measurer: TextMeasurer) : TextFitte
 }
 
 /**
- * 按实际排版把一章切成若干页。正文段落按行切开，跨页时下一页从断开的那一行接着排；
- * 标题、引用、表格等整块放置，放不下就挪到下一页。
+ * 按实际排版把一章切成若干页。正文段落、引用、列表按行切开，跨页时下一页从断开的那一行接着排；
+ * 标题放得进一页时整块放置，放不下就挪到下一页，比一页还高才按行切；表格按行切；插图、分隔线整块放置。
  */
 internal class Paginator(
     private val fitter: TextFitter,
@@ -68,7 +73,8 @@ internal class Paginator(
     /** 插图的高宽比；不知道时按 3:4 估计。 */
     private val imageAspect: (String) -> Float? = { null },
 ) {
-    fun paginate(chapter: Chapter, widthPx: Int, heightPx: Int): List<Page> {
+    /** [checkpoint] 每排一块调用一次：后台分页被取消时由它抛出取消异常，及早停下。 */
+    fun paginate(chapter: Chapter, widthPx: Int, heightPx: Int, checkpoint: () -> Unit = {}): List<Page> {
         val pages = mutableListOf<Page>()
         var items = mutableListOf<PageItem>()
         var used = 0f
@@ -90,27 +96,74 @@ internal class Paginator(
         val titleHeight = chapterOpenerHeight(chapter.title, styles, fitter, widthPx, density.density)
         place(PageItem.Title, titleHeight)
 
+        /**
+         * 按行切开一块文字：[before] 是块上方的留白（只在第一段前），[after] 是块下方的留白（只在最后一段后）。
+         * [keepTogether] 为真时，整块放得进一页就不拆开，当前页放不下整块就挪到下一页（标题不要半截留在页底）。
+         */
+        fun lines(index: Int, text: AnnotatedString, style: TextStyle, width: Int, before: Float, after: Float, keepTogether: Boolean = false) {
+            val lines = fitter.lines(text, style, width)
+            if (lines.isEmpty()) return
+            if (keepTogether) {
+                val whole = before + lines.last().bottom - lines.first().top + after
+                if (whole <= avail && used > 0 && used + whole > avail) newPage()
+            }
+            var from = 0
+            while (from < lines.size) {
+                val top = lines[from].top
+                val lead = if (from == 0) before else 0f
+                val room = avail - used - lead
+                var last = from - 1
+                while (last + 1 < lines.size && lines[last + 1].bottom - top <= room) last++
+                if (last < from) {
+                    if (used == 0f) last = from else {
+                        newPage()
+                        continue
+                    }
+                }
+                val isEnd = last == lines.lastIndex
+                items += PageItem.Slice(index, lines[from].start, if (isEnd) text.length else lines[last].end, from == 0, isEnd)
+                used += lead + lines[last].bottom - top + if (isEnd) after else 0f
+                from = last + 1
+                if (!isEnd) newPage()
+            }
+        }
+
         val gap = px(styles.gap.value)
         chapter.blocks.forEachIndexed { index, block ->
+            checkpoint()
             when (block) {
                 is Block.Para -> {
                     val text = blockText(block, emptyList(), indent = styles.settings.indent) ?: return@forEachIndexed
-                    val lines = fitter.lines(text, styles.para, widthPx)
+                    lines(index, text, styles.para, widthPx, 0f, gap)
+                }
+                // 标题、引用、列表和段落一样按行切；留白、可用宽度与 BlockView 里一致。
+                is Block.Heading -> lines(index, blockText(block, emptyList())!!, styles.heading(block.level), widthPx, gap * 1.5f, gap, keepTogether = true)
+                is Block.Quote -> lines(index, blockText(block, emptyList())!!, styles.quote, widthPx - px(styles.quoteIndent.value).toInt(), 0f, gap)
+                is Block.ListItem -> lines(
+                    index,
+                    blockText(block, emptyList())!!,
+                    styles.list,
+                    widthPx - px(block.indent * 16f + styles.listMarkerWidth.value).toInt(),
+                    0f,
+                    gap / 2,
+                )
+                is Block.Table -> {
+                    // 表格按行切：每行的高度按这一行最高的格子算，这一页放不下的行挪到下一页接着排。
+                    val rowHeights = block.rows.mapIndexed { r, row -> tableRowHeight(row, r == 0, widthPx) }
                     var from = 0
-                    while (from < lines.size) {
-                        val top = lines[from].top
-                        val room = avail - used
+                    while (from < rowHeights.size) {
                         var last = from - 1
-                        while (last + 1 < lines.size && lines[last + 1].bottom - top <= room) last++
+                        var h = 0f
+                        while (last + 1 < rowHeights.size && used + h + rowHeights[last + 1] <= avail) h += rowHeights[++last]
                         if (last < from) {
-                            if (used == 0f) last = from else {
+                            if (used == 0f) h = rowHeights[++last] else {
                                 newPage()
                                 continue
                             }
                         }
-                        val isEnd = last == lines.lastIndex
-                        items += PageItem.Slice(index, lines[from].start, if (isEnd) text.length else lines[last].end, from == 0, isEnd)
-                        used += lines[last].bottom - top + if (isEnd) gap else 0f
+                        val isEnd = last == rowHeights.lastIndex
+                        items += PageItem.Slice(index, from, last + 1, from == 0, isEnd)
+                        used += h + if (isEnd) gap else 0f
                         from = last + 1
                         if (!isEnd) newPage()
                     }
@@ -127,17 +180,17 @@ internal class Paginator(
     }
 
     private fun wholeHeight(block: Block, widthPx: Int, gap: Float): Float = when (block) {
-        is Block.Heading -> gap * 2.5f + fitter.height(blockText(block, emptyList())!!, styles.heading(block.level), widthPx)
-        is Block.Quote -> gap + fitter.height(blockText(block, emptyList())!!, styles.quote, widthPx - px(styles.quoteIndent.value).toInt())
-        is Block.ListItem -> gap / 2 + fitter.height(
-            blockText(block, emptyList())!!,
-            styles.list,
-            widthPx - px(block.indent * 16f + styles.listMarkerWidth.value).toInt(),
-        )
-        is Block.Table -> gap + block.rows.size * (fitter.height(AnnotatedString("表"), styles.table, widthPx) + px(17f))
         Block.Rule -> gap * 2 + px(1f)
         Block.SceneBreak -> px(styles.settings.fontSize * 1.6f) + fitter.height(AnnotatedString("＊"), styles.sceneBreak, widthPx)
-        is Block.Para, is Block.Image -> 0f
+        else -> 0f
+    }
+
+    /** 表格一行的高度：最高的那格（表格可横向滚动，格子最宽 260dp、四周留 8dp），加一道 1dp 的分隔线。 */
+    private fun tableRowHeight(row: List<String>, header: Boolean, widthPx: Int): Float {
+        val style = if (header) styles.table.copy(fontWeight = FontWeight.Bold) else styles.table
+        val oneLine = fitter.height(AnnotatedString("表"), style, widthPx)
+        val tallest = row.maxOfOrNull { cell -> fitter.height(AnnotatedString(InlineText.parse(cell).text), style, px(260f - 16f).toInt()) } ?: 0f
+        return maxOf(oneLine, tallest) + px(17f)
     }
 
     private fun px(dp: Float): Float = dp * density.density
@@ -146,27 +199,41 @@ internal class Paginator(
 /**
  * 分好的页，按章留着。翻进下一章时，阅读区按新的位置重建，这时新的本章、上一章都已分过，只要再分新的下一章，
  * 换章那一下不必一口气分三章。[key] 里是影响分页的一切（排版设置、字体、页面大小……），变了就全部作废。
+ *
+ * 分页在后台线程做，界面线程只 [peek]：分页本身不持锁（不然界面线程要等整章分完），
+ * 分好的几章放在一份只读快照里，[peek] 直接读快照，不等锁。竖排的排版结果也用它缓存。
  */
-internal class PageCache(private val keep: Int = 5) {
-    private var key: Any? = null
-    private val pages = LinkedHashMap<Int, List<Page>>()
+internal open class ChapterCache<T : Any>(private val keep: Int = 5) {
+    private class Snapshot<T>(val key: Any?, val chapters: Map<Int, T>)
 
-    /** 已经分好的就给，没分过的不分。 */
-    @Synchronized
-    fun peek(key: Any, chapter: Int): List<Page>? = if (key == this.key) pages[chapter] else null
+    @Volatile
+    private var snapshot = Snapshot<T>(null, emptyMap())
 
-    /** 分页在后台线程里做，可能和界面线程同时来取：加锁。 */
-    @Synchronized
-    fun get(key: Any, chapter: Int, paginate: () -> List<Page>?): List<Page>? {
-        if (key != this.key) {
-            pages.clear()
-            this.key = key
+    /** 已经分好的就给，没分过的不分；不加锁。 */
+    fun peek(key: Any, chapter: Int): T? = snapshot.let { if (it.key == key) it.chapters[chapter] else null }
+
+    /** 没分过就在调用线程上分（[paginate] 在锁外做，可以被取消），分好后放进缓存。 */
+    fun get(key: Any, chapter: Int, paginate: () -> T?): T? {
+        synchronized(this) {
+            if (snapshot.key != key) snapshot = Snapshot(key, emptyMap())
+            snapshot.chapters[chapter]?.let { return it }
         }
-        pages[chapter]?.let { return it }
         val result = paginate() ?: return null
-        pages[chapter] = result
-        // 只留离这一章最近的几章。
-        while (pages.size > keep) pages.remove(pages.keys.maxBy { kotlin.math.abs(it - chapter) })
+        synchronized(this) {
+            val now = snapshot
+            // 分页期间排版又变了：这份已经过时，给调用方用，但不放进缓存。
+            if (now.key != key) return result
+            // 别的线程同时分好了同一章：用先放进去的那份，前后拿到的是同一个对象。
+            now.chapters[chapter]?.let { return it }
+            val chapters = LinkedHashMap(now.chapters)
+            chapters[chapter] = result
+            // 只留离这一章最近的几章。
+            while (chapters.size > keep) chapters.remove(chapters.keys.maxBy { kotlin.math.abs(it - chapter) })
+            snapshot = Snapshot(key, chapters)
+        }
         return result
     }
 }
+
+/** 翻页模式分好的页。 */
+internal class PageCache(keep: Int = 5) : ChapterCache<List<Page>>(keep)

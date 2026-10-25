@@ -228,28 +228,46 @@ class WritingTest {
     }
 
     @Test
-    fun corruptWorkMetadataCannotBeSilentlyOmittedFromBackup() {
+    fun corruptWorkMetadataIsReportedInsteadOfSilentlyOmittedFromBackup() {
         val folder = tmp.newFolder()
         val s = WorkStore(folder)
         val work = s.create("不能遗漏")
-        File(folder, "works/${work.id}/work.json").writeText("{broken")
-        assertTrue(runCatching { s.backup() }.isFailure)
+        val other = s.create("好好的")
+        s.saveText(other.id, other.chapters.single().id, "林月推开门。")
+        File(folder, "works/${work.id}/work.json").writeText("""{"id":"${work.id}","title":"不能遗漏","volumes":[""")
+        // 坏的那部不再拖垮整份备份：别的作品照常备份，坏的报告出来（认得出书名）。
+        val report = s.backupReport()!!
+        assertEquals(listOf("不能遗漏"), report.skipped.map { it.work })
+        assertEquals("work.json", report.skipped.single().file)
+        val works = JSONObject(String(report.bytes)).getJSONArray("works")
+        assertEquals(listOf(other.id), (0 until works.length()).map { works.getJSONObject(it).getString("id") })
+        assertTrue(File(folder, "works/${work.id}/work.json.damaged").isFile)
     }
 
     @Test
-    fun corruptStatsCannotBeOverwrittenByGoalWordsOrChapterSave() {
+    fun corruptStatsSkipsCountingButNeverBlocksSavingOrBackup() {
         val folder = tmp.newFolder()
         val s = WorkStore(folder)
         val work = s.create("保留统计")
         val chapter = work.chapters.single().id
         val source = File(folder, "stats.json")
         source.writeText("{damaged stats")
-        assertTrue(runCatching { s.setGoal(2000) }.isFailure)
-        assertTrue(runCatching { s.addWords(LocalDate.of(2026, 10, 25), 20) }.isFailure)
-        assertTrue(runCatching { s.saveText(work.id, chapter, "新稿") }.isFailure)
-        assertTrue(runCatching { s.backup() }.isFailure)
+        // 正文照常保存，只是不计数；坏的统计文件不被覆盖，另存了一份。
+        assertNotNull(s.saveText(work.id, chapter, "新稿"))
+        assertEquals("新稿", s.text(work.id, chapter))
+        s.addWords(LocalDate.of(2026, 10, 25), 20)
         assertEquals("{damaged stats", source.readText())
-        assertEquals("", s.text(work.id, chapter))
+        assertEquals("{damaged stats", File(folder, "stats.json.damaged").readText())
+        // 备份照常做，统计不放进去并报告出来。
+        val report = s.backupReport()!!
+        assertEquals(listOf("stats.json"), report.skipped.map { it.file })
+        assertFalse(JSONObject(String(report.bytes)).has("days"))
+        // 设目标就是修好的路：从空的统计重新记，坏的内容还在副本里。
+        s.setGoal(2000)
+        assertEquals(2000, s.stats().goal)
+        assertEquals("{damaged stats", File(folder, "stats.json.damaged").readText())
+        s.saveText(work.id, chapter, "新稿再加几个字")
+        assertEquals(5, s.stats().on(LocalDate.now()))
     }
 
     @Test

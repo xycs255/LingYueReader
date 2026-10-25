@@ -371,4 +371,85 @@ class AppViewModelTest {
         assertTrue(vm.characters.value.error.orEmpty().contains("读取失败"))
         assertEquals("{broken", table.readText())
     }
+
+    private fun resetExtras(app: Application) {
+        File(app.filesDir, "books").deleteRecursively()
+        app.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        app.filesDir.listFiles().orEmpty().filter { it.name.startsWith("stats.json") || it.name.startsWith("vocabulary.json") }.forEach { it.delete() }
+    }
+
+    private fun waitForMessage(vm: AppViewModel, text: String) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        while ((!vm.messages.value.orEmpty().contains(text) || vm.busy.value) && System.nanoTime() < deadline) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    /**
+     * 附加数据各自恢复、互不影响：生词本那份坏了不挡住书、统计和设置；本机统计文件坏了时直接采用备份里的；
+     * 恢复了设置以后按新设置重新排阅读目标提醒。
+     */
+    @Test
+    fun restoreHandlesEachExtraSeparatelyAndRepairsADamagedLocalStatsFile() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        resetExtras(app)
+        val library = Library(app)
+        val source = File(app.cacheDir, "附加数据恢复.txt").apply { writeText("第一章 起\n　　林月推开门。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val backup = ByteArrayOutputStream()
+        library.backup(
+            backup,
+            JSONObject().put("dailyGoal", JSONObject().put("i", 30)),
+            mapOf(
+                "vocabulary.json" to """[{"word":"门口"},{}]""".toByteArray(),
+                "stats.json" to """{"days":{"2026-10-23":{"ms":120000}}}""".toByteArray(),
+            ),
+        )
+        library.remove(entry.id)
+        val stats = File(app.filesDir, "stats.json").apply { writeText("""{"days":[]}""") }
+        val file = File(app.cacheDir, "附加数据恢复.zip").apply { writeBytes(backup.toByteArray()) }
+
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.messages.value.orEmpty().contains("阅读统计读取失败") }
+        vm.restore(Uri.fromFile(file))
+        waitForMessage(vm, "已恢复")
+
+        val message = vm.messages.value.orEmpty()
+        assertTrue(message, message.contains("已恢复 1 本书"))
+        assertTrue(message, message.contains("附加数据恢复失败") && message.contains("生词本"))
+        assertFalse(message, message.contains("阅读统计"))
+        assertEquals(listOf(entry.id), vm.shelf.value.map { it.id })
+        assertEquals(120_000L, com.xycs.lingyuereader.data.ReadingStats(stats).days().getValue(java.time.LocalDate.of(2026, 10, 23)).millis)
+        assertEquals("""{"days":[]}""", File(app.filesDir, "stats.json.damaged").readText())
+        assertEquals(30, Prefs(app).settings().dailyGoal)
+        val alarms = Shadows.shadowOf(app.getSystemService(android.app.AlarmManager::class.java))
+        assertTrue(alarms.nextScheduledAlarm != null)
+    }
+
+    /** 本机统计读不出时，备份照常完成，只是不带这一项，并告诉用户；坏的那份不打进包（恢复时会被拒）。 */
+    @Test
+    fun backupLeavesOutAnUnreadableStatsFileAndSaysSo() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        resetExtras(app)
+        val library = Library(app)
+        val source = File(app.cacheDir, "附加数据备份.txt").apply { writeText("第一章 起\n　　老周点了灯。\n") }
+        library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        File(app.filesDir, "stats.json").writeText("""{"days":[]}""")
+        File(app.filesDir, "vocabulary.json").writeText("""[{"word":"灯"}]""")
+        val target = File(app.cacheDir, "附加数据备份.zip")
+
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.messages.value.orEmpty().contains("阅读统计读取失败") }
+        vm.backup(Uri.fromFile(target))
+        waitForMessage(vm, "已备份")
+
+        val message = vm.messages.value.orEmpty()
+        assertTrue(message, message.contains("已备份 1 本书") && message.contains("阅读统计读不出"))
+        val names = java.util.zip.ZipInputStream(target.inputStream()).use { z -> generateSequence { z.nextEntry?.name }.toList() }
+        assertTrue(names.contains("data/vocabulary.json"))
+        assertFalse(names.contains("data/stats.json"))
+        assertEquals("""{"days":[]}""", File(app.filesDir, "stats.json").readText())
+    }
 }

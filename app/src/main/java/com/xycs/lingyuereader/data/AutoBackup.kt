@@ -71,6 +71,8 @@ class AutoBackup(
     /**
      * 备份一次：先写入本次独有的“.part”，完成后改名；失败时只清理本次临时文件。
      * 同一分钟再备份时使用递增编号，避免先删除上一份可用备份；最后只保留最近几份。
+     * 文件名用自动备份独有的前缀（[PREFIX]），清理只删这类：同一文件夹里的手动备份默认叫“灵阅备份-…”，不能被当成旧的自动备份删掉。
+     * 旧版自动备份也叫“灵阅备份-…”，和手动备份分不开，不再自动删，由用户自己清理。
      * 返回写好的文件名。
      */
     fun run(write: (OutputStream) -> Unit): Result<String> {
@@ -78,7 +80,7 @@ class AutoBackup(
         return runCatching {
             val folder = folderOf(folderUri)
             val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.ROOT).format(Date(now()))
-            val stem = "灵阅备份-$stamp"
+            val stem = "$PREFIX$stamp"
             val latestCopy = folder.list().mapNotNull { file ->
                 BACKUP_NAME.matchEntire(file)?.let { match ->
                     if (match.groupValues[1] == stamp) match.groupValues[2].toLongOrNull() ?: 1L else null
@@ -118,8 +120,12 @@ class AutoBackup(
 
         /** 留最近几份。 */
         const val KEEP = 7
-        val BACKUP_NAME = Regex("""灵阅备份-(\d{8}-\d{4})(?:-(\d{4,}))?\.zip""")
-        private val STALE_PART = Regex("""灵阅备份-\d{8}-\d{4}(?:-\d{4,})?\.zip\.[0-9a-fA-F-]{36}\.part""")
+
+        /** 自动备份的文件名前缀，和手动备份（默认“灵阅备份-”）分开。 */
+        const val PREFIX = "灵阅自动备份-"
+        val BACKUP_NAME = Regex("""$PREFIX(\d{8}-\d{4})(?:-(\d{4,}))?\.zip""")
+        /** 备份到一半留下的临时文件；带本次独有的 UUID，不会是手动备份。旧版前缀的也一起清掉。 */
+        private val STALE_PART = Regex("""(?:$PREFIX|灵阅备份-)\d{8}-\d{4}(?:-\d{4,})?\.zip\.[0-9a-fA-F-]{36}\.part""")
     }
 }
 

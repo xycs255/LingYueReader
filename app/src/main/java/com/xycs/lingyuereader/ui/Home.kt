@@ -66,7 +66,8 @@ fun HomeScreen(vm: AppViewModel) {
     val pager = rememberPagerState(initialPage = tab.ordinal) { HomeTab.entries.size }
     LaunchedEffect(tab) {
         if (pager.currentPage != tab.ordinal) {
-            if (Effects.noMotion) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal)
+            // 跟着导航栏指示器（手指拖着走）松手后归位：用不回弹的 settle 弹簧，和指示器一起停稳。
+            if (Effects.noMotion) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal, animationSpec = Motion.settle())
         }
     }
 
@@ -104,7 +105,8 @@ fun HomeScreen(vm: AppViewModel) {
         },
         // 各页自己处理状态栏等边距；导航栏让出的高度由 LocalTabBarInset 告诉各页。
         contentWindowInsets = WindowInsets(0),
-        popupHost = { GlassPopupHost() },
+        // 各页弹出的菜单、对话框画在这里，拿不到各页里提供的配色：宿主这里按主题补一套设置页配色。
+        popupHost = { ProvideGroupedColors { GlassPopupHost() } },
     ) { _ ->
         CompositionLocalProvider(LocalTabBarInset provides tabBarInset(appearance.floatingBar)) {
             HorizontalPager(

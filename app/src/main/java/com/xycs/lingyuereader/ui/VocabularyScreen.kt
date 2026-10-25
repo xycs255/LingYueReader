@@ -74,6 +74,16 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.core.content.FileProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.SnackbarResult
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -83,7 +93,8 @@ import java.util.Locale
 fun VocabularyScreen(vm: AppViewModel) {
     val words by vm.vocab.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
-    val vocabAi by vm.vocabAi.collectAsStateWithLifecycle()
+    // AI 例句边生成边变：只在卡片里读，不让每个流式片段都把整页（和下面按全部生词算的东西）重算一遍。
+    val vocabAi = vm.vocabAi.collectAsStateWithLifecycle()
     val filling by vm.vocabFilling.collectAsStateWithLifecycle()
     val message by vm.messages.collectAsStateWithLifecycle()
     val snackbar = remember { top.yukonga.miuix.kmp.basic.SnackbarHostState() }
@@ -96,12 +107,16 @@ fun VocabularyScreen(vm: AppViewModel) {
     var mastered by rememberSaveable { mutableStateOf(false) }
     var reviewing by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // 上一个“已删除，撤销”提示：再删一个词时先收起它，免得提示排成长队。
+    var undoing by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(Unit) { vm.reloadVocabulary() }
-    val learning = words.filterNot { it.mastered }
+    val learning = remember(words) { words.filterNot { it.mastered } }
     // 到期的词：按遗忘曲线排到今天或更早的。
     val now = remember(words) { System.currentTimeMillis() }
-    val due = learning.filter { it.isDue(now) }.sortedWith(compareBy({ it.due }, { it.addedAt }))
-    val shown = words.filter { it.mastered == mastered }
+    val due = remember(learning, now) { learning.filter { it.isDue(now) }.sortedWith(compareBy({ it.due }, { it.addedAt })) }
+    val shown = remember(words, mastered) { words.filter { it.mastered == mastered } }
+    val anyBlank = remember(words) { words.any { DictGloss.clean(it.gloss).isBlank() } }
 
     // 和书架、统计、我的一样用大标题，往上滚时收成小标题。
     val scrollBehavior = MiuixScrollBehavior()
@@ -121,9 +136,10 @@ fun VocabularyScreen(vm: AppViewModel) {
                 },
                 actions = {
                     // 开了 AI 助手、有词还没释义时：一键补上中文释义。
-                    if (!reviewing && aiConfig.ready && words.any { DictGloss.clean(it.gloss).isBlank() }) {
+                    if (!reviewing && aiConfig.ready && anyBlank) {
                         if (filling) {
-                            top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 20.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                            // 顶栏在设置页配色外面，转圈的颜色直接取主题强调色。
+                            Spinner(Modifier.padding(horizontal = 14.dp), size = 20.dp, color = MiuixTheme.colorScheme.primary)
                         } else {
                             IconButton(onClick = vm::fillVocabGlosses) {
                                 Icon(LingYueIcons.Sparkle, contentDescription = "AI 补释义")
@@ -132,7 +148,10 @@ fun VocabularyScreen(vm: AppViewModel) {
                     }
                     if (!reviewing && words.isNotEmpty()) {
                         IconButton(
-                            onClick = { shareText(context, "生词本", vm.vocabularyMarkdown(words)) },
+                            onClick = {
+                                val list = words
+                                scope.launch { shareVocabulary(context) { vm.vocabularyMarkdown(list) }?.let { snackbar.showSnackbar(it) } }
+                            },
                             modifier = Modifier.padding(end = 12.dp),
                         ) {
                             Icon(LingYueIcons.Share, contentDescription = "导出生词本")
@@ -153,37 +172,26 @@ fun VocabularyScreen(vm: AppViewModel) {
             overscrollEffect = null,
         ) {
             item {
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ProvideGroupedColors {
+                ProvideGroupedColors {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         SegmentedControl(
                             listOf(false to "学习中 ${learning.size}", true to "已掌握 ${words.size - learning.size}"),
                             mastered,
                             Modifier.width(220.dp),
                             height = 36.dp,
                         ) { mastered = it }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (due.isNotEmpty()) {
-                        // 和左边的分段控件一样高的强调色小胶囊，不用一颗大按钮压过整行。
-                        Text(
-                            "复习 ${due.size}",
-                            color = MiuixTheme.colorScheme.onPrimary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier
-                                .height(36.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(MiuixTheme.colorScheme.primary)
-                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { reviewing = true }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                    } else if (learning.isNotEmpty()) {
-                        val next = learning.minOf { it.due }
-                        Text(
-                            "下次复习：${dueLabel(next, now)}",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
+                        Spacer(Modifier.weight(1f))
+                        if (due.isNotEmpty()) {
+                            // 淡色胶囊（和左边的分段控件一样看着 36dp 高），不用一颗大按钮压过整行。
+                            PillButton("复习 ${due.size}", onClick = { reviewing = true }, style = PillStyle.Tinted)
+                        } else if (learning.isNotEmpty()) {
+                            val next = learning.minOf { it.due }
+                            Text(
+                                "下次复习：${dueLabel(next, now)}",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
                     }
                 }
             }
@@ -197,13 +205,25 @@ fun VocabularyScreen(vm: AppViewModel) {
                 }
             }
             items(shown, key = { it.word }) { w ->
+                // 只有正在生成例句的这张卡跟着流式片段重组。
+                val ai by remember(w.word) { derivedStateOf { vocabAi.value[w.word] } }
                 WordCard(
                     w,
                     // 标为掌握、删除、切换标签时，其余的词滑到新位置。
                     modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()),
                     onToggleMastered = { vm.setMastered(w.word, !w.mastered) },
-                    onRemove = { vm.removeFromVocabulary(w.word) },
-                    ai = vocabAi[w.word],
+                    onRemove = {
+                        // 删除不再确认，但给几秒撤销：原样放回原来的位置。
+                        val index = words.indexOfFirst { it.word == w.word }
+                        vm.removeFromVocabulary(w.word)
+                        undoing?.cancel()
+                        undoing = scope.launch {
+                            if (snackbar.showSnackbar("已删除“${w.word}”", actionLabel = "撤销") == SnackbarResult.ActionPerformed) {
+                                vm.restoreToVocabulary(w, index)
+                            }
+                        }
+                    },
+                    ai = ai,
                     onAi = { vm.vocabExample(w.word) }.takeIf { aiConfig.ready },
                 )
             }
@@ -450,9 +470,23 @@ private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
     }
 }
 
-private fun shareText(context: Context, subject: String, text: String) {
+/**
+ * 生词本写成 cache/exports 下的 Markdown 文件，再用 FileProvider 分享：整份放进 EXTRA_TEXT，
+ * 生词一多就超过跨进程传递的大小上限（约 1MB）而闪退。出错时返回提示，不抛出。
+ */
+private suspend fun shareVocabulary(context: Context, markdown: () -> String): String? = try {
+    val file = withContext(Dispatchers.IO) {
+        File(File(context.cacheDir, "exports").apply { mkdirs() }, "生词本.md").apply { writeText(markdown()) }
+    }
+    val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
     val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-        .putExtra(Intent.EXTRA_SUBJECT, subject)
-        .putExtra(Intent.EXTRA_TEXT, text)
-    context.startActivity(Intent.createChooser(send, "导出$subject").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        .putExtra(Intent.EXTRA_SUBJECT, "生词本")
+        .putExtra(Intent.EXTRA_STREAM, uri)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    context.startActivity(Intent.createChooser(send, "导出生词本").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    null
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (error: Exception) {
+    "导出失败：${error.message ?: error.javaClass.simpleName}"
 }

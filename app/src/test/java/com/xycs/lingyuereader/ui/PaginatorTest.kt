@@ -103,6 +103,114 @@ class PaginatorTest {
         // 章节不存在时不缓存。
         assertEquals(null, cache.get("B", 99) { null })
     }
+
+    /** 每块的切片首尾相接、覆盖全文，并且确实拆到了不止一页。 */
+    private fun assertCoveredAcrossPages(pages: List<Page>, block: Int, length: Int) {
+        val slices = pages.flatMap { it.items }.filterIsInstance<PageItem.Slice>().filter { it.block == block }
+        assertTrue("块 $block 应拆成多段：$slices", slices.size > 1)
+        assertEquals(0, slices.first().start)
+        assertEquals(length, slices.last().end)
+        slices.zipWithNext().forEach { (a, c) -> assertEquals(a.end, c.start) }
+        assertTrue(slices.first().isStart && slices.last().isEnd)
+        assertTrue(slices.drop(1).none { it.isStart } && slices.dropLast(1).none { it.isEnd })
+        assertEquals(slices.size, pages.count { page -> page.items.any { it is PageItem.Slice && it.block == block } })
+    }
+
+    @Test
+    fun tallQuotesListsAndHeadingsAreSplitByLines() {
+        val quote = Block.Quote("引".repeat(200))
+        val item = Block.ListItem("•", "列".repeat(200))
+        val heading = Block.Heading(2, "标".repeat(200))
+        val chapter = Chapter("第一章", listOf(quote, item, heading))
+        val pages = paginator.paginate(chapter, widthPx = 100, heightPx = 100)
+        assertCoveredAcrossPages(pages, 0, 200)
+        assertCoveredAcrossPages(pages, 1, 200)
+        assertCoveredAcrossPages(pages, 2, 200)
+        // 每页都放得下（假的测量每行 10 像素）。
+        pages.forEach { page ->
+            val used = page.items.sumOf { if (it is PageItem.Slice) ((it.end - it.start + 9) / 10 * 10).toDouble() else if (it == PageItem.Title) 66.0 else 0.0 }
+            assertTrue("page uses $used", used <= 100)
+        }
+    }
+
+    @Test
+    fun shortHeadingMovesToTheNextPageWhole() {
+        // 第一页剩下的地方放不下两行标题：整块挪到下一页，不拆开。
+        val chapter = Chapter("第一章", listOf(para(18, '甲'), Block.Heading(2, "标".repeat(15)), para(5, '乙')))
+        val pages = paginator.paginate(chapter, widthPx = 100, heightPx = 100)
+        val headingSlices = pages.flatMap { it.items }.filterIsInstance<PageItem.Slice>().filter { it.block == 1 }
+        assertEquals(1, headingSlices.size)
+        assertTrue(headingSlices.single().isStart && headingSlices.single().isEnd)
+    }
+
+    @Test
+    fun tallTablesAreSplitByRows() {
+        val rows = (1..30).map { listOf("第${it}行", "值") }
+        val chapter = Chapter("第一章", listOf(Block.Table(rows)))
+        val pages = paginator.paginate(chapter, widthPx = 100, heightPx = 100)
+        val slices = pages.flatMap { it.items }.filterIsInstance<PageItem.Slice>().filter { it.block == 0 }
+        assertTrue(slices.size > 1)
+        assertEquals(0, slices.first().start)
+        assertEquals(30, slices.last().end)
+        slices.zipWithNext().forEach { (a, c) -> assertEquals(a.end, c.start) }
+        // 每页的行（每行 10 + 17 像素）放得下。
+        slices.drop(1).forEach { assertTrue((it.end - it.start) * 27 <= 100) }
+    }
+
+    @Test
+    fun cancelledPaginationStopsEarly() {
+        val chapter = Chapter("第一章", (1..100).map { para(30, '字') })
+        var blocks = 0
+        val stopped = runCatching {
+            paginator.paginate(chapter, widthPx = 100, heightPx = 100) {
+                if (++blocks > 3) throw java.util.concurrent.CancellationException("取消")
+            }
+        }
+        assertTrue(stopped.exceptionOrNull() is java.util.concurrent.CancellationException)
+        assertEquals(4, blocks)
+    }
+
+    @Test
+    fun peekDoesNotWaitForAPaginationInProgress() {
+        val cache = PageCache()
+        val ready = listOf(Page(listOf(PageItem.Title)))
+        cache.get("A", 1) { ready }
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread {
+            cache.get("A", 2) {
+                started.countDown()
+                release.await()
+                ready
+            }
+        }.apply { start() }
+        assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // 第 2 章还在分：界面线程照样立刻拿到第 1 章，别的章也能同时分。
+        val peeked = java.util.concurrent.Executors.newSingleThreadExecutor().let { pool ->
+            pool.submit<List<Page>?> { cache.get("A", 3) { ready }; cache.peek("A", 1) }.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                .also { pool.shutdown() }
+        }
+        assertEquals(ready, peeked)
+        assertEquals(null, cache.peek("A", 2))
+        release.countDown()
+        worker.join(5_000)
+        assertEquals(ready, cache.peek("A", 2))
+    }
+
+    @Test
+    fun aPaginationFinishedAfterTheLayoutChangedIsNotCached() {
+        val cache = PageCache()
+        val old = listOf(Page(listOf(PageItem.Title)))
+        // 按旧排版分第 1 章的途中，字号变了、按新排版分了第 2 章。
+        val result = cache.get("旧", 1) {
+            cache.get("新", 2) { listOf(Page(emptyList())) }
+            old
+        }
+        assertEquals(old, result)
+        assertEquals(null, cache.peek("旧", 1))
+        assertEquals(null, cache.peek("新", 1))
+        assertTrue(cache.peek("新", 2) != null)
+    }
 }
 
 class ChineseDetectionTest {

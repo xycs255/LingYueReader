@@ -1,6 +1,11 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,7 +48,6 @@ import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
@@ -52,8 +56,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
-
-private val MISS = Color(0xFFE5484D)
 
 /** 一章的统计，一行说完。 */
 internal fun statsLine(s: ChapterStats): String =
@@ -130,13 +132,14 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
             ) {
                 item {
                     val set = rules
+                    // 组名只是标签，不写条数（规范：组名不写状态）；每份规则文档读懂几条写在“编辑规则”那行右边。
                     GroupedSection(
-                        header = if (set == null || set.isEmpty) "规则" else "规则（${set.rules.size} 条）",
+                        header = "规则",
                         footer = "规则写在设定包的“检查规则”文档里，每行一条，比如“字数：3000-6000”“至多 1：点了点头、顿了顿／一顿”“禁用：您”“句式：不是……而是……”“短段：12 字以内至多 5 处”。" +
                             "灵阅在本机检查，不联网。",
                     ) {
                         if (set != null && set.isEmpty && set.unknown.isEmpty()) {
-                            row { Text("还没有规则。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
+                            row { EmptyRow("还没有规则。") }
                         }
                         set?.rules?.forEach { r ->
                             row {
@@ -155,10 +158,21 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                                 }
                             }
                         } else {
-                            ruleDocs.forEach { d -> row { NavRow(if (ruleDocs.size == 1) "编辑规则" else "编辑“${d.title}”") { vm.open(Screen.PackDoc(workId, d.id)) } } }
+                            ruleDocs.forEach { d ->
+                                val count = set?.rules?.count { it.source.doc == d.title }?.takeIf { it > 0 }
+                                row {
+                                    NavRow(if (ruleDocs.size == 1) "编辑规则" else "编辑“${d.title}”", value = count?.let { "$it 条" }) {
+                                        vm.open(Screen.PackDoc(workId, d.id))
+                                    }
+                                }
+                            }
                         }
                         row {
-                            ActionRow(if (drafting) "AI 正在整理……" else "用 AI 从写作规范整理", enabled = !drafting && aiConfig.ready && hasStyle) { draftRules() }
+                            // 整理时这一行换成行内转圈，整理完换回来（原地淡过去）。
+                            Crossfade(drafting, animationSpec = Motion.standard(Motion.SHORT), label = "drafting") { busy ->
+                                if (busy) LoadingRow("AI 正在整理……")
+                                else ActionRow("用 AI 从写作规范整理", enabled = aiConfig.ready && hasStyle) { draftRules() }
+                            }
                         }
                     }
                     if (!aiConfig.ready || !hasStyle) {
@@ -175,7 +189,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                                 row {
                                     GroupedRow {
                                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            Text(u.text, color = MISS, fontSize = 15.sp, lineHeight = 21.sp)
+                                            Text(u.text, color = c.destructive, fontSize = 15.sp, lineHeight = 21.sp)
                                             Text("${u.doc} · 第 ${u.line} 行", color = c.secondary, fontSize = 12.sp)
                                         }
                                     }
@@ -190,14 +204,22 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                             header = "全书检查",
                             footer = list?.let { "共 ${it.size} 章，${bad.size} 章有不合规则的地方。检查的是已经存盘的正文。" },
                         ) {
-                            row { ActionRow(if (checking) "正在检查……" else if (list == null) "检查全书" else "重新检查", enabled = !checking) { checkAll() } }
+                            row {
+                                Crossfade(checking, animationSpec = Motion.standard(Motion.SHORT), label = "checking") { busy ->
+                                    if (busy) LoadingRow("正在检查……")
+                                    else ActionRow(if (list == null) "检查全书" else "重新检查") { checkAll() }
+                                }
+                            }
+                            // 检查完多出来的几行淡入（卡片自己平滑长高）。
                             bad.forEach { (ch, report) ->
                                 row {
-                                    NavRow(
-                                        ch.title,
-                                        value = "${report.hits.size} 条",
-                                        subtitle = report.hits.take(2).joinToString("；") { it.message },
-                                    ) { vm.open(Screen.Editor(workId, ch.id, check = true)) }
+                                    FadeInOnce(ch.id to report.hits.size) {
+                                        NavRow(
+                                            ch.title,
+                                            value = "${report.hits.size} 条",
+                                            subtitle = report.hits.take(2).joinToString("；") { it.message },
+                                        ) { vm.open(Screen.Editor(workId, ch.id, check = true)) }
+                                    }
                                 }
                             }
                         }
@@ -235,25 +257,23 @@ private fun RulesDraftDialog(text: String, replacing: Boolean, onDismiss: () -> 
         if (parsed.unknown.isNotEmpty()) {
             Text(
                 "没看懂：" + parsed.unknown.take(3).joinToString("；") { it.text },
-                color = MISS,
+                color = c.destructive,
                 fontSize = 13.sp,
                 lineHeight = 18.sp,
                 maxLines = 3,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = "存为检查规则",
-                enabled = parsed.rules.isNotEmpty(),
-                onClick = { onSave(value.trimEnd() + "\n") },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
         if (parsed.rules.isEmpty()) Text("没有读懂的规则，先改一改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(value.trimEnd() + "\n") }, confirmText = "存为检查规则", confirmEnabled = parsed.rules.isNotEmpty())
     }
+}
+
+/** 新出现的一行淡入（[Motion.SHORT]），[key] 变了才再淡一次；减少动效时直接出现。 */
+@Composable
+private fun FadeInOnce(key: Any, content: @Composable () -> Unit) {
+    val shown = remember(key) { MutableTransitionState(Effects.noMotion).apply { targetState = true } }
+    AnimatedVisibility(shown, enter = fadeIn(Motion.standard(Motion.SHORT)), exit = ExitTransition.None) { content() }
 }
 
 /** 编辑器里的规则检查：本章统计和不合规则的地方；点一条，依次选中正文里出现的位置。 */
@@ -266,42 +286,44 @@ internal fun RulesPanel(
     onClose: () -> Unit,
 ) {
     val c = LocalGroupedColors.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(c.cell)
-            .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
+    // 没规则、在检查、检查完三种：原地淡过去，高矮由面板平滑跟上。
+    val phase = when {
+        !hasRules -> 0
+        report == null -> 1
+        else -> 2
+    }
+    InlinePanel(
+        "规则检查",
+        onClose = onClose,
+        closeLabel = "收起",
+        actions = { PillButton("管理规则", onOpenRules) },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("规则检查", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            TextButton(text = "规则", onClick = onOpenRules)
-            IconButton(onClick = onClose) { Icon(LingYueIcons.Close, contentDescription = "收起", tint = c.secondary) }
-        }
-        when {
-            !hasRules -> Text(
-                "还没有检查规则。在设定包里写一份“检查规则”，比如篇幅、口头禅每章至多几次、禁用词，灵阅就能逐章检查。",
-                color = c.secondary,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-                modifier = Modifier.padding(vertical = 6.dp),
-            )
-            report == null -> Text("正在检查……", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 6.dp))
-            else -> {
-                Text(statsLine(report.stats), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp))
-                Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
-                    if (report.hits.isEmpty()) Text("都合规则。", color = Color(0xFF2F9E44), fontSize = 15.sp, modifier = Modifier.padding(vertical = 8.dp))
-                    report.hits.forEach { h ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(enabled = h.ranges.isNotEmpty()) { onJump(h) }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(h.message, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.weight(1f))
-                            if (h.ranges.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
+        AnimatedContent(phase, transitionSpec = { Motion.fadeThrough() using null }, label = "rulesPhase") { p ->
+            when {
+                p == 0 -> Text(
+                    "还没有检查规则。在设定包里写一份“检查规则”，比如篇幅、口头禅每章至多几次、禁用词，灵阅就能逐章检查。",
+                    color = c.secondary,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                )
+                p == 1 || report == null -> PanelBusy("正在检查……", Modifier.padding(vertical = 8.dp))
+                else -> Column {
+                    Text(statsLine(report.stats), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                        if (report.hits.isEmpty()) Text("都合规则。", color = c.success, fontSize = 15.sp, modifier = Modifier.padding(vertical = 8.dp))
+                        report.hits.forEach { h ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = h.ranges.isNotEmpty()) { onJump(h) }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(h.message, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.weight(1f))
+                                if (h.ranges.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
+                            }
                         }
                     }
                 }

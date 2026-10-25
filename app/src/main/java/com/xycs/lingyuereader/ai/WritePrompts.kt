@@ -182,7 +182,8 @@ object WritePrompts {
         paragraphs.forEachIndexed { i, p -> append(i + 1).append(". ").append(p).append('\n') }
         append("\n只找下面这几类问题，别的不要管（不要改文风、不要提“可以写得更好”的建议、不要改人物故意的说法）：\n")
         kinds.forEach { append("- ").append(it.label).append("：").append(it.ask).append('\n') }
-        append("设定、规范、口吻这几类必须在设定包里有明确依据，拿不准就不提；需要核对时可以用工具查设定包和前面的章。\n")
+        // 写作建议发得勤，不给工具（一次请求就答）：只按上面整份给出的设定判断。
+        append("设定、规范、口吻这几类必须在上面给出的设定里有明确依据，拿不准就不提。\n")
         append("wrong 必须是原文里一字不差的一小段（尽量短，三五个字到一句话），right 是改好的这一小段，reason 用一句话说原因，")
         append("kind 是 ").append(kinds.joinToString("、") { it.name + "（" + it.label + "）" }).append(" 之一，source 写依据出自哪份文档哪一节（错字不用写）。\n")
         append("每段最多 3 处；没有问题的段不要列。只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\",\"kind\":\"\",\"source\":\"\"}]}，全都没问题就输出 {\"issues\":[]}。")
@@ -384,6 +385,32 @@ object WritePrompts {
         return if (text.isBlank()) add else text.trimEnd() + "\n\n" + add
     }
 
+    /**
+     * 人物档案里已有这个人：把他那一节（“## 林月”标题下面、到下一个标题之前的文字）或那一条（“- 林月：……”）
+     * 换成 [body]，后面注明“（AI 整理，日期）”。没有这样的一节（找不到，或只在表格里）返回空。
+     */
+    fun replaceCharacter(text: String, name: String, body: String, date: String): String? {
+        val lines = text.lines()
+        val mark = "（AI 整理，$date）"
+        val newBody = body.trim().lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val heading = Regex("""^#{2,4}\s*${Regex.escape(name)}\s*$""")
+        val h = lines.indexOfFirst { heading.matches(it.trim()) }
+        if (h >= 0) {
+            var end = h + 1
+            while (end < lines.size && !lines[end].trim().startsWith("#")) end++
+            val tail = lines.subList(end, lines.size)
+            return (lines.subList(0, h + 1) + newBody + mark + (if (tail.isEmpty()) emptyList() else listOf("") + tail)).joinToString("\n")
+        }
+        val item = Regex("""^([-*]\s*)${Regex.escape(name)}\s*[：:]""")
+        val i = lines.indexOfFirst { item.containsMatchIn(it.trim()) }
+        if (i >= 0) {
+            val indent = lines[i].takeWhile { it == ' ' || it == '\t' }
+            val bullet = item.find(lines[i].trim())!!.groupValues[1]
+            return lines.toMutableList().apply { this[i] = indent + bullet + name + "：" + newBody.joinToString(" ") + mark }.joinToString("\n")
+        }
+        return null
+    }
+
     /** 从模型回答里取出 JSON 对象：容忍前后多余的话和 ```json 包裹。 */
     private fun json(answer: String): JSONObject {
         val start = answer.indexOf('{')
@@ -441,67 +468,138 @@ object TextDiff {
     enum class Kind { SAME, DELETED, INSERTED }
     data class Piece(val kind: Kind, val text: String)
 
-    /** 改动太多（编辑距离超过 [maxEdits]）时返回空，界面就只显示改后的全文。 */
+    /**
+     * 改动太多（编辑距离超过 [maxEdits]）时返回空，界面就只显示改后的全文。
+     * 用 Myers 的“中间蛇”二分（线性空间）：内存只和 [maxEdits] 成正比；超过上限时在找的途中就放弃，不先算完。
+     */
     fun diff(a: String, b: String, maxEdits: Int = 3_000): List<Piece>? {
-        // 去掉相同的头尾，只比中间。
-        var start = 0
-        while (start < a.length && start < b.length && a[start] == b[start]) start++
-        var endA = a.length
-        var endB = b.length
-        while (endA > start && endB > start && a[endA - 1] == b[endB - 1]) { endA--; endB-- }
-        val mid = myers(a.substring(start, endA), b.substring(start, endB), maxEdits) ?: return null
-        val out = mutableListOf<Piece>()
-        fun add(kind: Kind, s: String) {
-            if (s.isEmpty()) return
-            val last = out.lastOrNull()
-            if (last != null && last.kind == kind) out[out.lastIndex] = Piece(kind, last.text + s) else out += Piece(kind, s)
-        }
-        add(Kind.SAME, a.substring(0, start))
-        mid.forEach { add(it.kind, it.text) }
-        add(Kind.SAME, a.substring(endA))
-        return out
+        val out = Out()
+        return if (compare(a, 0, a.length, b, 0, b.length, maxEdits, out)) out.done() else null
     }
 
-    /** Myers 差分：最少的删和加。 */
-    private fun myers(a: String, b: String, maxEdits: Int): List<Piece>? {
-        val n = a.length
-        val m = b.length
-        if (n == 0) return listOf(Piece(Kind.INSERTED, b))
-        if (m == 0) return listOf(Piece(Kind.DELETED, a))
-        val max = minOf(n + m, maxEdits)
-        val offset = max + 1
-        var v = IntArray(2 * max + 3)
-        val trace = ArrayList<IntArray>()
-        var found = -1
-        loop@ for (d in 0..max) {
-            trace += v.copyOf()
-            for (k in -d..d step 2) {
-                var x = if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1])) v[offset + k + 1] else v[offset + k - 1] + 1
-                var y = x - k
-                while (x < n && y < m && a[x] == b[y]) { x++; y++ }
-                v[offset + k] = x
-                if (x >= n && y >= m) { found = d; break@loop }
+    /** 收集结果：相邻同类的合成一段。 */
+    private class Out {
+        private val pieces = mutableListOf<Piece>()
+        private var kind: Kind? = null
+        private val buf = StringBuilder()
+
+        fun add(k: Kind, s: CharSequence) {
+            if (s.isEmpty()) return
+            if (k != kind) flush()
+            kind = k
+            buf.append(s)
+        }
+
+        fun done(): List<Piece> {
+            flush()
+            return pieces
+        }
+
+        private fun flush() {
+            kind?.let { if (buf.isNotEmpty()) pieces += Piece(it, buf.toString()) }
+            buf.setLength(0)
+            kind = null
+        }
+    }
+
+    /** 比 a[a0, a1) 和 b[b0, b1)，结果按次序放进 [out]。改动超过 [maxEdits] 时返回假。 */
+    private fun compare(a: String, a0: Int, a1: Int, b: String, b0: Int, b1: Int, maxEdits: Int, out: Out): Boolean {
+        // 去掉相同的头尾，只比中间。
+        var aS = a0
+        var bS = b0
+        while (aS < a1 && bS < b1 && a[aS] == b[bS]) { aS++; bS++ }
+        var aE = a1
+        var bE = b1
+        while (aE > aS && bE > bS && a[aE - 1] == b[bE - 1]) { aE--; bE-- }
+        out.add(Kind.SAME, a.subSequence(a0, aS))
+        val n = aE - aS
+        val m = bE - bS
+        when {
+            n == 0 -> out.add(Kind.INSERTED, b.subSequence(bS, bE))
+            m == 0 -> out.add(Kind.DELETED, a.subSequence(aS, aE))
+            else -> {
+                val split = bisect(a, aS, n, b, bS, m, maxEdits)
+                when {
+                    split != null -> {
+                        val (x, y) = split
+                        if (!compare(a, aS, aS + x, b, bS, bS + y, maxEdits, out)) return false
+                        if (!compare(a, aS + x, aE, b, bS + y, bE, maxEdits, out)) return false
+                    }
+                    // 一个字都不一样：全删全加。
+                    n + m <= maxEdits -> {
+                        out.add(Kind.DELETED, a.subSequence(aS, aE))
+                        out.add(Kind.INSERTED, b.subSequence(bS, bE))
+                    }
+                    else -> return false
+                }
             }
         }
-        if (found < 0) return null
-        trace += v
-        // 倒着走回去。
-        val ops = ArrayList<Piece>()
-        var x = n
-        var y = m
-        for (d in found downTo 1) {
-            val vd = trace[d]
-            val k = x - y
-            val prevK = if (k == -d || (k != d && vd[offset + k - 1] < vd[offset + k + 1])) k + 1 else k - 1
-            val prevX = vd[offset + prevK]
-            val prevY = prevX - prevK
-            while (x > prevX && y > prevY) { ops += Piece(Kind.SAME, a[x - 1].toString()); x--; y-- }
-            if (x == prevX) ops += Piece(Kind.INSERTED, b[y - 1].toString()) else ops += Piece(Kind.DELETED, a[x - 1].toString())
-            x = prevX
-            y = prevY
+        out.add(Kind.SAME, a.subSequence(aE, a1))
+        return true
+    }
+
+    /**
+     * 找 a[aS, aS+n) 和 b[bS, bS+m) 最短编辑路径的中点（从两头同时往中间找），返回中点在两段里的位置。
+     * 两段没有一个字相同，或者改动超过 [maxEdits]（找到一半还没碰头）时返回空。
+     */
+    private fun bisect(a: String, aS: Int, n: Int, b: String, bS: Int, m: Int, maxEdits: Int): Pair<Int, Int>? {
+        // 前后各走 d 步碰头时，编辑距离约为 2d：超过上限的一半就不用再找了。
+        val dMax = minOf((n + m + 1) / 2, maxEdits / 2 + 2)
+        val offset = dMax
+        val size = 2 * dMax + 2
+        val v1 = IntArray(size) { -1 }
+        val v2 = IntArray(size) { -1 }
+        v1[offset + 1] = 0
+        v2[offset + 1] = 0
+        val delta = n - m
+        // 差的长度是奇数时，从前往后走的那一头先碰上。
+        val front = delta % 2 != 0
+        var k1start = 0
+        var k1end = 0
+        var k2start = 0
+        var k2end = 0
+        for (d in 0 until dMax) {
+            // 从前往后。
+            var k1 = -d + k1start
+            while (k1 <= d - k1end) {
+                val k1o = offset + k1
+                var x1 = if (k1 == -d || (k1 != d && v1[k1o - 1] < v1[k1o + 1])) v1[k1o + 1] else v1[k1o - 1] + 1
+                var y1 = x1 - k1
+                while (x1 < n && y1 < m && a[aS + x1] == b[bS + y1]) { x1++; y1++ }
+                v1[k1o] = x1
+                if (x1 > n) {
+                    k1end += 2
+                } else if (y1 > m) {
+                    k1start += 2
+                } else if (front) {
+                    val k2o = offset + delta - k1
+                    if (k2o in 0 until size && v2[k2o] != -1 && x1 >= n - v2[k2o]) return x1 to y1
+                }
+                k1 += 2
+            }
+            // 从后往前。
+            var k2 = -d + k2start
+            while (k2 <= d - k2end) {
+                val k2o = offset + k2
+                var x2 = if (k2 == -d || (k2 != d && v2[k2o - 1] < v2[k2o + 1])) v2[k2o + 1] else v2[k2o - 1] + 1
+                var y2 = x2 - k2
+                while (x2 < n && y2 < m && a[aS + n - x2 - 1] == b[bS + m - y2 - 1]) { x2++; y2++ }
+                v2[k2o] = x2
+                if (x2 > n) {
+                    k2end += 2
+                } else if (y2 > m) {
+                    k2start += 2
+                } else if (!front) {
+                    val k1o = offset + delta - k2
+                    if (k1o in 0 until size && v1[k1o] != -1) {
+                        val x1 = v1[k1o]
+                        val y1 = x1 - (k1o - offset)
+                        if (x1 >= n - x2) return x1 to y1
+                    }
+                }
+                k2 += 2
+            }
         }
-        while (x > 0 && y > 0) { ops += Piece(Kind.SAME, a[x - 1].toString()); x--; y-- }
-        ops.reverse()
-        return ops
+        return null
     }
 }

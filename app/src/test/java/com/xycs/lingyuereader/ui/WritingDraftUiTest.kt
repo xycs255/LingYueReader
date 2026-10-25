@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -22,6 +23,7 @@ import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +47,8 @@ class WritingDraftUiTest {
     private var c2 = ""
     private lateinit var server: HttpServer
     private val asked: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
+    @Volatile private var authorWritesSummary = false
+    private val release = java.util.concurrent.CountDownLatch(1)
 
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -54,6 +58,25 @@ class WritingDraftUiTest {
                     val system = (0 until msgs.length()).map { msgs.getJSONObject(it) }.firstOrNull { it.getString("role") == "system" }?.getString("content").orEmpty()
                     val user = msgs.getJSONObject(msgs.length() - 1).getString("content")
                     asked += system to user
+                    if ("慢慢写" in user) {
+                        // 流式回答：先给一句，停很久再给下一句（测试在中间停下）。
+                        ex.responseHeaders.add("Content-Type", "text/event-stream")
+                        ex.sendResponseHeaders(200, 0)
+                        runCatching {
+                            ex.responseBody.use { out ->
+                                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"沈默走进雪里。\"}}]}\n\n".toByteArray())
+                                out.flush()
+                                // 等到测试结束（最多半分钟）才给下一句：测试一定是在写的途中停下的。
+                                release.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"\\n他没有回头。\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".toByteArray())
+                            }
+                        }
+                        return@createContext
+                    }
+                    // 补写摘要写到第二章时，作者正好在细纲卡里自己写了摘要。
+                    if ("概括这一章" in user && "旧稿一句。" in user && authorWritesSummary) {
+                        WorkStore(writingDir).let { it.saveCard(workId, c2, it.card(workId, c2).copy(summary = "作者自己写的摘要")) }
+                    }
                     val answer = when {
                         "请写出这一章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
                         "请从最后一句接着往下写" in user -> "门外的人没有回答。"
@@ -67,6 +90,7 @@ class WritingDraftUiTest {
                     ex.sendResponseHeaders(200, bytes.size.toLong())
                     ex.responseBody.use { it.write(bytes) }
                 }
+                executor = java.util.concurrent.Executors.newCachedThreadPool()
                 start()
             }
             val files = context.filesDir
@@ -92,6 +116,7 @@ class WritingDraftUiTest {
         }
 
         override fun after() {
+            release.countDown()
             server.stop(0)
         }
     }
@@ -106,6 +131,9 @@ class WritingDraftUiTest {
     }
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+    /** 每道审稿的结果写在卡片第一行，读屏念成“事实关：1 处”（组名里不再写状态）。 */
+    private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     @Test
     fun aiWritesTheChapterThenItGoesIntoTheText() {
@@ -160,9 +188,46 @@ class WritingDraftUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, c2)) }
         waitForText("还没有审过")
         compose.onNodeWithText("开始审稿").performClick()
-        waitForText("一、事实关 · 出错")
-        waitForText("二、写法关 · 出错")
+        waitForGate("事实关：出错")
+        waitForGate("写法关：出错")
         waitForText("AI 的回答不是要求的格式")
-        waitForText("三、规则关 · 1 处")
+        waitForGate("规则关：1 处")
+    }
+
+    @Test
+    fun aSummaryTheAuthorWroteMeanwhileIsKept() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        authorWritesSummary = true
+        compose.runOnUiThread { vm.writingAi.summarizeAll(workId) }
+        waitFor { store.card(workId, c1).summary == "沈默进城，在杜娘的茶馆落脚。" }
+        waitFor { vm.writingAi.summaries.value == null && asked.count { "概括这一章" in it.second } == 2 }
+        Thread.sleep(500)
+        ShadowLooper.idleMainLooper()
+        // 写入前重新读了卡片：作者写的摘要没被盖掉，细纲也还在。
+        assertEquals("作者自己写的摘要", store.card(workId, c2).summary)
+        assertEquals("杜娘开门，门外来了人", store.card(workId, c2).facts)
+    }
+
+    @Test
+    fun draftsOfTwoChaptersDoNotMixAndStoppingKeepsWhatWasWritten() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c1, "慢慢写") }
+        waitFor { vm.writingAi.drafts.value[workId to c1]?.text == "沈默走进雪里。" }
+        // 第一章还在写：打开第二章的草稿页，不动第一章的状态。
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("这一章想怎么写")
+        waitFor { vm.writingAi.drafts.value.containsKey(workId to c2) }
+        assertTrue(vm.writingAi.drafts.value.getValue(workId to c1).loading)
+        // 回到第一章的草稿页：还在写，没有“放进正文”。
+        compose.runOnUiThread { vm.replaceTop(Screen.ChapterDraft(workId, c1)) }
+        waitForText("正在写")
+        assertTrue(compose.onAllNodesWithText("放进正文").fetchSemanticsNodes().isEmpty())
+        // 停下：写出来的存成草稿，可以接着写。
+        compose.onNodeWithText("停止").performClick()
+        waitFor { store.draft(workId, c1) == "沈默走进雪里。" }
+        assertFalse(vm.writingAi.drafts.value.getValue(workId to c1).loading)
+        waitForText("放进正文")
     }
 }

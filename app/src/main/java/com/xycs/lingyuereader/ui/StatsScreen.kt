@@ -9,6 +9,9 @@ import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -88,7 +93,7 @@ fun StatsScreen(vm: AppViewModel) {
                             // 今天最要紧，写大；本周、本月、今年并排小一号。
                             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                                 Text("今天", fontSize = 13.sp, color = c.secondary)
-                                val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat(), 900)
+                                val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat())
                                 Text(minutes(todayShown.toLong()), color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
                                 Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
                                 Row(Modifier.fillMaxWidth()) {
@@ -114,25 +119,22 @@ fun StatsScreen(vm: AppViewModel) {
                             }
                         }
                     }
-                    val books = shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis }
+                    val books = remember(shelf) { shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis } }
                     val longest = books.firstOrNull()?.readMillis ?: 1
+                    // 书多时先列读得最久的几本（每本都带动画，一次全排出来会卡一下），点“查看全部”再展开。
+                    var showAll by rememberSaveable { mutableStateOf(false) }
+                    // 点“查看全部”“收起”时多出来、去掉的几行由卡片的高度动画平滑长高、缩短（GroupedSection 自带）。
                     GroupedSection(header = "各本书") {
                         if (books.isEmpty()) {
-                            row {
-                                Text(
-                                    "还没有阅读记录。一本书读满 1 分钟，就会列在这里。",
-                                    color = c.secondary,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-                                )
-                            }
+                            row { EmptyRow("还没有阅读记录。一本书读满 1 分钟，就会列在这里。") }
                         }
-                        books.forEach { b ->
+                        (if (showAll) books else books.take(TOP_BOOKS)).forEach { b ->
                             row {
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                                    Row {
-                                        Text(b.title, color = c.label, fontSize = 17.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 15.sp)
+                                // 行高、字号同 NavRow：书名 16sp 半粗、右边时长 14sp 灰字，至少 56dp 高。
+                                Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(b.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
                                     }
                                     val grown = animateFromZero(b.readMillis.toFloat() / longest)
                                     Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
@@ -140,6 +142,9 @@ fun StatsScreen(vm: AppViewModel) {
                                     }
                                 }
                             }
+                        }
+                        if (books.size > TOP_BOOKS) {
+                            row { ActionRow(if (showAll) "收起" else "查看全部 ${books.size} 本") { showAll = !showAll } }
                         }
                     }
                 }
@@ -151,13 +156,16 @@ fun StatsScreen(vm: AppViewModel) {
 @Composable
 private fun Figure(label: String, millis: Long, modifier: Modifier = Modifier) {
     // 打开统计页时数字从 0 往上数。
-    val shown = animateFromZero(millis.toFloat(), 900)
+    val shown = animateFromZero(millis.toFloat())
     val c = LocalGroupedColors.current
     Column(modifier) {
         Text(minutes(shown.toLong()), color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium)
         Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
+
+/** “各本书”先列几本。 */
+private const val TOP_BOOKS = 10
 
 private fun minutes(millis: Long): String {
     val m = millis / 60_000
@@ -181,7 +189,7 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
     val readDays = days.count { (d, s) -> !d.isBefore(start) && s.millis >= 60_000 }
     // 从左往右一列列亮起来。
     val reveal = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
-    LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(900)) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(Motion.COUNT_UP)) }
     Canvas(
         Modifier
             .fillMaxWidth()
@@ -253,7 +261,7 @@ private fun GoalSection(vm: AppViewModel, todayMinutes: Int) {
                         )
                     }
                     Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.fill)) {
-                        val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f), 900)
+                        val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f))
                         Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(c.tint))
                     }
                 }

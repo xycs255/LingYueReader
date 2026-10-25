@@ -5,13 +5,10 @@ import androidx.compose.runtime.getValue
 import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,31 +17,31 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.ReplaceRule
 import com.xycs.lingyuereader.data.TextRules
+import com.xycs.lingyuereader.data.RegexTooSlowException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -67,31 +64,47 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     val shelf by vm.shelf.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val entry = shelf.firstOrNull { it.id == bookId }
-    var loaded by remember { mutableStateOf(false) }
-    var toc by remember { mutableStateOf("") }
-    var rules by remember { mutableStateOf(listOf<ReplaceRule>()) }
-    var source by remember { mutableStateOf("") }
+    // 没保存的改动旋转屏幕后还在：规则从磁盘读过一次就不再读，免得盖掉。全文太大，不存，重新读。
+    var rulesRead by rememberSaveable { mutableStateOf(false) }
+    var toc by rememberSaveable { mutableStateOf("") }
+    var rules by rememberSaveable(stateSaver = RulesSaver) { mutableStateOf(listOf<ReplaceRule>()) }
+    var source by remember { mutableStateOf<String?>(null) }
     var chapters by remember { mutableStateOf<List<String>?>(null) }
-    var pattern by remember { mutableStateOf("") }
-    var replacement by remember { mutableStateOf("") }
-    var regex by remember { mutableStateOf(false) }
+    // 试分章时正则太慢、被放弃了：这时不让保存。
+    var tooSlow by remember { mutableStateOf(false) }
+    var pattern by rememberSaveable { mutableStateOf("") }
+    var replacement by rememberSaveable { mutableStateOf("") }
+    var regex by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(entry?.id) {
         val e = entry ?: return@LaunchedEffect
-        val r = vm.bookRules(e.id)
-        toc = r.toc
-        rules = r.replace
+        if (!rulesRead) {
+            val r = vm.bookRules(e.id)
+            toc = r.toc
+            rules = r.replace
+            rulesRead = true
+        }
         source = vm.bookSourceText(e)
-        loaded = true
     }
+    val loaded = rulesRead && source != null
     val current = TextRules(rules, toc.trim())
     // 停手半秒再试分章：整本重新解析，不能每敲一个字就跑一遍。
     LaunchedEffect(current, loaded) {
         val e = entry ?: return@LaunchedEffect
         if (!loaded) return@LaunchedEffect
         chapters = null
+        tooSlow = false
         delay(500)
-        chapters = runCatching { vm.previewChapters(e, current) }.getOrNull()
+        chapters = try {
+            vm.previewChapters(e, current)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (slow: RegexTooSlowException) {
+            tooSlow = true
+            null
+        } catch (failed: Exception) {
+            null
+        }
     }
     val tocError = toc.takeIf { it.isNotBlank() }?.let(TextRules::error)
 
@@ -113,7 +126,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
             },
         ) { padding ->
             if (entry == null || !loaded) {
-                InfiniteProgressIndicator(Modifier.padding(top = padding.calculateTopPadding() + 48.dp).fillMaxWidth())
+                LoadingState("正在读取规则和原文……", Modifier.padding(top = padding.calculateTopPadding()))
                 return@GlassScaffold
             }
             val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
@@ -146,16 +159,21 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
                     GroupedSection(header = "预览") {
                         row {
-                            Text(
-                                when {
-                                    list == null -> "正在试分章……"
-                                    list.size <= 1 -> "按这个规则只分出 ${list.size} 章，可能没匹配到章名。"
-                                    else -> "将分为 ${list.size} 章"
-                                },
-                                color = if (list != null && list.size <= 1) c.destructive else c.secondary,
-                                fontSize = 14.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            )
+                            if (list == null && !tooSlow) {
+                                LoadingRow("正在试分章……")
+                            } else {
+                                val count = list?.size ?: 0
+                                Text(
+                                    when {
+                                        tooSlow -> "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
+                                        count <= 1 -> "按这个规则只分出 $count 章，可能没匹配到章名。"
+                                        else -> "将分为 $count 章"
+                                    },
+                                    color = if (tooSlow || count <= 1) c.destructive else c.secondary,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                )
+                            }
                         }
                         if (list != null && list.size > 1) {
                             val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
@@ -164,23 +182,15 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     }
                     GroupedSection(header = "净化规则") {
                         if (rules.isEmpty()) {
-                            row {
-                                Text(
-                                    "还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。",
-                                    color = c.secondary,
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                )
-                            }
+                            row { EmptyRow("还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。") }
                         }
                         rules.forEachIndexed { i, r ->
                             row {
-                                val preview = rememberPreview(r, source)
+                                val preview = rememberPreview(r, source.orEmpty())
                                 RuleRow(
                                     rule = r,
-                                    matches = preview?.let { "匹配 ${it.first} 处" } ?: "统计中……",
-                                    samples = preview?.second.orEmpty(),
+                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { "正则太慢" }) ?: "统计中……",
+                                    samples = preview?.getOrNull()?.second.orEmpty(),
                                     onToggle = { on -> rules = rules.toMutableList().also { it[i] = r.copy(enabled = on) } },
                                     onDelete = { rules = rules.filterIndexed { j, _ -> j != i } },
                                 )
@@ -189,13 +199,15 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     }
                     val draft = ReplaceRule(pattern, replacement, regex)
                     val error = if (regex && pattern.isNotEmpty()) TextRules.error(pattern) else null
-                    val draftPreview = rememberPreview(draft, source)
+                    val draftPreview = rememberPreview(draft, source.orEmpty())
+                    val draftSlow = draftPreview?.isFailure == true
                     GroupedSection(
                         header = "添加规则",
                         footer = when {
                             error != null -> "正则有误：$error"
-                            pattern.isNotEmpty() -> (draftPreview?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
-                                draftPreview?.second.orEmpty().joinToString("") { "\n$it" }
+                            draftSlow -> "正则太慢，在这本书上跑不完。请改写，避免 (\\w+\\s?)+ 这类套在一起的重复。"
+                            pattern.isNotEmpty() -> (draftPreview?.getOrNull()?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
+                                draftPreview?.getOrNull()?.second.orEmpty().joinToString("") { "\n$it" }
                             else -> null
                         },
                     ) {
@@ -211,7 +223,8 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                         row { TextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, colors = fieldColors, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
                         row { ToggleRow("按正则匹配", regex) { regex = it } }
                         row {
-                            ActionRow("添加", enabled = pattern.isNotEmpty() && error == null) {
+                            // 正则要等统计完、确认不慢才能添加。
+                            ActionRow("添加", enabled = pattern.isNotEmpty() && error == null && !draftSlow && (!regex || draftPreview != null)) {
                                 rules = rules + draft
                                 pattern = ""
                                 replacement = ""
@@ -219,18 +232,14 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                             }
                         }
                     }
-                    Box(
-                        Modifier
-                            .padding(horizontal = 16.dp)
-                            .fillMaxWidth()
-                            .heightIn(min = 50.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(if (!busy && tocError == null) c.tint else c.fill)
-                            .clickable(enabled = !busy && tocError == null) { vm.saveRules(entry, current) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(if (busy) "正在重新整理……" else "保存并重新分章", color = if (!busy && tocError == null) Color.White else c.secondary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                    }
+                    val canSave = !busy && tocError == null && !tooSlow
+                    // 主按钮和上面的卡片左右对齐（都缩进 12dp）。
+                    PrimaryButton(
+                        if (busy) "正在重新整理……" else "保存并重新分章",
+                        onClick = { vm.saveRules(entry, current) },
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        enabled = canSave,
+                    )
                     Text(
                         "规则只影响灵阅里的显示，不会改动原文件。",
                         color = c.secondary,
@@ -267,14 +276,27 @@ private fun RuleRow(rule: ReplaceRule, matches: String, samples: List<String>, o
     }
 }
 
-/** 在后台统计规则匹配几处（整本书的文字可能有十几兆，不能在主线程上算）；停手 300 毫秒再算。 */
+/**
+ * 在后台统计规则匹配几处（整本书的文字可能有十几兆，不能在主线程上算）；停手 300 毫秒再算。
+ * 统计中为 null；正则太慢、被放弃时是失败（[RegexTooSlowException]）。改了规则就不再等上一次的结果。
+ */
 @Composable
-private fun rememberPreview(rule: ReplaceRule, source: String): Pair<Int, List<String>>? {
-    val state = produceState<Pair<Int, List<String>>?>(null, rule, source) {
+private fun rememberPreview(rule: ReplaceRule, source: String): Result<Pair<Int, List<String>>>? {
+    val state = produceState<Result<Pair<Int, List<String>>>?>(null, rule, source) {
         value = null
         if (rule.pattern.isEmpty()) return@produceState
         delay(300)
-        value = withContext(Dispatchers.Default) { TextRules.preview(rule, source) }
+        value = try {
+            Result.success(runInterruptible(Dispatchers.Default) { TextRules.preview(rule, source) })
+        } catch (slow: RegexTooSlowException) {
+            Result.failure(slow)
+        }
     }
     return state.value
 }
+
+/** 净化规则列表旋转屏幕时存成 JSON，和 rules.json 同一个格式。 */
+private val RulesSaver = Saver<List<ReplaceRule>, String>(
+    save = { TextRules(it).toJson().toString() },
+    restore = { TextRules.fromJson(JSONObject(it)).replace },
+)

@@ -4,13 +4,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.background
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.ui.graphics.Color
@@ -33,7 +26,6 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BookEntry
 import com.xycs.lingyuereader.data.BookFormat
-import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
@@ -135,19 +127,12 @@ private fun Header(entry: BookEntry, vm: AppViewModel) {
                 )
             }
         }
-        // 主按钮和下面的卡片左右对齐。
-        Box(
-            Modifier
-                .padding(top = 20.dp)
-                .fillMaxWidth()
-                .heightIn(min = 50.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(c.tint)
-                .clickable(role = Role.Button) { vm.open(Screen.Reader(entry.id)) },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(if (entry.progress == null) "开始阅读" else "继续阅读", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-        }
+        // 主按钮和下面的卡片左右对齐（都缩进 12dp）。
+        PrimaryButton(
+            if (entry.progress == null) "开始阅读" else "继续阅读",
+            onClick = { vm.open(Screen.Reader(entry.id)) },
+            modifier = Modifier.padding(top = 20.dp),
+        )
     }
 }
 

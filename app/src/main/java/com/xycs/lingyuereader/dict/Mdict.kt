@@ -94,8 +94,17 @@ class MdictFile(private val file: File, private val isMdd: Boolean = false) {
             readNumber(raf) // 条目数
             readNumber(raf) // 块信息大小
             readNumber(raf) // 正文块总大小
-            val sizes = (0 until numRecordBlocks).map { readNumber(raf).toInt() to readNumber(raf).toInt() }
+            // 块信息先核对再用：块数、每块大小都不能超出文件，否则查词时会按坏的大小分配内存、读出界。
+            if (numRecordBlocks < 0 || numRecordBlocks > (raf.length() - raf.filePointer) / (2 * numberWidth)) throw Unsupported("正文区损坏")
+            val sizes = (0 until numRecordBlocks).map {
+                val c = readNumber(raf)
+                val d = readNumber(raf)
+                if (c !in 8..Int.MAX_VALUE.toLong() || d !in 0..Int.MAX_VALUE.toLong()) throw Unsupported("正文区损坏")
+                c.toInt() to d.toInt()
+            }
             pos = raf.filePointer
+            // 各块压缩后大小加起来不能超过文件剩下的长度（文件不完整、被截断时在导入时就报错）。
+            if (sizes.sumOf { it.first.toLong() } > raf.length() - pos) throw Unsupported("词典文件不完整（正文区比文件还长）")
             decompressedAt = 0L
             recordBlocks = sizes.map { (c, d) ->
                 BlockInfo(pos, c, d, decompressedAt).also {

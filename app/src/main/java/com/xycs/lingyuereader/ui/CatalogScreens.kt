@@ -11,6 +11,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +85,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
@@ -89,7 +94,7 @@ import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 private val OpdsColor = Color(0xFFFF9500)
-private val DavColor = Color(0xFF007AFF)
+private val DavColor = RowIconColors.Folder
 
 private fun CatalogKind.icon() = if (this == CatalogKind.OPDS) LingYueIcons.Book else LingYueIcons.Folder
 private fun CatalogKind.color() = if (this == CatalogKind.OPDS) OpdsColor else DavColor
@@ -171,7 +176,7 @@ fun CatalogsScreen(vm: AppViewModel) {
                     if (catalogs.none { it.url.trim() == CatalogPresets.GUTENBERG.url }) {
                         GroupedSection(header = "公版书", footer = "古登堡计划：七万多本版权已过期的书，以英文为主，可以直接下载 EPUB。") {
                             iconRow {
-                                NavRow("添加古登堡计划", icon = LingYueIcons.Add, iconBackground = Color(0xFF34C759)) {
+                                NavRow("添加古登堡计划", icon = LingYueIcons.Add, iconBackground = RowIconColors.Add) {
                                     vm.saveCatalog(CatalogPresets.GUTENBERG.copy(id = java.util.UUID.randomUUID().toString()))
                                 }
                             }
@@ -184,32 +189,26 @@ fun CatalogsScreen(vm: AppViewModel) {
     }
 }
 
-/** 一个书源：图标、名字、地址；右边“编辑”。 */
+/** 一个书源：图标、名字、地址（照 [NavRow]）；箭头前一个“编辑”。 */
 @Composable
 private fun CatalogRow(cat: Catalog, onEdit: () -> Unit, onOpen: () -> Unit) {
     val c = LocalGroupedColors.current
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(role = Role.Button, onClick = onOpen).padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RowIcon(cat.kind.icon(), cat.kind.color())
-        Column(Modifier.weight(1f).padding(start = 12.dp, top = 8.dp, bottom = 8.dp)) {
-            Text(cat.name, color = c.label, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    NavRow(
+        cat.name,
+        icon = cat.kind.icon(),
+        iconBackground = cat.kind.color(),
+        subtitle = "${if (cat.kind == CatalogKind.OPDS) "OPDS" else "WebDAV"} · ${cat.url.trim().removePrefix("https://").removePrefix("http://")}",
+        subtitleMaxLines = 1,
+        trailing = {
             Text(
-                "${if (cat.kind == CatalogKind.OPDS) "OPDS" else "WebDAV"} · ${cat.url.trim().removePrefix("https://").removePrefix("http://")}",
-                color = c.secondary,
-                fontSize = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                "编辑",
+                color = c.tint,
+                fontSize = 15.sp,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onEdit).padding(horizontal = 8.dp, vertical = 12.dp),
             )
-        }
-        Text(
-            "编辑",
-            color = c.tint,
-            fontSize = 15.sp,
-            modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onEdit).padding(horizontal = 12.dp, vertical = 14.dp),
-        )
-    }
+        },
+        onClick = onOpen,
+    )
 }
 
 /** 添加或编辑书源：类型、名称、地址、账号；可以先测试连接再保存。 */
@@ -217,18 +216,19 @@ private fun CatalogRow(cat: Catalog, onEdit: () -> Unit, onOpen: () -> Unit) {
 fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
     val catalogs by vm.catalogs.collectAsStateWithLifecycle()
     val existing = remember(catalogId) { catalogs.firstOrNull { it.id == catalogId } }
-    var kind by remember { mutableStateOf(existing?.kind ?: CatalogKind.OPDS) }
-    var name by remember { mutableStateOf(existing?.name.orEmpty()) }
-    var url by remember { mutableStateOf(existing?.url.orEmpty()) }
-    var username by remember { mutableStateOf(existing?.username.orEmpty()) }
-    var password by remember { mutableStateOf(existing?.password.orEmpty()) }
+    // 没保存的输入旋转屏幕后还在。
+    var kind by rememberSaveable { mutableStateOf(existing?.kind ?: CatalogKind.OPDS) }
+    var name by rememberSaveable { mutableStateOf(existing?.name.orEmpty()) }
+    var url by rememberSaveable { mutableStateOf(existing?.url.orEmpty()) }
+    var username by rememberSaveable { mutableStateOf(existing?.username.orEmpty()) }
+    var password by rememberSaveable { mutableStateOf(existing?.password.orEmpty()) }
     var showPassword by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf<Job?>(null) }
     var result by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val draft = Catalog(
-        id = existing?.id ?: remember { java.util.UUID.randomUUID().toString() },
+        id = existing?.id ?: rememberSaveable { java.util.UUID.randomUUID().toString() },
         kind = kind,
         name = name.trim().ifEmpty { url.trim().removePrefix("https://").removePrefix("http://").substringBefore('/') },
         url = url.trim(),
@@ -329,11 +329,16 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
             }
             if (confirmDelete && existing != null) {
                 GlassDialog(show = true, title = "删除书源", summary = "删除“${existing.name}”？已经下载到书架的书不受影响。", onDismissRequest = { confirmDelete = false }) {
-                    DialogButtons(confirm = "删除", onDismiss = { confirmDelete = false }) {
-                        confirmDelete = false
-                        vm.removeCatalog(existing.id)
-                        vm.back()
-                    }
+                    DialogButtons(
+                        onDismiss = { confirmDelete = false },
+                        onConfirm = {
+                            confirmDelete = false
+                            vm.removeCatalog(existing.id)
+                            vm.back()
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }
@@ -359,19 +364,32 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<RemotePage?>(null) }
     var searching by remember { mutableStateOf(false) }
-    var loadingMore by remember { mutableStateOf(false) }
+    // 翻页失败的原因：底部不再转圈，改成“点此重试”。
+    var moreError by remember { mutableStateOf<String?>(null) }
+    var moreRetry by remember { mutableIntStateOf(0) }
+    var refreshing by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<RemoteItem.Book?>(null) }
     val scope = rememberCoroutineScope()
 
+    // 进页面时先用缓存；点“刷新”（reload 加一）时不用缓存，重新从书源取。
     LaunchedEffect(url, reload) {
         if (catalog == null || (page != null && reload == 0)) return@LaunchedEffect
         error = null
-        try {
+        refreshing = true
+        val failed = try {
             page = vm.remotePage(catalog, url, fresh = reload > 0)
+            moreError = null
+            null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            error = e.message ?: "打不开"
+            e.message ?: "打不开"
+        } finally {
+            refreshing = false
+        }
+        // 已经显示着内容时刷新失败：留着原来的内容，提示一下。
+        if (failed != null) {
+            if (page != null) snackbar.showSnackbar("刷新失败：$failed") else error = failed
         }
     }
     LaunchedEffect(message) {
@@ -385,7 +403,14 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
         val c = LocalGroupedColors.current
         GlassScaffold(
             containerColor = c.background,
-            topBar = { PageBar(screen.title.ifEmpty { page?.title ?: catalog?.name ?: "书源" }, onBack = { vm.back() }) },
+            topBar = {
+                PageBar(
+                    screen.title.ifEmpty { page?.title ?: catalog?.name ?: "书源" },
+                    onBack = { vm.back() },
+                    action = ("刷新" to { reload += 1 }).takeIf { catalog != null },
+                    actionEnabled = !refreshing,
+                )
+            },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
             val current = page
@@ -398,9 +423,7 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                     Modifier.padding(top = padding.calculateTopPadding()),
                     action = "重试" to { reload++ },
                 )
-                current == null -> Box(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding() + 64.dp), contentAlignment = Alignment.TopCenter) {
-                    InfiniteProgressIndicator(color = c.tint)
-                }
+                current == null -> LoadingState("正在打开……", Modifier.padding(top = padding.calculateTopPadding()))
                 else -> {
                     val dav = catalog.kind == CatalogKind.WEBDAV
                     val canSearch = dav || current.searchTemplate != null || current.searchDescription != null
@@ -409,11 +432,19 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                     val listState = rememberLazyListState()
                     // 滚到底加载 OPDS 的下一页。
                     val atEnd by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= listState.layoutInfo.totalItemsCount - 3 } == true } }
-                    LaunchedEffect(atEnd, shown.next) {
-                        if (!atEnd || shown.next == null || loadingMore || results != null) return@LaunchedEffect
-                        loadingMore = true
-                        runCatching { vm.remoteMore(catalog, url, current) }.onSuccess { page = it }
-                        loadingMore = false
+                    // 同一组参数只取一次。不另记“正在取”：这一段离开组合再回来时（比如换页动画），
+                    // 旧的那次被取消，“正在取”却留着，新的一次就不再取，底部一直转圈。
+                    LaunchedEffect(atEnd, shown.next, moreRetry) {
+                        if (!atEnd || shown.next == null || moreError != null || results != null) return@LaunchedEffect
+                        try {
+                            val more = vm.remoteMore(catalog, url, current)
+                            // 这期间点了刷新：不拿旧的一页接在新内容上。
+                            if (page === current) page = more
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            moreError = e.message ?: "打不开"
+                        }
                     }
                     LazyColumn(
                         Modifier.fillMaxSize().overScrollVertical(),
@@ -466,8 +497,10 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                         }
                         // 书源返回的条目可能重复（同一个链接出现两次、翻页时目录有变动）：重复的 key 会让列表崩溃，只留第一条。
                         items(items.distinctBy { it.key }, key = { it.key }) { item ->
+                            // 筛选、搜索、翻页加载时其余条目滑到新位置，新的淡入、去掉的淡出。
+                            val motion = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())
                             when (item) {
-                                is RemoteItem.Folder -> FolderRow(item, dav) {
+                                is RemoteItem.Folder -> FolderRow(item, dav, motion) {
                                     vm.open(Screen.CatalogBrowse(catalog.id, item.url, item.title))
                                 }
                                 is RemoteItem.Book -> {
@@ -480,13 +513,29 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                                         downloading = item.files.any { it.url == downloading },
                                         onOpen = { detail = item },
                                         onDownload = { vm.downloadRemote(file, item.title.takeIf { !dav }) },
+                                        modifier = motion,
                                     )
                                 }
                             }
                         }
                         if (shown.next != null && results == null) {
                             item {
-                                Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator(color = c.tint) }
+                                if (moreError != null) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable(role = Role.Button) {
+                                                moreError = null
+                                                moreRetry++
+                                            }
+                                            .padding(20.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text("加载失败，点此重试", color = c.tint, fontSize = 15.sp)
+                                    }
+                                } else {
+                                    Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { Spinner(size = 20.dp) }
+                                }
                             }
                         }
                     }
@@ -530,16 +579,16 @@ private fun SearchField(query: String, hint: String, busy: Boolean, onChange: (S
             keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
             modifier = Modifier.weight(1f),
         )
-        if (busy) InfiniteProgressIndicator(size = 16.dp, color = c.tint)
+        if (busy) Spinner()
     }
     Spacer(Modifier.height(8.dp))
 }
 
 @Composable
-private fun FolderRow(item: RemoteItem.Folder, dav: Boolean, onClick: () -> Unit) {
+private fun FolderRow(item: RemoteItem.Folder, dav: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val c = LocalGroupedColors.current
     Row(
-        Modifier
+        modifier
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
@@ -560,10 +609,19 @@ private fun FolderRow(item: RemoteItem.Folder, dav: Boolean, onClick: () -> Unit
 
 /** 一本书：封面、书名、作者、简介或大小；右边下载钮。 */
 @Composable
-private fun BookRow(item: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, inShelf: Boolean, downloading: Boolean, onOpen: () -> Unit, onDownload: () -> Unit) {
+private fun BookRow(
+    item: RemoteItem.Book,
+    vm: AppViewModel,
+    catalogUrl: String,
+    inShelf: Boolean,
+    downloading: Boolean,
+    onOpen: () -> Unit,
+    onDownload: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val c = LocalGroupedColors.current
     Row(
-        Modifier
+        modifier
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
@@ -598,7 +656,10 @@ private fun sizeLabel(bytes: Long): String = when {
 
 private enum class DownloadStage { READY, BUSY, SHELVED }
 
-/** 下载箭头落成等待环、再变成勾；状态靠图形变化读懂，读屏仍能获得完整说明。 */
+/**
+ * 下载箭头落成等待环、再变成勾；状态靠图形变化读懂，读屏仍能获得完整说明。
+ * 外形同 [PillButton] 的淡色胶囊：看着 36dp 高、两头全圆，能点的范围 48dp，按下缩到 0.95 倍；已入书架时换成灰底。
+ */
 @Composable
 internal fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String = "下载", onClick: () -> Unit) {
     val c = LocalGroupedColors.current
@@ -607,17 +668,15 @@ internal fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String 
         downloading -> DownloadStage.BUSY
         else -> DownloadStage.READY
     }
+    val source = remember { MutableInteractionSource() }
     val background by animateColorAsState(
-        if (stage == DownloadStage.SHELVED) c.secondary.copy(alpha = 0.09f) else c.tint.copy(alpha = 0.12f),
+        if (stage == DownloadStage.SHELVED) c.fill else c.tint.copy(alpha = 0.12f),
         Motion.standard(Motion.SHORT), label = "downloadBackground",
     )
     Box(
         Modifier
-            .widthIn(min = 96.dp)
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(background)
-            .clickable(enabled = stage == DownloadStage.READY, role = Role.Button, onClick = onClick)
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(interactionSource = source, indication = null, enabled = stage == DownloadStage.READY, role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {
                 contentDescription = when (stage) {
                     DownloadStage.READY -> label
@@ -627,33 +686,44 @@ internal fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String 
             },
         contentAlignment = Alignment.Center,
     ) {
-        AnimatedContent(stage, transitionSpec = {
-            if (Effects.noMotion) (EnterTransition.None togetherWith ExitTransition.None).using(null)
-            else (fadeIn(Motion.standard(Motion.SHORT)) + slideInVertically(
-                animationSpec = Motion.standard(Motion.SHORT), initialOffsetY = { -it / 3 },
-            )) togetherWith fadeOut(Motion.exit(Motion.SHORT))
-        }, label = "downloadStage") { shown ->
-            val tint = if (shown == DownloadStage.SHELVED) c.secondary else c.tint
-            Row(
-                Modifier.padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                when (shown) {
-                    DownloadStage.READY -> Icon(LingYueIcons.Download, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-                    DownloadStage.BUSY -> if (Effects.noMotion) {
-                        Icon(LingYueIcons.Timer, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-                    } else InfiniteProgressIndicator(size = 18.dp, color = tint)
-                    DownloadStage.SHELVED -> Icon(LingYueIcons.Check, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-                }
-                Text(
+        Box(
+            Modifier
+                .pressScale(source, 0.95f)
+                .widthIn(min = 96.dp)
+                .heightIn(min = 36.dp)
+                .clip(CircleShape)
+                .background(background),
+            contentAlignment = Alignment.Center,
+        ) {
+            AnimatedContent(stage, transitionSpec = {
+                if (Effects.noMotion) (EnterTransition.None togetherWith ExitTransition.None).using(null)
+                else (fadeIn(Motion.standard(Motion.SHORT)) + slideInVertically(
+                    animationSpec = Motion.standard(Motion.SHORT), initialOffsetY = { -it / 3 },
+                )) togetherWith fadeOut(Motion.exit(Motion.SHORT))
+            }, label = "downloadStage") { shown ->
+                val tint = if (shown == DownloadStage.SHELVED) c.secondary else c.tint
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
                     when (shown) {
-                        DownloadStage.READY -> label
-                        DownloadStage.BUSY -> "下载中"
-                        DownloadStage.SHELVED -> "已入书架"
-                    },
-                    color = tint, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                )
+                        DownloadStage.READY -> Icon(LingYueIcons.Download, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                        // 减少动效时不放转圈，用不动的钟表图标。
+                        DownloadStage.BUSY -> if (Effects.noMotion) {
+                            Icon(LingYueIcons.Timer, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                        } else Spinner(size = 18.dp, color = tint)
+                        DownloadStage.SHELVED -> Icon(LingYueIcons.Check, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                    }
+                    Text(
+                        when (shown) {
+                            DownloadStage.READY -> label
+                            DownloadStage.BUSY -> "下载中"
+                            DownloadStage.SHELVED -> "已入书架"
+                        },
+                        color = tint, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    )
+                }
             }
         }
     }
@@ -681,6 +751,7 @@ private fun Cover(item: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, m
 }
 
 /** 书的详情面板：封面、书名、作者、简介，每个格式一个下载按钮。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookDetail(book: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, shelfUrls: Set<String>, downloading: String?, onDownload: (RemoteFile) -> Unit) {
     val c = LocalGroupedColors.current
@@ -698,32 +769,23 @@ private fun BookDetail(book: RemoteItem.Book, vm: AppViewModel, catalogUrl: Stri
             Text("这本书的封面来自其他网站，已默认隐藏。", color = c.secondary, fontSize = 12.sp)
         }
         book.summary?.let { Text(it, color = c.label, fontSize = 15.sp, lineHeight = 23.sp) }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            book.files.forEachIndexed { i, f ->
-                val inShelf = f.url in shelfUrls
-                val busy = f.url == downloading
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (i == 0 && !inShelf) c.tint else c.cell)
-                        .clickable(enabled = !inShelf && !busy, role = Role.Button) { onDownload(f) }
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    if (busy) InfiniteProgressIndicator(size = 16.dp, color = if (i == 0) Color.White else c.tint, modifier = Modifier.padding(end = 8.dp))
-                    Text(
-                        when {
-                            inShelf -> "${f.label} 已在书架"
-                            busy -> "正在下载 ${f.label}"
-                            else -> "下载 ${f.label}"
-                        },
-                        color = if (i == 0 && !inShelf) Color.White else if (inShelf) c.secondary else c.tint,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
+        // 第一个格式用主按钮，其余格式一排淡色胶囊；下载中、已在书架的不能点。
+        val label = { f: RemoteFile ->
+            when {
+                f.url in shelfUrls -> "${f.label} 已在书架"
+                f.url == downloading -> "正在下载 ${f.label}"
+                else -> "下载 ${f.label}"
+            }
+        }
+        val first = book.files.first()
+        Box(contentAlignment = Alignment.CenterStart) {
+            PrimaryButton(label(first), onClick = { onDownload(first) }, enabled = first.url !in shelfUrls && first.url != downloading)
+            if (first.url == downloading) Spinner(Modifier.padding(start = 16.dp))
+        }
+        if (book.files.size > 1) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                book.files.drop(1).forEach { f ->
+                    PillButton(label(f), onClick = { onDownload(f) }, style = PillStyle.Tinted, enabled = f.url !in shelfUrls && f.url != downloading)
                 }
             }
         }

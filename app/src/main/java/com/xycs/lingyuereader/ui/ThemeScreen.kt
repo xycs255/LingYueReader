@@ -163,7 +163,7 @@ private fun AppearancePicker(a: Appearance, onPick: (ThemeMode) -> Unit) {
                         .then(if (on) Modifier.background(c.tint) else Modifier.border(1.5.dp, c.tertiary, CircleShape)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (on) Icon(LingYueIcons.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                    if (on) Icon(LingYueIcons.Check, contentDescription = null, tint = c.onTint, modifier = Modifier.size(14.dp))
                 }
             }
         }
@@ -222,6 +222,7 @@ private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp)) {
         (listOf(0) + Appearance.ACCENTS).forEach { color ->
             val on = color == accent
+            val dot = if (color == 0) Color(0xFF3482FF) else Color(color)
             val ring by animateDpAsState(if (on) 2.dp else 0.dp, Motion.pop(), label = "ring")
             Box(
                 Modifier
@@ -237,10 +238,10 @@ private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
                 Box(
                     Modifier
                         .size(36.dp)
-                        .border(ring.coerceAtLeast(0.dp), (if (color == 0) Color(0xFF3482FF) else Color(color)).copy(alpha = if (on) 1f else 0f), CircleShape)
+                        .border(ring.coerceAtLeast(0.dp), dot.copy(alpha = if (on) 1f else 0f), CircleShape)
                         .padding(4.dp)
                         .clip(CircleShape)
-                        .background(if (color == 0) Color(0xFF3482FF) else Color(color)),
+                        .background(dot),
                     contentAlignment = Alignment.Center,
                 ) {
                     androidx.compose.animation.AnimatedVisibility(
@@ -248,7 +249,10 @@ private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
                         enter = Effects.enter(androidx.compose.animation.scaleIn(Motion.pop(), initialScale = 0.5f) + androidx.compose.animation.fadeIn(Motion.standard(Motion.SHORT))),
                         exit = Effects.exit(androidx.compose.animation.fadeOut(Motion.exit())),
                     ) {
-                        Icon(LingYueIcons.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        // 勾画在这颗圆点自己的颜色上（不一定是当前强调色，开着 Monet 时就不是）：和 onTint 同一个挑法，
+                        // 白勾够 3:1（图形的对比度要求）就用白，太浅的圆点上换深色勾。
+                        val check = if (contrastRatio(Color.White, dot) >= 3f) Color.White else contentColorOn(dot)
+                        Icon(LingYueIcons.Check, contentDescription = null, tint = check, modifier = Modifier.size(16.dp))
                     }
                 }
             }

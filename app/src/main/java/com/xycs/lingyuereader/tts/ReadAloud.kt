@@ -250,9 +250,17 @@ object ReadAloud {
                 onStart = ::onUtteranceStart,
                 onDone = ::onUtteranceDone,
                 onError = { id, message -> onUtteranceError(id, message) },
+                wakeLock = wakeLock(context),
             ).also { it.speed = rate }
         }
     }
+
+    /** AI、离线语音听书用的唤醒锁（见 [AiSpeaker] 的 wakeLock），跟着播放器走，播放器释放时放开。系统语音在引擎自己的进程里合成，不用它。 */
+    private fun wakeLock(context: Context): android.os.PowerManager.WakeLock? = runCatching {
+        context.getSystemService(android.os.PowerManager::class.java)
+            ?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "LingYue:ReadAloud")
+            ?.apply { setReferenceCounted(false) }
+    }.getOrNull()
 
     fun resume() {
         val s = _state.value ?: return

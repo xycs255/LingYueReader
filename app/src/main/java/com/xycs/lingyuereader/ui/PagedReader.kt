@@ -63,6 +63,7 @@ import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -152,8 +153,9 @@ internal fun PagedReader(
 
         val cacheKey = listOf(styles.settings.layoutKey, styles.pinyin != null, styles.fontFamily, density, images, widthPx, heightPx)
 
-        fun pagesOf(index: Int): List<Page>? = content.chapters.getOrNull(index)?.let { c ->
-            pageCache.get(cacheKey, index) { paginator.paginate(c, widthPx, heightPx) }
+        // 只在后台线程里调；[checkpoint] 在分页途中检查是否已取消（换章、改字号时旧的分页及早停下）。
+        fun pagesOf(index: Int, checkpoint: () -> Unit): List<Page>? = content.chapters.getOrNull(index)?.let { c ->
+            pageCache.get(cacheKey, index) { paginator.paginate(c, widthPx, heightPx, checkpoint) }
         }
 
         val chapter = content.chapters[chapterIndex]
@@ -161,7 +163,7 @@ internal fun PagedReader(
         // 分好之前只露出纸（前后章多半已经提前分好，翻过来时直接就有）。
         var ready by remember(chapter, paginator, widthPx, heightPx) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex)) }
         LaunchedEffect(chapter, paginator, widthPx, heightPx) {
-            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) }
+            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) { ensureActive() } }
         }
         val pages = ready ?: run {
             // 还在分页：轻点照样能叫出菜单、翻页。
@@ -204,10 +206,10 @@ internal fun PagedReader(
             // 先让这一章画出来（打开书的放大动画就在这几帧），再趁书页停着时分；往后翻的多，先分下一章。
             repeat(2) { withFrameNanos { } }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) }
+            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) { ensureActive() } }
             withFrameNanos { }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) }
+            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) { ensureActive() } }
         }
 
         // 墨水屏上、选了“无动画”时翻页直接换过去，免得一页页地闪。

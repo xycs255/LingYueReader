@@ -104,10 +104,12 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
                 action = if (task is AiTask.Recap && !loading && session.turns.isNotEmpty()) "重新生成" to actions.regenerate else null,
             ) {}
             val scroll = rememberScrollState()
-            // 回答长出来时跟着滚到底；读者往上翻着看时不打扰。
+            // 回答长出来时跟着滚到底；读者往上翻着看时不打扰。减少动效时直接跳到底。
             val last = session.turns.lastOrNull()
             LaunchedEffect(session.turns.size, last?.answer?.length, last?.error) {
-                if (scroll.maxValue - scroll.value < 600) scroll.animateScrollTo(scroll.maxValue)
+                if (scroll.maxValue - scroll.value < 600) {
+                    if (Effects.noMotion) scroll.scrollTo(scroll.maxValue) else scroll.animateScrollTo(scroll.maxValue)
+                }
             }
             Column(
                 Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = 20.dp).padding(bottom = 8.dp),
@@ -130,7 +132,8 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
                             fontSize = 14.sp,
                             lineHeight = 21.sp,
                         )
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 胶囊能点的范围比看着的高 12dp，上下不再另加间距。
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("目前出场的主要人物有哪些？", "他们之间是什么关系？", "这一章讲了什么？").forEach { q ->
                                 Chip(q, enabled = true) { actions.ask(q) }
                             }
@@ -146,7 +149,7 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
             if (task is AiTask.Selection) {
                 // 快捷问题在设置里可以改、可以加，多了就横着滑。
                 Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     config.asks.forEach { k -> Chip(k.label, enabled = !loading, strong = session.turns.isEmpty()) { actions.askKind(k) } }
@@ -223,7 +226,7 @@ private fun Answer(turn: AiTurn, actions: AiActions) {
         }
         when {
             turn.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(turn.error, color = c.destructive, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f))
+                ErrorText(turn.error, Modifier.weight(1f))
                 Text(
                     "重试",
                     color = c.tint,
@@ -301,30 +304,15 @@ private fun SourceRow(s: AiSource, onClick: () -> Unit) {
 private fun Thinking(empty: Boolean, status: String? = null) {
     val c = LocalGroupedColors.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 16.dp, color = c.tint)
+        Spinner()
         if (empty) Text(status ?: "正在思考……", color = c.secondary, fontSize = 14.sp)
     }
 }
 
-/** 快捷问题、示例问题：胶囊按钮。[strong] 时铺强调色，告诉读者从这里开始。 */
+/** 快捷问题、示例问题：胶囊按钮（[PillButton]）。[strong] 时铺强调色，告诉读者从这里开始；其余淡强调色。 */
 @Composable
 private fun Chip(label: String, enabled: Boolean, strong: Boolean = false, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Text(
-        label,
-        color = when {
-            !enabled -> c.tertiary
-            strong -> Color.White
-            else -> c.tint
-        },
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (strong && enabled) c.tint else c.tint.copy(alpha = 0.1f))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
-    )
+    PillButton(label, onClick, style = if (strong) PillStyle.Filled else PillStyle.Tinted, enabled = enabled)
 }
 
 /** 底部的输入框和发送钮。 */
@@ -369,7 +357,7 @@ private fun AskField(hint: String, enabled: Boolean, onSend: (String) -> Unit) {
                 .semantics { contentDescription = "发送" },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(LingYueIcons.Send, contentDescription = null, tint = if (ready) Color.White else c.tertiary, modifier = Modifier.size(20.dp))
+            Icon(LingYueIcons.Send, contentDescription = null, tint = if (ready) c.onTint else c.tertiary, modifier = Modifier.size(20.dp))
         }
     }
     Spacer(Modifier.height(2.dp))

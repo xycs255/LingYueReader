@@ -207,18 +207,27 @@ class AiEnhanceTest {
     }
 
     @Test
-    fun malformedVectorCacheHeadersAndOversizedFilesFailBeforeAllocatingVectors() {
+    fun malformedOrOversizedVectorCachesAreSetAsideAndStartEmpty() {
         val dir = Files.createTempDirectory("vector-bounds").toFile()
         val file = File(dir, VectorCache.FILE)
+        val backup = File(dir, VectorCache.FILE + ".damaged")
+        /** 读不了的缓存：按空的继续，原文件改名留作备份，之后照常能存。 */
+        fun assertSetAside(reason: String) {
+            val bytes = file.readBytes()
+            val cache = VectorCache(file)
+            assertTrue(reason, cache.load("m").isEmpty())
+            assertFalse(reason, file.exists())
+            assertArrayEquals(reason, bytes, backup.readBytes())
+            cache.put(mapOf(7L to floatArrayOf(7f)))
+            assertEquals(reason, setOf(7L), VectorCache(file).load("m").keys)
+        }
         try {
             DataOutputStream(file.outputStream()).use { out ->
                 out.writeInt(0x4C595645)
                 out.writeUTF("m")
                 out.writeInt(8_001)
             }
-            val legacy = file.readBytes()
-            assertTrue(runCatching { VectorCache(file).load("m") }.exceptionOrNull() is VectorCacheException)
-            assertArrayEquals("拒绝加载不得更改旧缓存", legacy, file.readBytes())
+            assertSetAside("旧缓存条目数超限")
 
             DataOutputStream(file.outputStream()).use { out ->
                 out.writeInt(0x4C595646)
@@ -226,7 +235,7 @@ class AiEnhanceTest {
                 out.writeLong(1)
                 out.writeInt(Int.MAX_VALUE)
             }
-            assertTrue("维度应在分配前校验", runCatching { VectorCache(file).load("m") }.exceptionOrNull() is VectorCacheException)
+            assertSetAside("维度应在分配前校验")
 
             DataOutputStream(file.outputStream()).use { out ->
                 out.writeInt(0x4C595646)
@@ -237,25 +246,110 @@ class AiEnhanceTest {
                     out.writeFloat(1f)
                 }
             }
-            val oversizedEntries = file.length()
-            assertTrue(runCatching { VectorCache(file).load("m") }.exceptionOrNull() is VectorCacheException)
-            assertEquals(oversizedEntries, file.length())
+            assertSetAside("新缓存条目数超限")
+
+            // 旧版用大模型读过整本长篇：浮点总量刚超过新上限（文件长度还在可读的范围里，要解析到超限的那条）。
+            DataOutputStream(file.outputStream().buffered()).use { out ->
+                out.writeInt(0x4C595645)
+                out.writeUTF("m")
+                out.writeInt(611)
+                repeat(611) {
+                    out.writeLong(it.toLong())
+                    out.writeInt(8192)
+                    repeat(8192) { out.writeFloat(0.5f) }
+                }
+            }
+            assertSetAside("旧缓存向量总量超限")
+
+            file.writeBytes(byteArrayOf(1, 2, 3))
+            assertSetAside("文件头损坏")
 
             RandomAccessFile(file, "rw").use { it.setLength(64L * 1024 * 1024 + 1) }
-            assertTrue("大文件应在解析前拒绝", runCatching { VectorCache(file).load("m") }.exceptionOrNull() is VectorCacheException)
+            assertTrue("大文件不读进内存，直接移开", VectorCache(file).load("m").isEmpty())
+            assertFalse(file.exists())
+            assertEquals(64L * 1024 * 1024 + 1, backup.length())
 
-            file.delete()
+            // 真正的读取错误（不是内容坏了）仍然报错，也不能清掉已载入的旧向量。
             val inMemory = VectorCache(file)
             inMemory.load("keep")
             inMemory.put(mapOf(99L to floatArrayOf(1f)))
-            DataOutputStream(file.outputStream()).use { out ->
-                out.writeInt(0x4C595645)
-                out.writeUTF("bad")
-                out.writeInt(8_001)
-            }
+            file.delete()
+            file.mkdir()
             assertTrue(runCatching { inMemory.load("bad") }.exceptionOrNull() is VectorCacheException)
             assertEquals("加载失败不能清掉已载入的旧向量", setOf(99L), inMemory.load("keep").keys)
         } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aFullVectorCacheEvictsTheOldestParagraphsInsteadOfFailing() {
+        val dir = Files.createTempDirectory("vector-full").toFile()
+        val file = File(dir, VectorCache.FILE)
+        try {
+            val cache = VectorCache(file)
+            cache.load("m")
+            repeat(8) { batch -> cache.put((batch * 1000L until (batch + 1) * 1000L).associateWith { floatArrayOf(it.toFloat()) }) }
+            assertEquals(8_000, VectorCache(file).load("m").size)
+            // 再存一批：淘汰最早的，留到上限的四分之三，新的一批照常存下。
+            cache.put((8_000L until 8_100L).associateWith { floatArrayOf(it.toFloat()) })
+            val kept = VectorCache(file).load("m")
+            assertEquals(6_000, kept.size)
+            assertTrue(8_099L in kept && 7_999L in kept)
+            assertFalse(0L in kept || 2_099L in kept)
+            assertEquals(2_100L, kept.keys.first())
+            assertArrayEquals(floatArrayOf(5_000f), kept[5_000L], 0f)
+            // 淘汰后接着追加，不再整份重写。
+            val length = file.length()
+            cache.put(mapOf(9_000L to floatArrayOf(1f)))
+            assertEquals(length + 16, file.length())
+            assertEquals(6_001, VectorCache(file).load("m").size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun askBookStillWorksAfterTheVectorCacheIsDamaged() = runBlocking<Unit> {
+        val sent = CopyOnWriteArrayList<Int>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/v1/chat/completions") { ex ->
+                ex.requestBody.use { it.readBytes() }
+                val body = "data: {\"choices\":[{\"delta\":{\"content\":\"线索\"}}]}\n\ndata: [DONE]\n\n".toByteArray()
+                ex.responseHeaders.add("Content-Type", "text/event-stream")
+                ex.sendResponseHeaders(200, body.size.toLong())
+                ex.responseBody.use { it.write(body) }
+            }
+            createContext("/v1/embeddings") { ex ->
+                val count = JSONObject(ex.requestBody.readBytes().decodeToString()).getJSONArray("input").length()
+                sent.add(count)
+                val data = JSONArray().apply { repeat(count) { put(JSONObject().put("index", it).put("embedding", JSONArray(listOf(1.0, 0.0)))) } }
+                val body = JSONObject().put("data", data).toString().toByteArray()
+                ex.responseHeaders.add("Content-Type", "application/json")
+                ex.sendResponseHeaders(200, body.size.toLong())
+                ex.responseBody.use { it.write(body) }
+            }
+            start()
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val dir = Files.createTempDirectory("damaged-vectors").toFile()
+        try {
+            File(dir, VectorCache.FILE).writeBytes(byteArrayOf(0x4C, 0x59, 0x56, 0x46, 0, 1))
+            val config = AiConfig(enabled = true, preset = AiPresets.LOCAL,
+                baseUrl = "http://127.0.0.1:${server.address.port}/v1", model = "chat", embeddingModel = "fake-embedding")
+            val content = BookContent("书", null, listOf(Chapter("第一章", (0 until 12).map { Block.Para("顾长风 第 $it 段") })))
+            val assistant = AiAssistant(scope, null, bookFile = { _, name -> File(dir, name) })
+            assistant.saveConfig(config)
+            assistant.startAskBook(AiBook("a", "书", null, content), ReadPos(0, 11))
+            assistant.ask("顾长风去了哪里？")
+            withTimeout(10_000) { while (assistant.session.value?.turns?.lastOrNull()?.loading != false) delay(10) }
+            assertNull(assistant.session.value!!.turns.last().error)
+            assertTrue("照常建了向量索引", sent.isNotEmpty())
+            assertTrue(File(dir, VectorCache.FILE + ".damaged").isFile)
+            assertTrue("新的缓存照常存下", VectorCache(File(dir, VectorCache.FILE)).load("fake-embedding").isNotEmpty())
+        } finally {
+            scope.cancel()
+            server.stop(0)
             dir.deleteRecursively()
         }
     }

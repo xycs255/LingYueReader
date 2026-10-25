@@ -2,15 +2,18 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -18,18 +21,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -37,16 +44,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -54,11 +64,14 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
@@ -71,17 +84,26 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ui.glass.GlassMenu
+import com.xycs.lingyuereader.ui.glass.GlassScaffold
+import com.xycs.lingyuereader.ui.glass.glassBar
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.SnackbarHost
+import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.SwitchDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.Colors
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -112,10 +134,23 @@ internal data class GroupedColors(
     /** 分段控件选中的那一格。 */
     val segment: Color,
     val tint: Color,
+    /** 强调色底上的字和图标（主按钮、选中的胶囊）。 */
+    val onTint: Color,
+    /** 删除、出错。 */
     val destructive: Color,
+    /** 提醒、该处理了（卡片底上的小字也读得清，≥ 4.5:1）。 */
+    val warning: Color,
+    /** 完成、通过（同上）。 */
+    val success: Color,
     val switchOn: Color,
     val dark: Boolean,
 )
+
+/** 提醒、成功的基准色：浅色底用深一些的橙和绿，深色底用亮一些的；实际取值再按卡片底调到够对比度。 */
+private val WarningLight = Color(0xFFA85500)
+private val WarningDark = Color(0xFFFF9F0A)
+private val SuccessLight = Color(0xFF15803D)
+private val SuccessDark = Color(0xFF30D158)
 
 private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
     background = surface,
@@ -128,7 +163,12 @@ private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
     fill = secondaryContainer,
     segment = if (dark) secondary else surfaceContainer,
     tint = tint,
+    // miuix 自己配的 onPrimary（默认的蓝配白只有 3.6:1，照 HyperOS 留着白字）；
+    // 换了别的强调色，或 onPrimary 实在看不清（不到 3:1，比如自选了很浅的强调色）时在黑白里挑。
+    onTint = if (tint == primary && contrastRatio(onPrimary, tint) >= 3f) onPrimary else contentColorOn(tint),
     destructive = error,
+    warning = (if (dark) WarningDark else WarningLight).readableOn(listOf(surfaceContainer, surface)),
+    success = (if (dark) SuccessDark else SuccessLight).readableOn(listOf(surfaceContainer, surface)),
     switchOn = tint,
     dark = dark,
 )
@@ -161,7 +201,11 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
             fill = up(bg, 0.08f),
             segment = up(bg, 0.20f),
             tint = tint,
+            // 书页的强调色有深有浅（朱砂配白字，琥珀、灰蓝配深字），按对比度挑。
+            onTint = contentColorOn(tint),
             destructive = Color(0xFFF15B4F),
+            warning = WarningDark.readableOn(listOf(cell, sheet)),
+            success = SuccessDark.readableOn(listOf(cell, sheet)),
             switchOn = tint,
             dark = true,
         )
@@ -179,7 +223,11 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
             fill = lerp(sheet, palette.text, 0.06f),
             segment = cell,
             tint = tint,
+            onTint = contentColorOn(tint),
             destructive = Color(0xFFD9412F),
+            // 纸白、宣黄、竹青的面板底各不相同，调到在卡片和面板底上都够 4.5:1。
+            warning = WarningLight.readableOn(listOf(cell, sheet)),
+            success = SuccessLight.readableOn(listOf(cell, sheet)),
             switchOn = tint,
             dark = false,
         )
@@ -190,10 +238,42 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
 @Composable
 internal fun ProvideReaderColors(palette: ReaderPalette, tint: Color, content: @Composable () -> Unit) {
     val colors = remember(palette, tint) { readerGroupedColors(palette, tint) }
-    CompositionLocalProvider(LocalGroupedColors provides colors, content = content)
+    ProvideGroupedColorsValue(colors, content)
 }
 
-internal val LocalGroupedColors = staticCompositionLocalOf { groupedColors(dark = false, tint = Color(0xFF3482FF)) }
+/**
+ * 设置页配色。没有默认值：在 [ProvideGroupedColors] / [ProvideReaderColors] 外面读会直接报错——
+ * 以前默认给一套浅色，深色模式下读到它也不报错，黑字画在深灰卡片上、强调色固定成蓝色。
+ */
+internal val LocalGroupedColors = staticCompositionLocalOf<GroupedColors> {
+    error("LocalGroupedColors 没有提供：在 ProvideGroupedColors / ProvideReaderColors 里面读（弹层的内容画在最外层宿主里，要在调用处读好再传进去）")
+}
+
+/** 外面有没有提供 [LocalGroupedColors]：弹层要把调用处的配色带进宿主时用。 */
+private val LocalGroupedColorsProvided = staticCompositionLocalOf { false }
+
+/** 调用处提供的配色；没有提供时为 null（不报错）。 */
+@Composable
+internal fun currentGroupedColorsOrNull(): GroupedColors? = if (LocalGroupedColorsProvided.current) LocalGroupedColors.current else null
+
+/** 直接提供一套配色（同时记下“已经提供过”）。 */
+@Composable
+internal fun ProvideGroupedColorsValue(colors: GroupedColors, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalGroupedColors provides colors, LocalGroupedColorsProvided provides true, content = content)
+}
+
+/**
+ * 调用处的配色；外面没有提供时按当前 miuix 主题现算一套。
+ * 对话框、面板、菜单的内容画在最外层的弹层宿主里，拿不到调用处的 CompositionLocal，
+ * 要在调用处取好（[com.xycs.lingyuereader.ui.glass.GlassDialog] 这样做），再在弹层里用 [ProvideGroupedColorsValue] 提供。
+ */
+@Composable
+internal fun currentGroupedColorsOrTheme(): GroupedColors {
+    currentGroupedColorsOrNull()?.let { return it }
+    val scheme = MiuixTheme.colorScheme
+    val dark = scheme.surface.luminance() < 0.5f
+    return remember(scheme, dark) { scheme.grouped(scheme.primary, dark) }
+}
 
 /**
  * 提供设置页配色：深浅和当前 miuix 主题一致时直接用主题的配色（含 Monet），
@@ -211,7 +291,7 @@ internal fun ProvideGroupedColors(
     val colors = remember(scheme, dark, tint, elevated) {
         if (themeDark == dark) scheme.grouped(tint, dark) else groupedColors(dark, tint, elevated)
     }
-    CompositionLocalProvider(LocalGroupedColors provides colors, content = content)
+    ProvideGroupedColorsValue(colors, content)
 }
 
 /** 一组的内容：用 [row] 一行行加。 */
@@ -240,7 +320,8 @@ internal fun GroupedSection(
         if (header != null) SmallTitle(header, textColor = c.secondary)
         if (scope.rows.isNotEmpty()) {
             Card(
-                modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
+                // 开关带出附属行、加载完多出几行时，卡片平滑长高，不一下跳开。
+                modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().animateHeightChanges(),
                 colors = CardDefaults.defaultColors(color = c.cell),
             ) {
                 scope.rows.forEach { it() }
@@ -261,20 +342,23 @@ internal fun GroupedSection(
 /** 图标行（miuix 卡片不画分隔线，和 [GroupedSectionScope.row] 一样）。 */
 internal fun GroupedSectionScope.iconRow(content: @Composable () -> Unit) = row(content = content)
 
-/** 一行的外壳：至少 56dp 高，左右 16dp，按下时整行变灰（miuix 的按压反馈）。 */
+/** 一行的外壳：至少 56dp 高，左右 16dp，按下时整行变灰（miuix 的按压反馈）；可以长按（[onLongClick]）。 */
 @Composable
 internal fun GroupedRow(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
-    val c = LocalGroupedColors.current
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val clickable = if (onClick != null) {
-        Modifier.clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
-    } else Modifier
+    val clickable = when {
+        onClick != null && onLongClick != null ->
+            Modifier.combinedClickable(interactionSource = source, indication = null, enabled = enabled, onLongClick = onLongClick, onClick = onClick)
+        onClick != null -> Modifier.clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+        else -> Modifier
+    }
     Row(
         modifier
             .fillMaxWidth()
@@ -297,11 +381,11 @@ internal fun RowIcon(icon: ImageVector, background: Color) {
 }
 
 @Composable
-private fun RowScope.RowTitle(title: String, color: Color, enabled: Boolean, subtitle: String? = null) {
+private fun RowScope.RowTitle(title: String, color: Color, enabled: Boolean, subtitle: String? = null, subtitleMaxLines: Int = Int.MAX_VALUE) {
     val c = LocalGroupedColors.current
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(title, color = if (enabled) color else c.tertiary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -320,7 +404,10 @@ private fun RowValue(value: String, enabled: Boolean = true) {
     )
 }
 
-/** 点进去的一行：名字（可有说明）、右边当前值、小箭头。 */
+/**
+ * 点进去的一行：名字（可有说明）、右边当前值、小箭头。
+ * [trailing] 放在当前值和箭头之间（[Tag] 这类）；[subtitleMaxLines] 限制说明的行数（列表里的长摘要）；可以长按。
+ */
 @Composable
 internal fun NavRow(
     title: String,
@@ -329,13 +416,17 @@ internal fun NavRow(
     iconBackground: Color = Color.Unspecified,
     enabled: Boolean = true,
     subtitle: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    subtitleMaxLines: Int = Int.MAX_VALUE,
     onClick: () -> Unit,
 ) {
     val c = LocalGroupedColors.current
-    GroupedRow(onClick = onClick, enabled = enabled) {
+    GroupedRow(onClick = onClick, enabled = enabled, onLongClick = onLongClick) {
         if (icon != null) RowIcon(icon, iconBackground)
-        RowTitle(title, c.label, enabled, subtitle)
+        RowTitle(title, c.label, enabled, subtitle, subtitleMaxLines)
         if (value != null) RowValue(value, enabled)
+        if (trailing != null) Box(Modifier.padding(start = 8.dp)) { trailing() }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
     }
 }
@@ -711,4 +802,483 @@ internal fun EmptyState(
             }
         }
     }
+}
+
+/**
+ * 内容变高变矮时平滑过去（标准缓动 [Motion.MEDIUM]）：开关带出的附属行、加载完多出来的几行、流式输出。
+ * 第一次显示时不动——画完第一帧才接上（接上时按当时的大小起算），免得一打开页面整块先长高一遍；减少动效时不加。
+ */
+@Composable
+internal fun Modifier.animateHeightChanges(): Modifier {
+    if (Effects.noMotion) return this
+    var ready by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        ready = true
+    }
+    return if (ready) animateContentSize(Motion.standard(Motion.MEDIUM)) else this
+}
+
+/** 一行：左边名字，右边控件。 */
+@Composable
+internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        control()
+    }
+}
+
+// ---------- 按钮、标签 ----------
+
+/**
+ * 整宽的主按钮（“开始阅读”“保存”）：至少 50dp 高、16dp 圆角，强调色底配 [GroupedColors.onTint] 的字；
+ * 删除类（[destructive]）用红底。左右和下面的卡片对齐由调用处给边距。
+ */
+@Composable
+internal fun PrimaryButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val (fill, text) = buttonColors(c, filled = true, enabled = enabled, destructive = destructive)
+    val background by animateColorAsState(fill, Motion.standard(Motion.SHORT), label = "primaryFill")
+    val content by animateColorAsState(text, Motion.standard(Motion.SHORT), label = "primaryText")
+    Box(
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .pressScale(source, 0.97f)
+            .clip(RoundedCornerShape(16.dp))
+            .background(background)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = content,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+    }
+}
+
+/** 胶囊按钮的样子。 */
+internal enum class PillStyle {
+    /** 强调色底、[GroupedColors.onTint] 字：一排里最主要的那个（“采纳”“接在后面”）。 */
+    Filled,
+    /** 淡强调色底、强调色字：次要但要让人看见的（“复习 N”）。 */
+    Tinted,
+    /** 灰底、正文色字：其余的（“复制”“再来一次”“不用了”）。 */
+    Plain,
+}
+
+/**
+ * 胶囊按钮：看着 36dp 高、两头全圆，能点的范围至少 48dp（触控大小），一排并列时用 8dp 间距。
+ * 按下缩到 0.95 倍；[destructive] 时强调色换成红色。
+ */
+@Composable
+internal fun PillButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    style: PillStyle = PillStyle.Plain,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val accent = if (destructive) c.destructive else c.tint
+    val (fill, text) = when {
+        style == PillStyle.Filled || !enabled -> buttonColors(c, filled = style == PillStyle.Filled, enabled = enabled, destructive = destructive)
+        style == PillStyle.Tinted -> accent.copy(alpha = 0.12f) to accent
+        else -> c.fill to (if (destructive) c.destructive else c.label)
+    }
+    val background by animateColorAsState(fill, Motion.standard(Motion.SHORT), label = "pillFill")
+    val content by animateColorAsState(text, Motion.standard(Motion.SHORT), label = "pillText")
+    Box(
+        modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .pressScale(source, 0.95f)
+                .heightIn(min = 36.dp)
+                .clip(CircleShape)
+                .background(background)
+                .padding(horizontal = 16.dp, vertical = 7.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, color = content, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * 实心按钮（主按钮、实心胶囊、对话框的确认键）的底色和字色：强调色配 onTint；删除类红底白字——
+ * miuix 的删除色配白字不到 4.5:1（浅色 #E94634 只有 3.9:1），把红压深到够为止，不换成黑字；不可用时灰底灰字。
+ */
+internal fun buttonColors(c: GroupedColors, filled: Boolean = true, enabled: Boolean = true, destructive: Boolean = false): Pair<Color, Color> = when {
+    !enabled -> c.fill to c.tertiary
+    !filled -> c.fill to (if (destructive) c.destructive else c.label)
+    destructive -> c.destructive.readableOn(listOf(Color.White)) to Color.White
+    else -> c.tint to c.onTint
+}
+
+/**
+ * 小徽标：状态、类别这类一两个词（“定稿”“错字”“规则”）。[color] 是字色，底是它的淡色；
+ * 用语义色（[GroupedColors.warning]、[GroupedColors.success]、强调色、次要色），小字才读得清。
+ */
+@Composable
+internal fun Tag(text: String, color: Color, modifier: Modifier = Modifier) {
+    Box(modifier.clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
+        Text(text, color = color, fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+// ---------- 对话框 ----------
+
+/**
+ * 对话框底下的“取消 + 确认”一行，两键等宽。会删东西的（[destructive]）确认键用红色；
+ * [confirmEnabled] 为假时确认键变灰（比如还没填名字）。
+ */
+@Composable
+internal fun DialogButtons(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+    confirmText: String,
+    dismissText: String = "取消",
+    destructive: Boolean = false,
+    confirmEnabled: Boolean = true,
+) {
+    val c = LocalGroupedColors.current
+    val (fill, text) = buttonColors(c, destructive = destructive)
+    Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // 取消键用设置页的灰底：阅读页的面板里也跟着书页配色。
+        TextButton(
+            text = dismissText,
+            onClick = onDismiss,
+            modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.textButtonColors(color = c.fill, textColor = c.label),
+        )
+        TextButton(
+            text = confirmText,
+            onClick = onConfirm,
+            enabled = confirmEnabled,
+            modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.textButtonColors(color = fill, textColor = text),
+        )
+    }
+}
+
+/**
+ * 对话框里“选一项”：一行一项，名字（下面可有灰色说明），点了就选。样子照 [CheckRow]，给了 [selected] 时当前那项打勾。
+ * “AI 接着写”“新建什么”这类挑一种做法的对话框用它，不用一格格按钮；选项只有两三个、不用说明的用 [SegmentedControl]。
+ */
+@Composable
+internal fun <T> DialogOptionList(
+    options: List<Pair<T, String>>,
+    onPick: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    selected: T? = null,
+    description: (T) -> String? = { null },
+) {
+    Column(modifier.fillMaxWidth()) {
+        options.forEach { (value, label) ->
+            Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                CheckRow(label, selected = value == selected, subtitle = description(value)) { onPick(value) }
+            }
+        }
+    }
+}
+
+// ---------- 加载、空、出错 ----------
+
+/**
+ * 转圈（miuix 的）。减少动效时（墨水屏 / 省电、系统关了动画）换成不动的三个点：一直转的圈在墨水屏上只会留残影，也费电。
+ * 默认 16dp、强调色；阅读页的书页上传书页的次要色。
+ */
+@Composable
+internal fun Spinner(
+    modifier: Modifier = Modifier,
+    size: Dp = 16.dp,
+    color: Color = LocalGroupedColors.current.tint,
+) {
+    val busy = Modifier.semantics { progressBarRangeInfo = ProgressBarRangeInfo.Indeterminate }
+    if (Effects.noMotion) {
+        Canvas(modifier.then(busy).size(size)) {
+            val radius = this.size.minDimension / 10f
+            val gap = this.size.width / 3.2f
+            for (i in -1..1) drawCircle(color, radius, center + Offset(i * gap, 0f))
+        }
+    } else {
+        InfiniteProgressIndicator(modifier.then(busy), color = color, size = size)
+    }
+}
+
+/** 卡片里（或面板里）的一行“正在加载”：16dp 转圈、次要色的字。 */
+@Composable
+internal fun LoadingRow(text: String, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Row(
+        modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Spinner()
+        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+    }
+}
+
+/** 整页的“正在加载”：放得下时在中间（在列表里时离顶 72dp），转圈下面一行次要色的字。 */
+@Composable
+internal fun LoadingState(text: String, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Column(
+        modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 72.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+    ) {
+        Spinner(size = 28.dp)
+        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center)
+    }
+}
+
+/** 卡片里的“还没有……”：一行次要色的字，和别的行一样高。整页什么都没有时用 [EmptyState]。 */
+@Composable
+internal fun EmptyRow(text: String, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Box(modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 14.dp), contentAlignment = Alignment.CenterStart) {
+        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+    }
+}
+
+/**
+ * 出错的说明：删除色、14sp。写成“做什么没成：原因”（如“导入失败：文件读不出来”），不另加“出错了”前缀；
+ * 出现时读屏会念出来。
+ */
+@Composable
+internal fun ErrorText(text: String, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Text(
+        text,
+        color = c.destructive,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
+    )
+}
+
+// ---------- 面板、页面骨架 ----------
+
+/** 面板右上角的关闭钮：32dp 的圆底灰叉，能点的范围 44dp（目录面板、编辑器浮层面板）。 */
+@Composable
+internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    Box(
+        modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .clickable(onClickLabel = label, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(32.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+            Icon(LingYueIcons.Close, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * 编辑器里贴在键盘上方的浮层面板（AI 结果、可能的问题、AI 接着写、写作建议、规则）：顶上 20dp 圆角、卡片底色；
+ * 标题一行左边可带强调色小图标，[status] 是标题右边的灰色小字（“生成中……”），最右是圆底关闭钮（[onClose] 为空时不显示）；
+ * 内容在中间，[actions] 一排胶囊按钮（[PillButton]）在最下面，放不下左右滑。
+ * 高矮变化（流式输出、换一条建议）平滑过去；出现、收起由调用处包 AnimatedVisibility（[Motion.edgeEnter] / [Motion.edgeExit]）。
+ */
+@Composable
+internal fun InlinePanel(
+    title: String,
+    onClose: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    status: String? = null,
+    closeLabel: String = "关闭",
+    actions: (@Composable RowScope.() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .background(c.cell)
+            .animateHeightChanges()
+            .padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 6.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
+            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(
+                status.orEmpty(),
+                color = c.secondary,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            if (onClose != null) PanelCloseButton(closeLabel, onClose, Modifier.offset(x = 6.dp))
+        }
+        content()
+        if (actions != null) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = actions,
+            )
+        }
+    }
+}
+
+/** 面板顶上的标题栏（HyperOS 底部面板的写法）：左边圆形返回钮，中间标题，右边强调色的主操作（“完成”“划线”）。 */
+@Composable
+internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -> Unit>? = null, onBack: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Box(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp)) {
+        if (back != null) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onBack)
+                    .semantics { contentDescription = "返回$back"; role = Role.Button },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(36.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+                    Icon(LingYueIcons.ChevronBackward, contentDescription = null, tint = c.label, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+        Text(title, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.align(Alignment.Center))
+        if (action != null) {
+            Text(
+                action.first,
+                color = c.tint,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .clickable(role = Role.Button, onClick = action.second)
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 二级页的骨架：玻璃小标题栏（左边返回，右边 [actions]，文字按钮用 [BarTextAction]）、设置页的浅灰底、提示条。
+ * 自己提供 [ProvideGroupedColors]；[content] 拿到的边距已经让出标题栏和系统栏，列表照
+ * `contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp)` 来排。
+ */
+@Composable
+internal fun SubPageScaffold(
+    title: String,
+    onBack: () -> Unit,
+    actions: @Composable RowScope.() -> Unit = {},
+    snackbar: SnackbarHostState? = null,
+    content: @Composable (PaddingValues) -> Unit,
+) {
+    ProvideGroupedColors {
+        val c = LocalGroupedColors.current
+        GlassScaffold(
+            containerColor = c.background,
+            topBar = {
+                SmallTopAppBar(
+                    color = Color.Transparent,
+                    modifier = Modifier.glassBar(),
+                    title = title,
+                    navigationIcon = {
+                        IconButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp)) {
+                            Icon(LingYueIcons.Back, contentDescription = "返回")
+                        }
+                    },
+                    actions = actions,
+                )
+            },
+            snackbarHost = { if (snackbar != null) SnackbarHost(snackbar) },
+            content = content,
+        )
+    }
+}
+
+/** 标题栏右边的文字按钮（“保存”“完成”）：强调色半粗，不能点时变灰。 */
+@Composable
+internal fun BarTextAction(text: String, onClick: () -> Unit, enabled: Boolean = true) {
+    val c = LocalGroupedColors.current
+    Text(
+        text,
+        color = if (enabled) c.tint else c.tertiary,
+        fontSize = 17.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier
+            .padding(end = 12.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+    )
+}
+
+/**
+ * 长列表里的一格：同一组的格子连成一张圆角卡片（首格上面圆角、末格下面圆角），和 [GroupedSection] 一个样子，
+ * 但能懒加载、每格能单独做增删动画（LazyColumn 的 items + animateItem）。[last] 那格下面留出 [gap]：
+ * 卡片之间 12dp，下面紧跟说明小字时 8dp（[GroupedListFooter]）。
+ */
+@Composable
+internal fun GroupedListCell(first: Boolean, last: Boolean, modifier: Modifier = Modifier, gap: Dp = 12.dp, content: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    val r = 16.dp
+    val shape = RoundedCornerShape(
+        topStart = if (first) r else 0.dp,
+        topEnd = if (first) r else 0.dp,
+        bottomStart = if (last) r else 0.dp,
+        bottomEnd = if (last) r else 0.dp,
+    )
+    Box(modifier.fillMaxWidth().padding(bottom = if (last) gap else 0.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
+            content()
+        }
+    }
+}
+
+/** 长列表的组名：和 [GroupedSection] 的组名一样，卡片上方的灰色小字。 */
+@Composable
+internal fun GroupedListHeader(text: String, modifier: Modifier = Modifier) {
+    SmallTitle(text, modifier = modifier, textColor = LocalGroupedColors.current.secondary)
+}
+
+/** 长列表卡片下的说明小字（和 [GroupedSection] 的 footer 一样）：末格用 `gap = 8.dp`，下面再留 12dp。 */
+@Composable
+internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = LocalGroupedColors.current.secondary,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
+    )
 }

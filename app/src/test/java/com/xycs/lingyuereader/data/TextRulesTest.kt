@@ -57,6 +57,47 @@ class TextRulesTest {
     }
 
     @Test
+    fun slowRegexIsAbandonedInsteadOfHangingForever() {
+        // 带反向引用的嵌套重复：在一行几十个字母上要回溯几小时。
+        val slow = """^((\w)+\2?)+$"""
+        val text = novel + "\nshenmolaozhouduniangguchangfenglinyuexyz!\n"
+        val saved = TextRules.timeoutMillis
+        TextRules.timeoutMillis = 300
+        try {
+            fun assertTooSlow(block: () -> Unit) {
+                val started = System.nanoTime()
+                val error = runCatching(block).exceptionOrNull()
+                assertTrue("应当报正则太慢，实际：$error", error is RegexTooSlowException)
+                assertTrue("应当在期限后很快放弃", System.nanoTime() - started < 5_000_000_000L)
+            }
+            assertTooSlow { TextRules.preview(ReplaceRule(slow, regex = true), text) }
+            assertTooSlow { TextRules(listOf(ReplaceRule(slow, regex = true))).clean(text) }
+            assertTooSlow { TextRules(toc = slow).titleMatcher(text) }
+            assertTooSlow { TextRules(toc = slow).titleMatcher()("shenmolaozhouduniangguchangfenglinyuexyz!") }
+            // 停用的慢规则不跑；正常的正则不受影响。
+            assertEquals(text, TextRules(listOf(ReplaceRule(slow, regex = true, enabled = false))).clean(text))
+            assertEquals(3, TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), text).first)
+            // 放弃的那次匹配也停下来了，没有线程一直空转。
+            val deadline = System.currentTimeMillis() + 5_000
+            fun spinning() = Thread.getAllStackTraces().keys.any { it.name == "regex-guard" && it.state == Thread.State.RUNNABLE }
+            while (spinning() && System.currentTimeMillis() < deadline) Thread.sleep(50)
+            assertTrue(!spinning())
+        } finally {
+            TextRules.timeoutMillis = saved
+        }
+    }
+
+    @Test
+    fun customTocWithWholeTextMatchesTheSameLinesAsLineByLine() {
+        val bracket = TextRules.TOC_PRESETS.first { it.label == "【章名】" }.pattern
+        val rules = TextRules(toc = bracket)
+        val byText = TxtParser.parse(novel, rules.titleMatcher(novel))
+        assertEquals(TxtParser.parse(novel, rules.titleMatcher()).map { it.title }, byText.map { it.title })
+        // 全文里没有的行（去空白的方式不同）也照样判断。
+        assertTrue(rules.titleMatcher(novel)("【三 出城】"))
+    }
+
+    @Test
     fun previewCountsMatchesWithContext() {
         val (count, samples) = TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel)
         assertEquals(3, count)

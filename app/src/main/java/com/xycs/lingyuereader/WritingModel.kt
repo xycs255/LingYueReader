@@ -22,6 +22,8 @@ import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.data.WorkExport
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.WritingBackup
+import com.xycs.lingyuereader.data.WritingRestore
 import com.xycs.lingyuereader.data.WritingStats
 import com.xycs.lingyuereader.data.brief
 import com.xycs.lingyuereader.data.chapterNo
@@ -281,6 +283,22 @@ class WritingModel(
         }
     }
 
+    /**
+     * 按字段改细纲卡（见 [WorkStore.updateCard]）：在写盘队列里读出现在的卡再改，只动 [transform] 改到的字段，
+     * 不会拿页面上的旧卡片把 AI 刚写的摘要盖掉。[then] 拿到改后的卡。
+     */
+    fun updateCard(workId: String, chapterId: String, transform: (ChapterCard) -> ChapterCard, then: (ChapterCard) -> Unit = {}) {
+        scope.launch {
+            try {
+                then(withContext(disk) { store.updateCard(workId, chapterId, transform) })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
     // ---------- 设定包 ----------
 
     private val _packs = MutableStateFlow<Map<String, List<PackDoc>>>(emptyMap())
@@ -488,9 +506,15 @@ class WritingModel(
 
     internal fun backup(): ByteArray? = store.backup()
 
+    /** 同 [backup]，另外报告读不出、没放进备份的文件（[WritingBackup.skipped]），好告诉作者。 */
+    internal fun backupReport(): WritingBackup? = store.backupReport()
+
     internal fun validateBackup(json: String) = store.validateBackup(json)
 
-    internal fun restoreBackup(json: String): Int = store.restoreBackup(json).also {
+    internal fun restoreBackup(json: String): Int = restoreBackupReport(json).restored
+
+    /** 同 [restoreBackup]，另外报告整部没有恢复的作品（[WritingRestore.skipped]：本机的较新，或本机的文件读不出）。 */
+    internal fun restoreBackupReport(json: String): WritingRestore = store.restoreBackupReport(json).also {
         _packs.value = emptyMap()
         reload()
     }

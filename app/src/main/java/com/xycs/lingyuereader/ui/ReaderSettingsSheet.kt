@@ -176,44 +176,6 @@ internal fun SettingsSheet(
     }
 }
 
-/** 面板顶上的标题栏（HyperOS 底部面板的写法）：左边圆形返回钮，中间标题，右边强调色的主操作（“完成”“划线”）。 */
-@Composable
-internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -> Unit>? = null, onBack: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Box(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp)) {
-        if (back != null) {
-            Box(
-                Modifier
-                    .align(Alignment.CenterStart)
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onBack)
-                    .semantics { contentDescription = "返回$back"; role = Role.Button },
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(Modifier.size(36.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
-                    Icon(LingYueIcons.ChevronBackward, contentDescription = null, tint = c.label, modifier = Modifier.size(20.dp))
-                }
-            }
-        }
-        Text(title, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.align(Alignment.Center))
-        if (action != null) {
-            Text(
-                action.first,
-                color = c.tint,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .clickable(role = Role.Button, onClick = action.second)
-                    .padding(horizontal = 12.dp, vertical = 11.dp),
-            )
-        }
-    }
-}
-
 // ---------- 首页：字号、亮度、配色，和各项入口 ----------
 
 @Composable
@@ -293,19 +255,6 @@ private fun FontSizeRow(size: Float, onChange: (Float) -> Unit) {
             )
             Step(19, size < 30f, "字号增大", 1f)
         }
-    }
-}
-
-/** 一行：左边名字，右边控件。 */
-@Composable
-internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
-    val c = LocalGroupedColors.current
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-        control()
     }
 }
 

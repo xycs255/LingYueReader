@@ -9,9 +9,14 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.robolectric.Shadows.shadowOf
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -66,5 +71,62 @@ class VocabularyUiTest {
         val words = JSONArray(file.readText()).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
         assertEquals(listOf(0, 1), words.map { it.getInt("interval") }.sorted())
         assertTrue(words.none { it.getBoolean("mastered") })
+    }
+
+    @Test
+    // 手机大小的屏幕：两张生词卡都在屏幕内。
+    @Config(sdk = [36], qualifiers = "w411dp-h891dp")
+    fun deletingAWordCanBeUndoneAndPutsItBackUnchanged() {
+        // 删第二个词：撤销后要回到第二个，不是挤到最前面。
+        val before = JSONArray(file.readText()).getJSONObject(1)
+        waitForText("书架还是空的")
+        compose.onNodeWithText("生词本").performClick()
+        waitForText("学习中 2")
+        compose.onAllNodesWithContentDescription("删除")[1].performClick()
+        waitForText("已删除“排队”")
+        compose.waitUntil(10_000) { JSONArray(file.readText()).length() == 1 }
+        waitForText("学习中 1")
+        compose.onNodeWithText("撤销").performClick()
+        compose.waitUntil(10_000) { JSONArray(file.readText()).length() == 2 }
+        waitForText("学习中 2")
+        // 原样放回原来的位置：查过几次、出处、时间都不变。
+        val restored = JSONArray(file.readText()).getJSONObject(1)
+        assertEquals("排队", restored.getString("word"))
+        listOf("reading", "gloss", "context", "bookTitle").forEach { assertEquals(before.getString(it), restored.getString(it)) }
+        assertEquals(before.getLong("addedAt"), restored.getLong("addedAt"))
+        assertEquals(1, restored.getInt("lookups"))
+    }
+
+    @Test
+    fun exportingALargeVocabularySharesAFileInsteadOfText() {
+        // 几千个词、每个带一段长原句：整份放进 EXTRA_TEXT 会超过跨进程的大小上限。
+        file.writeText(
+            JSONArray().apply {
+                (1..3000).forEach { i ->
+                    put(
+                        org.json.JSONObject().put("word", "词$i").put("reading", "").put("gloss", "释义$i")
+                            .put("context", "林月和沈默在老周的茶馆里坐了一下午，顾长风推门进来。".repeat(6)).put("bookTitle", "测试书").put("addedAt", i.toLong()),
+                    )
+                }
+            }.toString(),
+        )
+        waitForText("书架还是空的")
+        compose.onNodeWithText("生词本").performClick()
+        waitForText("学习中 3000")
+        compose.onNodeWithContentDescription("导出生词本").performClick()
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        var chooser: Intent? = null
+        compose.waitUntil(10_000) {
+            chooser = chooser ?: shadowOf(app).nextStartedActivity
+            chooser != null
+        }
+        val send = chooser!!.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)!!
+        assertNull(send.getStringExtra(Intent.EXTRA_TEXT))
+        val uri = send.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)!!
+        assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        val exported = File(File(context.cacheDir, "exports"), "生词本.md")
+        assertTrue(exported.length() > 1_000_000)
+        assertTrue(exported.readText().contains("## 词3000"))
+        assertEquals(context.packageName + ".files", uri.authority)
     }
 }

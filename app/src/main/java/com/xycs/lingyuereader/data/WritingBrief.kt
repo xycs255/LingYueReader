@@ -314,14 +314,19 @@ object ChapterBriefs {
         return out
     }
 
-    /** 标为已回收：表格改“状态”那格（没有状态列就补在最后），列表项在行尾加“（已回收）”。 */
+    /** 标为已回收：表格改“状态”那格（没有状态列就在表头、分隔行和这一行最后补一列“状态”），列表项在行尾加“（已回收）”。 */
     fun markDone(text: String, f: Foreshadow, chapter: Int?): String {
         val lines = text.lines()
         if (f.line !in lines.indices) return text
         val mark = "已回收" + (chapter?.let { "（第${it}章）" } ?: "")
         return if (lines[f.line].trim().startsWith("|")) {
-            val cols = MdTable.parse(text).firstOrNull { f.line in it.lines }?.header?.size ?: 0
-            MdTable.setCell(text, f.line, if (f.statusColumn >= 0) f.statusColumn else cols, mark)
+            if (f.statusColumn >= 0) return MdTable.setCell(text, f.line, f.statusColumn, mark)
+            val table = MdTable.parse(text).firstOrNull { f.line in it.lines } ?: return text
+            // 只补这一行的话，多出的那格在表头之外，读的时候读不到：表头和分隔行也补上。
+            val col = table.header.size
+            val head = table.lines.first() - 2
+            val withHeader = MdTable.setCell(MdTable.setCell(text, head, col, "状态"), head + 1, col, "---")
+            MdTable.setCell(withHeader, f.line, col, mark)
         } else {
             lines.toMutableList().also { it[f.line] = it[f.line].trimEnd() + "（$mark）" }.joinToString("\n")
         }

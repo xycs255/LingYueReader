@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -81,14 +82,14 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                         else "在手机上合成语音：不联网、不花钱，锁屏也能听。先下载一个模型（只需一次，建议连 Wi-Fi）。",
                     ) {
                         row {
-                            ToggleRow("听书用离线语音", config.enabled && ready, enabled = ready, icon = LingYueIcons.VolumeUp, iconBackground = Color(0xFF34C759)) {
+                            ToggleRow("听书用离线语音", config.enabled && ready, enabled = ready, icon = LingYueIcons.VolumeUp, iconBackground = RowIconColors.Voice) {
                                 vm.setOfflineEnabled(it)
                             }
                         }
                     }
                     GroupedSection(
                         header = "模型",
-                        footer = state.error ?: "模型来自 sherpa-onnx 在 GitHub 上的发布页，下载后核对校验值。点已下载的模型选用它，长按删除。",
+                        footer = "模型来自 sherpa-onnx 在 GitHub 上的发布页，下载后核对校验值。点已下载的模型选用它，长按删除。",
                     ) {
                         OfflineModels.ALL.forEach { m ->
                             val installed = m.id in state.installed
@@ -109,9 +110,11 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                         if (task != null && task.model == null) {
                             row { TaskRow("从文件导入", "${task.phase.label} ${(task.fraction * 100).toInt()}%", task.fraction, onCancel = vm::cancelOfflineTask) }
                         }
+                        // 出错写在卡片里，不顶掉下面的说明。
+                        state.error?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                     }
                     if (ready) {
-                        GroupedSection(header = "声音", footer = previewError) {
+                        GroupedSection(header = "声音") {
                             current.voices.forEach { v ->
                                 row { CheckRow(v.label, v.name == config.voice(current)) { vm.saveOfflineConfig(config.withVoice(v.name)) } }
                             }
@@ -121,6 +124,7 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                                     vm.previewOffline { previewError = "试听失败：$it" }
                                 }
                             }
+                            previewError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                         }
                     }
                     GroupedSection(
@@ -143,18 +147,27 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                     summary = "要下载 ${m.sizeLabel}，装好后约占 ${m.installedMb} MB。建议连 Wi-Fi。下到一半中断的，下次接着下。",
                     onDismissRequest = { confirmDownload = null },
                 ) {
-                    DialogButtons(confirm = "下载", onDismiss = { confirmDownload = null }) {
-                        vm.downloadOfflineModel(m)
-                        confirmDownload = null
-                    }
+                    DialogButtons(
+                        onDismiss = { confirmDownload = null },
+                        onConfirm = {
+                            vm.downloadOfflineModel(m)
+                            confirmDownload = null
+                        },
+                        confirmText = "下载",
+                    )
                 }
             }
             removing?.let { m ->
                 GlassDialog(show = true, title = "删除模型", summary = "删除「${m.label}」？要用时可以再下载。", onDismissRequest = { removing = null }) {
-                    DialogButtons(confirm = "删除", onDismiss = { removing = null }) {
-                        vm.deleteOfflineModel(m)
-                        removing = null
-                    }
+                    DialogButtons(
+                        onDismiss = { removing = null },
+                        onConfirm = {
+                            vm.deleteOfflineModel(m)
+                            removing = null
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }
@@ -167,7 +180,7 @@ private fun TaskRow(title: String, status: String, fraction: Float, onCancel: ()
     val c = LocalGroupedColors.current
     GroupedRow {
         Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
-            Text(title, color = c.label, fontSize = 16.sp)
+            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
             Text(status, color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
             Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(c.separator)) {
                 Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(2.dp)).background(c.tint))
