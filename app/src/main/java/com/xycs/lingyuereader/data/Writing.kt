@@ -433,6 +433,79 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
     fun markSynced(workId: String, changeId: String, synced: Boolean = true) =
         writeChanges(workId, changes(workId).map { if (it.id == changeId) it.copy(synced = synced) else it })
 
+    // ---------- 故事账本 ----------
+
+    private fun ledgerHistoryDir(workId: String) = File(dir(workId), LEDGER_HISTORY)
+
+    /** 故事账本（见 [StoryLedger]）；还没有是空的。读不出时另存坏文件、当作空的。 */
+    @Synchronized
+    fun ledger(workId: String): List<LedgerEntry> {
+        val file = File(dir(workId), LEDGER)
+        if (!file.isFile) return emptyList()
+        return try {
+            StoryLedger.parse(file.readText())
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            emptyList()
+        }
+    }
+
+    /**
+     * 改账本：一批改动 [ops] 一起写进去（写不进去就都不算），改之前的样子存进历史（[label] 说明为什么改）。
+     * 返回实际新加了几条（重复的不加）。
+     */
+    @Synchronized
+    fun applyLedger(workId: String, ops: List<LedgerOp>, label: String): Int {
+        require(File(dir(workId), WORK).isFile) { "作品不在了" }
+        val before = ledger(workId)
+        val (after, added) = StoryLedger.apply(before, ops, clock())
+        if (after == before) return 0
+        saveLedger(workId, before, after, label)
+        return added
+    }
+
+    private fun saveLedger(workId: String, before: List<LedgerEntry>, after: List<LedgerEntry>, label: String) {
+        if (File(dir(workId), LEDGER).isFile) {
+            val folder = ledgerHistoryDir(workId)
+            folder.mkdirs()
+            val taken = folder.listFiles().orEmpty().mapNotNull { it.name.removeSuffix(".json").toLongOrNull() }.toSet()
+            var at = clock()
+            while (at in taken) at++
+            val old = StoryLedger.toJson(before).put("label", label)
+            check(DurableFiles.write(File(folder, "$at.json"), old.toString().toByteArray())) { "无法保存账本的历史版本" }
+            folder.listFiles().orEmpty().filter { it.name.removeSuffix(".json").toLongOrNull() != null }
+                .sortedByDescending { it.name.removeSuffix(".json").toLong() }.drop(LEDGER_KEEP).forEach { it.delete() }
+        }
+        check(DurableFiles.write(File(dir(workId), LEDGER), StoryLedger.toJson(after).toString().toByteArray())) { "无法保存故事账本" }
+        update(workId) { it }
+    }
+
+    /** 账本的历史版本（每次改之前的样子），新的在前。 */
+    @Synchronized
+    fun ledgerVersions(workId: String): List<LedgerVersion> =
+        ledgerHistoryDir(workId).listFiles().orEmpty().mapNotNull { f ->
+            val at = f.name.removeSuffix(".json").toLongOrNull() ?: return@mapNotNull null
+            runCatching {
+                val o = JSONObject(f.readText())
+                LedgerVersion(at, o.optString("label"), o.optJSONArray("entries")?.length() ?: 0)
+            }.getOrNull()
+        }.sortedByDescending { it.at }
+
+    /** 某个历史版本的账本；读不出返回 null。 */
+    @Synchronized
+    fun ledgerVersion(workId: String, at: Long): List<LedgerEntry>? =
+        File(ledgerHistoryDir(workId), "$at.json").takeIf { it.isFile }?.let { runCatching { StoryLedger.parse(it.readText()) }.getOrNull() }
+
+    /** 换回某个历史版本（现在的样子也存进历史，可以再换回来）。 */
+    @Synchronized
+    fun restoreLedger(workId: String, at: Long): Boolean {
+        val old = ledgerVersion(workId, at) ?: return false
+        val now = ledger(workId)
+        if (old == now) return true
+        saveLedger(workId, now, old, "换回之前的版本")
+        return true
+    }
+
     private fun cardFile(workId: String, chapterId: String): File {
         require(ID.matches(chapterId)) { "章节 id 无效" }
         return File(dir(workId), "$chapterId.card.json")
@@ -1011,6 +1084,9 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             assist?.let { entry.put("assist", it.toJson()) }
             pack?.let { entry.put("pack", it) }
             changes?.let { entry.put("changes", it) }
+            val ledgerSource = File(dir(w.id), LEDGER)
+            if (ledgerSource.isFile) component(ledgerSource, "故事账本读不出，没有放进备份") { StoryLedger.parse(it) }
+                ?.let { entry.put("ledger", StoryLedger.toJson(it).getJSONArray("entries")) }
             array.put(entry)
         }
         val backup = JSONObject().put("format", 1).put("works", array)
@@ -1035,6 +1111,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val texts: Map<String, String>,
         val cards: Map<String, ChapterCard>?,
         val changes: List<ChangeEntry>?,
+        val ledger: List<LedgerEntry>?,
         val pack: List<Pair<PackDoc, String>>?,
         val localPack: List<PackDoc>,
         val assist: WorkAssist?,
@@ -1092,6 +1169,12 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             val raw = o.getJSONArray("changes")
             (0 until raw.length()).map { index ->
                 requireNotNull(raw.getJSONObject(index).toChange()) { "备份变更记录无效" }
+            }
+        } else null
+        val ledger = if (o.has("ledger")) {
+            val raw = o.getJSONArray("ledger")
+            (0 until raw.length()).map { index ->
+                requireNotNull(LedgerEntry.fromJson(raw.getJSONObject(index))) { "备份故事账本无效" }
             }
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
@@ -1156,7 +1239,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, cards, changes, pack, localPack, assist)
+        return RestoreWork(incoming, local, texts, cards, changes, ledger, pack, localPack, assist)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -1207,6 +1290,9 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         plan.changes?.let { entries ->
             val value = JSONArray().apply { entries.forEach { put(it.toJson()) } }
             check(DurableFiles.write(File(destination, changesFile), value.toString().toByteArray())) { "无法暂存变更登记" }
+        }
+        plan.ledger?.let { entries ->
+            check(DurableFiles.write(File(destination, LEDGER), StoryLedger.toJson(entries).toString().toByteArray())) { "无法暂存故事账本" }
         }
         plan.pack?.let { docs ->
             val folder = File(destination, PACK)
@@ -1317,6 +1403,10 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         private const val ASSIST = "assist.json"
         /** 文风范例的挑选缓存。 */
         private const val SAMPLES = "style-samples.json"
+        private const val LEDGER = "ledger.json"
+        private const val LEDGER_HISTORY = "ledger-history"
+        /** 账本留几个历史版本。 */
+        private const val LEDGER_KEEP = 30
         private const val PACK = "pack"
         private const val PACK_INDEX = "index.json"
         private const val RESTORE_PREFIX = ".restore-writing-"
