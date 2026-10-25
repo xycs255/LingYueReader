@@ -243,4 +243,143 @@ class AiUsageTest {
         file.writeText("坏了")
         assertTrue(UsageStore(file) { today }.load().days.isEmpty())
     }
+
+    @Test
+    fun ownPriceIsKeptPerModelAndSwitchingModelUsesThatModelsPrice() {
+        val claude = AiConfig(enabled = true).withPreset(AiPresets.of("claude")).copy(model = "claude-opus-5-5")
+        val opus = AiPrice(4.4, 0.22, 22.0, usd = true)
+        val withOpus = claude.copy(prices = mapOf(AiPricing.priceKey(claude) to opus))
+        assertEquals(AiPricing.PriceKind.MODEL, AiPricing.choose(withOpus)!!.kind)
+        assertEquals(opus, AiPricing.price(withOpus))
+        // 换成 Haiku：不按 Opus 的价算，用 Haiku 的参考价。
+        val haiku = withOpus.copy(model = "claude-haiku-5-5")
+        assertEquals(AiPricing.PriceKind.REFERENCE, AiPricing.choose(haiku)!!.kind)
+        assertEquals(0.10, AiPricing.price(haiku)!!.input, 1e-12)
+        // 换回 Opus：还是自己填的。
+        assertEquals(opus, AiPricing.price(haiku.copy(model = "claude-opus-5-5")))
+        // 自定义服务商：给 m 填了价，换成没填价、也没有参考价的模型就“没估钱”。
+        val custom = openAi(price = null)
+        val mine = AiPrice(2.0, 0.2, 8.0)
+        val priced = custom.copy(prices = mapOf(AiPricing.priceKey(custom) to mine))
+        assertEquals(mine, AiPricing.price(priced))
+        val other = priced.copy(model = "m-large")
+        assertNull(AiPricing.choose(other))
+        assertEquals(AiCost(unpriced = 1), AiPricing.cost(other, AiUsage(10, 0, 10, requests = 1)))
+        // 同一个模型名、换了接口地址（别的转发站）：也对不上。
+        assertNull(AiPricing.choose(priced.copy(baseUrl = "https://relay.example.org/v1")))
+    }
+
+    @Test
+    fun oldPricesKeptOnlyByProviderAreMigratedOrKeptAsProviderWide() {
+        val mine = AiPrice(1.0, 0.1, 2.0)
+        val other = AiPrice(3.0, 0.3, 6.0)
+        // 旧数据：单价只按服务商记。当前服务商的那份改记到当时的模型（存着的模型）名下。
+        val old = AiConfig(enabled = true).withPreset(AiPresets.of("claude")).copy(model = "claude-opus-5-5", prices = mapOf("claude" to mine, "deepseek" to other))
+        val migrated = AiPricing.migrate(old)
+        assertEquals(mine, migrated.prices[AiPricing.priceKey(old)])
+        assertFalse(migrated.prices.containsKey("claude"))
+        assertEquals(mine, AiPricing.price(migrated))
+        // 迁移以后换模型：不再沿用。
+        assertEquals(AiPricing.PriceKind.REFERENCE, AiPricing.choose(migrated.copy(model = "claude-haiku-5-5"))!!.kind)
+        // 别家的不知道是哪个模型：留作那家的通用价（未指定模型），给模型专门填的优先。
+        assertEquals(other, migrated.prices["deepseek"])
+        val deepseek = migrated.withPreset(AiPresets.of("deepseek")).copy(model = "deepseek-chat")
+        assertEquals(AiPricing.PriceKind.PROVIDER, AiPricing.choose(deepseek)!!.kind)
+        assertEquals(other, AiPricing.price(deepseek))
+        val special = AiPrice(9.0, 0.9, 9.0)
+        val both = deepseek.copy(prices = deepseek.prices + (AiPricing.priceKey(deepseek) to special))
+        assertEquals(AiPricing.PriceKind.MODEL, AiPricing.choose(both)!!.kind)
+        assertEquals(special, AiPricing.price(both))
+        // 已经是新键的、没有旧键的：原样。
+        assertEquals(migrated, AiPricing.migrate(migrated))
+        // 本机模型不迁移。
+        val device = AiConfig(protocol = AiProtocol.DEVICE, preset = "claude", model = "gemma", prices = mapOf("claude" to mine))
+        assertEquals(device, AiPricing.migrate(device))
+    }
+
+    /** 一笔一个不同的数（1、2、4、8……），加总时看得出哪几笔算进去了。 */
+    private fun UsageBook.spend(day: LocalDate, cny: Double) = add(day, "w1", AiFeature.INLINE, AiUsage(1, 0, 1, requests = 1), AiCost(cny = cny))
+
+    private fun UsageBook.sum(from: LocalDate?, to: LocalDate) = UsageBook.total(rows(from, to)).cost.cny
+
+    @Test
+    fun last90DaysDoesNotCountTheWholeMonthTheStartFallsIn() {
+        val today = LocalDate.of(2026, 10, 25)
+        val start = today.minusDays((UsageBook.KEEP_DAYS - 1).toLong()) // 2026-07-28
+        assertEquals(LocalDate.of(2026, 7, 28), start)
+        val b = UsageBook()
+            .spend(LocalDate.of(2026, 6, 1), 1.0)
+            .spend(LocalDate.of(2026, 6, 30), 2.0)
+            .spend(LocalDate.of(2026, 7, 1), 4.0)
+            .spend(LocalDate.of(2026, 7, 27), 8.0)
+            .spend(start, 16.0)
+            .spend(LocalDate.of(2026, 7, 31), 32.0)
+            .spend(today, 64.0)
+            .compact(today)
+        // 7 月 1 日、27 日并进了 7 月的汇总；28 日起还是明细。
+        assertEquals(12.0, UsageBook.total(b.months[YearMonth.of(2026, 7)]!!).cost.cny, 1e-9)
+        assertTrue(start in b.days)
+        // 近 90 天：只有明细，7 月的汇总（起点之前的那几天）不算。
+        assertEquals(16.0 + 32.0 + 64.0, b.sum(start, today), 1e-9)
+        // 本月。
+        assertEquals(64.0, b.sum(today.withDayOfMonth(1), today), 1e-9)
+        // 全部。
+        assertEquals(127.0, b.sum(null, today), 1e-9)
+        // 起点早于明细：只补整月都在范围里的。月初起：6 月整月、7 月整月都算。
+        assertEquals(127.0, b.sum(LocalDate.of(2026, 6, 1), today), 1e-9)
+        // 6 月 2 日起：6 月不完整，不算；7 月整月算。
+        assertEquals(4.0 + 8.0 + 16.0 + 32.0 + 64.0, b.sum(LocalDate.of(2026, 6, 2), today), 1e-9)
+        // 月末（6 月 30 日）起：同上。
+        assertEquals(4.0 + 8.0 + 16.0 + 32.0 + 64.0, b.sum(LocalDate.of(2026, 6, 30), today), 1e-9)
+        // 7 月 1 日起：7 月整月在范围里。
+        assertEquals(4.0 + 8.0 + 16.0 + 32.0 + 64.0, b.sum(LocalDate.of(2026, 7, 1), today), 1e-9)
+        // 截止日在 7 月里：7 月不完整，汇总不算。
+        assertEquals(1.0 + 2.0 + 16.0, b.sum(LocalDate.of(2026, 6, 1), LocalDate.of(2026, 7, 30)), 1e-9)
+    }
+
+    @Test
+    fun last90DaysAcrossNewYear() {
+        val today = LocalDate.of(2027, 1, 10)
+        val start = today.minusDays((UsageBook.KEEP_DAYS - 1).toLong())
+        assertEquals(LocalDate.of(2026, 10, 13), start)
+        val b = UsageBook()
+            .spend(LocalDate.of(2026, 9, 30), 1.0)
+            .spend(LocalDate.of(2026, 10, 1), 2.0)
+            .spend(LocalDate.of(2026, 10, 12), 4.0)
+            .spend(start, 8.0)
+            .spend(LocalDate.of(2026, 12, 31), 16.0)
+            .spend(LocalDate.of(2027, 1, 1), 32.0)
+            .spend(today, 64.0)
+            .compact(today)
+        assertEquals(setOf(YearMonth.of(2026, 9), YearMonth.of(2026, 10)), b.months.keys)
+        assertEquals(8.0 + 16.0 + 32.0 + 64.0, b.sum(start, today), 1e-9)
+        // 本月（跨年后的 1 月）：去年 12 月 31 日不算。
+        assertEquals(32.0 + 64.0, b.sum(today.withDayOfMonth(1), today), 1e-9)
+        // 去年 9 月 1 日起：9 月、10 月整月都在范围里。
+        assertEquals(127.0, b.sum(LocalDate.of(2026, 9, 1), today), 1e-9)
+        // 去年 10 月 2 日起：10 月不完整，只剩明细。
+        assertEquals(8.0 + 16.0 + 32.0 + 64.0, b.sum(LocalDate.of(2026, 10, 2), today), 1e-9)
+        assertEquals(127.0, b.sum(null, today), 1e-9)
+    }
+
+    @Test
+    fun storePublishesTheLatestBookAndAlertsOncePerDay() {
+        val file = tmp.newFile("ai-usage.json")
+        val today = LocalDate.of(2026, 10, 25)
+        val store = UsageStore(file) { today }
+        // 几个请求同时结束：每次记账都在锁里更新，最后显示的是加全了的账。
+        val threads = (1..8).map { Thread { repeat(25) { store.add("w1", AiFeature.DRAFT, AiUsage(1, 0, 1, requests = 1), AiCost(cny = 0.01)) } } }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        assertEquals(200, store.book.value.day(today).usage.requests)
+        // 同一天只提醒一次：几个线程同时检查，只有一个拿到“该提醒了”。
+        val alerts = java.util.concurrent.atomic.AtomicInteger()
+        val racers = (1..8).map { Thread { if (store.markAlerted(today)) alerts.incrementAndGet() } }
+        racers.forEach { it.start() }
+        racers.forEach { it.join() }
+        assertEquals(1, alerts.get())
+        assertEquals(today.toString(), store.book.value.alerted)
+        assertFalse(store.markAlerted(today))
+        assertTrue(store.markAlerted(today.plusDays(1)))
+    }
 }

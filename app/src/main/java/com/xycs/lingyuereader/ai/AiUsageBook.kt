@@ -1,6 +1,9 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.DurableFiles
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -66,10 +69,19 @@ data class UsageBook(
         return copy(days = days - old.keys, months = months)
     }
 
-    /** [from] 到 [to]（含）各天的明细；整月都早于明细的，用按月汇总补上（[from] 为空是全部）。 */
+    /**
+     * [from] 到 [to]（含）各天的明细（[from] 为空是全部，按月汇总也全算上）。
+     * 有起点时只用按天的明细（[KEEP_DAYS] 天够“本月”“近 90 天”用）；起点早于明细最早的一天、按天的明细不够时，
+     * 只补上整月都在范围里的按月汇总——起点所在的那个月不完整，不能整月算进来。
+     */
     fun rows(from: LocalDate?, to: LocalDate): List<UsageRow> {
         val inDays = days.filterKeys { (from == null || !it.isBefore(from)) && !it.isAfter(to) }.values.flatten()
-        val inMonths = months.filterKeys { m -> from == null || !m.atDay(1).isBefore(from.withDayOfMonth(1)) }.values.flatten()
+        val earliest = days.keys.minOrNull()
+        val inMonths = when {
+            from == null -> months.values.flatten()
+            earliest != null && !from.isBefore(earliest) -> emptyList()
+            else -> months.filterKeys { m -> !m.atDay(1).isBefore(from) && !m.atEndOfMonth().isAfter(to) }.values.flatten()
+        }
         return merge(inDays + inMonths)
     }
 
@@ -108,8 +120,13 @@ data class UsageBook(
 class UsageStore(private val file: File, private val today: () -> LocalDate = LocalDate::now) {
     private var cached: UsageBook? = null
 
+    private val _book = MutableStateFlow(UsageBook())
+
+    /** 最新的账本：在锁里随写盘一起更新，几个请求同时结束也不会被旧账盖掉。 */
+    val book: StateFlow<UsageBook> = _book.asStateFlow()
+
     @Synchronized
-    fun load(): UsageBook = cached ?: read().also { cached = it }
+    fun load(): UsageBook = cached ?: read().also { cached = it; _book.value = it }
 
     private fun read(): UsageBook {
         if (!file.isFile) return UsageBook()
@@ -125,9 +142,13 @@ class UsageStore(private val file: File, private val today: () -> LocalDate = Lo
     @Synchronized
     fun add(work: String, feature: AiFeature, usage: AiUsage, cost: AiCost): UsageBook = save(load().add(today(), work, feature, usage, cost).compact(today()))
 
-    /** 记下今天提醒过了。 */
+    /** 记下 [day] 提醒过了；那天已经提醒过返回假（检查和记下在同一把锁里，一天只提醒一次）。 */
     @Synchronized
-    fun markAlerted(day: LocalDate): UsageBook = save(load().copy(alerted = day.toString()))
+    fun markAlerted(day: LocalDate): Boolean {
+        if (load().alerted == day.toString()) return false
+        save(load().copy(alerted = day.toString()))
+        return true
+    }
 
     /** 清空（用量页“清除用量记录”）。 */
     @Synchronized
@@ -135,6 +156,7 @@ class UsageStore(private val file: File, private val today: () -> LocalDate = Lo
 
     private fun save(b: UsageBook): UsageBook {
         cached = b
+        _book.value = b
         file.parentFile?.mkdirs()
         DurableFiles.write(file, UsageBook.toJson(b).toByteArray())
         return b

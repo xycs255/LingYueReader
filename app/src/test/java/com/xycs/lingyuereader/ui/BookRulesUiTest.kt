@@ -6,6 +6,8 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
@@ -98,6 +100,7 @@ class BookRulesUiTest {
         // 一行几十个英文字母：带反向引用的嵌套重复会在这一行上回溯几小时。
         File(context.filesDir, "books/b1/s0.txt").appendText("shenmolaozhouduniangguchangfenglinyuexyz!\n")
         val slow = """^((\w)+\2?)+$"""
+        val slowToc = """^((\w)+\2?)+\s*$"""
         val saved = TextRules.timeoutMillis
         TextRules.timeoutMillis = 500
         try {
@@ -105,12 +108,24 @@ class BookRulesUiTest {
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("按正则匹配"))
             compose.onNodeWithText("按正则匹配").performClick()
             compose.onNodeWithText("查找").performTextInput(slow)
+            // 写法像会灾难性回溯：先不统计，说明原因；点“仍然试一下”才在这本书上跑。
+            waitForText("有套在一起的重复")
+            waitForText("先没统计")
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("添加"))
+            compose.onNodeWithText("添加").assertIsNotEnabled()
+            compose.onNodeWithText("仍然试一下").performClick()
             waitForText("正则太慢，在这本书上跑不完")
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("添加"))
             compose.onNodeWithText("添加").assertIsNotEnabled()
 
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("分章正则"))
-            compose.onNodeWithText("分章正则").performTextInput(slow)
+            // 换一种写法（上面点过“仍然试一下”的那个不再拦）。
+            compose.onNodeWithText("分章正则").performTextInput(slowToc)
+            waitForText("先没试分章")
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存并重新分章"))
+            compose.onNodeWithText("保存并重新分章").assertIsNotEnabled()
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("仍然试一下"))
+            compose.onNodeWithText("仍然试一下").performSemanticsAction(SemanticsActions.OnClick)
             waitForText("正则太慢，在这本书上跑不完，请改写分章或净化规则")
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存并重新分章"))
             compose.onNodeWithText("保存并重新分章").assertIsNotEnabled()

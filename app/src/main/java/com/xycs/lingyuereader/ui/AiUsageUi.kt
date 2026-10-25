@@ -298,22 +298,32 @@ internal fun priceLine(p: com.xycs.lingyuereader.ai.AiPrice): String {
 internal fun PriceSection(vm: AppViewModel, config: AiConfig) {
     val book by vm.aiUsage.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf(false) }
-    val custom = config.prices[config.preset]
+    val choice = AiPricing.choose(config)
     val reference = AiPricing.reference(config)
+    val model = config.model.trim()
+    val custom = choice?.kind == AiPricing.PriceKind.MODEL || choice?.kind == AiPricing.PriceKind.PROVIDER
     val today = book.day(LocalDate.now())
     GroupedSection(
         header = "价格与用量",
         footer = when {
             config.onDevice -> "本机模型不联网、不花钱，不计用量。"
-            custom != null -> "按你填的单价估（每百万 token）。"
-            reference != null -> "参考价，以服务商为准：${reference.source}（${reference.date}），每百万 token" +
+            choice?.kind == AiPricing.PriceKind.MODEL -> "这是 $model 的价，按你填的单价估（每百万 token）。换了模型要另填。"
+            choice?.kind == AiPricing.PriceKind.PROVIDER -> "这是以前按服务商填的通用价，未指定模型，现在按它估 $model（每百万 token）。" +
+                "不是这个模型的价时，给 $model 单独填一个。"
+            reference != null -> "这是 $model 的参考价，以服务商为准：${reference.source}（${reference.date}），每百万 token" +
                 (if (reference.note.isNotEmpty()) "，${reference.note}" else "") + "。和你的账户价格不一样时，自己填单价。"
-            else -> "这个服务商或模型没有内置参考价（价格常变，查不到出处的不内置），填上单价才估钱；不填也照样记 token 数。"
+            else -> "$model 没有内置参考价（价格常变，查不到出处的不内置），也没填单价：没估钱，只记 token 数。填上单价才估钱。"
         },
     ) {
         if (!config.onDevice) {
-            row { ValueRow(if (custom != null) "单价（你填的）" else "单价（参考价）", AiPricing.price(config)?.let(::priceLine) ?: "没有") }
-            row { NavRow("自己填单价", value = if (custom != null) "已填" else null) { editing = true } }
+            val label = when (choice?.kind) {
+                AiPricing.PriceKind.MODEL -> "单价（你填的）"
+                AiPricing.PriceKind.PROVIDER -> "单价（你填的，未指定模型）"
+                AiPricing.PriceKind.REFERENCE -> "单价（参考价）"
+                null -> "单价"
+            }
+            row { ValueRow(label, choice?.price?.let(::priceLine) ?: "没估钱") }
+            row { NavRow("自己填单价", value = if (custom) "已填" else null) { editing = true } }
         }
         row {
             NavRow(
@@ -324,7 +334,17 @@ internal fun PriceSection(vm: AppViewModel, config: AiConfig) {
     }
     if (editing) PriceDialog(config, onDismiss = { editing = false }) { price ->
         editing = false
-        vm.saveAiConfig(config.copy(prices = if (price == null) config.prices - config.preset else config.prices + (config.preset to price)))
+        // 填的价记在当前模型名下；“清除”清掉现在起作用的那份（给这个模型填的，没有就是旧的通用价）。
+        val key = AiPricing.priceKey(config)
+        vm.saveAiConfig(
+            config.copy(
+                prices = when {
+                    price != null -> config.prices + (key to price)
+                    config.prices.containsKey(key) -> config.prices - key
+                    else -> config.prices - config.preset
+                },
+            ),
+        )
     }
 }
 
@@ -338,7 +358,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
     var usd by remember { mutableStateOf(start?.usd ?: (config.protocol == com.xycs.lingyuereader.ai.AiProtocol.ANTHROPIC)) }
     fun num(s: String) = s.trim().toDoubleOrNull()?.takeIf { it >= 0 }
     val ok = num(input) != null && num(output) != null && (cached.isBlank() || num(cached) != null)
-    GlassDialog(show = true, title = "单价", summary = "每百万 token 多少钱，照服务商价格页填（${config.providerLabel} · ${config.model}）。缓存命中价不知道可以空着，按输入价算。", onDismissRequest = onDismiss) {
+    GlassDialog(show = true, title = "单价", summary = "这是 ${config.model.trim()} 的价（${config.providerLabel}），只用于这个模型，换了模型要另填。每百万 token 多少钱，照服务商价格页填；缓存命中价不知道可以空着，按输入价算。", onDismissRequest = onDismiss) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SegmentedControl(listOf(false to "人民币 ¥", true to "美元 $"), usd) { usd = it }
             listOf(Triple("输入", input) { v: String -> input = v }, Triple("缓存命中", cached) { v: String -> cached = v }, Triple("输出", output) { v: String -> output = v }).forEach { (label, value, set) ->
@@ -351,7 +371,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            if (config.prices.containsKey(config.preset)) {
+            if (AiPricing.choose(config)?.kind.let { it == AiPricing.PriceKind.MODEL || it == AiPricing.PriceKind.PROVIDER }) {
                 Box(Modifier.clip(RoundedCornerShape(12.dp))) {
                     ActionRow(if (AiPricing.reference(config) != null) "不用自己填的，用参考价" else "清除填的单价", destructive = true) { onSave(null) }
                 }

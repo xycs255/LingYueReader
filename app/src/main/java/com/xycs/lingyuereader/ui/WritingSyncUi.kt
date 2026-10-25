@@ -85,6 +85,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
         ) {
             item(key = "head") { SyncHead(vm, session, lookup) }
             if (session != null && session.results.isNotEmpty()) {
+                val repeats = session.repeats
                 SyncGroup.entries.forEach { g ->
                     item(key = "group:${g.name}") {
                         val list = session.items.filter { it.group == g }
@@ -98,6 +99,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                                         expanded = item.key in open,
                                         text = session.edits[item.key] ?: item.text,
                                         showChapter = session.results.size > 1,
+                                        repeat = item.key in repeats,
                                         onToggle = { vm.writingAi.toggleSync(item.key, item.key !in session.picked) },
                                         onExpand = { open = if (item.key in open) open - item.key else open + item.key },
                                         onEdit = { vm.writingAi.editSync(item.key, it) },
@@ -114,7 +116,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                         if (n > 0) "写进设定包（$n 条）" else "不写，标为已整理",
                         onClick = {
                             writing = true
-                            vm.writingAi.applySync(workId) { msg ->
+                            vm.writingAi.applySync(workId, failed = { writing = false }) { msg ->
                                 vm.writing.loadPack(workId)
                                 vm.writing.loadChanges(workId)
                                 vm.showMessage(msg)
@@ -122,7 +124,8 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                             }
                         },
                         modifier = Modifier.padding(horizontal = 12.dp),
-                        enabled = session.running == null && !writing && session.results.any { it.error == null },
+                        // 分段整理有一段没成的章不记为已整理，但其余几段的提议照样可以写。
+                        enabled = session.running == null && !writing && (session.results.any { it.error == null } || n > 0),
                     )
                 }
             }
@@ -157,9 +160,12 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
         session.results.forEach { r ->
             row {
                 if (r.error != null) {
-                    ErrorText("整理「${r.title}」没成：${r.error}", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+                    ErrorText(
+                        (if (r.parts > 1) "整理「${r.title}」没整理全，${r.items.size} 条提议照样列在下面：" else "整理「${r.title}」没成：") + r.error,
+                        Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    )
                 } else {
-                    TwoLine(r.title, "第 ${r.number} 章 · " + if (r.items.isEmpty()) "没有要整理的" else "${r.items.size} 条提议")
+                    TwoLine(r.title, "第 ${r.number} 章 · " + (if (r.parts > 1) "分 ${r.parts} 段整理 · " else "") + if (r.items.isEmpty()) "没有要整理的" else "${r.items.size} 条提议")
                 }
             }
         }
@@ -167,7 +173,7 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
 }
 
 /**
- * 一条提议：左边勾选框（“正文写错了”的冲突不能写进设定包，换成小标签），标题，下面一行写进哪份文档；
+ * 一条提议：左边勾选框（“正文写错了”的冲突不能写进设定包，换成小标签），标题，下面一行写进哪份文档（前面章已经提过同一个的，[repeat] 标出来）；
  * 点开（高度用 [Motion.MEDIUM] 长出来）看设定包和正文各怎么写、要写进去的原文（可以改）、依据原句。
  */
 @Composable
@@ -177,6 +183,7 @@ private fun SyncItemRow(
     expanded: Boolean,
     text: String,
     showChapter: Boolean,
+    repeat: Boolean,
     onToggle: () -> Unit,
     onExpand: () -> Unit,
     onEdit: (String) -> Unit,
@@ -201,7 +208,7 @@ private fun SyncItemRow(
             }
             Column(Modifier.weight(1f).padding(start = if (item.writable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
-                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + item.where, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") + item.where, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
             }
             if (!item.writable) Tag(if (item.fixText) "改正文" else "只提示", c.warning, Modifier.padding(start = 8.dp))
             Icon(LingYueIcons.ChevronDown, contentDescription = if (expanded) "收起" else "展开", tint = c.tertiary, modifier = Modifier.padding(start = 6.dp).size(16.dp).rotate(turn))

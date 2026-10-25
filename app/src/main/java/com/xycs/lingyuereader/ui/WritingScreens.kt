@@ -987,7 +987,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction)
     }
 
-    /** 整理本章进设定包：用编辑框里现在的正文；同一份正文刚整理好、还没写进去的，直接看结果。 */
+    /** 整理本章进设定包：用编辑框里现在的正文；同一份正文刚整理好（单章或批量里的）、还没写进去的，直接看结果。 */
     fun startSync() {
         val text = current?.text?.toString() ?: return
         if (text.isBlank()) {
@@ -1000,8 +1000,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         if (!locked) vm.writing.save(workId, chapterId, text)
         val s = vm.writingAi.sync.value
-        val done = s != null && s.workId == workId && !s.batch && s.running == null &&
-            s.results.singleOrNull()?.let { it.chapterId == chapterId && it.hash == text.hashCode() && it.error == null } == true
+        val done = s != null && s.workId == workId && s.running == null &&
+            s.results.any { it.chapterId == chapterId && it.hash == ChapterSyncs.hash(text) && it.error == null }
         if (!done) vm.writingAi.syncChapter(workId, chapterId, text)
         vm.open(Screen.ChapterSync(workId))
     }

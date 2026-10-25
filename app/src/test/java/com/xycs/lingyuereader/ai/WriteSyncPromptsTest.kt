@@ -104,4 +104,19 @@ class WriteSyncPromptsTest {
         assertEquals("老周第十二章才走", text.title)
         assertEquals("", text.text)
     }
+
+    @Test
+    fun longChaptersAreSplitAtParagraphs() {
+        val text = List(2_000) { "渡口的雾一直没散，林月坐在窗边数更声。$it" }.joinToString("\n")
+        val parts = WritePrompts.syncParts(text)
+        assertTrue(parts.size >= 2)
+        assertTrue(parts.all { it.length <= WritePrompts.CHAPTER_CHARS })
+        // 一字不少，每段都在段落末尾切开。
+        assertEquals(text, parts.joinToString(""))
+        assertTrue(parts.dropLast(1).all { it.endsWith("\n") })
+        assertEquals(listOf(chapter), WritePrompts.syncParts(chapter))
+        val p = WritePrompts.sync("第十二章 渡口", 12, parts[1], 2, parts.size, parts[0].takeLast(WritePrompts.SYNC_OVERLAP))
+        assertTrue("分 ${parts.size} 段整理" in p && "第 2 段" in p && "上一段的末尾" in p && "按设定算第 12 章" in p && "只整理这一段" in p)
+        assertTrue(parts[1].take(20) in p)
+    }
 }

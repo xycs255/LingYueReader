@@ -432,10 +432,18 @@ object WritePrompts {
      * 写完一章，整理进设定包：设定包整份在系统提示里（可以查），这里给这一章的正文。
      * 只要正文里明写了的：新出现的设定、和设定包对不上的、谁知道了什么。每条带正文原句，解析时核对。
      */
-    fun sync(title: String, number: Int, text: String): String = buildString {
-        append("下面是这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）的正文：\n\n")
+    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = ""): String = buildString {
+        if (parts > 1) {
+            // 太长的章分几段整理：每段一次请求，带上前一段的末尾接上文。
+            append("这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）太长，分 ").append(parts).append(" 段整理")
+            append("，下面是第 ").append(part).append(" 段。")
+            if (before.isNotBlank()) append("上一段的末尾（只用来接上文，不用整理）：\n\n").append(before.trim()).append("\n\n这一段的正文：")
+            append("\n\n")
+        } else {
+            append("下面是这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）的正文：\n\n")
+        }
         append(text.take(CHAPTER_CHARS)).append("\n\n")
-        append("作者写完了这一章，请把它整理进设定包（设定包在上面）。只找三类：\n")
+        append("作者写完了这一章，请把它整理进设定包（设定包在上面）。").append(if (parts > 1) "只整理这一段里写到的，" else "").append("只找三类：\n")
         append("1. new（新设定）：正文里新出现、设定包里还没有的人物（称呼、身份、和谁什么关系、本章做了什么）、地名、物件、组织、规矩或设定。\n")
         append("2. conflicts（冲突）：正文和设定包写法对不上的（人数、生死、身份、称呼、年代、地点、物件下落、谁什么时候知道了什么）。")
         append("pack 摘设定包里的原话（一字不差，便于找到它），doc、section 写它在哪份文档哪一节，chapter 写正文怎么写的；")
@@ -455,6 +463,29 @@ object WritePrompts {
         append("{\"new\":[{\"type\":\"人物\",\"name\":\"\",\"kind\":\"人物档案\",\"doc\":\"\",\"section\":\"\",\"alias\":\"\",\"identity\":\"\",\"relation\":\"\",\"did\":\"\",\"text\":\"\",\"quote\":\"\"}],")
         append("\"conflicts\":[{\"title\":\"\",\"kind\":\"\",\"doc\":\"\",\"section\":\"\",\"pack\":\"\",\"chapter\":\"\",\"fix\":\"pack\",\"text\":\"\",\"quote\":\"\"}],")
         append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}]}")
+    }
+
+    /** 分段整理时带上前一段末尾多少字（接上文用）。 */
+    const val SYNC_OVERLAP = 400
+
+    /**
+     * 整理本章要分几段发：不超过 [limit] 字的一段就是整章；更长的在段落（换行）处切成每段不超过 [limit] 字，
+     * 一段本身就超长的才从中间硬切。
+     */
+    fun syncParts(text: String, limit: Int = CHAPTER_CHARS): List<String> {
+        if (text.length <= limit) return listOf(text)
+        val out = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            if (text.length - start <= limit) {
+                out += text.substring(start)
+                break
+            }
+            val cut = text.lastIndexOf('\n', start + limit - 1).takeIf { it > start + limit / 2 }?.plus(1) ?: (start + limit)
+            out += text.substring(start, cut)
+            start = cut
+        }
+        return out.filter { it.isNotBlank() }
     }
 
     /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */

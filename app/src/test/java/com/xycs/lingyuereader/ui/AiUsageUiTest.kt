@@ -146,6 +146,12 @@ class AiUsageUiTest {
         waitForText("价格与用量")
         compose.onNodeWithText("单价（你填的）").performScrollTo()
         waitForText("输入 ¥2 · 命中 ¥0.2 · 输出 ¥8")
+        // 以前只按服务商记的单价迁移到了当时的模型名下：写明是哪个模型的价。
+        waitForText("这是 test-model 的价")
+        // 换个模型：没有给它填的价、也没有参考价，标“没估钱”，不沿用上一个模型的价。
+        compose.runOnUiThread { vm.saveAiConfig(vm.aiConfig.value.copy(model = "test-model-large")) }
+        waitForText("没估钱")
+        assertTrue(compose.onAllNodesWithText("输入 ¥2 · 命中 ¥0.2 · 输出 ¥8").fetchSemanticsNodes().isEmpty())
     }
 
     @Test

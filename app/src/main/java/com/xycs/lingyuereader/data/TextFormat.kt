@@ -22,14 +22,14 @@ enum class QuoteStyle(val label: String, val open: Char, val close: Char, val in
  * 中英文之间不加空格，段末缺标点只提示不补。
  */
 data class FormatSettings(
-    /** 段首段尾的半角、全角空格和制表符去掉（段首缩进是编辑器显示时加的）。 */
+    /** 段尾的空白、段首普通的缩进去掉（段首缩进是编辑器显示时加的）；诗歌、落款那样排的段首空白留着。 */
     val trim: Boolean = true,
-    /** 汉字、中文标点之间的空格去掉；英文单词、数字之间的压成一个。 */
+    /** 汉字、中文标点之间的半角空格去掉（全角空格留着）；英文单词、数字之间的压成一个。 */
     val spaces: Boolean = true,
     val blankLines: BlankLines = BlankLines.ONE,
     /** 中文语境里的半角 , . ? ! : ; ( ) 换成全角。 */
     val punct: Boolean = true,
-    /** 直引号、英文弯引号统一成成对的中文引号。 */
+    /** 直引号按前后推断开闭，换成中文引号；已有的中文引号不改方向（「」风格下按嵌套换成「」『』）。 */
     val quotes: Boolean = true,
     val quoteStyle: QuoteStyle = QuoteStyle.CURLY,
     /** 省略号、破折号统一成两个字宽的“……”“——”。 */
@@ -195,7 +195,10 @@ object TextFormat {
         FormatKind.MIXED -> mixed(t)
     }
 
-    /** 1. 段首段尾空白；只有空白的行变成空行。 */
+    /**
+     * 1. 段首段尾空白；只有空白的行变成空行。段首只去普通的段首缩进（1–2 个全角空格、1–4 个半角空格或一个制表符，
+     * 后面是没有全角空格的普通段落）；更多的、混着的、诗歌对仗那样段内也用全角空格排的（右缩进的落款等）留着。
+     */
     private fun trim(t: String): List<FormatEdit> = buildList {
         lines(t) { s, e ->
             if (isSeparator(t, s, e)) return@lines
@@ -205,12 +208,16 @@ object TextFormat {
                 if (e > s) add(FormatEdit(s, e, ""))
                 return@lines
             }
-            if (a > s) add(FormatEdit(s, a, ""))
             var b = e
             while (b > a && isSpace(t[b - 1])) b--
+            if (a > s && plainIndent(t.substring(s, a)) && (a until b).none { t[it] == '　' }) add(FormatEdit(s, a, ""))
             if (b < e) add(FormatEdit(b, e, ""))
         }
     }
+
+    /** 看起来就是普通段首缩进的：1–2 个全角空格、1–4 个半角空格，或一个制表符。 */
+    private fun plainIndent(indent: String): Boolean =
+        (indent.length <= 2 && indent.all { it == '　' }) || (indent.length <= 4 && indent.all { it == ' ' }) || indent == "\t"
 
     /** 3. 空行：连续的压成一行（或一行不留），全文开头结尾的空行去掉。只有空白的行也算空行。 */
     private fun blanks(t: String, mode: BlankLines): List<FormatEdit> {
@@ -297,7 +304,8 @@ object TextFormat {
 
     /**
      * 4. 中文语境里的半角标点换全角：前后（跳过空格、引号和别的半角标点）挨着汉字或中文标点。
-     * 不动：数字里的小数点、千分位、时间（3.14、1,000、12:30），连着的几个点（英文省略号），网址、邮箱、文件名，英文句子。
+     * 不动：数字里的小数点、千分位、时间（3.14、1,000、12:30），连着的几个点（英文省略号），网址、邮箱、文件名，英文句子；
+     * “1.”“A.”这类编号的点；紧跟在英文字母、数字后面的括号和分号（代码、“1)”编号）；:) :( :D 这类表情。
      * 圆括号成对的话一起换。
      */
     private fun punct(t: String): List<FormatEdit> = buildList {
@@ -313,26 +321,59 @@ object TextFormat {
                     for (i in m.range.first until end) guard[i] = true
                 }
             }
-            val convert = BooleanArray(line.length)
-            for (i in line.indices) {
-                val c = line[i]
-                if (c !in HALF || guard[i]) continue
-                if (c == '.' && (line.getOrNull(i - 1) == '.' || line.getOrNull(i + 1) == '.')) continue
-                if (c in ".,:" && line.getOrNull(i - 1)?.isAsciiDigit() == true && line.getOrNull(i + 1)?.isAsciiDigit() == true) continue
-                if (cnAround(line, i, i + 1)) convert[i] = true
-            }
-            // 圆括号成对：一边换了另一边也换（“(abc)他”不排成“(abc）他”）。
+            // 圆括号配对（网址里的不算）。
+            val match = IntArray(line.length) { -1 }
             val stack = ArrayList<Int>()
             for (i in line.indices) {
                 when (line[i]) {
                     '(' -> if (!guard[i]) stack += i
                     ')' -> if (!guard[i] && stack.isNotEmpty()) {
                         val o = stack.removeAt(stack.lastIndex)
-                        if (convert[o] || convert[i]) {
-                            convert[o] = true
-                            convert[i] = true
+                        match[o] = i
+                        match[i] = o
+                    }
+                }
+            }
+            for (i in line.indices) {
+                val c = line[i]
+                if (guard[i]) continue
+                val afterAscii = line.getOrNull(i - 1)?.isAsciiLetterOrDigit() == true
+                when {
+                    // 代码样的片段：紧跟在英文字母、数字后面的一对圆括号（里面没有汉字）连同后面的分号不动（println(x);）。
+                    c == '(' && afterAscii && match[i] >= 0 && (i + 1 until match[i]).none { isHan(line[it]) } -> {
+                        guard[i] = true
+                        guard[match[i]] = true
+                        if (line.getOrNull(match[i] + 1) == ';') guard[match[i] + 1] = true
+                    }
+                    // 紧跟在英文字母、数字后面、配不上的括号（“1)”这类编号）和分号不动。
+                    (c in "()" && afterAscii && match[i] < 0) || (c == ';' && afterAscii) -> guard[i] = true
+                    // 表情 :) :( :-) ;) :D :P 不动（配上了的括号不算表情）。
+                    c in ":;" -> {
+                        val j = if (line.getOrNull(i + 1) == '-') i + 2 else i + 1
+                        val face = line.getOrNull(j)
+                        val after = line.getOrNull(j + 1)
+                        if ((face == '(' || face == ')') && match[j] < 0) {
+                            for (k in i..j) guard[k] = true
+                        } else if ((face == 'D' || face == 'P') && (after == null || !(after.isAsciiLetterOrDigit() || isHan(after)))) {
+                            guard[i] = true
                         }
                     }
+                }
+            }
+            val convert = BooleanArray(line.length)
+            for (i in line.indices) {
+                val c = line[i]
+                if (c !in HALF || guard[i]) continue
+                if (c == '.' && (line.getOrNull(i - 1) == '.' || line.getOrNull(i + 1) == '.')) continue
+                if (c in ".,:" && line.getOrNull(i - 1)?.isAsciiDigit() == true && line.getOrNull(i + 1)?.isAsciiDigit() == true) continue
+                if (c == '.' && numbering(line, i)) continue
+                if (cnAround(line, i, i + 1)) convert[i] = true
+            }
+            // 圆括号成对：一边换了另一边也换（“(abc)他”不排成“(abc）他”）。
+            for (i in line.indices) {
+                if (line[i] == '(' && match[i] >= 0 && !guard[i] && (convert[i] || convert[match[i]])) {
+                    convert[i] = true
+                    convert[match[i]] = true
                 }
             }
             for (i in line.indices) if (convert[i]) add(FormatEdit(s + i, s + i + 1, FULL[HALF.indexOf(line[i])].toString()))
@@ -340,38 +381,196 @@ object TextFormat {
     }
 
     /**
-     * 5. 引号：一段里的直引号、弯引号按出现的先后两两配对（外层、里层分开配），中文语境的换成 [style] 的一对；
-     * 已经对的不动；配不上的（单数个的最后一个）不动，预览里提示。英文单词里的撇号（don't）不算引号。
+     * [i] 处的点是“1.”“A.”这类编号的点：前面是一串数字或单个英文字母，再往前是行首、空白、左括号或标点，后面还有字
+     * （“任务:1.击杀”“e.g.他”）。
+     */
+    private fun numbering(line: String, i: Int): Boolean {
+        if (i + 1 >= line.length) return false
+        var k = i - 1
+        while (k >= 0 && line[k].isAsciiDigit()) k--
+        if (k == i - 1) {
+            if (k < 0 || !line[k].isAsciiLetter()) return false
+            k--
+        }
+        val before = line.getOrNull(k) ?: return true
+        return isSpace(before) || before in "(（[【〔" || before in HALF_MARKS || before in "，。、；：？！"
+    }
+
+    /**
+     * 5. 引号：已有的中文引号（“”‘’；「」风格下还有「」『』）方向是定的，当锚点，绝不改方向；只有直引号 " ' 的开闭要推断（[resolveQuotes]）。
+     * 中文语境的换成 [style] 的一对：“”风格下直引号换成“”‘’；「」风格下直引号和已有的“”‘’按嵌套层级换，外层「」、里层『』。
+     * 推断不了的直引号不动，预览里提示。英文单词里的撇号（don't）不算引号。
      */
     private fun quotes(t: String, style: QuoteStyle): List<FormatEdit> = buildList {
         lines(t) { s, e ->
             if (isSeparator(t, s, e)) return@lines
             val line = t.substring(s, e)
-            listOf(doubleQuotes(line) to (style.open to style.close), singleQuotes(line) to (style.innerOpen to style.innerClose)).forEach { (tokens, pair) ->
-                var k = 0
-                while (k + 1 < tokens.size) {
-                    val o = tokens[k]
-                    val c = tokens[k + 1]
-                    val cn = (o + 1 until c).any { isHan(line[it]) } || cnBefore(line, o) || cnAfter(line, c + 1)
-                    if (cn) {
-                        if (line[o] != pair.first) add(FormatEdit(s + o, s + o + 1, pair.first.toString()))
-                        if (line[c] != pair.second) add(FormatEdit(s + c, s + c + 1, pair.second.toString()))
+            if (line.none { it in QUOTE_MARKS }) return@lines
+            val levels = ArrayList<Int>()
+            quoteMarks(line, style).forEach { m ->
+                if (m.dir == 0) return@forEach
+                val open = m.dir > 0
+                val target = when (style) {
+                    QuoteStyle.CURLY -> if (m.inner) (if (open) style.innerOpen else style.innerClose) else (if (open) style.open else style.close)
+                    QuoteStyle.CORNER -> {
+                        // 开引号的层级是外面还开着几层；闭引号跟着和它配上的开引号（段首续段的闭引号算外层）。
+                        val level = if (open) levels.size.also { levels += it } else levels.removeLastOrNull() ?: 0
+                        if (level == 0) (if (open) style.open else style.close) else (if (open) style.innerOpen else style.innerClose)
                     }
-                    k += 2
                 }
+                // 已有的「」『』是作者自己排的，不动。
+                if (m.cn && line[m.at] != target && line[m.at] !in "「」『』") add(FormatEdit(s + m.at, s + m.at + 1, target.toString()))
             }
         }
     }
 
-    private fun doubleQuotes(line: String): List<Int> = line.indices.filter { line[it] == '"' || line[it] == '“' || line[it] == '”' }
+    /** 一个引号：在段里的 [at]；[dir] 1 是开、-1 是闭、0 是推断不了的直引号；[inner] 是单引号这一类；[cn] 在中文语境里（该换）。 */
+    private class QuoteMark(val at: Int, val dir: Int, val inner: Boolean, val cn: Boolean)
 
-    private fun singleQuotes(line: String): List<Int> =
-        line.indices.filter { i -> (line[i] == '\'' || line[i] == '‘' || line[i] == '’') && !apostrophe(line, i) }
+    /** 一段里的引号：双引号、单引号两类分开推断（「」风格下「」算双引号这类、『』算单引号这类），按位置排好。 */
+    private fun quoteMarks(line: String, style: QuoteStyle): List<QuoteMark> {
+        val corner = style == QuoteStyle.CORNER
+        return (quoteFamily(line, inner = false, corner = corner) + quoteFamily(line, inner = true, corner = corner)).sortedBy { it.at }
+    }
+
+    private fun quoteFamily(line: String, inner: Boolean, corner: Boolean): List<QuoteMark> {
+        val at = ArrayList<Int>()
+        val fixed = ArrayList<Int>()
+        for (i in line.indices) {
+            val d = when (line[i]) {
+                '"' -> if (inner) null else 0
+                '“' -> if (inner) null else 1
+                '”' -> if (inner) null else -1
+                '\'' -> if (inner && !apostrophe(line, i)) 0 else null
+                '‘' -> if (inner) 1 else null
+                '’' -> if (inner) -1 else null
+                '「' -> if (corner && !inner) 1 else null
+                '」' -> if (corner && !inner) -1 else null
+                '『' -> if (corner && inner) 1 else null
+                '』' -> if (corner && inner) -1 else null
+                else -> null
+            } ?: continue
+            at += i
+            fixed += d
+        }
+        if (at.isEmpty()) return emptyList()
+        val dir = resolveQuotes(line, at, fixed.toIntArray())
+        // 配对（续段的闭引号、还开着的开引号没有对家），定中文语境：引号里有汉字，或开引号前、闭引号后挨着中文。
+        val partner = IntArray(at.size) { -1 }
+        val stack = ArrayList<Int>()
+        for (k in at.indices) {
+            if (dir[k] > 0) {
+                stack += k
+            } else if (dir[k] < 0 && stack.isNotEmpty()) {
+                val o = stack.removeAt(stack.lastIndex)
+                partner[o] = k
+                partner[k] = o
+            }
+        }
+        return at.indices.map { k ->
+            val i = at[k]
+            val cn = when {
+                dir[k] == 0 -> false
+                partner[k] >= 0 -> {
+                    val o = at[minOf(k, partner[k])]
+                    val c = at[maxOf(k, partner[k])]
+                    (o + 1 until c).any { isHan(line[it]) } || cnBefore(line, o) || cnAfter(line, c + 1)
+                }
+                dir[k] > 0 -> cnBefore(line, i) || (i + 1 until line.length).any { isHan(line[it]) }
+                else -> (0 until i).any { isHan(line[it]) } || cnAfter(line, i + 1)
+            }
+            QuoteMark(i, dir[k], inner, cn)
+        }
+    }
+
+    /**
+     * 一类引号里直引号的开闭：[fixed] 里锚点是 1（开）或 -1（闭），直引号是 0；返回每个引号的方向，推断不了的是 0。
+     * 从段首走到段末，开着的层数不能小于 0；段首可以已经开着一层（跨段对话的续段：段首没有开引号就先出现闭引号）。
+     * 两个锚点之间的一串直引号一开一闭交替；段首（或冒号、左括号后面）的只能开，段末的只能闭。
+     * 走得通、段末还开着的层数最少的那些读法里，一个直引号方向都一样才算定了；几种读法都说得通的不动。
+     * 段末还开着的直引号（单数个的最后一个）也不动。
+     */
+    private fun resolveQuotes(line: String, at: List<Int>, fixed: IntArray): IntArray {
+        val n = at.size
+        val dir = fixed.copyOf()
+        if (fixed.all { it != 0 }) return dir
+        val canOpen = BooleanArray(n) { fixed[it] != 0 || !mustCloseQuote(line, at[it]) }
+        val canClose = BooleanArray(n) { fixed[it] != 0 || !mustOpenQuote(line, at[it]) }
+
+        // 状态 = 开着的层数 * 3 + 这串直引号里上一个的方向（0 还没有、1 开、2 闭）；走不通是 -1。
+        fun step(state: Int, k: Int, d: Int): Int {
+            val prev = state % 3
+            val next = if (fixed[k] != 0) {
+                if (d != fixed[k]) return -1
+                0
+            } else {
+                if ((prev == 1 && d > 0) || (prev == 2 && d < 0)) return -1
+                if ((d > 0 && !canOpen[k]) || (d < 0 && !canClose[k])) return -1
+                if (d > 0) 1 else 2
+            }
+            val depth = state / 3 + d
+            return if (depth < 0) -1 else depth * 3 + next
+        }
+        val reach = Array(n + 1) { HashSet<Int>() }
+        reach[0] += 0
+        reach[0] += 3
+        for (k in 0 until n) for (st in reach[k]) for (d in DIRS) step(st, k, d).takeIf { it >= 0 }?.let { reach[k + 1] += it }
+        if (reach[n].isEmpty()) {
+            for (k in 0 until n) if (fixed[k] == 0) dir[k] = 0
+            return dir
+        }
+        val least = reach[n].minOf { it / 3 }
+        var good: Set<Int> = reach[n].filterTo(HashSet()) { it / 3 == least }
+        val chosen = Array(n) { HashSet<Int>() }
+        for (k in n - 1 downTo 0) {
+            val here = HashSet<Int>()
+            for (st in reach[k]) {
+                for (d in DIRS) {
+                    if (step(st, k, d) in good) {
+                        here += st
+                        chosen[k] += d
+                    }
+                }
+            }
+            good = here
+        }
+        for (k in 0 until n) if (fixed[k] == 0) dir[k] = chosen[k].singleOrNull() ?: 0
+        // 段末还开着的直引号：可能是没打完，也可能是跨段对话的开头，不动。
+        val stack = ArrayList<Int>()
+        for (k in 0 until n) {
+            if (dir[k] > 0) stack += k else if (dir[k] < 0 && stack.isNotEmpty()) stack.removeAt(stack.lastIndex)
+        }
+        stack.forEach { if (fixed[it] == 0) dir[it] = 0 }
+        return dir
+    }
+
+    private val DIRS = intArrayOf(1, -1)
+
+    /** 直引号只能是开引号：段首，紧跟在冒号、左括号后面，或者前面是空格、后面紧挨着字。 */
+    private fun mustOpenQuote(line: String, i: Int): Boolean {
+        var k = i - 1
+        while (k >= 0 && isSpace(line[k])) k--
+        if (k < 0 || line[k] in "：:（(【[《〈") return true
+        val next = line.getOrNull(i + 1)
+        return isSpace(line[i - 1]) && next != null && !isSpace(next)
+    }
+
+    /** 直引号只能是闭引号：段末，或者后面是空格、前面紧挨着字。 */
+    private fun mustCloseQuote(line: String, i: Int): Boolean {
+        var k = i + 1
+        while (k < line.length && isSpace(line[k])) k++
+        if (k == line.length) return true
+        val prev = line.getOrNull(i - 1)
+        return isSpace(line[i + 1]) && prev != null && !isSpace(prev)
+    }
 
     /** 英文单词里的撇号：两边都是英文字母。 */
     private fun apostrophe(line: CharSequence, i: Int) = line.getOrNull(i - 1)?.isAsciiLetter() == true && line.getOrNull(i + 1)?.isAsciiLetter() == true
 
-    /** 2. 段内多余空格：两边都是汉字或中文标点的去掉；别的（英文单词、数字之间）压成一个半角空格。 */
+    /**
+     * 2. 段内多余空格：两边都是汉字或中文标点的，半角空格去掉（“第三章 归来”也排成“第三章归来”），全角空格（诗歌、对仗、落款里排的）留着；
+     * 别的（英文单词、数字之间）压成一个半角空格，连着两个以上全角空格的只留全角空格。段首的空白归第 1 条管。
+     */
     private fun spaces(t: String): List<FormatEdit> = buildList {
         lines(t) { s, e ->
             if (isSeparator(t, s, e)) return@lines
@@ -387,8 +586,12 @@ object TextFormat {
                 }
                 var j = i
                 while (j < b && isSpace(t[j])) j++
-                if (isCn(t[i - 1]) && isCn(t[j])) add(FormatEdit(i, j, ""))
-                else if (j - i != 1 || t[i] != ' ') add(FormatEdit(i, j, " "))
+                val wide = (i until j).count { t[it] == '　' }
+                val keep = "　".repeat(wide)
+                when {
+                    (isCn(t[i - 1]) && isCn(t[j])) || wide >= 2 -> if (j - i != wide) add(FormatEdit(i, j, keep))
+                    j - i != 1 || t[i] != ' ' -> add(FormatEdit(i, j, " "))
+                }
                 i = j
             }
         }
@@ -424,13 +627,23 @@ object TextFormat {
         lines(t) { a, b ->
             if (a == b || isSeparator(t, a, b)) return@lines
             val line = t.substring(a, b)
-            if (s.quotes) {
-                val extra = (s.quoteStyle.takeIf { it == QuoteStyle.CORNER }?.let { st -> line.indices.filter { line[it] == st.open || line[it] == st.close } }).orEmpty()
-                val doubles = (doubleQuotes(line) + extra).sorted()
-                val innerExtra = (s.quoteStyle.takeIf { it == QuoteStyle.CORNER }?.let { st -> line.indices.filter { line[it] == st.innerOpen || line[it] == st.innerClose } }).orEmpty()
-                val singles = (singleQuotes(line) + innerExtra).sorted()
-                listOf(doubles, singles).forEach { tokens ->
-                    if (tokens.size % 2 == 1) add(FormatNote(FormatHint.UNPAIRED, a + tokens.last(), line))
+            if (s.quotes && line.any { it in QUOTE_MARKS }) {
+                // 推断不了开闭的直引号；没有对家的闭引号（段首续段的第一个除外）；段末还开着的开引号（里层套了同一种引号的也在这里提示）。
+                val marks = quoteMarks(line, s.quoteStyle)
+                listOf(false, true).forEach { inner ->
+                    val open = ArrayList<Int>()
+                    var seen = false
+                    marks.filter { it.inner == inner }.forEach { m ->
+                        when {
+                            m.dir == 0 -> add(FormatNote(FormatHint.UNPAIRED, a + m.at, line))
+                            m.dir > 0 -> open += m.at
+                            open.isNotEmpty() -> open.removeAt(open.lastIndex)
+                            !seen -> Unit
+                            else -> add(FormatNote(FormatHint.UNPAIRED, a + m.at, line))
+                        }
+                        seen = true
+                    }
+                    open.forEach { add(FormatNote(FormatHint.UNPAIRED, a + it, line)) }
                 }
             }
             if (s.endHint) {
