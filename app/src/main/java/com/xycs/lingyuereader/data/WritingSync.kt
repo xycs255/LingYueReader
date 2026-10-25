@@ -1,18 +1,27 @@
 package com.xycs.lingyuereader.data
 
 /**
- * “写完一章，整理进设定包”：AI 读完一章，提出要补进设定包的新设定、和设定包对不上的冲突、谁知道了什么（察觉），
- * 作者逐条勾选、改过，才写进设定包。这里是不联网的部分：定位写进哪份文档哪一处、写进去、记下哪些章整理过。
+ * “写完一章，整理进设定包”：AI 读完一章，提出要补进设定包的新设定、和设定包对不上的冲突，
+ * 以及随章变化、要记进故事账本的（人物状态、发生的事、谁知道了什么、埋下和收起的伏笔、故事里的时间），
+ * 作者逐条勾选、改过，才写进去。这里是不联网的部分：定位写进哪份文档哪一处（或账本）、写进去、记下哪些章整理过。
  */
 
 /** 整理过的一章：整理时正文的哈希（[ChapterSyncs.hash]，早先记的是 [String.hashCode]，也认）、什么时候整理的。 */
 data class SyncMark(val hash: Int, val at: Long)
 
-/** 整理结果的三组。 */
-enum class SyncGroup(val label: String) { NEW("新设定"), CONFLICT("冲突"), AWARENESS("察觉") }
+/** 整理结果的几组：前两组写进设定包，后面几组记进故事账本。 */
+enum class SyncGroup(val label: String) {
+    NEW("新设定"), CONFLICT("冲突"), STATE("人物状态"), EVENT("发生的事"), AWARENESS("察觉"), PROMISE("伏笔"), TIME("时间");
 
-/** 写进文档的方式：表格追加一行、追加到某一节、追加到文档末尾、换掉设定包里的一句；[NONE] 是不写（只提示）。 */
-enum class SyncPlace { ROW, SECTION, END, REPLACE, NONE }
+    /** 记进故事账本的组（冲突里也可能有改账本的，看 [SyncItem.place]）。 */
+    val ledger: Boolean get() = this != NEW && this != CONFLICT
+}
+
+/**
+ * 写进文档的方式：表格追加一行、追加到某一节、追加到文档末尾、换掉设定包里的一句；[LEDGER] 是记进故事账本；
+ * [NONE] 是不写（只提示）。
+ */
+enum class SyncPlace { ROW, SECTION, END, REPLACE, LEDGER, NONE }
 
 /**
  * 一条提议。AI 回的字段放在前面；[docId] 往后是定好的位置（[PackSync.plan]）：写进哪份文档（为空是新建一份 [docTitle]）、
@@ -45,11 +54,20 @@ data class SyncItem(
     val place: SyncPlace = SyncPlace.END,
     /** [SyncPlace.SECTION] 是节名（人物名），[SyncPlace.REPLACE] 是要换掉的设定包原文。 */
     val anchor: String = "",
+    /** 记进账本的那一条（[text] 是它的内容，作者可以改）；账本里已有这一条（同一个 id）时是改它。 */
+    val entry: LedgerEntry? = null,
+    /** 收伏笔：收的是账本里的哪一条。 */
+    val closes: LedgerEntry? = null,
 ) {
-    /** 能写进设定包的（“正文写错了”的冲突只提示）。 */
-    val writable: Boolean get() = place != SyncPlace.NONE && text.isNotBlank()
+    /** 能写进去的（“正文写错了”的冲突只提示）。 */
+    val writable: Boolean
+        get() = when (place) {
+            SyncPlace.NONE -> false
+            SyncPlace.LEDGER -> closes != null || (entry != null && text.isNotBlank())
+            else -> text.isNotBlank()
+        }
 
-    /** 默认勾不勾：新设定和察觉勾上，冲突要作者自己看过再勾。 */
+    /** 默认勾不勾：新设定和记进账本的勾上，冲突要作者自己看过再勾。 */
     val defaultOn: Boolean get() = writable && group != SyncGroup.CONFLICT
 
     /** 认这一条（勾选、改过的文字按它记）。 */
@@ -61,6 +79,7 @@ data class SyncItem(
     val where: String
         get() = when (place) {
             SyncPlace.NONE -> if (fixText) "正文写错了，只提示，不改设定包" else "不写进设定包"
+            SyncPlace.LEDGER -> "记进故事账本"
             else -> (if (docId == null) "新建《${docTitle}》" else "写进《${docTitle}》") + " · " + when (place) {
                 SyncPlace.ROW -> "表格追加一行"
                 SyncPlace.SECTION -> "追加到“$anchor”"
@@ -94,11 +113,77 @@ object ChapterSyncs {
     /** 有正文、还没整理（或整理以后正文改过）的章，按目录顺序。没整理过的章不用读正文。 */
     fun unsynced(chapters: List<WorkChapter>, marks: Map<String, SyncMark>, text: (String) -> String): List<WorkChapter> =
         chapters.filter { c -> c.words > 0 && marks[c.id]?.let { isSynced(it, text(c.id)) } != true }
+
+    /** 整理一章时带给 AI 的账本现状最多多少字。 */
+    const val LEDGER_CHARS = 3_000
+
+    /**
+     * 整理第 [chapter] 章时带给 AI 的账本现状：到上一章为止开着的伏笔（每条一个短编号，收伏笔时 AI 用编号指认）、
+     * 出场人物 [present] 此刻的状态、他们已经知道的事。不给这一章和后面的（防剧透），也不给只有作者知道的。
+     * 最多 [limit] 字，放不下的省略并注明；伏笔放最前面。账本里没有可给的返回空的。
+     */
+    fun ledgerView(entries: List<LedgerEntry>, chapter: Int, volume: Int? = null, present: Collection<String> = emptyList(), limit: Int = LEDGER_CHARS): SyncLedger {
+        val names = present.filter { it.isNotBlank() }.toSet()
+        val snap = StoryLedger.snapshot(entries, chapter - 1, volume, names)
+        // 没有出场人物时 snapshot 不按人物筛：这里人物状态、知情都不给。
+        val states = if (names.isEmpty()) emptyList() else snap.states.filter { it.subject in names }
+        val known = if (names.isEmpty()) emptyList() else snap.known
+        if (snap.open.isEmpty() && states.isEmpty() && known.isEmpty()) return SyncLedger("", emptyMap())
+        val out = StringBuilder("【故事账本：到上一章（第 ${chapter - 1} 章）为止】\n")
+        val codes = LinkedHashMap<String, LedgerEntry>()
+        var skipped = 0
+        // 留出末尾注明省略的地方。
+        val room = limit - 60
+        fun at(e: LedgerEntry) = e.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }
+        fun section(title: String, list: List<LedgerEntry>, listed: (LedgerEntry) -> Unit = {}, line: (LedgerEntry) -> String) {
+            if (list.isEmpty()) return
+            val head = "\n$title\n"
+            if (out.length + head.length > room) {
+                skipped += list.size
+                return
+            }
+            out.append(head)
+            list.forEach { e ->
+                val l = "- " + line(e).take(200) + "\n"
+                if (out.length + l.length > room) {
+                    skipped++
+                } else {
+                    out.append(l)
+                    listed(e)
+                }
+            }
+        }
+        // 伏笔列出了才给编号：编号连着，没列出的没有编号。
+        section("开着的伏笔（收伏笔时用这里的编号指认）：", snap.open, listed = { codes["P${codes.size + 1}"] = it }) { e -> "P${codes.size + 1}：${e.text}${at(e)}" }
+        section("这一章出场人物此刻的状态：", states) { e -> e.subject + (if (e.aspect.isNotBlank()) "·" + e.aspect else "") + "：" + e.text + at(e) }
+        section("已有的知情：", known) { e ->
+            (if (e.subject.isNotBlank()) e.subject + "：" else "") + e.text + at(e) + (if (e.via.isNotBlank()) "，消息来自" + e.via else "")
+        }
+        if (skipped > 0) out.append("（账本太长，还有 $skipped 条没列出；没列出的伏笔不要收）\n")
+        return SyncLedger(out.toString().trim(), codes)
+    }
 }
+
+/** 整理一章时带给 AI 的账本现状：[text] 是拼好的文字（没有可给的为空），[codes] 是开着的伏笔的短编号（P1、P2……）各是哪一条。 */
+data class SyncLedger(val text: String, val codes: Map<String, LedgerEntry>)
 
 /** 这部作品里有正文、还没整理的章。[marks] 不给就按存盘的 AI 设置。 */
 fun WorkStore.unsynced(workId: String, marks: Map<String, SyncMark>? = null): List<WorkChapter> =
     ChapterSyncs.unsynced(get(workId)?.chapters.orEmpty(), marks ?: assist(workId).synced) { text(workId, it) }
+
+/**
+ * 整理第 [number] 章时带给 AI 的账本现状（[ChapterSyncs.ledgerView]）。出场人物：人物档案里的人（连同别名）、
+ * 账本里记过的人，名字在正文 [text] 里出现的。
+ */
+fun WorkStore.syncLedger(workId: String, chapterId: String, number: Int, text: String): SyncLedger {
+    val work = get(workId) ?: return SyncLedger("", emptyMap())
+    val entries = ledger(workId)
+    if (entries.isEmpty()) return SyncLedger("", emptyMap())
+    val docs = pack(workId).filter { it.kind == PackKind.CHARACTER }.map { it.title to packText(workId, it.id) }
+    val people = ChapterBriefs.characters(docs).filter { c -> c.names.any { it.length >= 2 && it in text } }.flatMap { it.names }
+    val present = (people + entries.map { it.subject }.filter { it.length >= 2 && it in text }).toSet()
+    return ChapterSyncs.ledgerView(entries, number, work.volumeNumber(chapterId), present)
+}
 
 object PackSync {
     /** 人物档案、察觉表的表格里各项对应哪一列（表头含这些字）。 */
@@ -109,12 +194,9 @@ object PackSync {
         "关系" to listOf("关系"),
         "本章" to listOf("本章", "经历", "事件", "出场", "首次", "备注", "说明"),
     )
-    private val awarenessColumns = listOf(
-        "人物" to listOf("人物", "谁", "角色"),
-        "知道什么" to listOf("知道", "内容", "什么", "事情", "察觉", "知情"),
-        "从第几章起" to listOf("章", "起", "时间", "卷"),
-        "消息从哪来" to listOf("来", "源", "途径", "渠道", "怎么知道"),
-    )
+
+    /** 记进账本的那几条在 [WorkStore.applySync] 的结果里算在这个名字下。 */
+    const val LEDGER = "故事账本"
 
     private fun clean(s: String) = s.replace(Regex("[《》「」“”\\s*]"), "")
 
@@ -182,25 +264,13 @@ object PackSync {
     /** “- 第N章：……”这样记本章经历的一行，返回 N。 */
     private fun chapterOf(line: String): Int? = Regex("^[-*]?\\s*第\\s*(\\d+)\\s*章").find(line.trim())?.groupValues?.get(1)?.toIntOrNull()
 
-    /** 察觉 [who] 知道 [what] 在 [text] 里已经有了（表格的一行，或“- 谁：……”的一条）。 */
-    private fun knownAwareness(text: String, who: String, what: String): Boolean {
-        val inTable = MdTable.parse(text).any { t ->
-            val whoCol = t.column("人物", "谁", "角色")
-            val whatCol = t.column("知道", "内容", "什么", "事情", "察觉", "知情")
-            whatCol >= 0 && t.rows.any { cells ->
-                val rowWho = t.cell(cells, whoCol)
-                (whoCol < 0 || rowWho.contains(who) || (rowWho.isNotBlank() && who.contains(rowWho))) && similar(t.cell(cells, whatCol), what)
-            }
-        }
-        return inTable || text.lines().any { l -> Regex("^[-*]\\s*${Regex.escape(who)}\\s*[：:]").containsMatchIn(l.trim()) && similar(l.trim().substringAfter('：').substringAfter(':'), what) }
-    }
-
     /** 察觉的“谁”。 */
     private fun whoOf(item: SyncItem) = item.field("人物").ifBlank { item.name }.trim()
 
     /**
      * 两条提议说的是不是同一个新人物、同一处地方（同名），或同一个人知道了同一件事（跨章、分段去重用）。
      * 给已有人物补本章经历的（追加到他那一节的）每章各记各的，不算重复；冲突不比。
+     * 账本类：同一人物同一方面的同一状态、同一件事、同一条伏笔（收伏笔看收的是不是同一条）；时间每章各记各的，同一章的几段只留一条。
      */
     fun sameThing(a: SyncItem, b: SyncItem): Boolean {
         if (a.group != b.group) return false
@@ -211,6 +281,10 @@ object PackSync {
                 n.isNotEmpty() && n == clean(b.name) && (a.kind == PackKind.CHARACTER) == (b.kind == PackKind.CHARACTER) && !supplement(a) && !supplement(b)
             }
             SyncGroup.AWARENESS -> whoOf(a).let { it.isNotEmpty() && it == whoOf(b) } && similar(a.field("知道什么"), b.field("知道什么"))
+            SyncGroup.STATE -> clean(a.name).let { it.isNotEmpty() && it == clean(b.name) } && a.entry?.aspect.orEmpty() == b.entry?.aspect.orEmpty() && similar(a.text, b.text)
+            SyncGroup.EVENT -> similar(a.text, b.text)
+            SyncGroup.PROMISE -> if (a.closes != null || b.closes != null) a.closes?.id == b.closes?.id else similar(a.text, b.text)
+            SyncGroup.TIME -> a.chapterId == b.chapterId
             SyncGroup.CONFLICT -> false
         }
     }
@@ -268,18 +342,20 @@ object PackSync {
         copy(docId = doc?.first?.id, docTitle = doc?.first?.title ?: docTitle.ifBlank { kind.label }, kind = doc?.first?.kind ?: kind, place = place, text = text, anchor = anchor)
 
     /**
-     * 给 AI 的提议定位置，写好要写进去的原文；设定包里已经有的丢掉。察觉表里已经有、但写的是更晚的章才知道的，改成冲突。
-     * [docs] 是现在的设定包（文档和正文）。
+     * 给 AI 的提议定位置，写好要写进去的原文；设定包（或账本）里已经有的丢掉。察觉表、账本里已经有、但写的是更晚的章才知道的，改成冲突。
+     * [docs] 是现在的设定包（文档和正文），[ledger] 是现在的故事账本。
      */
-    fun plan(items: List<SyncItem>, docs: List<Pair<PackDoc, String>>): List<SyncItem> {
+    fun plan(items: List<SyncItem>, docs: List<Pair<PackDoc, String>>, ledger: List<LedgerEntry> = emptyList()): List<SyncItem> {
         val people = ChapterBriefs.characters(docs.filter { it.first.kind == PackKind.CHARACTER }.map { it.first.title to it.second }).flatMap { it.names }.toSet()
         val characterText = docs.filter { it.first.kind == PackKind.CHARACTER }.joinToString("\n") { it.second }
         val allText = docs.joinToString("\n") { it.second }
         return items.mapNotNull { item ->
             when (item.group) {
                 SyncGroup.NEW -> planNew(item, docs, people, characterText, allText)
-                SyncGroup.AWARENESS -> planAwareness(item, docs)
+                SyncGroup.AWARENESS -> planAwareness(item, docs, ledger)
                 SyncGroup.CONFLICT -> planConflict(item, docs)
+                SyncGroup.STATE, SyncGroup.EVENT, SyncGroup.PROMISE, SyncGroup.TIME ->
+                    item.takeIf { (it.entry != null || it.closes != null) && !inLedger(it, ledger) }?.copy(place = SyncPlace.LEDGER)
             }
         }.distinctBy { it.key }
     }
@@ -329,13 +405,14 @@ object PackSync {
         return if (section.isNotEmpty()) item.into(doc, SyncPlace.SECTION, line, section) else item.into(doc, SyncPlace.END, line)
     }
 
-    private fun planAwareness(item: SyncItem, docs: List<Pair<PackDoc, String>>): SyncItem? {
+    /**
+     * 察觉记进账本（知情）。察觉表里已经有、不晚于这一章的不再提，写的是后面的章的改成冲突（勾上改察觉表那一行）；
+     * 账本里也一样，写的是后面的章的改成冲突，勾上把账本那一条改成从这一章起。
+     */
+    private fun planAwareness(item: SyncItem, docs: List<Pair<PackDoc, String>>, ledger: List<LedgerEntry>): SyncItem? {
         val who = item.field("人物").ifBlank { item.name }.trim()
         val what = item.field("知道什么").trim()
         if (who.isEmpty() || what.isEmpty()) return null
-        val since = item.field("从第几章起").ifBlank { "第${item.chapter}章" }
-        val source = item.field("消息从哪来")
-        val values = listOf("人物" to who, "知道什么" to what, "从第几章起" to since, "消息从哪来" to source)
         val own = docs.filter { it.first.kind == PackKind.AWARENESS }
         // 察觉表里已经有这件事：写的章不晚于这一章，不再提；写的是后面的章，正文提前说破了，改成冲突。
         for ((doc, text) in own) {
@@ -368,13 +445,63 @@ object PackSync {
                 }
             }
         }
-        val doc = own.firstOrNull()
-        val table = doc?.second?.let { awarenessTable(it) }
-        return when {
-            doc == null -> item.copy(docTitle = PackKind.AWARENESS.label).into(null, SyncPlace.ROW, row(MdTable.parse(PackImport.template(PackKind.AWARENESS)).first(), values, awarenessColumns))
-            table != null -> item.into(doc, SyncPlace.ROW, row(table, values, awarenessColumns))
-            else -> item.into(doc, SyncPlace.END, "- $who：${since}起$what" + if (source.isNotBlank()) "（$source）" else "")
+        val entry = item.entry ?: LedgerEntry(
+            kind = LedgerKind.KNOW, text = what, subject = who, from = ChapterRefs.number(item.field("从第几章起")) ?: item.chapter,
+            via = item.field("消息从哪来"), quote = item.quote, chapterId = item.chapterId, origin = LedgerOrigin.SYNC,
+        )
+        val planned = item.copy(place = SyncPlace.LEDGER, text = what, entry = entry, docId = null, docTitle = LEDGER)
+        val later = ledger.firstOrNull { it.kind == LedgerKind.KNOW && sameWho(it.subject, who) && similar(it.text, what) && !it.reached(item.chapter) }
+            ?: return planned.takeUnless { inLedger(it, ledger) }
+        val at = later.from?.let { "第${it}章" } ?: later.volume?.let { "第${it}卷" } ?: "后面"
+        return planned.copy(
+            group = SyncGroup.CONFLICT,
+            title = "账本里写$who ${at}才知道，正文第${item.chapter}章就知道了",
+            packSays = later.text + later.whenLabel.let { if (it.isEmpty()) "" else "（$it）" },
+            textSays = what,
+            text = later.text,
+            entry = later.copy(from = item.chapter, volume = null, quote = item.quote, chapterId = item.chapterId),
+        )
+    }
+
+    private fun sameWho(a: String, b: String): Boolean {
+        val x = clean(a)
+        val y = clean(b)
+        return x.isNotEmpty() && y.isNotEmpty() && (x == y || x.contains(y) || y.contains(x))
+    }
+
+    /**
+     * 账本里已经有这一条了（定位置、写之前、重试时再查一遍用）：人物状态看那个人那一方面到这一章为止最新的一条；
+     * 发生的事、伏笔看有没有说同一件事的；知情看同一个人是不是已经记过知道这件事；时间看这一章记过没有。
+     * 收伏笔：那一条已经收了（或者账本里已经没有那一条了）。改账本已有一条的（冲突里改章号的）：已经改成这一章了。
+     */
+    fun inLedger(item: SyncItem, ledger: List<LedgerEntry>): Boolean {
+        item.closes?.let { c -> return ledger.firstOrNull { it.id == c.id }?.done ?: true }
+        val e = item.entry ?: return true
+        ledger.firstOrNull { it.id == e.id }?.let { return it.from == e.from && it.volume == e.volume }
+        val text = item.text.ifBlank { e.text }
+        val n = item.chapter
+        return when (e.kind) {
+            LedgerKind.STATE -> {
+                val same = ledger.filter { it.kind == LedgerKind.STATE && clean(it.subject) == clean(e.subject) && it.validAt(n) }
+                if (e.aspect.isBlank()) same.any { similar(it.text, text) }
+                else same.filter { it.aspect == e.aspect }.maxWithOrNull(compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt }))?.let { similar(it.text, text) } == true
+            }
+            LedgerKind.EVENT -> ledger.any { it.kind == LedgerKind.EVENT && similar(it.text, text) }
+            LedgerKind.KNOW -> ledger.any { it.kind == LedgerKind.KNOW && sameWho(it.subject, e.subject) && similar(it.text, text) }
+            LedgerKind.PROMISE -> ledger.any { it.kind == LedgerKind.PROMISE && similar(it.text, text) }
+            LedgerKind.TIME -> ledger.any { it.kind == LedgerKind.TIME && it.from == e.from && similar(it.text, text) }
         }
+    }
+
+    /**
+     * 一条记进账本的提议对应的改动：收伏笔是 [LedgerOp.Close]；账本 [ledger] 里已经有这一条（同一个 id，冲突里改章号的）是 [LedgerOp.Update]，
+     * 否则是 [LedgerOp.Add]。内容用 [SyncItem.text]（作者可能改过）。
+     */
+    fun ledgerOp(item: SyncItem, ledger: List<LedgerEntry>): LedgerOp? {
+        item.closes?.let { return LedgerOp.Close(it.id, item.chapter.takeIf { n -> n > 0 }, item.quote, item.chapterId) }
+        val e = item.entry ?: return null
+        val entry = e.copy(text = item.text.trim().ifEmpty { return null })
+        return if (ledger.any { it.id == e.id }) LedgerOp.Update(entry) else LedgerOp.Add(entry)
     }
 
     private fun planConflict(item: SyncItem, docs: List<Pair<PackDoc, String>>): SyncItem {
@@ -424,10 +551,6 @@ object PackSync {
                 if (inTable) null else item
             }
             item.group == SyncGroup.NEW && item.kind != PackKind.CHARACTER -> if (name.length >= 2 && name in text) null else item
-            item.group == SyncGroup.AWARENESS -> {
-                val who = whoOf(item)
-                if (who.isNotEmpty() && knownAwareness(text, who, item.field("知道什么"))) null else item
-            }
             else -> item
         }
     }
@@ -448,7 +571,7 @@ object PackSync {
         if (add.isBlank()) return text
         fun end(t: String) = if (t.isBlank()) add else t.trimEnd() + "\n\n" + add
         return when (item.place) {
-            SyncPlace.NONE -> text
+            SyncPlace.NONE, SyncPlace.LEDGER -> text
             SyncPlace.END -> end(text)
             SyncPlace.REPLACE -> {
                 val at = text.indexOf(item.anchor)
@@ -494,9 +617,13 @@ object PackSync {
 
 /**
  * 把作者勾选的提议写进设定包：同一份文档的几条依次写进去，写之前把原来的文字存一个历史版本；
- * 没有对应文档的新建一份。每写一条在变更登记里记一笔“整理第 N 章：……”。返回写进了哪几份文档、各几条。
+ * 没有对应文档的新建一份。每写一条在变更登记里记一笔“整理第 N 章：……”。返回写进了哪几份文档、各几条
+ * （记进账本的算在 [PackSync.LEDGER] 下）。
  * 写的时候用已经写进去的文字再查一遍（[PackSync.apply]）：前几章写过的同一个人、上次写到一半出错已经写进去的，跳过、不计数，
  * 所以出错以后重试不会写出两份。
+ * 记进账本的：一章一批（[WorkStore.applyLedger]，账本的历史版本记“整理第 N 章”），按章号先后；写之前用账本现在的样子
+ * （连同这一批前面刚记的）再查一遍（[PackSync.inLedger]），已经有的跳过，所以重试、几章提了同一件事都只记一次。
+ * 账本有自己的历史版本，不再记变更登记。
  */
 fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int> {
     val work = requireNotNull(get(workId)) { "作品不在了" }
@@ -505,7 +632,7 @@ fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int>
     val created = LinkedHashMap<Pair<PackKind, String>, String>()
     val counts = LinkedHashMap<String, Int>()
     val done = mutableListOf<Pair<SyncItem, String>>()
-    items.filter { it.writable }.forEach { item ->
+    items.filter { it.writable && it.place != SyncPlace.LEDGER }.forEach { item ->
         val fallback = item.docTitle.ifBlank { item.kind.label }
         // 要新建的文档：上次写到一半出错时可能已经建好了，就写进那一份，不再建第二份。
         val id = item.docId?.takeIf { id -> docs.any { it.id == id } } ?: docs.firstOrNull { it.kind == item.kind && it.title == fallback }?.id
@@ -535,6 +662,22 @@ fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int>
     done.forEach { (item, title) ->
         val chapterTitle = work.chapter(item.chapterId)?.title.orEmpty()
         addChange(workId, ChangeEntry(WorkStore.newId(), System.currentTimeMillis(), ChangeKind.CANON, item.chapterId, chapterTitle, "整理第${item.chapter}章：${item.title}（《$title》）", canon = true, synced = true))
+    }
+    items.filter { it.writable && it.place == SyncPlace.LEDGER }.groupBy { it.chapter to it.chapterId }.entries.sortedBy { it.key.first }.forEach { (key, group) ->
+        var working = ledger(workId)
+        val ops = mutableListOf<LedgerOp>()
+        group.forEach { item ->
+            if (PackSync.inLedger(item, working)) return@forEach
+            val op = PackSync.ledgerOp(item, working) ?: return@forEach
+            // 用不上的改动（和已有的重复、找不到那一条的）不算。
+            val next = StoryLedger.apply(working, listOf(op), 0).first
+            if (next == working) return@forEach
+            working = next
+            ops += op
+        }
+        if (ops.isEmpty()) return@forEach
+        applyLedger(workId, ops, "整理第 ${key.first} 章")
+        counts[PackSync.LEDGER] = (counts[PackSync.LEDGER] ?: 0) + ops.size
     }
     return counts
 }
