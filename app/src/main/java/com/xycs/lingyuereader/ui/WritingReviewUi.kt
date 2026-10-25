@@ -122,8 +122,10 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             if (b != null && !b.isEmpty) {
                 val total = b.render()?.length ?: 0
                 GroupedSection(
-                    footer = "请 AI 改稿、给灵感、查矛盾、审稿时带上这些，约 $total 字。人物按名字和“字”“小名”在正文和细纲卡里认；" +
-                        "察觉表按“第几章”“第几卷”分已知道和还不该知道；其他按需的文档里提到这一章或出场人物的小节也会带上。",
+                    footer = "请 AI 改稿、给灵感、查矛盾、审稿、写本章时带上这些，约 $total 字。人物按名字、称呼在正文和细纲卡里认；" +
+                        "察觉表按“第几章”“第几卷”分已知道和还不该知道；前几章没写摘要的用它们的细纲当前情。" +
+                        "短的常用文档整份带，长的（总纲、人物档案这类）切成小块，单独写到这一章的、写到出场人物的、和细纲用词相近的先带，" +
+                        "“第一至四十章”这样的大范围不算，隔了一卷以上的后文不带。",
                 ) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

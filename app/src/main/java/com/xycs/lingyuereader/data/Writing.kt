@@ -662,11 +662,26 @@ class WorkStore(private val root: File) {
         var added = 0
         var replaced = 0
         var chapters = 0
-        items.filter { it.include }.forEach { item ->
+        // 新建作品自带的空白“第1章”：导入正文时用不上，删掉。
+        val blank = get(workId)?.chapters?.singleOrNull()?.takeIf { it.words == 0 && it.title == "第1章" && text(workId, it.id).isBlank() }
+        // 正文文件按文件名里的数字排（“第6-10章”在“第11-15章”前面）。
+        val ordered = items.filter { it.include }.sortedWith { a, b ->
+            if (a.asChapters && b.asChapters) BookParser.NaturalOrder.compare(a.fileName.substringAfterLast('/'), b.fileName.substringAfterLast('/')) else 0
+        }
+        ordered.forEach { item ->
             if (item.asChapters) {
                 PackImport.chapters(item.text, item.title).forEach { (title, body) ->
                     val work = get(workId) ?: return@forEach
-                    val (_, c) = addChapter(workId, work.volumes.last().id, title) ?: return@forEach
+                    // 同名的章再导一次：换成新稿（旧稿进历史），不重复加。
+                    val same = work.chapters.firstOrNull { it.title == title }
+                    val c = same ?: addChapter(workId, work.volumes.last().id, title)?.second ?: return@forEach
+                    if (same != null) {
+                        val old = text(workId, c.id)
+                        if (old == body) return@forEach
+                        if (old.isNotBlank()) snapshot(workId, c.id, old)
+                        // 定稿的章换稿：先解锁，变更登记里记一笔。
+                        if (same.locked) setStatus(workId, c.id, ChapterStatus.REVISION, "重新导入正文：${item.fileName.substringAfterLast('/')}")
+                    }
                     saveText(workId, c.id, body, count = false)
                     // 文件名写着“已定”“定稿”的正文，导进来就是定稿。
                     if (Regex("已定|定稿").containsMatchIn(item.fileName)) setStatus(workId, c.id, ChapterStatus.FINAL, "导入已定正文")
@@ -686,6 +701,7 @@ class WorkStore(private val root: File) {
                 added++
             }
         }
+        if (blank != null && chapters > 0 && (get(workId)?.chapters?.size ?: 0) > 1) deleteChapter(workId, blank.id)
         return PackImportResult(added, replaced, chapters)
     }
 

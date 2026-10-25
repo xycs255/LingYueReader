@@ -184,6 +184,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var previous by remember(chapterId) { mutableStateOf<Pair<WorkChapter, ChapterCard>?>(null) }
     var info by remember(chapterId) { mutableStateOf<PlannedCard?>(null) }
     var replacing by remember { mutableStateOf(false) }
+    var planning by remember { mutableStateOf(false) }
+    var proposal by remember { mutableStateOf<ChapterCard?>(null) }
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -267,6 +269,23 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 else -> null
                             }
                             if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
+                            row {
+                                ActionRow(if (planning) "AI 正在拟细纲……" else "AI 拟这一章的细纲", enabled = !planning && aiConfig.ready) {
+                                    planning = true
+                                    scope.launch {
+                                        try {
+                                            proposal = vm.writingAi.planCard(workId, chapterId)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            vm.showMessage(e.message ?: "拟细纲失败")
+                                        } finally {
+                                            planning = false
+                                        }
+                                    }
+                                }
+                            }
                             if (outline != null) row { ActionRow("用细纲里的替换") { replacing = true } }
                             CARD_FIELDS.forEach { (label, hint, get) ->
                                 row {
@@ -314,6 +333,32 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            proposal?.let { p ->
+                GlassDialog(show = true, title = "AI 拟的细纲", summary = "按总纲、前后几章和上一章结尾拟的，看过再用", onDismissRequest = { proposal = null }) {
+                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CARD_FIELDS.dropLast(1).forEach { (label, _, get) ->
+                            val v = get(p)
+                            if (v.isNotBlank()) {
+                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = 13.sp)
+                                Text(v, color = LocalGroupedColors.current.label, fontSize = 15.sp, lineHeight = 22.sp)
+                            }
+                        }
+                    }
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TextButton(text = "不用", onClick = { proposal = null }, modifier = Modifier.weight(1f))
+                        TextButton(
+                            text = "用这份",
+                            onClick = {
+                                proposal = null
+                                card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0)
+                                info = info?.copy(source = null)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                        )
                     }
                 }
             }

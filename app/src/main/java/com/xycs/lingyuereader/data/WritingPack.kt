@@ -100,12 +100,19 @@ object PackImport {
             if (t != null) out += t to b else if (b.isNotEmpty()) out += fallbackTitle to b
             body.setLength(0)
         }
+        var preface: Pair<String, String>? = null
         for (raw in text.removePrefix("\uFEFF").lines()) {
             val line = raw.trim().trim('　').trim()
             val heading = Regex("""^#{1,4}\s+(.+)$""").matchEntire(line)?.groupValues?.get(1)?.trim()
             val isTitle = heading?.let { ChapterTitles.isTxtChapterTitle(it) || it.startsWith("第") } ?: ChapterTitles.isTxtChapterTitle(line)
             if (isTitle) {
-                flush()
+                // 第一章前面的（“承上一份”“本文件随写作追加”这类说明）不是正文，有章名时不单独成章。
+                if (title == null) {
+                    preface = body.toString().trim().takeIf { it.isNotEmpty() }?.let { fallbackTitle to it }
+                    body.setLength(0)
+                } else {
+                    flush()
+                }
                 title = heading ?: line
                 continue
             }
@@ -115,6 +122,7 @@ object PackImport {
             body.append(line.removePrefix("> ")).append('\n')
         }
         flush()
+        if (out.isEmpty()) preface?.let { out += it }
         return out.filter { it.second.isNotBlank() || it.first.isNotBlank() }
     }
 

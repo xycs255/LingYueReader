@@ -7,6 +7,7 @@ import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.ChapterBriefs
+import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterReview
 import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.CheckRule
@@ -162,7 +163,7 @@ class WritingAi(
                     chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
                 // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
-                val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
+                val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true) }
                 val (system, prompt) = when (task) {
                     is WriteAiTask.Edit -> {
                         val before = text.substring(0, task.start.coerceIn(0, text.length))
@@ -326,13 +327,13 @@ class WritingAi(
         characterDocs(workId).flatMap { WritePrompts.characterNames(store.packText(workId, it.id)) }.distinct()
 
     /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。 */
-    private fun chapterContext(workId: String, chapterId: String, text: String): String? {
+    private fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false): String? {
         val work = store.get(workId) ?: return null
         val chapters = work.chapters
         val i = chapters.indexOfFirst { it.id == chapterId }
         val prev = chapters.getOrNull(i - 1)
         val card = WritePrompts.card(store.plannedCard(workId, chapterId).card, prev?.title, prev?.let { store.plannedCard(workId, it.id).card })
-        return listOfNotNull(store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render(), card).joinToString("\n\n").ifEmpty { null }
+        return listOfNotNull(store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, style)?.render(), card).joinToString("\n\n").ifEmpty { null }
     }
 
     // ---------- 三道审稿 ----------
@@ -485,6 +486,30 @@ class WritingAi(
         if (text.isBlank()) throw IllegalStateException("这一章还没有正文")
         val title = work.chapter(chapterId)?.title.orEmpty()
         return ask("章节摘要", WritePrompts.system(work.title, assistOf(workId)), WritePrompts.summary(text, title), whole = true).trim()
+    }
+
+    /**
+     * AI 拟这一章的细纲卡：带上本章资料（按章挑的总纲、接续索引、人物、察觉、伏笔，前几章的细纲或摘要）、
+     * 上一章结尾、下一章已经定下的细纲。结果交给作者看过再用，不直接存。
+     */
+    suspend fun planCard(workId: String, chapterId: String): ChapterCard {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        val (system, prompt) = withContext(Dispatchers.IO) {
+            val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
+            val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+            val i = work.chapters.indexOfFirst { it.id == chapterId }
+            val previous = work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty()
+            val next = work.chapters.getOrNull(i + 1)
+            val text = store.text(workId, chapterId)
+            val pack = store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render()
+            WritePrompts.system(work.title, assistOf(workId), pack) to
+                WritePrompts.plan(chapter.title, previous, next?.let { store.plannedCard(workId, it.id).card }, next?.title, text)
+        }
+        val answer = ask("拟细纲", system, prompt, whole = true)
+        val card = WritePrompts.parsePlan(answer)
+        if (card.isEmpty) throw IllegalStateException("AI 没按格式回，换个模型或再试一次")
+        log(workId, chapterId, "拟细纲", "", answer.trim())
+        return card
     }
 
     private val _summaries = MutableStateFlow<SummaryProgress?>(null)

@@ -66,6 +66,7 @@ class WritingRound2UiTest {
                     val answer = when {
                         "请做事实审稿" in user -> """{"issues":[{"quote":"林月早就知道","problem":"林月这时还不知道","fix":"改成觉得眼熟"},{"quote":"推开门","problem":"门是锁着的","fix":""}]}"""
                         "审稿意见" in user -> "修改后：林月觉得眼熟"
+                        "拟细纲卡" in user -> "本章事实与结果：林月在渡口等到天亮\n后文承接边界：无\n视角人物：林月\n倒计时：无\n章末钩子：对岸亮起一盏灯。\n推进的线：明线"
                         "请只按上面的写作规范" in user -> """{"issues":[]}"""
                         else -> "1. 让门外有脚步声。"
                     }
@@ -197,6 +198,22 @@ class WritingRound2UiTest {
         compose.onNodeWithText("替换").performClick()
         waitFor { store.card(workId, chapterId).let { it.hook == "船没来。" && it.auto != 0 } }
         waitForText("自动提取")
+    }
+
+    @Test
+    fun aiDraftsAnOutlineForAChapterTheOutlineDoesNotCover() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        store.addPackDoc(workId, PackKind.VOLUME, "第一卷细纲", "- **第五章 对岸**：沈默过河。\n")
+        compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
+        waitForText("没找到这一章")
+        compose.onNodeWithText("AI 拟这一章的细纲").performClick()
+        waitForText("AI 拟的细纲")
+        waitForText("对岸亮起一盏灯。")
+        // 发给 AI 的带着设定资料和拟细纲的要求。
+        assertTrue(asked.any { "拟细纲卡" in it && "章末钩子：" in it })
+        compose.onNodeWithText("用这份").performClick()
+        waitFor { store.card(workId, chapterId).let { it.hook == "对岸亮起一盏灯。" && it.facts == "林月在渡口等到天亮" && it.auto == 0 } }
     }
 
     @Test

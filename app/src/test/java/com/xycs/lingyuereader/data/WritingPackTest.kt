@@ -174,8 +174,9 @@ class WritingPackTest {
         assertEquals("新的", s.packText(w.id, old.id))
         assertEquals("旧的", s.snapshotText(w.id, s.docKey(old.id), s.history(w.id, s.docKey(old.id)).first().at))
         val work = s.get(w.id)!!
-        assertEquals(listOf("第1章", "第一章 雪夜", "第二章 来客"), work.chapters.map { it.title })
-        assertEquals("他推开门。", s.text(w.id, work.chapters[1].id))
+        // 新建作品自带的空白“第1章”导入正文后删掉。
+        assertEquals(listOf("第一章 雪夜", "第二章 来客"), work.chapters.map { it.title })
+        assertEquals("他推开门。", s.text(w.id, work.chapters[0].id))
         assertEquals(0, s.stats().on(LocalDate.now()))
         assertEquals(listOf("人物档案", "正文写作约定"), s.pack(w.id).map { it.title })
     }

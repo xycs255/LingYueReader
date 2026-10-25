@@ -125,7 +125,8 @@ class WritingPlanTest {
             PackImport.classify("草稿_第2-2章.md", "## 第二章 来客\n来人了。"),
         ))
         val chapters = s.get(w.id)!!.chapters
-        assertEquals(listOf(ChapterStatus.OUTLINE, ChapterStatus.FINAL, ChapterStatus.DRAFT), chapters.map { it.status })
+        // 新建作品自带的空白“第1章”导入正文后删掉。
+        assertEquals(listOf(ChapterStatus.FINAL, ChapterStatus.DRAFT), chapters.map { it.status })
         assertEquals(ChangeKind.FINALIZE, s.changes(w.id).single().kind)
     }
 

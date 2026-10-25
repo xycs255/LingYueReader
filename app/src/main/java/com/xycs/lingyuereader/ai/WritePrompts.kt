@@ -201,6 +201,45 @@ object WritePrompts {
         append("章末留下的钩子写一句。只写事实，不评价写法，不猜后文。只输出摘要本身。")
     }
 
+    /** 拟细纲时各项的标签（AI 照这个格式回，按它拆回细纲卡）。 */
+    private val PLAN_FIELDS = listOf("本章事实与结果", "后文承接边界", "视角人物", "倒计时", "章末钩子", "推进的线")
+
+    /**
+     * 拟这一章的细纲卡：按系统提示里的本章资料（总纲、前后几章的细纲或摘要、人物、察觉、伏笔），接上一章结尾，
+     * 不越过下一章已经定下的细纲。[written] 是这一章已经写了的正文（可空）。
+     */
+    fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String): String = buildString {
+        if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
+        if (next != null && !next.isEmpty) {
+            append("下一章「").append(nextTitle.orEmpty()).append("」已经定下的细纲（这一章不能写到它的事，要能接上它）：\n")
+            append(listOf(next.facts, next.boundary, next.hook).filter { it.isNotBlank() }.joinToString("\n")).append("\n\n")
+        }
+        if (written.isNotBlank()) append("这一章已经写了的开头：\n").append(written.take(3_000)).append("\n\n")
+        append("请为这一章「").append(title).append("」拟细纲卡：只划事实边界，不写文笔。\n")
+        append("- 从设定资料里找这一章该发生的事（总纲、分卷速查、接续索引里写到这一章或这一段的），接上上一章结尾和前情；资料里没写到的，按总纲的走向补最小的一步，不要发明大事件。\n")
+        append("- 人数、伤亡、日期、谁知道了什么要和资料一致；不写资料里后面才发生的事。\n")
+        append("按下面的格式输出，每项一行（没有的项写“无”），不要别的话：\n")
+        PLAN_FIELDS.forEach { append(it).append("：\n") }
+    }
+
+    /** 把拟好的细纲拆回细纲卡；“无”当空。 */
+    fun parsePlan(answer: String): ChapterCard {
+        val values = LinkedHashMap<String, StringBuilder>()
+        var current: String? = null
+        answer.lines().forEach { raw ->
+            val line = raw.trim().removePrefix("- ").replace("**", "").trim()
+            val field = PLAN_FIELDS.firstOrNull { line.startsWith("$it：") || line.startsWith("$it:") }
+            if (field != null) {
+                current = field
+                values.getOrPut(field) { StringBuilder() }.append(line.substring(field.length + 1).trim())
+            } else if (line.isNotEmpty()) {
+                current?.let { values.getValue(it).append(if (values.getValue(it).isEmpty()) "" else "\n").append(line) }
+            }
+        }
+        fun get(i: Int) = values[PLAN_FIELDS[i]]?.toString()?.trim()?.takeIf { it != "无" && it != "（无）" }.orEmpty()
+        return ChapterCard(facts = get(0), boundary = get(1), pov = get(2), countdown = get(3), hook = get(4), threads = get(5))
+    }
+
     /**
      * AI 写一章：按细纲卡（在系统提示里）写，接上一章结尾，照写作规范和检查规则。
      * [length] 是篇幅要求（“3000 到 6000 字”），[instruction] 是作者这次的补充要求（可空）。
