@@ -16,10 +16,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,7 +41,10 @@ import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Utterance
 import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.dict.WordFinder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 竖排：字从上往下排成一列，列从右往左排，页也从右往左翻（下一页在左边）。
@@ -207,6 +213,9 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
     }
 }
 
+/** 相邻章还没排好时，两端占位的那一页：只有纸。 */
+private val BLANK_PAGE = VerticalLayout.VPage(emptyList())
+
 /** 竖排阅读：和左右翻页一样按页翻，只是页从右往左，点左边是下一页。 */
 @Composable
 internal fun VerticalReader(
@@ -228,6 +237,8 @@ internal fun VerticalReader(
     turn: PageTurn? = null,
     /** 正在查的词：块和范围。 */
     selected: Pair<Int, IntRange>? = null,
+    /** 排好的页；放在阅读区外面，换章重建阅读区时还在（见 PagedReader）。 */
+    pageCache: ChapterCache<List<VerticalLayout.VPage>> = remember { ChapterCache() },
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val density = LocalDensity.current
@@ -244,13 +255,30 @@ internal fun VerticalReader(
         val columns = (widthPx / colW).toInt().coerceAtLeast(2)
         val layout = remember(rows, columns, styles.settings.indent) { VerticalLayout(rows, columns, styles.settings.indent) }
 
-        fun pagesOf(index: Int) = content.chapters.getOrNull(index)?.let(layout::layout)
+        val cacheKey = listOf(rows, columns, styles.settings.indent)
+
+        // 排版要先读出整章（读盘、繁简转换），只在后台线程里调。
+        fun pagesOf(index: Int): List<VerticalLayout.VPage>? = content.chapters.getOrNull(index)?.let { c ->
+            pageCache.get(cacheKey, index) { layout.layout(c) }
+        }
         val chapter = content.chapters[chapterIndex]
-        val pages = remember(chapter, layout) { pagesOf(chapterIndex)!! }
-        val prev = remember(chapterIndex, content, layout) { pagesOf(chapterIndex - 1) }
-        val next = remember(chapterIndex, content, layout) { pagesOf(chapterIndex + 1) }
-        val lead = if (prev != null) 1 else 0
-        val count = lead + pages.size + if (next != null) 1 else 0
+        // 本章在后台排好之前只露出纸；邻章等本章画出来、书页停着时再排（见下面）。
+        var ready by remember(chapter, layout) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex)) }
+        LaunchedEffect(chapter, layout) {
+            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) }
+        }
+        val pages = ready ?: run {
+            // 还在排版：轻点照样能叫出菜单、翻页（左边是下一页）。
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { onTap(1f - it.x / size.width) }) })
+            return@BoxWithConstraints
+        }
+        val hasPrev = chapterIndex > 0
+        val hasNext = chapterIndex < content.chapters.lastIndex
+        var prev by remember(chapterIndex, content, layout) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex - 1)) }
+        var next by remember(chapterIndex, content, layout) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex + 1)) }
+        // 两端各多放一页：位置先占好，相邻章排好之前那一页只有纸。
+        val lead = if (hasPrev) 1 else 0
+        val count = lead + pages.size + if (hasNext) 1 else 0
 
         // 最近停在哪一页的开头：重新排版时按它找回所在的页（见 PagedReader）。
         val settledAt = remember { arrayOfNulls<Pair<Int, Int>>(1) }
@@ -268,6 +296,16 @@ internal fun VerticalReader(
         val pageCount by rememberUpdatedState(count)
         val pager = remember(pages) { PagerState(lead + startPage) { pageCount } }
         val scope = rememberCoroutineScope()
+        LaunchedEffect(chapterIndex, content, layout) {
+            if ((!hasNext || next != null) && (!hasPrev || prev != null)) return@LaunchedEffect
+            // 先让这一章画出来，再趁书页停着时排；往后翻的多，先排下一章。
+            repeat(2) { withFrameNanos { } }
+            snapshotFlow { pager.isScrollInProgress }.first { !it }
+            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) }
+            withFrameNanos { }
+            snapshotFlow { pager.isScrollInProgress }.first { !it }
+            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) }
+        }
         DisposableEffect(pager) {
             registerTurner { forward ->
                 scope.launch {
@@ -292,8 +330,8 @@ internal fun VerticalReader(
         LaunchedEffect(pager, pages) {
             snapshotFlow { pager.settledPage }.collect { p ->
                 when {
-                    prev != null && p == 0 -> onChapterChange(chapterIndex - 1, true)
-                    next != null && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
+                    hasPrev && p == 0 -> onChapterChange(chapterIndex - 1, true)
+                    hasNext && p == count - 1 -> onChapterChange(chapterIndex + 1, false)
                     else -> {
                         val i = (p - lead).coerceIn(pages.indices)
                         settledAt[0] = pages[i].firstBlock to pages[i].firstChar
@@ -323,8 +361,8 @@ internal fun VerticalReader(
         // 下一页在左边：倒过来排。
         HorizontalPager(state = pager, reverseLayout = true, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize().clipToBook(inset)) { p ->
             val (pageChapter, page) = when {
-                prev != null && p == 0 -> chapterIndex - 1 to prev.last()
-                next != null && p == count - 1 -> chapterIndex + 1 to next.first()
+                hasPrev && p == 0 -> chapterIndex - 1 to (prev?.last() ?: BLANK_PAGE)
+                hasNext && p == count - 1 -> chapterIndex + 1 to (next?.first() ?: BLANK_PAGE)
                 else -> chapterIndex to pages[p - lead]
             }
             val notes = remember(marks, pageChapter) { marks.notes.filter { it.chapterIndex == pageChapter } }

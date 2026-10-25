@@ -94,4 +94,26 @@ class QuoteCardUiTest {
         compose.onNodeWithText("分享").performScrollTo().performClick()
         compose.waitUntil(5_000) { File(context.cacheDir, "cards/书摘.png").isFile }
     }
+
+    @Test
+    fun sharingACardThatCannotBeWrittenSaysSoInsteadOfCrashing() {
+        // 放卡片的目录被一个同名文件占着：图片写不出来。
+        File(context.cacheDir, "cards").writeText("占位")
+        waitForText("测试书")
+        compose.onAllNodesWithText("测试书")[0].performClick()
+        waitForText("银行门口")
+        val body = compose.onAllNodesWithText("银行门口", substring = true)[0].fetchSemanticsNode().boundsInRoot
+        compose.onRoot().performTouchInput { down(Offset(body.left + 40.dp.toPx(), body.center.y)) }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.onRoot().performTouchInput {
+            moveTo(Offset(body.right - 4f, body.center.y))
+            up()
+        }
+        waitForText("卡片")
+        compose.onNodeWithText("卡片").performClick()
+        waitForText("书摘卡片")
+        compose.onNodeWithText("分享").performScrollTo().performClick()
+        waitForText("分享失败")
+        assertTrue(File(context.cacheDir, "cards").isFile)
+    }
 }

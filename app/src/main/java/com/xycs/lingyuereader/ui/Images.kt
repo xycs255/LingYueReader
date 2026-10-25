@@ -45,7 +45,7 @@ import com.xycs.lingyuereader.data.PageBooks
 import com.xycs.lingyuereader.data.PdfPages
 
 /**
- * 书里的插图：按显示宽度降采样解码，内存里缓存最近用过的几张。
+ * 书里的插图：按显示宽度降采样解码（太长、太大的再按高度和总像素降），内存里缓存最近用过的几张。
  * 分页时只需要宽高比，读文件头即可，不解码整张图。
  * 漫画的页直接从压缩包里读（“zip:来源文件:包内路径”），PDF 的页现画（“pdf:来源文件:页号:高宽比”）。
  */
@@ -79,7 +79,7 @@ class BookImages(private val fileOf: (String) -> File) {
         PageBooks.pdfRef(src)?.let { page ->
             val key = "${fileOf(page.file).path}#${page.page}@$widthPx"
             cache.get(key)?.let { return it }
-            return PdfPages.render(fileOf(page.file), page.page, widthPx)?.asImageBitmap()?.also { cache.put(key, it) }
+            return decoding { PdfPages.render(fileOf(page.file), page.page, widthPx) }?.asImageBitmap()?.also { cache.put(key, it) }
         }
         PageBooks.zipRef(src)?.let { (name, path) ->
             val z = zip(name) ?: return null
@@ -89,8 +89,8 @@ class BookImages(private val fileOf: (String) -> File) {
             return synchronized(z) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 z.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, bounds) }
-                val options = BitmapFactory.Options().apply { inSampleSize = sampleFor(bounds.outWidth, widthPx) }
-                z.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, options) }
+                val options = BitmapFactory.Options().apply { inSampleSize = sampleFor(bounds.outWidth, bounds.outHeight, widthPx) }
+                decoding { z.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, options) } }
             }?.asImageBitmap()?.also { cache.put(key, it) }
         }
         return decode(fileOf(src), widthPx)
@@ -109,10 +109,23 @@ class BookImages(private val fileOf: (String) -> File) {
             override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
         }
 
-        private fun sampleFor(width: Int, widthPx: Int): Int {
+        /** 解码出的位图最多这么多像素、单边最长这么多：超长的条漫、超大的扫描页再降采样，免得解码出上百 MB 的位图。 */
+        private const val MAX_PIXELS = 16L * 1024 * 1024
+        private const val MAX_SIDE = 4096
+
+        /** 降采样倍数：先按显示宽度降，再按宽、高和总像素的上限降。 */
+        internal fun sampleFor(width: Int, height: Int, widthPx: Int): Int {
             var sample = 1
             while (width / (sample * 2) >= widthPx) sample *= 2
+            while (width / sample > MAX_SIDE || height / sample > MAX_SIDE || (width / sample).toLong() * (height / sample) > MAX_PIXELS) sample *= 2
             return sample
+        }
+
+        /** 解码时内存不够：这张图不显示，不让整个应用崩掉。 */
+        private inline fun <T> decoding(block: () -> T?): T? = try {
+            block()
+        } catch (_: OutOfMemoryError) {
+            null
         }
 
         fun decode(file: File, widthPx: Int): ImageBitmap? {
@@ -121,8 +134,8 @@ class BookImages(private val fileOf: (String) -> File) {
             cache.get(key)?.let { return it }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.path, bounds)
-            val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sampleFor(bounds.outWidth, widthPx) })
-                ?.asImageBitmap() ?: return null
+            val options = BitmapFactory.Options().apply { inSampleSize = sampleFor(bounds.outWidth, bounds.outHeight, widthPx) }
+            val bitmap = decoding { BitmapFactory.decodeFile(file.path, options) }?.asImageBitmap() ?: return null
             cache.put(key, bitmap)
             return bitmap
         }

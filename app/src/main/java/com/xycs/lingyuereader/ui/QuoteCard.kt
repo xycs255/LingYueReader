@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -41,6 +42,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -130,32 +134,46 @@ fun renderQuoteCard(content: QuoteCardContent, style: CardStyle, typeface: Typef
 /** 书摘最多取这么多字，太长的卡片没法看。 */
 private const val MAX_QUOTE = 600
 
-/** 存成 PNG 文件（分享用）。 */
+/** 存成 PNG 文件（分享用）。要写文件，别在界面线程上调；写不出来时抛异常。 */
 fun Bitmap.writePng(file: File): File {
     file.parentFile?.mkdirs()
-    file.outputStream().use { compress(Bitmap.CompressFormat.PNG, 100, it) }
+    file.outputStream().use { check(compress(Bitmap.CompressFormat.PNG, 100, it)) { "写入出错" } }
     return file
 }
 
-/** 书摘卡片面板：选配色、预览、分享或保存成图片。 */
+/** 书摘卡片面板：选配色、预览、分享或保存成图片。[onMessage] 用来提示分享、保存失败。 */
 @Composable
-internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, palette: ReaderPalette, tint: Color = palette.accent) {
+internal fun QuoteCardSheet(
+    content: QuoteCardContent,
+    typeface: Typeface?,
+    palette: ReaderPalette,
+    tint: Color = palette.accent,
+    onMessage: (String) -> Unit = {},
+) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var style by rememberSaveable { mutableStateOf(CardStyle.PAPER) }
     val bitmap = remember(content, style, typeface) { renderQuoteCard(content, style, typeface) }
     val save = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("image/png"),
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
-        runCatching {
-            context.contentResolver.openOutputStream(uri)!!.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // 编码 PNG、写文件都在后台做；存储满、没有权限时提示，不闪退。
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) {
+                runCatching {
+                    val out = context.contentResolver.openOutputStream(uri) ?: error("打不开文件")
+                    out.use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "写入出错" } }
+                }
+            }
+            saved.onFailure { onMessage("保存图片失败：${it.message ?: "写入出错"}") }
         }
     }
     // 标题栏右边“分享”；预览下面选配色，再下面“保存图片”。
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-            SheetNavBar("书摘卡片", back = null, action = "分享" to { shareCard(context, bitmap) }) {}
+            SheetNavBar("书摘卡片", back = null, action = "分享" to { scope.launch { shareCard(context, bitmap, onMessage) } }) {}
             Image(
                 bitmap.asImageBitmap(),
                 contentDescription = "书摘卡片预览",
@@ -175,8 +193,15 @@ internal fun QuoteCardSheet(content: QuoteCardContent, typeface: Typeface?, pale
     }
 }
 
-private fun shareCard(context: Context, bitmap: Bitmap) {
-    val file = bitmap.writePng(File(File(context.cacheDir, "cards"), "书摘.png"))
+/** 先在后台把卡片写成 PNG，再交给系统分享；写不出来（存储满等）时提示。 */
+private suspend fun shareCard(context: Context, bitmap: Bitmap, onMessage: (String) -> Unit) {
+    val written = withContext(Dispatchers.IO) {
+        runCatching { bitmap.writePng(File(File(context.cacheDir, "cards"), "书摘.png")) }
+    }
+    val file = written.getOrElse {
+        onMessage("分享失败：${it.message ?: "写入出错"}")
+        return
+    }
     val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
     val send = Intent(Intent.ACTION_SEND).setType("image/png")
         .putExtra(Intent.EXTRA_STREAM, uri)
