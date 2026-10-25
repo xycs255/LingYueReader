@@ -11,10 +11,12 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -75,6 +77,7 @@ class WritingPackAiUiTest {
             val w = store.create("长夜")
             store.renameChapter(w.id, w.chapters[0].id, "第一章 进城")
             store.saveText(w.id, w.chapters[0].id, "沈默进了城，在杜娘的茶馆落脚。")
+            store.setStatus(w.id, w.chapters[0].id, ChapterStatus.FINAL)
             val (_, two) = store.addChapter(w.id, w.volumes[0].id, "第二章 雪夜")!!
             store.addPackDoc(w.id, PackKind.INSTRUCTION, "使用说明", "先读本说明，再按需读取细纲。")
             store.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 想要 |\n|---|---|\n| 沈默 | 查清旧案 |\n| 杜娘 | 保住茶馆 |\n")
@@ -110,7 +113,7 @@ class WritingPackAiUiTest {
         // 工作说明在最前面，知识库整份，细纲在目录里、AI 自己读；这一章的细纲原文随请求带。
         assertTrue(system.indexOf("【使用说明】") < system.indexOf("【人物档案】"))
         assertTrue("《第一卷细纲》（卷纲细纲，" in system)
-        assertTrue("【设定包里写这一章的原文】" in system && "沈默夜里出门" in system)
+        assertTrue("【本次章节任务】" in system && "沈默夜里出门" in system)
         assertEquals(3, first.getJSONArray("tools").length())
         // 工具读到的第一章交回给 AI 了。
         val second = bodies[1].getJSONArray("messages")
@@ -123,5 +126,19 @@ class WritingPackAiUiTest {
         waitFor { compose.onAllNodesWithText("AI 拿到的设定包").fetchSemanticsNodes().isNotEmpty() }
         waitFor { compose.onAllNodesWithText("知识库 · 整份 · 人物档案").fetchSemanticsNodes().isNotEmpty() }
         waitFor { compose.onAllNodesWithText("按需查阅 · 卷纲细纲").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun disablingTheReviewWorkflowStillKeepsUnapprovedProseOutOfProjectTools() {
+        val store = WorkStore(writingDir)
+        val firstChapter = store.get(workId)!!.chapters.first().id
+        store.setStatus(workId, firstChapter, ChapterStatus.DRAFT, reason = "继续修订前章")
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, chapterId, workflow = false) }
+        waitFor { vm.writingAi.drafts.value[workId to chapterId]?.let { !it.loading && it.text.isNotBlank() } == true }
+        val messages = bodies[1].getJSONArray("messages")
+        val returned = messages.getJSONObject(messages.length() - 1).getString("content")
+        assertEquals("tool", messages.getJSONObject(messages.length() - 1).getString("role"))
+        assertFalse(returned.contains("沈默进了城，在杜娘的茶馆落脚。"))
     }
 }

@@ -975,7 +975,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 改稿类：选中的文字或光标所在的段。 */
-    fun runEdit(action: WriteAction, instruction: String = "") {
+    fun runEdit(action: WriteAction, instruction: String = "", reviewFix: com.xycs.lingyuereader.ReviewFix? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -983,7 +983,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val target = editTarget(st.text.toString(), st.selection, action, instruction)
         if (target == null) vm.showMessage(if (action == WriteAction.CONTINUE) "先写一点，再让 AI 接着写" else "先选中文字，或把光标放在要改的那段")
-        else runAi(target)
+        else runAi(target.copy(reviewFix = reviewFix))
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
@@ -1156,7 +1156,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 current.edit { selection = TextRange(at, at + minOf(quote.length, text.length - at)) }
                                 runCatching { focus.requestFocus() }
                                 // “按这条改”：选中的这句交给 AI 按意见改，结果照常先看对比再采纳。
-                                j.instruction?.let { runEdit(WriteAction.CUSTOM, it) }
+                                j.instruction?.let { runEdit(WriteAction.CUSTOM, it, j.reviewFix) }
                             }
                         }
                     }
@@ -1372,10 +1372,29 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             p.state,
                             lookup = aiLookup,
                             model = "${aiConfig.providerLabel} · ${aiConfig.model}",
-                            onAccept = { result ->
+                            onAccept = accept@{ result ->
+                                if (locked) {
+                                    vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                    return@accept
+                                }
                                 val task = p.state.task as WriteAiTask.Edit
+                                val before = st.text.toString()
                                 when (applyEdit(st, task, result)) {
-                                    EditApply.DONE -> vm.writingAi.accepted(workId, task.action, task.original, result)
+                                    EditApply.DONE -> {
+                                        vm.writingAi.accepted(workId, task.action, task.original, result)
+                                        val after = st.text.toString()
+                                        task.reviewFix?.takeIf { before != after }?.let { fix ->
+                                            // 成功替换并真正落盘以后，才处理来源审稿里的同一条问题。
+                                            vm.writing.save(workId, chapterId, after, onSaved = {
+                                                val report = vm.writingAi.reviews.value[workId to chapterId]?.review
+                                                if (report != null && report.at == fix.reviewAt && report.textHash == fix.textHash &&
+                                                    report.gate(fix.gate)?.issues?.any { it == fix.issue } == true
+                                                ) {
+                                                    vm.writingAi.markIssue(workId, chapterId, fix.gate, fix.issue, com.xycs.lingyuereader.data.ReviewIssue.FIXED)
+                                                }
+                                            })
+                                        }
+                                    }
                                     EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
                                     EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
                                 }

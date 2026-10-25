@@ -68,6 +68,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 写作助手面板在做的事。 */
+/** A proposed edit may resolve one issue from one particular review; a request itself resolves nothing. */
+data class ReviewFix(val gate: ReviewGate, val issue: ReviewIssue, val reviewAt: Long, val textHash: Int)
+
 sealed interface WriteAiTask {
     val title: String
 
@@ -75,7 +78,14 @@ sealed interface WriteAiTask {
      * 改一段：[original] 是原文（续写时为空），在正文的 [start]..[end]（不含）。
      * 采纳时按位置换；正文在那之后又改过、位置对不上时，按原文找。
      */
-    data class Edit(val action: WriteAction, val original: String, val start: Int, val end: Int, val instruction: String = "") : WriteAiTask {
+    data class Edit(
+        val action: WriteAction,
+        val original: String,
+        val start: Int,
+        val end: Int,
+        val instruction: String = "",
+        val reviewFix: ReviewFix? = null,
+    ) : WriteAiTask {
         override val title: String get() = if (action == WriteAction.CUSTOM) "按要求改" else action.label
     }
 
@@ -1203,7 +1213,7 @@ class WritingAi(
                 val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples)
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, stable = samples, meter = meter,
-                    toolsUpTo = chapterId, phase = WritingPhase.CREATE,
+                    toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
                     onReset = {
                         written = ""
                         updateDraft(key, run) { it.copy(text = prefix) }

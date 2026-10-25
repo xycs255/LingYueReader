@@ -742,7 +742,7 @@ data class FormatRun(
 }
 
 /** 回到编辑器要选中的一句：哪一章、原文、要不要按一条意见让 AI 改。 */
-data class Jump(val chapterId: String, val quote: String, val instruction: String? = null)
+data class Jump(val chapterId: String, val quote: String, val instruction: String? = null, val reviewFix: ReviewFix? = null)
 
 /** 账本页能翻到的一章：[no] 是按设定算的章号，[volume] 是第几卷。 */
 data class LedgerChapter(val id: String, val title: String, val no: Int, val volume: Int)

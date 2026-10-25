@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.ReviewFix
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.BriefItem
@@ -277,9 +278,9 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
         }
     }
 
-    fun jump(issue: ReviewIssue, instruction: String? = null) {
+    fun jump(issue: ReviewIssue, instruction: String? = null, reviewFix: ReviewFix? = null) {
         if (issue.quote.isBlank()) return
-        vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote, instruction)
+        vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote, instruction, reviewFix)
         vm.back()
     }
     var acting by remember { mutableStateOf<Pair<ReviewGate, ReviewIssue>?>(null) }
@@ -370,7 +371,11 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             IssueAction.JUMP -> jump(issue)
                             IssueAction.AI_FIX -> {
                                 // 发起改稿不等于已经改好：失败、关闭或未采纳时，问题仍应保持未处理。
-                                jump(issue, listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。")
+                                jump(
+                                    issue,
+                                    listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。",
+                                    review?.let { ReviewFix(gate, issue, it.at, it.textHash) },
+                                )
                             }
                         }
                     })
