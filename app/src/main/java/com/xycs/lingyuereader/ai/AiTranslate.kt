@@ -111,10 +111,16 @@ object AiTranslate {
         )
     }
 
-    fun read(file: File?): Translations = runCatching {
-        val o = JSONObject(file!!.readText())
+    /** 显示用：读不出时按没有译文显示（坏文件已另存一份）。 */
+    fun read(file: File?): Translations = runCatching { load(file) }.getOrDefault(Translations())
+
+    /** 改了要存回去时用：读不出的坏文件另存一份后按空的算；连副本都存不下就抛出，不能当成空的写回去。 */
+    fun load(file: File?): Translations = AiFiles.load(file, ::decode) ?: Translations()
+
+    private fun decode(text: String): Translations {
+        val o = JSONObject(text)
         val chapters = o.getJSONObject("chapters")
-        Translations(
+        return Translations(
             show = o.optBoolean("show", true),
             target = runCatching { TranslateTarget.valueOf(o.getString("target")) }.getOrDefault(TranslateTarget.CHINESE),
             chapters = chapters.keys().asSequence().associate { key ->
@@ -127,21 +133,18 @@ object AiTranslate {
                 key.toInt() to h.keys().asSequence().associate { b -> b.toInt() to h.getInt(b) }
             }.toMap(),
         )
-    }.getOrDefault(Translations())
+    }
 
+    /** 原子写（见 [AiFiles.write]）：写不成就抛出，旧译文原样留着。 */
     fun write(file: File?, t: Translations) {
-        val f = file ?: return
-        runCatching {
-            f.parentFile?.mkdirs()
-            val chapters = JSONObject()
-            t.chapters.forEach { (i, pair) ->
-                val blocks = JSONObject()
-                pair.second.forEach { (b, text) -> blocks.put(b.toString(), text) }
-                val c = JSONObject().put("title", pair.first).put("blocks", blocks)
-                t.hashes[i]?.let { h -> c.put("hashes", JSONObject().apply { h.forEach { (b, v) -> put(b.toString(), v) } }) }
-                chapters.put(i.toString(), c)
-            }
-            f.writeText(JSONObject().put("show", t.show).put("target", t.target.name).put("chapters", chapters).toString())
+        val chapters = JSONObject()
+        t.chapters.forEach { (i, pair) ->
+            val blocks = JSONObject()
+            pair.second.forEach { (b, text) -> blocks.put(b.toString(), text) }
+            val c = JSONObject().put("title", pair.first).put("blocks", blocks)
+            t.hashes[i]?.let { h -> c.put("hashes", JSONObject().apply { h.forEach { (b, v) -> put(b.toString(), v) } }) }
+            chapters.put(i.toString(), c)
         }
+        AiFiles.write(file, JSONObject().put("show", t.show).put("target", t.target.name).put("chapters", chapters).toString())
     }
 }

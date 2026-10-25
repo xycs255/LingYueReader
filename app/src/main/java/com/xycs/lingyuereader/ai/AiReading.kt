@@ -78,20 +78,20 @@ object AiSummaries {
         }.toMap()
     }
 
-    /** 章下标 → (章名, 摘要)。 */
-    fun read(file: File?): Map<Int, Pair<String, String>> = runCatching {
-        val o = JSONObject(file!!.readText())
-        o.keys().asSequence().associate { k -> o.getJSONObject(k).let { k.toInt() to (it.getString("t") to it.getString("s")) } }
-    }.getOrDefault(emptyMap())
+    /** 章下标 → (章名, 摘要)。显示用：读不出时按没有摘要显示（坏文件已另存一份）。 */
+    fun read(file: File?): Map<Int, Pair<String, String>> = runCatching { load(file) }.getOrDefault(emptyMap())
 
+    /** 改了要存回去时用：连坏文件的副本都存不下就抛出（见 [AiFiles.load]）。 */
+    fun load(file: File?): Map<Int, Pair<String, String>> = AiFiles.load(file) { text ->
+        val o = JSONObject(text)
+        o.keys().asSequence().associate { k -> o.getJSONObject(k).let { k.toInt() to (it.getString("t") to it.getString("s")) } }
+    }.orEmpty()
+
+    /** 原子写（见 [AiFiles.write]）：写不成就抛出。 */
     fun write(file: File?, map: Map<Int, Pair<String, String>>) {
-        val f = file ?: return
-        runCatching {
-            f.parentFile?.mkdirs()
-            val o = JSONObject()
-            map.forEach { (i, p) -> o.put(i.toString(), JSONObject().put("t", p.first).put("s", p.second)) }
-            f.writeText(o.toString())
-        }
+        val o = JSONObject()
+        map.forEach { (i, p) -> o.put(i.toString(), JSONObject().put("t", p.first).put("s", p.second)) }
+        AiFiles.write(file, o.toString())
     }
 
     /** 只留章名对得上的（改稿后章序可能变了）。 */
@@ -126,24 +126,25 @@ object AiCompanion {
         return c.takeIf { it.points.isNotEmpty() || it.questions.isNotEmpty() }
     }
 
-    fun read(file: File?): Map<Int, Pair<String, ChapterCompanion>> = runCatching {
-        val o = JSONObject(file!!.readText())
+    /** 显示用：读不出时按没有伴读显示（坏文件已另存一份）。 */
+    fun read(file: File?): Map<Int, Pair<String, ChapterCompanion>> = runCatching { load(file) }.getOrDefault(emptyMap())
+
+    /** 改了要存回去时用：连坏文件的副本都存不下就抛出（见 [AiFiles.load]）。 */
+    fun load(file: File?): Map<Int, Pair<String, ChapterCompanion>> = AiFiles.load(file) { text ->
+        val o = JSONObject(text)
         o.keys().asSequence().associate { k ->
             val c = o.getJSONObject(k)
             fun list(name: String) = c.getJSONArray(name).let { a -> (0 until a.length()).map { a.getString(it) } }
             k.toInt() to (c.getString("t") to ChapterCompanion(list("points"), list("questions")))
         }
-    }.getOrDefault(emptyMap())
+    }.orEmpty()
 
+    /** 原子写（见 [AiFiles.write]）：写不成就抛出。 */
     fun write(file: File?, map: Map<Int, Pair<String, ChapterCompanion>>) {
-        val f = file ?: return
-        runCatching {
-            f.parentFile?.mkdirs()
-            val o = JSONObject()
-            map.forEach { (i, p) ->
-                o.put(i.toString(), JSONObject().put("t", p.first).put("points", JSONArray(p.second.points)).put("questions", JSONArray(p.second.questions)))
-            }
-            f.writeText(o.toString())
+        val o = JSONObject()
+        map.forEach { (i, p) ->
+            o.put(i.toString(), JSONObject().put("t", p.first).put("points", JSONArray(p.second.points)).put("questions", JSONArray(p.second.questions)))
         }
+        AiFiles.write(file, o.toString())
     }
 }

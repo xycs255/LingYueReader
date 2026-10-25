@@ -83,6 +83,19 @@ class MdictTest {
     }
 
     @Test
+    fun aTruncatedRecordSectionIsRejectedWhenOpened() {
+        // 文件不完整（下载、复制到一半）：块信息里的正文块加起来比文件还长，导入时就报错，不等查词时读出界。
+        for (name in listOf("v2_zlib_utf8.mdx", "v1_lzo_utf8.mdx")) {
+            val bytes = fixture(name).readBytes()
+            val cut = tmp.newFile("cut-$name").apply { writeBytes(bytes.copyOf(bytes.size - 64)) }
+            val error = runCatching { MdictFile(cut) }.exceptionOrNull()
+            assertTrue(name, error is MdictFile.Unsupported)
+            val whole = tmp.newFile("whole-$name").apply { writeBytes(bytes) }
+            assertTrue(name, MdictFile(whole).entryCount > 0)
+        }
+    }
+
+    @Test
     fun ripemd128TestVectors() {
         fun hex(s: String) = Ripemd128.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
         assertEquals("cdf26213a150dc3ecb610f18f6b38b46", hex(""))

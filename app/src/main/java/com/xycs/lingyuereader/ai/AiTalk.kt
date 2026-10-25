@@ -70,25 +70,26 @@ object AiTalk {
 
     private const val MAX_LINE = 80
 
-    fun read(file: File?): Map<String, Talk> = runCatching {
-        val o = JSONObject(file!!.readText())
+    /** 显示用：读不出时按没有存过的稿子算（坏文件已另存一份）。 */
+    fun read(file: File?): Map<String, Talk> = runCatching { load(file) }.getOrDefault(emptyMap())
+
+    /** 改了要存回去时用：连坏文件的副本都存不下就抛出（见 [AiFiles.load]）。 */
+    fun load(file: File?): Map<String, Talk> = AiFiles.load(file) { text ->
+        val o = JSONObject(text)
         o.keys().asSequence().associate { k ->
             val t = o.getJSONObject(k)
             val a = t.getJSONArray("lines")
             k to Talk(t.getString("title"), (0 until a.length()).map { i -> a.getJSONObject(i).let { TalkLine(it.getInt("s"), it.getString("t")) } }, t.optLong("at"))
         }
-    }.getOrDefault(emptyMap())
+    }.orEmpty()
 
+    /** 原子写（见 [AiFiles.write]）：写不成就抛出。 */
     fun write(file: File?, map: Map<String, Talk>) {
-        val f = file ?: return
-        runCatching {
-            f.parentFile?.mkdirs()
-            val o = JSONObject()
-            // 只留最近的 30 篇。
-            map.entries.sortedByDescending { it.value.at }.take(30).forEach { (k, t) ->
-                o.put(k, JSONObject().put("title", t.title).put("at", t.at).put("lines", JSONArray().apply { t.lines.forEach { put(JSONObject().put("s", it.speaker).put("t", it.text)) } }))
-            }
-            f.writeText(o.toString())
+        val o = JSONObject()
+        // 只留最近的 30 篇。
+        map.entries.sortedByDescending { it.value.at }.take(30).forEach { (k, t) ->
+            o.put(k, JSONObject().put("title", t.title).put("at", t.at).put("lines", JSONArray().apply { t.lines.forEach { put(JSONObject().put("s", it.speaker).put("t", it.text)) } }))
         }
+        AiFiles.write(file, o.toString())
     }
 }

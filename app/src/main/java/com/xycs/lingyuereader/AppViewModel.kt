@@ -543,13 +543,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val c = aiConfig.value
         if (!c.speechReady) return null
         val sp = c.speech
+        // 听书是全应用的单例，比 ViewModel 活得久：只带上合成要用的客户端，不要引用整个 ViewModel。
+        val client = assistant.client
         return AiVoice(
             sp.label,
             sp.voices.map { VoiceOption(it.first, it.second) },
             sp.voice,
             fingerprint = { v -> sp.fingerprint(v) },
             // 按开始听书时的设置合成，和缓存键用的是同一份：中途改了设置，换引擎或重新开始听书后才生效。
-            fetch = { v, text -> assistant.speech(text, v, sp) },
+            fetch = { v, text -> client.speech(sp, text, v) },
         )
     }
 
@@ -1431,8 +1433,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val id = work()
                 refreshDeviceModels()
-                // 刚装好的直接选用。
-                saveAiConfig(aiConfig.value.copy(model = id))
+                // 刚装好的直接选用；下载期间换成了别家服务商就不动，不然会把那家的模型名改成本机模型的。
+                if (aiConfig.value.onDevice) saveAiConfig(aiConfig.value.copy(model = id))
                 _deviceModels.update { it.copy(task = null) }
                 _messages.value = "「${com.xycs.lingyuereader.ai.DeviceModels.label(id)}」已装好"
             } catch (e: CancellationException) {
@@ -1632,10 +1634,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 packs.forEach { pack ->
                     val got = AiSummaries.parse(assistant.complete(aiBook, AiSummaries.prompt(pack), AnswerLength.SHORT), pack)
-                    withContext(Dispatchers.IO) {
-                        val stored = AiSummaries.read(file).toMutableMap()
-                        got.forEach { (i, text) -> stored[i] = book.content.chapters[i].title to text }
-                        AiSummaries.write(file, stored)
+                    // 存不下就停：接着生成的也存不下，白花钱。
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val stored = AiSummaries.load(file).toMutableMap()
+                            got.forEach { (i, text) -> stored[i] = book.content.chapters[i].title to text }
+                            AiSummaries.write(file, stored)
+                        }
+                    } catch (e: java.io.IOException) {
+                        throw AiException("速读没能保存（${e.message ?: e.javaClass.simpleName}），已停止生成")
                     }
                     done += pack.chapters.size
                     mine { it.copy(summaries = it.summaries + got, progress = "$done/${indices.size}") }
@@ -1671,8 +1678,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val talkPlayer: StateFlow<TalkPlayer?> = _talkPlayer.asStateFlow()
     private var talkJob: Job? = null
 
-    /** 打开讲书稿：存过的直接用，没有（或要重新生成）就让 AI 写。 */
-    fun openTalk(chapterIndex: Int, block: Int, scope: TalkScope, style: TalkStyle, regenerate: Boolean = false, char: Int = Int.MAX_VALUE) {
+    /**
+     * 打开讲书稿：存过的直接用，没有（或要重新生成）就让 AI 写。
+     * [cachedOnly]：面板打开、换范围或形式时只看存过的，没有就等读者点“生成”，不自动发请求花钱。
+     */
+    fun openTalk(chapterIndex: Int, block: Int, scope: TalkScope, style: TalkStyle, regenerate: Boolean = false, char: Int = Int.MAX_VALUE, cachedOnly: Boolean = false) {
         val book = _openBook.value ?: return
         val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
         val aiBook = aiBook() ?: return
@@ -1682,11 +1692,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!regenerate && _talk.value.key == key && _talk.value.bookId == book.entry.id && (_talk.value.talk != null || _talk.value.loading)) return
         talkJob?.cancel()
         stopTalk()
-        _talk.value = TalkState(book.entry.id, key, loading = true)
+        // 只看存过的时不显示“正在写”：读者没点生成。
+        _talk.value = TalkState(book.entry.id, key, loading = !cachedOnly)
         talkJob = viewModelScope.launch {
             val file = library.bookFile(book.entry.id, AiTalk.FILE)
             try {
                 val cached = if (regenerate) null else withContext(Dispatchers.IO) { AiTalk.read(file)[key] }
+                if (cached == null && cachedOnly) return@launch
+                var saveError: String? = null
                 val talk = cached ?: run {
                     val text = withContext(Dispatchers.IO) {
                         if (scope == TalkScope.CHAPTER) chapterExcerpt(chapter, AiTalk.LIMIT)
@@ -1695,10 +1708,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (text.isBlank()) throw AiException("还没读到正文")
                     val answer = assistant.complete(aiBook, AiTalk.prompt(style, scope, chapter.title, text), AnswerLength.LONG)
                     val parsed = AiTalk.parse(answer, style)?.copy(at = System.currentTimeMillis()) ?: throw AiException("AI 没有按格式写稿，请重试")
-                    withContext(Dispatchers.IO) { AiTalk.write(file, AiTalk.read(file) + (key to parsed)) }
+                    // 存不下也先给读者听（已经花了钱），只说一声下次要重新生成。
+                    withContext(Dispatchers.IO) { runCatching { AiTalk.write(file, AiTalk.load(file) + (key to parsed)) } }.onFailure { e ->
+                        saveError = "讲书稿没能保存（${e.message ?: e.javaClass.simpleName}），下次打开要重新生成"
+                    }
                     parsed
                 }
-                _talk.update { it.copy(talk = talk, loading = false) }
+                _talk.update { it.copy(talk = talk, loading = false, error = saveError) }
                 _talkPlayer.value = TalkPlayer(getApplication(), talkVoices(style)).also { p -> p.load(talk.lines.map { it.speaker to it.text }) }
             } catch (e: CancellationException) {
                 throw e
@@ -1768,15 +1784,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val file = library.bookFile(book.entry.id, AiCompanion.FILE)
             try {
                 val cached = if (regenerate) null else withContext(Dispatchers.IO) { AiCompanion.read(file)[chapterIndex]?.takeIf { it.first == chapter.title }?.second }
+                var saveError: String? = null
                 val data = cached ?: run {
                     val previous = _summaries.value.takeIf { it.bookId == book.entry.id }?.summaries?.get(chapterIndex - 1)
                     val text = withContext(Dispatchers.IO) { chapterExcerpt(chapter, AiCompanion.LIMIT) }
                     val answer = assistant.complete(aiBook, AiCompanion.prompt(chapter.title, text, previous), AnswerLength.MEDIUM)
                     val parsed = AiCompanion.parse(answer) ?: throw AiException("AI 没有按格式回答，请重试")
-                    withContext(Dispatchers.IO) { AiCompanion.write(file, AiCompanion.read(file) + (chapterIndex to (chapter.title to parsed))) }
+                    // 存不下也先显示（已经花了钱），只说一声下次要重新生成。
+                    withContext(Dispatchers.IO) { runCatching { AiCompanion.write(file, AiCompanion.load(file) + (chapterIndex to (chapter.title to parsed))) } }.onFailure { e ->
+                        saveError = "伴读没能保存（${e.message ?: e.javaClass.simpleName}），下次打开要重新生成"
+                    }
                     parsed
                 }
-                _companion.update { it.copy(data = data, loading = false) }
+                _companion.update { it.copy(data = data, loading = false, error = saveError) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1837,14 +1857,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val answer = assistant.complete(aiBook, AiTranslate.prompt(batch, target), AnswerLength.LONG)
                     result.putAll(AiTranslate.parse(answer, batch))
                 }
-                val current = withContext(Dispatchers.IO) { AiTranslate.read(file) }
                 val hashes = result.keys.associateWith { b -> AiTranslate.hash(chapter.blocks.getOrNull(b)) }
-                val next = current.copy(
-                    show = true, target = target,
-                    chapters = current.chapters + (chapterIndex to (chapter.title to result)),
-                    hashes = current.hashes + (chapterIndex to hashes),
-                )
-                withContext(Dispatchers.IO) { AiTranslate.write(file, next) }
+                // 存不下就算没译成：不能提示“已翻译”，旧译文原样留着。
+                val next = try {
+                    withContext(Dispatchers.IO) {
+                        val current = AiTranslate.load(file)
+                        current.copy(
+                            show = true, target = target,
+                            chapters = current.chapters + (chapterIndex to (chapter.title to result)),
+                            hashes = current.hashes + (chapterIndex to hashes),
+                        ).also { AiTranslate.write(file, it) }
+                    }
+                } catch (e: java.io.IOException) {
+                    throw AiException("译文没能保存（${e.message ?: e.javaClass.simpleName}），本章没有翻译成功")
+                }
                 mine { it.copy(translations = next, running = null, progress = null) }
                 val missing = batches.sumOf { it.size } - result.size
                 _messages.value = if (missing > 0) "已翻译本章，有 $missing 段没译出来" else "已翻译本章"
@@ -1871,7 +1897,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val book = _openBook.value ?: return
         viewModelScope.launch {
             val file = library.bookFile(book.entry.id, AiTranslate.FILE)
-            val next = withContext(Dispatchers.IO) { transform(AiTranslate.read(file)).also { AiTranslate.write(file, it) } }
+            val next = try {
+                withContext(Dispatchers.IO) { transform(AiTranslate.load(file)).also { AiTranslate.write(file, it) } }
+            } catch (e: java.io.IOException) {
+                _messages.value = "译文设置没能保存：${e.message ?: e.javaClass.simpleName}"
+                return@launch
+            }
             _translate.update { it.copy(bookId = book.entry.id, translations = next) }
             reloadOpenBook()
         }
@@ -2526,7 +2557,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val title = (subject?.trim()?.takeIf { it.isNotEmpty() } ?: body.lineSequence().first().trim()).take(30)
                 .replace(Regex("""[\\/:*?"<>|]"""), " ").trim().ifEmpty { "分享的文字" }
             val file = withContext(Dispatchers.IO) {
-                java.io.File(getApplication<Application>().cacheDir, "shared").apply { mkdirs() }
+                val shared = java.io.File(getApplication<Application>().cacheDir, "shared").apply { mkdirs() }
+                // 导入时已复制进书库：一小时前分享的可以清掉。
+                val stale = System.currentTimeMillis() - 3_600_000L
+                shared.listFiles()?.filter { it.lastModified() < stale }?.forEach { it.deleteRecursively() }
+                // 每次放进各自的文件夹：同一标题再分享一次是新的地址，不会被当成上次那本（文件名仍是标题，书名不变）；
+                // 内容一样的照旧找回书架上那本。
+                java.io.File(shared, java.util.UUID.randomUUID().toString()).apply { mkdirs() }
                     .let { java.io.File(it, "$title.txt") }.apply { writeText(body) }
             }
             openExternal(listOf(Uri.fromFile(file)))
@@ -2542,7 +2579,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             if (picked.size > 1) {
+                // 问“合成一本还是分开导入”的对话框在书架页上：在写作、统计等页时先切过去。
                 _stack.value = listOf(Screen.Shelf)
+                selectTab(HomeTab.Shelf)
                 _pendingImport.value = picked
                 return@launch
             }

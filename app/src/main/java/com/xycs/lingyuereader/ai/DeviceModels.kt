@@ -2,8 +2,10 @@ package com.xycs.lingyuereader.ai
 
 import android.content.Context
 import android.os.Build
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
@@ -256,12 +258,15 @@ internal object DevicePrompt {
 /** MediaPipe 的 LLM 推理（Apache-2.0）。一次只跑一个请求；模型第一次用时载入，换模型时换掉。 */
 class MediaPipeLlm(private val context: Context, private val files: DeviceModelFiles) : DeviceLlm {
     private val lock = Mutex()
+    /** 关引擎的协程：[release] 多在主线程调用，不能在那里等正在跑的生成。 */
+    private val closer = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var engine: com.google.mediapipe.tasks.genai.llminference.LlmInference? = null
     private var loaded: String? = null
 
+    /** 只在持有 [lock] 时调用。 */
     private fun engine(modelId: String): com.google.mediapipe.tasks.genai.llminference.LlmInference {
         if (loaded == modelId) engine?.let { return it }
-        release()
+        close()
         val file = files.file(modelId)
         if (!files.installed(modelId)) throw AiException("本机模型还没下载：到“我的 → AI 助手 → 本机模型”里下载")
         val options = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
@@ -311,7 +316,13 @@ class MediaPipeLlm(private val context: Context, private val files: DeviceModelF
         }
     }
 
+    /** 不马上关：正在生成时等这次会话结束，拿到同一把锁再关，免得把正在用的引擎关掉。 */
     override fun release() {
+        closer.launch { lock.withLock { close() } }
+    }
+
+    /** 只在持有 [lock] 时调用。 */
+    private fun close() {
         runCatching { engine?.close() }
         engine = null
         loaded = null
