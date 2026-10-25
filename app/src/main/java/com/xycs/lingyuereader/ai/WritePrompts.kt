@@ -1,12 +1,18 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterTitles
+import com.xycs.lingyuereader.data.LEDGER_ASPECTS
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
+import com.xycs.lingyuereader.data.SyncPlace
 import com.xycs.lingyuereader.data.WorkAssist
 import org.json.JSONArray
 import org.json.JSONObject
@@ -429,10 +435,12 @@ object WritePrompts {
     private val SYNC_KINDS = listOf(PackKind.CHARACTER, PackKind.CANON, PackKind.VOICE, PackKind.INVARIANT, PackKind.FORESHADOW, PackKind.AWARENESS, PackKind.REFERENCE)
 
     /**
-     * 写完一章，整理进设定包：设定包整份在系统提示里（可以查），这里给这一章的正文。
-     * 只要正文里明写了的：新出现的设定、和设定包对不上的、谁知道了什么。每条带正文原句，解析时核对。
+     * 写完一章，整理进设定包：设定包整份在系统提示里（可以查），这里给这一章的正文和到上一章为止的故事账本（[ledger]，
+     * 见 [com.xycs.lingyuereader.data.ChapterSyncs.ledgerView]，空的不给）。
+     * 只要正文里明写了的：新出现的设定、和设定包对不上的写进设定包；人物状态的变化、发生的事、谁知道了什么、
+     * 新埋和收掉的伏笔、故事里的时间记进账本。每条带正文原句，解析时核对。
      */
-    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = ""): String = buildString {
+    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = ""): String = buildString {
         if (parts > 1) {
             // 太长的章分几段整理：每段一次请求，带上前一段的末尾接上文。
             append("这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）太长，分 ").append(parts).append(" 段整理")
@@ -443,26 +451,42 @@ object WritePrompts {
             append("下面是这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）的正文：\n\n")
         }
         append(text.take(CHAPTER_CHARS)).append("\n\n")
-        append("作者写完了这一章，请把它整理进设定包（设定包在上面）。").append(if (parts > 1) "只整理这一段里写到的，" else "").append("只找三类：\n")
+        if (ledger.isNotBlank()) append(ledger.trim()).append("\n\n")
+        append("作者写完了这一章，请整理它：新设定和冲突写进设定包（设定包在上面），随章变化的记进故事账本。")
+        append(if (parts > 1) "只整理这一段里写到的，" else "").append("只找这几类：\n")
         append("1. new（新设定）：正文里新出现、设定包里还没有的人物（称呼、身份、和谁什么关系、本章做了什么）、地名、物件、组织、规矩或设定。\n")
         append("2. conflicts（冲突）：正文和设定包写法对不上的（人数、生死、身份、称呼、年代、地点、物件下落、谁什么时候知道了什么）。")
         append("pack 摘设定包里的原话（一字不差，便于找到它），doc、section 写它在哪份文档哪一节，chapter 写正文怎么写的；")
         append("判断该改设定包（fix 写 pack，text 写改成什么）还是正文写错了（fix 写 text）。\n")
-        append("3. awareness（察觉）：这一章里谁知道了什么、从第几章起、消息从哪来；谁对谁隐瞒、误会了什么（type 写 隐瞒 或 误会，what 写清楚瞒着谁、误会成什么）。")
+        append("3. states（人物状态）：这一章里人物的状态有了变化的。who 写谁；aspect 从这几项里选一个：").append(LEDGER_ASPECTS.joinToString("、"))
+        append("；now 写现在怎样（一句话，比如“左臂受了伤，还没好”）。没变的不提。\n")
+        append("4. events（发生的事）：已经发生、会影响后文的事，或世界的变化（谁死了、哪座城破了、东西到了谁手里）。what 写一句话。日常琐事不提。\n")
+        append("5. awareness（察觉）：这一章里谁知道了什么、从第几章起、消息从哪来；谁对谁隐瞒、误会了什么（type 写 隐瞒 或 误会，what 写清楚瞒着谁、误会成什么）。")
         append("察觉表里已有的不要再提；和察觉表对不上的（比如表上写第 30 章才知道，这一章就说破了）放进 conflicts。\n")
+        append("6. threads_opened（新伏笔）：这一章新埋下的伏笔、悬念、约定。what 写埋了什么；正文里写明了何时兑现、能确定是第几章的，payoff 写章号，否则空着。\n")
+        append("7. threads_closed（收伏笔）：这一章收掉的伏笔。id 只能写上面账本“开着的伏笔”里列出的编号（比如 P1）；")
+        append("没列出的不要提，账本里没有列出伏笔时给空列表。\n")
+        append("8. time（时间）：这一章在故事里是什么时候，或者离上一章过了多久。when 写一句话；正文没写就空着。\n")
         append("规矩：\n")
         append("- 只提正文里明确写到的，不推测、不补全、不替作者发明设定；拿不准就不提。\n")
-        append("- 设定包里已经有的不要重复提。\n")
+        append("- 设定包里已经有的不要重复提。")
+        append(if (ledger.isNotBlank()) "账本里已有的（上面列出的状态、知情、开着的伏笔）也不要重复提。\n" else "\n")
         append("- 人名、称呼和设定包统一，照《称谓与语气》《人物档案》的写法；正文里用了别的称呼的写进 alias。\n")
         append("- 防剧透：只按这一章和之前的正文判断，不要用后面章节的内容。要查前文可以用工具，但最多查一两次，查不到就按已有的资料答。\n")
         append("- 每条都要带 quote：正文里一字不差的原句（一句话以内，不超过 60 字）；找不到原句的不要提。\n")
         append("- kind 从这几类里选：").append(SYNC_KINDS.joinToString("、") { it.label }).append("；人物写人物档案，地名、物件、组织、规矩写硬性设定，称呼写称谓与语气。")
         append("doc 写要写进的文档标题（设定包里有的照抄标题，没有就空着），section 写追加到哪一节（照文档里已有的小标题，没有就空着）。\n")
         append("- text 写要写进设定包的文字：一两句，只写事实，照设定包的口吻。\n")
-        append("只输出 JSON，没有的类给空列表：\n")
+        append("- now、what、when 都只写一句事实，人名照设定包。\n")
+        append("只输出 JSON，没有的类给空列表（time 没有就给空对象）：\n")
         append("{\"new\":[{\"type\":\"人物\",\"name\":\"\",\"kind\":\"人物档案\",\"doc\":\"\",\"section\":\"\",\"alias\":\"\",\"identity\":\"\",\"relation\":\"\",\"did\":\"\",\"text\":\"\",\"quote\":\"\"}],")
         append("\"conflicts\":[{\"title\":\"\",\"kind\":\"\",\"doc\":\"\",\"section\":\"\",\"pack\":\"\",\"chapter\":\"\",\"fix\":\"pack\",\"text\":\"\",\"quote\":\"\"}],")
-        append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}]}")
+        append("\"states\":[{\"who\":\"\",\"aspect\":\"位置\",\"now\":\"\",\"quote\":\"\"}],")
+        append("\"events\":[{\"what\":\"\",\"quote\":\"\"}],")
+        append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}],")
+        append("\"threads_opened\":[{\"what\":\"\",\"payoff\":null,\"quote\":\"\"}],")
+        append("\"threads_closed\":[{\"id\":\"P1\",\"quote\":\"\"}],")
+        append("\"time\":{\"when\":\"\",\"quote\":\"\"}}")
     }
 
     /** 分段整理时带上前一段末尾多少字（接上文用）。 */
@@ -501,16 +525,25 @@ object WritePrompts {
     }
 
     /**
-     * 整理本章的回答：容忍 ``` 包裹、前后多余的话、字段缺失；三类一个都没有时当作没按格式回（报错，不当成“没什么要整理”）。
-     * 依据（quote）在正文 [text] 里找不到的丢掉，防止模型编造。
+     * 整理本章的回答：容忍 ``` 包裹、前后多余的话、字段缺失；一类都没有时当作没按格式回（报错，不当成“没什么要整理”）。
+     * 只回了 new、conflicts、awareness 的（旧的回法）照样能用。
+     * 依据（quote）在正文 [text] 里找不到的丢掉，防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
+     * 认回账本里那一条，认不出的丢掉。
      */
-    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int): SyncParse {
+    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap()): SyncParse {
         val o = json(answer)
         fun arr(vararg keys: String): JSONArray? = keys.firstNotNullOfOrNull { o.optJSONArray(it) }
         val news = arr("new", "news", "新设定")
         val conflicts = arr("conflicts", "conflict", "冲突")
         val aware = arr("awareness", "aware", "察觉")
-        if (news == null && conflicts == null && aware == null) throw AiException("模型没有按格式回答")
+        val states = arr("states", "state", "人物状态")
+        val events = arr("events", "event", "发生的事")
+        val opened = arr("threads_opened", "opened", "新伏笔")
+        val closed = arr("threads_closed", "closed", "收伏笔")
+        // 时间：一个对象，也认只有一个对象的列表。
+        val time = listOf("time", "时间").firstNotNullOfOrNull { k -> o.optJSONObject(k) ?: o.optJSONArray(k)?.optJSONObject(0) }
+        val any = listOf(news, conflicts, aware, states, events, opened, closed).any { it != null } || time != null || o.has("time")
+        if (!any) throw AiException("模型没有按格式回答")
         fun objects(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { a!!.optJSONObject(it) }
         fun JSONObject.s(vararg keys: String) = keys.firstNotNullOfOrNull { k -> optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
         fun kindOf(raw: String, fallback: PackKind): PackKind {
@@ -562,15 +595,79 @@ object WritePrompts {
                 val type = a.s("type", "类型")
                 val since = a.s("since", "从第几章起").let { s -> s.toIntOrNull()?.let { "第${it}章" } ?: s }.ifEmpty { "第${chapter}章" }
                 val shown = if (type.contains("瞒") || type.contains("误会")) "（$type）$what" else what
+                val source = a.s("source", "消息从哪来", "来源")
+                // 记进账本的知情：从第几章起按 since 的章号，认不出就是这一章。
+                val from = ChapterRefs.number(since) ?: chapter
                 SyncItem(
                     SyncGroup.AWARENESS, "$who：$shown", q, PackKind.AWARENESS, name = who,
-                    fields = listOf("人物" to who, "知道什么" to shown, "从第几章起" to since, "消息从哪来" to a.s("source", "消息从哪来", "来源")),
-                    chapterId = chapterId, chapter = chapter,
+                    fields = listOf("人物" to who, "知道什么" to shown, "从第几章起" to since, "消息从哪来" to source),
+                    text = shown, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.KNOW, shown, q, chapterId, from).copy(subject = who, via = source),
+                )
+            }
+        }
+        objects(states).forEach { st ->
+            add(st) { q ->
+                val who = st.s("who", "人物", "谁")
+                val now = st.s("now", "现在", "状态", "what")
+                if (who.isEmpty() || now.isEmpty()) return@add null
+                val raw = st.s("aspect", "方面")
+                // 方面照 LEDGER_ASPECTS 写；写成“所在位置”“身体状况”的认成那一项，别的照写。
+                val aspect = LEDGER_ASPECTS.firstOrNull { it == raw } ?: LEDGER_ASPECTS.firstOrNull { raw.isNotEmpty() && (it in raw || raw in it) } ?: raw
+                SyncItem(
+                    SyncGroup.STATE, "$who" + (if (aspect.isNotEmpty()) "·$aspect" else "") + "：$now", q, PackKind.CHARACTER, name = who,
+                    text = now, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.STATE, now, q, chapterId, chapter).copy(subject = who, aspect = aspect),
+                )
+            }
+        }
+        objects(events).forEach { e ->
+            add(e) { q ->
+                val what = e.s("what", "事", "内容", "text").ifEmpty { return@add null }
+                SyncItem(
+                    SyncGroup.EVENT, what, q, PackKind.CANON, text = what, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.EVENT, what, q, chapterId, chapter),
+                )
+            }
+        }
+        objects(opened).forEach { p ->
+            add(p) { q ->
+                val what = p.s("what", "内容", "text").ifEmpty { return@add null }
+                val raw = p.s("payoff", "计划第几章收")
+                val payoff = (raw.toIntOrNull() ?: ChapterRefs.number(raw) ?: ChapterRefs.number("第${raw}章"))?.takeIf { it > 0 }
+                SyncItem(
+                    SyncGroup.PROMISE, "埋下：$what", q, PackKind.FORESHADOW, text = what, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.PROMISE, what, q, chapterId, chapter).copy(payoff = payoff),
+                )
+            }
+        }
+        objects(closed).forEach { c ->
+            // 编号认不出（编的、没列出的）丢掉，不算“找不到原句”。
+            val code = c.s("id", "编号").uppercase().let { if (it.firstOrNull()?.isDigit() == true) "P$it" else it }
+            val promise = codes[code] ?: return@forEach
+            add(c) { q ->
+                SyncItem(
+                    SyncGroup.PROMISE, "收起：${promise.text}", q, PackKind.FORESHADOW, text = promise.text,
+                    chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER, closes = promise,
+                )
+            }
+        }
+        time?.let { t ->
+            val at = t.s("when", "time", "时间", "text")
+            if (at.isEmpty()) return@let
+            add(t) { q ->
+                SyncItem(
+                    SyncGroup.TIME, "时间：$at", q, PackKind.CANON, text = at, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.TIME, at, q, chapterId, chapter),
                 )
             }
         }
         return SyncParse(out.distinctBy { it.key }, dropped)
     }
+
+    /** 整理出来、要记进账本的一条：第 [from] 章起，依据是正文原句 [quote]。 */
+    private fun ledgerEntry(kind: LedgerKind, text: String, quote: String, chapterId: String, from: Int) =
+        LedgerEntry(kind = kind, text = text, from = from.takeIf { it > 0 }, quote = quote, chapterId = chapterId, origin = LedgerOrigin.SYNC)
 
     /** 从模型回答里取出 JSON 对象：容忍前后多余的话和 ```json 包裹。 */
     private fun json(answer: String): JSONObject {

@@ -20,6 +20,9 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
@@ -38,7 +41,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.util.Collections
 
-/** 写完一章，整理进设定包：编辑器菜单 → 结果页三组 → 勾选、改 → 写进设定包；作品页的“未整理”；定稿时的提示。 */
+/** 写完一章，整理进设定包：编辑器菜单 → 结果页各组 → 勾选、改 → 写进设定包、记进故事账本；作品页的“未整理”；定稿时的提示。 */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
 class WritingSyncUiTest {
@@ -53,7 +56,9 @@ class WritingSyncUiTest {
     private var failWhen: String? = null
     private val text = "渡口起了雾。\n杜娘把茶碗推给林月，说老周昨夜里走了。\n顾长风在门外喊她“月丫头”。\n林月这才知道沈默是朝廷的卧底。"
 
-    private val answer = JSONObject()
+    /** 模型的回答；账本那个测试换成带账本几组的。 */
+    @Volatile
+    private var answer = JSONObject()
         .put(
             "new",
             JSONArray()
@@ -173,34 +178,39 @@ class WritingSyncUiTest {
         // 三组；编出来的那条不在；冲突默认不勾，新设定、察觉默认勾上。
         listOf("新设定", "冲突", "察觉", "新地名：渡口", "顾长风怎么叫林月", "林月：沈默是朝廷的卧底", "有 1 条在正文里找不到").forEach { assertTrue(it, seen(it)) }
         assertFalse(seen("老韩"))
-        assertTrue(seen("写进设定包（3 条）"))
+        assertTrue(seen("写进设定包和账本（3 条）"))
 
         // 不要“渡口”这一条；杜娘那条点开改一改。
         seen("新地名：渡口")
         compose.onNodeWithContentDescription("勾选：新地名：渡口").performClick()
-        waitFor { seen("写进设定包（2 条）") }
+        waitFor { seen("写进设定包和账本（2 条）") }
         press("新人物：杜娘")
         waitFor { compose.onAllNodes(hasSetTextAction() and hasText("| 杜娘 |", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(hasSetTextAction() and hasText("| 杜娘 |", substring = true)).performTextReplacement("| 杜娘 | 渡口茶馆的老板娘，消息灵通 |")
         assertTrue(seen("依据：「杜娘把茶碗推给林月」"))
 
-        press("写进设定包（2 条）")
+        press("写进设定包和账本（2 条）")
         val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
         waitFor { "消息灵通" in store.packText(workId, people.id) }
         assertEquals("| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |\n| 沈默 | 镖局的账房 |\n| 杜娘 | 渡口茶馆的老板娘，消息灵通 |", store.packText(workId, people.id))
-        waitFor { store.pack(workId).any { it.kind == PackKind.AWARENESS } }
-        val awareness = store.pack(workId).single { it.kind == PackKind.AWARENESS }
-        assertTrue("| 林月 | 沈默是朝廷的卧底 | 第12章 | 杜娘说漏了嘴 |" in store.packText(workId, awareness.id))
+        // 察觉记进故事账本（以前写进察觉表），不再新建察觉表。
+        waitFor { store.ledger(workId).isNotEmpty() }
+        val know = store.ledger(workId).single()
+        assertEquals(LedgerKind.KNOW, know.kind)
+        assertEquals("林月" to "沈默是朝廷的卧底", know.subject to know.text)
+        assertEquals(12, know.from)
+        assertEquals("杜娘说漏了嘴", know.via)
+        assertTrue(store.pack(workId).none { it.kind == PackKind.AWARENESS })
         // 没勾的没写：渡口不进硬性设定，称谓与语气照旧。
         assertEquals("## 地名\n- 青石镇：林月的家乡", store.packText(workId, store.pack(workId).single { it.kind == PackKind.CANON }.id))
         assertEquals("## 顾长风\n顾长风叫林月“林姑娘”。", store.packText(workId, store.pack(workId).single { it.kind == PackKind.VOICE }.id))
-        // 原来的人物档案存了历史版本；变更登记里每条一笔。
+        // 原来的人物档案存了历史版本；变更登记里写进设定包的每条一笔（账本有自己的历史版本，不记）。
         assertTrue(store.history(workId, store.docKey(people.id)).isNotEmpty())
-        waitFor { store.changes(workId).size == 2 }
+        waitFor { store.changes(workId).size == 1 }
         val changes = store.changes(workId)
         assertTrue(changes.all { it.reason.startsWith("整理第12章：") })
         // 回到编辑器，提示写了几条进哪几份。
-        waitForText("写进了 2 条")
+        waitForText("写进了 2 条：《人物档案》1 条、故事账本 1 条")
         waitFor { store.assist(workId).synced.containsKey(chapterId) }
 
         // 作品页：这一章不显示“未整理”；正文改过以后又显示。
@@ -222,7 +232,7 @@ class WritingSyncUiTest {
         openSyncFromEditor()
         seen("顾长风怎么叫林月")
         compose.onNodeWithContentDescription("勾选：顾长风怎么叫林月").performClick()
-        press("写进设定包（4 条）")
+        press("写进设定包和账本（4 条）")
         val voice = store.pack(workId).single { it.kind == PackKind.VOICE }
         waitFor { "月丫头" in store.packText(workId, voice.id) }
         assertEquals("## 顾长风\n顾长风私下叫林月“月丫头”。", store.packText(workId, voice.id))
@@ -260,24 +270,89 @@ class WritingSyncUiTest {
         assertEquals(2, bodies.size)
         // 两章都写到杜娘、渡口、林月知道沈默是卧底：后面那章的默认不勾，标“前面章已有”。
         assertTrue(seen("前面章已有"))
-        assertTrue(seen("写进设定包（3 条）"))
+        assertTrue(seen("写进设定包和账本（3 条）"))
 
         // 还没写进去，又在编辑器里整理了第十二章：并进来，不冲掉第十三章的结果。
         compose.runOnUiThread { vm.writingAi.syncChapter(workId, chapterId) }
         waitForText("已并进还没写入的整理结果")
         waitFor { vm.writingAi.sync.value?.let { it.running == null && it.results.size == 2 } == true }
         assertEquals(setOf(chapterId, two.id), vm.writingAi.sync.value!!.results.map { it.chapterId }.toSet())
-        assertTrue(seen("写进设定包（3 条）"))
+        assertTrue(seen("写进设定包和账本（3 条）"))
 
         // 把后面那章的杜娘也勾上：写的时候再查一遍，人物档案里还是只有一行杜娘。
         val repeat = vm.writingAi.sync.value!!.let { s -> s.items.first { it.key in s.repeats && it.title == "新人物：杜娘" } }
         compose.runOnUiThread { vm.writingAi.toggleSync(repeat.key, true) }
         // 等提示条收起（它盖在按钮上）。
         waitFor { !has("已并进还没写入的整理结果") }
-        press("写进设定包（4 条）")
+        press("写进设定包和账本（4 条）")
         waitFor { store.assist(workId).synced.keys.containsAll(listOf(chapterId, two.id)) }
         val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
         assertEquals(1, store.packText(workId, people.id).lines().count { "杜娘" in it })
+        // 两章都说林月知道沈默是卧底：账本里只记一条。
+        assertEquals(1, store.ledger(workId).count { it.kind == LedgerKind.KNOW })
+    }
+
+    @Test
+    fun ledgerGroupsCanBeEditedAndGoIntoTheLedgerAsOneBatch() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        store.applyLedger(workId, listOf(LedgerOp.Add(LedgerEntry(id = "p1", kind = LedgerKind.PROMISE, text = "杜娘说老周会回来", from = 3))), "手动")
+        store.applyLedger(workId, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = "在青石镇", subject = "林月", aspect = "位置", from = 2))), "手动")
+        val versions = store.ledgerVersions(workId).size
+        fun one(vararg pairs: Pair<String, Any>) = JSONObject().apply { pairs.forEach { (k, v) -> put(k, v) } }
+        answer = JSONObject()
+            .put("new", JSONArray()).put("conflicts", JSONArray())
+            .put("states", JSONArray().put(one("who" to "林月", "aspect" to "位置", "now" to "在渡口的茶馆", "quote" to "杜娘把茶碗推给林月")))
+            .put("events", JSONArray().put(one("what" to "老周昨夜死了", "quote" to "说老周昨夜里走了")))
+            .put("awareness", JSONArray().put(one("who" to "林月", "what" to "沈默是朝廷的卧底", "since" to "第12章", "source" to "杜娘说漏了嘴", "quote" to "林月这才知道沈默是朝廷的卧底。")))
+            .put("threads_opened", JSONArray().put(one("what" to "顾长风在门外等林月", "quote" to "顾长风在门外喊她“月丫头”。")))
+            // P7 不是列出的编号：丢掉。
+            .put("threads_closed", JSONArray().put(one("id" to "P1", "quote" to "说老周昨夜里走了")).put(one("id" to "P7", "quote" to "渡口起了雾。")))
+            .put("time", one("when" to "起雾的早上", "quote" to "渡口起了雾。"))
+            .toString()
+        compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncChapter(workId, chapterId) }
+        waitForText("林月·位置：在渡口的茶馆")
+        // 请求里带着到上一章为止的账本：开着的伏笔带编号、出场人物的状态。
+        val prompt = lastMessage(bodies.single())
+        assertTrue("P1：杜娘说老周会回来" in prompt && "林月·位置：在青石镇" in prompt && "\"threads_closed\"" in prompt)
+        listOf("人物状态", "发生的事", "察觉", "伏笔", "时间", "老周昨夜死了", "埋下：顾长风在门外等林月", "收起：杜娘说老周会回来", "时间：起雾的早上")
+            .forEach { assertTrue(it, seen(it)) }
+        assertTrue(seen("记进故事账本（6 条）"))
+
+        // 人物状态：改方面、改文字。
+        press("林月·位置：在渡口的茶馆")
+        waitFor { seen("方面") }
+        compose.onNodeWithText("方面").performClick()
+        compose.onNodeWithText("情绪").performClick()
+        waitFor { vm.writingAi.sync.value!!.aspects.values.contains("情绪") }
+        compose.onNode(hasSetTextAction() and hasText("在渡口的茶馆")).performTextReplacement("在渡口茶馆的里间")
+        // 收伏笔：写明收的是账本里哪一条。
+        press("收起：杜娘说老周会回来")
+        assertTrue(seen("收的是账本里这一条：杜娘说老周会回来（第 3 章埋）"))
+        // 新伏笔：改计划第几章收。
+        press("埋下：顾长风在门外等林月")
+        waitFor { compose.onAllNodes(hasSetTextAction() and hasText("顾长风在门外等林月")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("15")
+        waitFor { seen("计划第 15 章收") }
+
+        press("记进故事账本（6 条）")
+        waitFor { vm.writingAi.sync.value == null }
+        val ledger = store.ledger(workId)
+        val state = ledger.single { it.kind == LedgerKind.STATE && it.from == 12 }
+        assertEquals("林月" to "情绪", state.subject to state.aspect)
+        assertEquals("在渡口茶馆的里间", state.text)
+        assertEquals("老周昨夜死了", ledger.single { it.kind == LedgerKind.EVENT }.text)
+        assertEquals("杜娘说漏了嘴", ledger.single { it.kind == LedgerKind.KNOW }.via)
+        assertEquals(15, ledger.single { it.kind == LedgerKind.PROMISE && it.id != "p1" }.payoff)
+        assertTrue(ledger.single { it.id == "p1" }.let { it.done && it.closed == 12 && it.quote == "说老周昨夜里走了" })
+        assertEquals("起雾的早上", ledger.single { it.kind == LedgerKind.TIME }.text)
+        // 一章一批：账本只多了一个历史版本；设定包、变更登记都没动。
+        assertEquals(versions + 1, store.ledgerVersions(workId).size)
+        assertEquals("整理第 12 章", store.ledgerVersions(workId).first().label)
+        assertTrue(store.changes(workId).isEmpty())
+        assertTrue(store.pack(workId).none { it.kind == PackKind.AWARENESS })
+        waitForText("写进了 6 条：故事账本 6 条")
+        waitFor { store.assist(workId).synced.containsKey(chapterId) }
     }
 
     @Test
@@ -291,7 +366,7 @@ class WritingSyncUiTest {
         assertEquals(2, bodies.size)
         assertTrue("第 1 段" in lastMessage(bodies[0]) && "第 2 段" in lastMessage(bodies[1]) && "上一段的末尾" in lastMessage(bodies[1]))
         assertEquals(1, vm.writingAi.sync.value!!.items.count { it.title == "新人物：杜娘" })
-        press("写进设定包（3 条）")
+        press("写进设定包和账本（3 条）")
         waitFor { store.assist(workId).synced.containsKey(chapterId) }
     }
 
@@ -305,7 +380,7 @@ class WritingSyncUiTest {
         waitForText("没整理全")
         assertEquals(2, bodies.size)
         // 第一段的提议照样能写，但这一章不记为已整理。
-        press("写进设定包（3 条）")
+        press("写进设定包和账本（3 条）")
         val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
         waitFor { "杜娘" in store.packText(workId, people.id) }
         waitFor { vm.writingAi.sync.value == null }

@@ -8,10 +8,29 @@ data class CharacterEntry(val name: String, val aliases: List<String> = emptyLis
     val names: List<String> get() = listOf(name) + aliases
 }
 
-/** 察觉表里的一条：谁、什么事、从第几章（或第几卷）起。[secret] 是“××这一面”“真相”这类视角人物不知道的格子。 */
-data class KnowledgeItem(val text: String, val who: Set<String>, val chapter: Int? = null, val volume: Int? = null, val secret: String = "")
+/**
+ * 察觉表里的一条：谁、什么事、从第几章（或第几卷）起。[secret] 是“××这一面”“真相”这类视角人物不知道的格子。
+ * 下面几项导入故事账本、和账本比对时用：[what] 只是内容那几格（不带谁、章号、消息来源、视角人物不知道的格子），
+ * [holders] 是写明知道的人（小节标题里的人名、“人物”“谁”那一列），[via] 是消息从哪来，
+ * [hiddenWhat] 是视角人物不知道的格子（不带前缀），[quote] 是原文那一行、那一项。
+ */
+data class KnowledgeItem(
+    val text: String,
+    val who: Set<String>,
+    val chapter: Int? = null,
+    val volume: Int? = null,
+    val secret: String = "",
+    val what: String = "",
+    val holders: Set<String> = emptySet(),
+    val via: String = "",
+    val hiddenWhat: String = "",
+    val quote: String = "",
+)
 
-/** 一条伏笔：什么、第几章埋下、计划第几章回收、回收了没有。[doc]、[line] 记它在哪份文档的哪一行（标为已回收时改那一行）。 */
+/**
+ * 一条伏笔：什么、第几章埋下、计划第几章回收、回收了没有。[doc]、[line] 记它在哪份文档的哪一行（标为已回收时改那一行）。
+ * [closed] 是状态里写了的“第几章回收的”（“已回收（第21章）”）；没写为空。
+ */
 data class Foreshadow(
     val what: String,
     val planted: Int? = null,
@@ -20,6 +39,7 @@ data class Foreshadow(
     val doc: String = "",
     val line: Int = -1,
     val statusColumn: Int = -1,
+    val closed: Int? = null,
 )
 
 /** 前面一章的摘要（细纲卡里写完以后的那一栏）。 */
@@ -29,7 +49,7 @@ data class ChapterSummary(val number: Int, val title: String, val summary: Strin
 data class BriefItem(val group: String, val title: String, val text: String, val reason: String)
 
 /**
- * 写某一章时要带给 AI 的资料：常用文档、出场人物的人物卡、到这一章为止知道的事、
+ * 写某一章时要带给 AI 的资料：常用文档、出场人物的人物卡、故事账本到这一章为止的快照、到这一章为止知道的事、
  * 到这一章还不该知道的事、没回收的伏笔、提到这一章的细纲和设定。
  */
 data class ChapterBrief(
@@ -42,15 +62,30 @@ data class ChapterBrief(
     val due: List<Foreshadow>,
     /** 作者知道、正文里还不能写出的：出场人物的结局和后文走向、对手的底牌。 */
     val hidden: List<String> = emptyList(),
+    /** 故事账本到这一章为止的快照（只有作者知道的已并进 [hidden]，这里不再有）；账本是空的为 null。 */
+    val ledger: LedgerSnapshot? = null,
+    /** 账本快照最多拼多少字（从本章资料的字数里扣）。 */
+    val ledgerLimit: Int = 0,
+    /** 账本快照放在 [items] 的第几项前面（前情之后）。 */
+    val ledgerAt: Int = 0,
 ) {
-    val isEmpty: Boolean get() = items.isEmpty() && notYet.isEmpty() && open.isEmpty() && due.isEmpty() && hidden.isEmpty()
+    val isEmpty: Boolean get() = items.isEmpty() && notYet.isEmpty() && open.isEmpty() && due.isEmpty() && hidden.isEmpty() && (ledger == null || ledger.isEmpty)
+
+    /** 账本快照拼成的文字；没有为 null。 */
+    val ledgerText: String? get() = ledger?.render(ledgerLimit)
 
     /** 拼成给 AI 的文字。 */
     fun render(): String? {
         if (isEmpty) return null
         val out = StringBuilder("下面是写第 $chapter 章（第 $volume 卷）要用到的设定资料，按优先级排列；资料之间有冲突时，以前面的为准。\n")
         if (present.isNotEmpty()) out.append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
-        items.forEach { out.append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n') }
+        // 账本是最新进展：放在前情之后、察觉和伏笔之前。
+        val ledgerText = ledgerText
+        items.forEachIndexed { i, it ->
+            if (i == ledgerAt && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
+            out.append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n')
+        }
+        if (ledgerAt >= items.size && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
         if (due.isNotEmpty()) {
             out.append("\n【计划在这一章回收的伏笔】\n")
             due.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
@@ -228,8 +263,11 @@ object ChapterBriefs {
         return CheckRules.cn(head)
     }
 
+    /** 察觉表里写消息来源的表头：“消息从哪来”“来源”“怎么得知”…… */
+    private val viaColumn = Regex("从哪|来源|得知|途径|消息")
+
     /**
-     * 察觉表里的条目：表格每行一条（“卷”或“章”那列定时间，小节标题里的人名和行里提到的人名算“谁”）；
+     * 察觉表里的条目：表格每行一条（“卷”或“章”那列定时间，小节标题里的人名、“人物”“谁”那一列和行里提到的人名算“谁”）；
      * 列表项里带章号或卷号的也算一条。
      */
     fun knowledge(docs: List<Pair<String, String>>, people: Collection<String>): List<KnowledgeItem> {
@@ -245,16 +283,29 @@ object ChapterBriefs {
                 val owners = section?.path.orEmpty().mapNotNull { cleanName(it) }.toSet()
                 val timeCol = t.column("章", "卷", "时间", "从")
                 val secretCols = t.header.indices.filter { it != timeCol && secretColumn.containsMatchIn(t.header[it]) }.toSet()
-                t.rows.forEach { row ->
+                val whoCol = t.header.indices.firstOrNull { it != timeCol && it !in secretCols && ("人物" in t.header[it] || "谁" in t.header[it]) } ?: -1
+                val viaCol = t.header.indices.firstOrNull { it != timeCol && it != whoCol && it !in secretCols && viaColumn.containsMatchIn(t.header[it]) } ?: -1
+                t.rows.forEachIndexed { r, row ->
                     val cell = t.cell(row, timeCol)
-                    fun cells(cols: List<Int>) = cols.filter { t.cell(row, it).isNotBlank() && t.cell(row, it) !in setOf("—", "无", "-") }.joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
+                    fun filled(cols: List<Int>) = cols.filter { t.cell(row, it).isNotBlank() && t.cell(row, it) !in setOf("—", "无", "-") }
+                    fun cells(cols: List<Int>) = filled(cols).joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
+                    // 只有一格的直接用那一格，几格的带上表头。
+                    fun plain(cols: List<Int>) = filled(cols).let { f -> if (f.size == 1) t.cell(row, f[0]) else cells(f) }
                     val body = cells(t.header.indices.filter { it != timeCol && it !in secretCols })
                     val secret = cells(secretCols.sorted())
                     val chapter = ChapterRefs.find(cell).minOrNull()
                     val volume = if (t.header.getOrNull(timeCol)?.contains("卷") == true) volumeOf(cell) else volumeRef.find(cell)?.let { volumeOf(it.value) }
                     val label = listOfNotNull(volume?.let { "第${it}卷" }, chapter?.let { "第${it}章" }).joinToString("")
                     val head = (if (owners.isEmpty()) "" else owners.joinToString("、") + "，") + (if (label.isEmpty()) "" else "$label：")
-                    out += KnowledgeItem(head + body, owners + names(body), chapter, volume, if (secret.isEmpty()) "" else head + secret)
+                    val listed = t.cell(row, whoCol).split('、', '，', ',', '／', '/', '；', ';').mapNotNull { cleanName(it) }.toSet()
+                    out += KnowledgeItem(
+                        head + body, owners + listed + names(body), chapter, volume, if (secret.isEmpty()) "" else head + secret,
+                        what = plain(t.header.indices.filter { it != timeCol && it != whoCol && it != viaCol && it !in secretCols }),
+                        holders = owners + listed,
+                        via = t.cell(row, viaCol).takeIf { it !in setOf("—", "无", "-") }.orEmpty(),
+                        hiddenWhat = plain(secretCols.sorted()),
+                        quote = lines.getOrNull(t.lines[r]).orEmpty().trim(),
+                    )
                 }
             }
             val inTable = tables.flatMap { it.lines }.toSet()
@@ -265,7 +316,7 @@ object ChapterBriefs {
                 val volume = volumeRef.find(line)?.let { volumeOf(it.value) }
                 if (chapter == null && volume == null) return@forEachIndexed
                 val body = line.replace(Regex("^(?:[-*]|\\d+[.、])\\s*"), "").replace("**", "")
-                out += KnowledgeItem(body, names(body), chapter, volume)
+                out += KnowledgeItem(body, names(body), chapter, volume, what = body, quote = line)
             }
         }
         return out
@@ -274,6 +325,9 @@ object ChapterBriefs {
     // ---------- 伏笔 ----------
 
     private val doneWords = Regex("已回收|已兑现|已揭|已完成|✓|✔")
+
+    /** “已回收（第21章）”里写的第几章回收的：回收字样后面的第一个章号；没写为空。 */
+    private fun closedAt(text: String): Int? = doneWords.find(text)?.let { m -> ChapterRefs.find(text.substring(m.range.last + 1)).firstOrNull() }
 
     /** 伏笔表：表格（伏笔、埋下、回收、状态几列）或列表项（“- 玉佩：第3章埋，第20章回收”）。 */
     fun foreshadows(docs: List<Pair<String, String>>): List<Foreshadow> {
@@ -297,6 +351,7 @@ object ChapterBriefs {
                         doc,
                         t.lines[r],
                         stateCol,
+                        closedAt(t.cell(row, stateCol)) ?: closedAt(t.cell(row, payCol)),
                     )
                 }
             }
@@ -308,7 +363,7 @@ object ChapterBriefs {
                 if (refs.isEmpty()) return@forEachIndexed
                 val body = line.replace(Regex("^[-*]\\s+"), "").replace("**", "")
                 val what = body.split('：', ':', '（', '(').first().trim().ifEmpty { body }
-                out += Foreshadow(what, refs.first(), refs.getOrNull(1), doneWords.containsMatchIn(line), doc, i)
+                out += Foreshadow(what, refs.first(), refs.getOrNull(1), doneWords.containsMatchIn(line), doc, i, closed = closedAt(line))
             }
         }
         return out
@@ -351,8 +406,9 @@ object ChapterBriefs {
     /**
      * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认），
      * [query] 是拿来比用词的（细纲卡、前一两章的细纲或摘要、正文结尾），[skip] 是细纲卡里已经有的段落（不再重复带）。
-     * 先放短的常用文档，再放写作规范节选（[style] 为真时）、前情、出场人物的人物卡、到这一章为止知道的事和伏笔，
-     * 最后把其余文档切块，按写没写到这一章、写没写到出场人物、和细纲用词重合多少打分，分高的先放。
+     * 先放短的常用文档，再放写作规范节选（[style] 为真时）、前情、故事账本的快照（[ledger] 不为空时）、
+     * 出场人物的人物卡、到这一章为止知道的事和伏笔，最后把其余文档切块，按写没写到这一章、写没写到出场人物、
+     * 和细纲用词重合多少打分，分高的先放。察觉表、伏笔表里和账本重复的条目不再列（账本优先）。
      */
     fun build(
         docs: List<Pair<PackDoc, String>>,
@@ -365,6 +421,7 @@ object ChapterBriefs {
         query: String = card,
         skip: List<String> = emptyList(),
         style: Boolean = false,
+        ledger: List<LedgerEntry> = emptyList(),
     ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
         val hidden = mutableListOf<String>()
@@ -412,6 +469,21 @@ object ChapterBriefs {
             left -= body.length
         }
 
+        // 故事账本：到这一章为止的快照，是最新进展，紧跟前情。最多占剩下的三分之一、不超过 LEDGER_LIMIT。
+        // 只有作者知道的条目并进 hidden，放在最前面（账本优先），快照里不再重复。
+        val snapshot = if (ledger.isEmpty()) null else StoryLedger.snapshot(ledger, chapter, volume, present.flatMap { it.names })
+        val ledgerAt = items.size
+        val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
+        val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
+        shown?.render(ledgerLimit)?.let { left -= it.length }
+        snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
+        val ledgerKnow = ledger.filter { it.kind == LedgerKind.KNOW && !it.secret }.map { it.text }
+        val ledgerSecret = ledger.filter { it.secret }.map { it.text }
+        val ledgerPromise = ledger.filter { it.kind == LedgerKind.PROMISE }.map { it.text }
+        fun hide(h: String) {
+            if (ledgerSecret.none { same(it, h) }) hidden += h
+        }
+
         // 三、出场人物的人物卡：出现次数多的在前。写到后面章节的句子、“结局”“怎么变”这类格子另列为只有作者知道的。
         var charBudget = left / 3
         present.take(MAX_CHARACTERS).forEach { c ->
@@ -421,7 +493,7 @@ object ChapterBriefs {
             items += BriefItem("人物", c.name, body, "本章出场" + if (c.aliases.isEmpty()) "" else "（也叫${c.aliases.joinToString("、")}）")
             charBudget -= body.length
             left -= body.length
-            (c.later + listOf(ahead)).filter { it.isNotBlank() }.forEach { hidden += c.name + "——" + cut(it, 300) }
+            (c.later + listOf(ahead)).filter { it.isNotBlank() }.forEach { hide(c.name + "——" + cut(it, 300)) }
         }
 
         // 三、察觉：出场人物到这一章为止知道的（离这一章近的在前），以及还不该知道的。
@@ -429,9 +501,13 @@ object ChapterBriefs {
         val knowledge = knowledge(sorted.filter { it.first.kind == PackKind.AWARENESS }.map { it.first.title to it.second }, allNames)
         fun reached(k: KnowledgeItem) = k.chapter?.let { it <= chapter } ?: k.volume?.let { it <= volume } ?: true
         val presentAll = present.flatMap { it.names }.toSet()
+        // 账本里已经有的（知情、只有作者知道的）不再从察觉表列。
+        fun inLedger(k: KnowledgeItem) = ledgerKnow.any { same(it, k.what.ifBlank { k.text }) || same(it, k.text) }
         val relevant = knowledge.filter { k -> k.who.isEmpty() || k.who.any { it in presentAll } }
-        val known = relevant.filter(::reached).sortedByDescending { it.chapter ?: ((it.volume ?: 0) * 1000) }
-        known.filter { it.secret.isNotBlank() }.take(8).forEach { hidden += cut(it.secret, 200) }
+        val reachedAll = relevant.filter(::reached).sortedByDescending { it.chapter ?: ((it.volume ?: 0) * 1000) }
+        reachedAll.filter { it.secret.isNotBlank() && ledgerSecret.none { s -> same(s, it.hiddenWhat.ifBlank { it.secret }) } }
+            .take(8).forEach { hide(cut(it.secret, 200)) }
+        val known = reachedAll.filterNot(::inLedger)
         var knowBudget = left / 3
         val knownText = StringBuilder()
         known.forEach { k ->
@@ -444,7 +520,7 @@ object ChapterBriefs {
             items += BriefItem("察觉", "到第 $chapter 章为止知道的", knownText.toString().trim(), "出场人物的察觉表")
             left -= knownText.length
         }
-        val notYet = relevant.filterNot(::reached)
+        val notYet = relevant.filterNot(::reached).filterNot(::inLedger)
             .sortedBy { it.chapter ?: ((it.volume ?: 0) * 1000) }
             .take(12)
             .map { cut(it.text, 160) }
@@ -452,13 +528,15 @@ object ChapterBriefs {
 
         // 四、伏笔：埋下了还没回收的；计划这一章回收的另列。
         val foreshadows = foreshadows(sorted.filter { it.first.kind == PackKind.FORESHADOW }.map { it.first.title to it.second })
+            .filter { f -> ledgerPromise.none { same(it, f.what) } }
         val open = foreshadows.filter { !it.done && (it.planted ?: 0) <= chapter }
         val due = open.filter { it.payoff == chapter }
         left -= open.sumOf { it.what.length + 20 }
 
         // 五、其余文档切块打分：写到这一章（单独写到的最算数，大范围几乎不算）、写到出场人物、和细纲卡用词重合。
         val skipKeys = skip.map { it.replace(Regex("\\s"), "").take(24) }.filter { it.length >= 4 }
-        val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds }.flatMap { (d, t) ->
+        // 账本导出的那份资料和上面的快照重复，账本不空时不再挑。
+        val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds && (ledger.isEmpty() || d.title != LEDGER_EXPORT_TITLE) }.flatMap { (d, t) ->
             PackUnits.split(t).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }.map { d to it }
         }
         val grams = pool.map { (_, u) -> PackRanking.bigrams(u.text) }
@@ -504,7 +582,20 @@ object ChapterBriefs {
             hiddenCut += h
             hiddenBudget -= h.length
         }
-        return ChapterBrief(chapter, volume, presentNames, items, notYet, open, due, hiddenCut)
+        return ChapterBrief(chapter, volume, presentNames, items, notYet, open, due, hiddenCut, shown, ledgerLimit, ledgerAt)
+    }
+
+    /** 账本快照最多拼多少字。 */
+    const val LEDGER_LIMIT = 4_000
+
+    /** 两段文字说的是同一件事：规范化以后相同，或一方包含另一方（短的那段至少两个字）。比对账本和设定包用。 */
+    internal fun same(a: String, b: String): Boolean {
+        val x = ChapterSyncs.normalize(a)
+        val y = ChapterSyncs.normalize(b)
+        if (x.isEmpty() || y.isEmpty()) return false
+        // 包含也算重复，但短的一方要够长、占长的一方的四成以上：只写“玉佩”的一条不能把所有提到玉佩的都去掉。
+        val short = minOf(x.length, y.length)
+        return x == y || (short >= 4 && short * 5 >= maxOf(x.length, y.length) * 2 && (x in y || y in x))
     }
 
     /**
@@ -601,5 +692,5 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     }
     val body = text ?: text(workId, chapterId)
     val query = listOf(card, summaries.takeLast(2).joinToString("\n") { it.summary }, body.takeLast(1_500)).joinToString("\n")
-    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style)
+    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style, ledger(workId))
 }

@@ -305,7 +305,7 @@ fun WorkStore.packTools(workId: String, upTo: String? = null): PackTools {
 
 /**
  * 写某一章时随请求带的（每次不一样的部分，放在设定包后面）：这一章是第几章、细纲里写这一章的原文、出场人物、
- * 到这一章还不该知道的事、伏笔、只有作者知道的、前情，以及已写的章目录（用 read_chapter 读）。
+ * 前情、故事账本到这一章为止的快照、伏笔、到这一章还不该知道的事、只有作者知道的，以及已写的章目录（用 read_chapter 读）。
  * [upTo] 为真时章目录只列到这一章为止（和只能读到这一章的查阅工具一致，防剧透）。
  */
 fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo: Boolean = false): String {
@@ -332,6 +332,8 @@ fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo
             out.append("\n【前情】\n")
             past.sortedBy { ChapterRefs.number(it.title) ?: 0 }.forEach { out.append("- ").append(it.title).append("：").append(it.text).append('\n') }
         }
+        // 账本是最新进展：放在前情之后、伏笔和察觉之前。
+        b.ledgerText?.let { out.append('\n').append(it).append('\n') }
         if (b.due.isNotEmpty()) out.append("\n【计划在这一章回收的伏笔】\n").append(b.due.joinToString("\n") { "- " + it.what + ChapterBrief.foreshadowWhen(it) }).append('\n')
         val waiting = b.open - b.due.toSet()
         if (waiting.isNotEmpty()) out.append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n").append(waiting.joinToString("\n") { "- " + it.what + ChapterBrief.foreshadowWhen(it) }).append('\n')
