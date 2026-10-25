@@ -72,6 +72,12 @@ data class BibleProposal(val name: String, val text: String, val existing: Boole
  * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
  */
 object WritePrompts {
+    /**
+     * 哪些改稿要带文风范例：要写出新句子的（润色、更生动、扩写、缩写、按要求改、续写）。
+     * 挑错只改错字，不学文风；写作建议、审稿、整理进设定包等也不带。
+     */
+    fun usesSamples(action: WriteAction): Boolean = action != WriteAction.PROOFREAD
+
     /** 改稿时带上前文多少字、后文多少字。 */
     const val BEFORE_CHARS = 1_500
     const val AFTER_CHARS = 300
@@ -82,8 +88,12 @@ object WritePrompts {
     const val TOOL_GUIDE = "设定包里没整份给出的内容（某一章正文、细纲原文、某个人物、某个数字、谁什么时候知道了什么），" +
         "拿不准就先用工具查，不要凭印象编。查够了就直接作答：回答里不要复述查到的资料，也不要说你查了什么。"
 
-    /** [pack] 是拼好的设定包（见 [com.xycs.lingyuereader.data.PackContext]），为空时不带设定。 */
-    fun system(title: String, assist: WorkAssist, pack: String? = null, examples: Boolean = false): String = buildString {
+    /**
+     * [pack] 是拼好的设定包（见 [com.xycs.lingyuereader.data.PackContext]），为空时不带设定。
+     * [samples] 是文风范例（[com.xycs.lingyuereader.data.StyleSamples.render]）：放在文风要求之后、本章资料之前——
+     * 它在同一部作品里很少变，放在前面，连同知识库成为稳定的开头，服务商能缓存；本章资料每章不同，放在它后面。
+     */
+    fun system(title: String, assist: WorkAssist, pack: String? = null, examples: Boolean = false, samples: String? = null): String = buildString {
         append("你是写作软件“灵阅”里的编辑助手，在帮作者写长篇小说")
         if (title.isNotBlank()) append("《").append(title).append("》")
         append("。\n")
@@ -91,6 +101,7 @@ object WritePrompts {
         append("- 要你改写或续写时，只输出正文本身：不要解释，不要加标题、引号、序号或“修改后：”之类的话，不用 Markdown。\n")
         append("- 一行就是一段，段与段之间换行，不要空行，段首不要空格。\n")
         if (assist.style.isNotBlank()) append("\n作者对文风的要求（最优先，和下面的设定资料冲突时以这里为准）：").append(assist.style.trim()).append('\n')
+        if (!samples.isNullOrBlank()) append("\n").append(samples.trim()).append('\n')
         if (!pack.isNullOrBlank()) append("\n").append(pack).append("\n写的内容不要和这些设定矛盾。\n")
         if (examples) {
             val picked = assist.accepted.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(3)

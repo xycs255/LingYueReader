@@ -187,6 +187,9 @@ sealed interface Screen {
 
     data class WorkAiLog(val workId: String) : Screen
 
+    /** 作品的文风范例：看看挑了哪几段，换一段、不用这段。 */
+    data class WorkStyleSamples(val workId: String) : Screen
+
     /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
     data class ChapterSync(val workId: String) : Screen
 

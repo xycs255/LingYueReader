@@ -27,7 +27,10 @@ import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewGate
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.RuleSet
+import com.xycs.lingyuereader.data.SampleChapter
+import com.xycs.lingyuereader.data.SamplePick
 import com.xycs.lingyuereader.data.StyleExample
+import com.xycs.lingyuereader.data.StyleSamples
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WriteRecord
@@ -207,13 +210,15 @@ class WritingAi(
                 }
                 // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
                 val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true) }
+                // 改稿类（挑错除外）带上定稿章里挑的文风范例。
+                val samples = if (task is WriteAiTask.Edit && WritePrompts.usesSamples(task.action)) samplesFor(workId, chapterId) else null
                 val (system, prompt) = when (task) {
                     is WriteAiTask.Edit -> {
                         val before = text.substring(0, task.start.coerceIn(0, text.length))
                         val after = text.substring(task.end.coerceIn(0, text.length))
                         // 本章开头的话，前文接上一章的结尾。
                         val context = if (before.length < WritePrompts.BEFORE_CHARS && previous.isNotBlank()) previous.takeLast(WritePrompts.BEFORE_CHARS - before.length) + "\n" + before else before
-                        WritePrompts.system(work.title, assist, pack, examples = task.action != WriteAction.CONTINUE) to
+                        WritePrompts.system(work.title, assist, pack, examples = task.action != WriteAction.CONTINUE, samples = samples) to
                             WritePrompts.edit(task.action, task.original, context, after, title, task.instruction)
                     }
                     is WriteAiTask.Idea -> {
@@ -232,7 +237,7 @@ class WritingAi(
                 val onPiece: (String) -> Unit = { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
                 // 改稿类的结果要换进正文：被截断（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
                 val answer = if (task == WriteAiTask.Review) ask(label, system, prompt, onText = onPiece)
-                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
+                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, stable = samples, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 if (task is WriteAiTask.Edit && answer.endsWith(STOPPED_NOTE)) {
                     // 模型中途停了：写出来的只是一半，显示出来但不能采纳，那行说明也不能进正文。
                     _state.update { s ->
@@ -474,12 +479,13 @@ class WritingAi(
                 // 光标前不够长：前面接上一章的结尾。
                 val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
                 val after = text.substring(cursor).take(800)
-                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
+                val samples = samplesFor(workId, chapterId)
+                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples)
                 val prompt = WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules)
                 // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
                 var shown = 0L
                 val answer = askWithPack(
-                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens,
+                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens, stable = samples,
                     onReset = {
                         written = ""
                         shown = 0L
@@ -667,6 +673,7 @@ class WritingAi(
         useTools: Boolean = true,
         maxRounds: Int = 6,
         toolsUpTo: String? = null,
+        stable: String? = null,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
@@ -685,6 +692,8 @@ class WritingAi(
                     out
                 },
                 cachePrefix = pack.prefix.length,
+                // 文风范例紧跟在知识库后面、本身也稳定：Anthropic 上在它后面再标一处缓存。
+                cacheExtra = stable?.let { s -> system.indexOf(s).takeIf { it >= 0 }?.plus(s.length) } ?: 0,
                 whole = whole,
                 maxTokens = maxTokens,
                 maxRounds = maxRounds,
@@ -695,6 +704,53 @@ class WritingAi(
             _lookup.value = null
         }
     }
+
+    // ---------- 文风范例 ----------
+
+    /**
+     * 写 [chapterId] 时带的文风范例（[chapterId] 为空时按“写下一章”挑，设置页预览用）。本机模型只带三分之一。
+     * 挑选结果按来源章（id、字数、修改时间、状态）和设置缓存在作品目录里：定稿章没变就不重读正文、不重挑。
+     */
+    suspend fun stylePick(workId: String, chapterId: String?, local: Boolean = localModel): SamplePick {
+        val assist = assistOf(workId)
+        val limit = if (local) StyleSamples.localLimit(assist.sampleLimit) else assist.sampleLimit
+        if (limit <= 0) return SamplePick(emptyList())
+        val options = assist.sampleOptions.copy(limit = limit)
+        return withContext(Dispatchers.IO) {
+            val work = store.get(workId) ?: return@withContext SamplePick(emptyList())
+            val chapters = work.chapters
+            val before = chapterId?.let { id -> chapters.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+            val (sources, fallback) = StyleSamples.sources(chapters, before, assist.sampleFallback)
+            if (sources.isEmpty()) return@withContext SamplePick(emptyList())
+            val sig = StyleSamples.signature(sources, fallback, options)
+            val cache = StyleSamples.decodeCache(store.sampleCache(workId))
+            cache.firstOrNull { it.first == sig }?.let { return@withContext it.second }
+            val texts = sources.map { SampleChapter(it.id, it.title, store.text(workId, it.id)) }
+            val pick = SamplePick(StyleSamples.pick(texts, options), fallback, sources.size)
+            runCatching { store.saveSampleCache(workId, StyleSamples.encodeCache(cache.filter { it.first != sig } + (sig to pick))) }
+            pick
+        }
+    }
+
+    /** 拼进系统提示的文风范例；没有、挑的时候出错（读不出正文）都不带，不耽误请求。 */
+    private suspend fun samplesFor(workId: String, chapterId: String): String? = try {
+        StyleSamples.render(stylePick(workId, chapterId).samples)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /** “换一段”：这一类往后挪一段。 */
+    fun shiftSample(workId: String, kind: String) =
+        updateAssist(workId) { a -> a.copy(sampleShift = a.sampleShift + (kind to (a.sampleShift[kind] ?: 0) + 1)) }
+
+    /** “不用这段”：记住，以后不再挑它。 */
+    fun skipSample(workId: String, key: String) =
+        updateAssist(workId) { a -> a.copy(sampleSkip = (a.sampleSkip + key).distinct()) }
+
+    /** 不用的段、换过的段都恢复。 */
+    fun resetSamples(workId: String) = updateAssist(workId) { it.copy(sampleSkip = emptyList(), sampleShift = emptyMap()) }
 
     /** 这部作品现在给 AI 的设定包（看“本章资料”用）；本机模型不用这一套，返回空。 */
     suspend fun aiPack(workId: String): AiPack? {
@@ -1031,9 +1087,10 @@ class WritingAi(
                 }
                 val prompt = if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction)
                 else WritePrompts.draftMore(chapter.title, prefix, rules, length)
-                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
+                val samples = samplesFor(workId, chapterId)
+                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples)
                 val answer = askWithPack(
-                    if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens,
+                    if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, stable = samples,
                     onReset = {
                         written = ""
                         updateDraft(key, run) { it.copy(text = prefix) }

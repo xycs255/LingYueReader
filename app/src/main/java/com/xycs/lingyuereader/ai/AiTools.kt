@@ -32,6 +32,8 @@ object AiToolWire {
         allowTools: Boolean = true,
         cachePrefix: Int = 0,
         maxTokens: Int? = null,
+        /** 第二处缓存的位置（文风范例这类紧跟在设定包后面、也很少变的部分的末尾）；0 是没有。 */
+        cacheExtra: Int = 0,
     ): String {
         val o = JSONObject().put("model", c.model.trim()).put("stream", true)
         when (c.protocol) {
@@ -53,10 +55,15 @@ object AiToolWire {
             AiProtocol.ANTHROPIC -> {
                 o.put("max_tokens", maxTokens ?: AiWire.MAX_TOKENS)
                 if (system.isNotEmpty()) {
-                    val cut = cachePrefix.coerceIn(0, system.length)
+                    // 每处缓存位置切一块、标上 cache_control（最多两处）；最后剩下的不标。
+                    val cuts = listOf(cachePrefix, cacheExtra).map { it.coerceIn(0, system.length) }.filter { it > 0 }.distinct().sorted()
                     o.put("system", JSONArray().apply {
-                        if (cut > 0) put(JSONObject().put("type", "text").put("text", system.substring(0, cut)).put("cache_control", JSONObject().put("type", "ephemeral")))
-                        if (cut < system.length) put(JSONObject().put("type", "text").put("text", system.substring(cut)))
+                        var from = 0
+                        cuts.forEach { cut ->
+                            put(JSONObject().put("type", "text").put("text", system.substring(from, cut)).put("cache_control", JSONObject().put("type", "ephemeral")))
+                            from = cut
+                        }
+                        if (from < system.length) put(JSONObject().put("type", "text").put("text", system.substring(from)))
                     })
                 }
                 o.put("messages", turns)

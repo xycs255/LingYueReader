@@ -310,6 +310,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         maxRounds: Int = 6,
         whole: Boolean = false,
         maxTokens: Int? = null,
+        cacheExtra: Int = 0,
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
@@ -321,7 +322,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
             try {
                 while (true) {
                     val allow = useTools.isNotEmpty() && round < maxRounds
-                    val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens)
+                    val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra)
                     val turn = post(config, body, onText)
                     if (turn.calls.isEmpty() || !allow) {
                         val out = StringBuilder(turn.text)

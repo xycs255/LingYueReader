@@ -230,6 +230,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
             is Screen.ChapterDraft -> ChapterDraftScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkAiLog -> WorkAiLogScreen(vm, screen.workId)
+            is Screen.WorkStyleSamples -> WorkStyleSamplesScreen(vm, screen.workId)
             is Screen.ChapterSync -> ChapterSyncScreen(vm, screen.workId)
             is Screen.WorkFormatSettings -> WorkFormatSettingsScreen(vm, screen.workId)
             is Screen.WorkFormat -> WorkFormatScreen(vm, screen.workId)

@@ -653,6 +653,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             )
                         }
                     }
+                    StyleSamplesSection(vm, workId, assist)
                     GroupedSection(
                         header = "学你的改法",
                         footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
