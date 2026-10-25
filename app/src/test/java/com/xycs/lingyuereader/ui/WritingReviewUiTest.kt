@@ -17,6 +17,9 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewGate
 import com.xycs.lingyuereader.data.WorkStore
@@ -177,6 +180,28 @@ class WritingReviewUiTest {
         val store = WorkStore(writingDir)
         waitFor { store.pack(workId).first { it.kind == PackKind.FORESHADOW }.let { "已回收" in store.packText(workId, it.id) } }
         waitForText("已回收")
+    }
+
+    @Test
+    fun briefListsTheLedgerUpToThisChapter() {
+        WorkStore(writingDir).applyLedger(
+            workId,
+            listOf(
+                LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = "在渡口等船", subject = "林月", aspect = "位置", from = 1)),
+                LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "顾长风说三日后再来", from = 1, payoff = 3)),
+                LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "杜娘是卧底", subject = "林月", from = 9)),
+            ),
+            "测试",
+        )
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterBrief(workId, chapterId)) }
+        waitForText("故事账本 · 到第 3 章为止")
+        waitForText("林月·位置：在渡口等船")
+        waitForText("顾长风说三日后再来")
+        waitForText("该收")
+        // 第 9 章才知道的，列为还不知道。
+        waitForText("林月：杜娘是卧底")
+        waitForText("还不知道 · 第 9 章起")
     }
 
     @Test
