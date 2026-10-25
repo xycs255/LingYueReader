@@ -156,7 +156,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -228,7 +227,8 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
         if (loaded == null) {
             SystemBars(darkBackground = palette.isDark, hidden = false)
             Box(Modifier.fillMaxSize()) {
-                InfiniteProgressIndicator(Modifier.align(Alignment.Center), color = palette.secondary)
+                // 减少动效时是不动的三个点（墨水屏上一直转只会留残影）。
+                Spinner(Modifier.align(Alignment.Center), size = 28.dp, color = palette.secondary)
             }
         } else {
             CompositionLocalProvider(LocalAmbientLight provides ambient) {
@@ -1552,6 +1552,8 @@ private class PressRing {
             // 快速点按不出现，按住了才开始画。
             delay(150)
             at = position
+            // 线性是有意的：这圈是“还要按多久”的进度，和系统长按时长一一对应，画满的那一刻正好选中。
+            // 换成缓动曲线会先快后慢，看着快满了却迟迟不选中，所以不用 Motion 的缓动；时长取自系统，不是写死的数。
             progress.animateTo(1f, tween((longPressMillis - 150).toInt().coerceAtLeast(100), easing = LinearEasing))
         }
     }

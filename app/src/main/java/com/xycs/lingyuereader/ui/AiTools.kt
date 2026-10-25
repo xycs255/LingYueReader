@@ -40,7 +40,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -57,7 +56,6 @@ import com.xycs.lingyuereader.ui.glass.GlassSheet
 import com.xycs.lingyuereader.ui.glass.glassHighlight
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 阅读页顶栏 AI 菜单里的各项。 */
@@ -126,7 +124,7 @@ private fun HistorySheet(vm: AppViewModel, onOpen: (String) -> Unit) {
     SheetNavBar("对话记录", back = null) {}
     val list = items
     when {
-        list == null -> Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) { InfiniteProgressIndicator(color = c.tint) }
+        list == null -> LoadingRow("正在读取对话记录……", Modifier.padding(horizontal = 12.dp))
         list.isEmpty() -> Text(
             "这本书里还没有和 AI 的对话。划选文字后点“问 AI”，或在 AI 菜单里“问这本书”，对话会自动存在这里。",
             color = c.secondary,
@@ -186,7 +184,7 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
         val wan = { n: Int -> if (n >= 10_000) "%.1f 万".format(n / 10_000f) else "$n" }
         when {
             state.running -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Spinner()
                 Text(state.progress ?: "正在整理……", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
                 Text("停止", color = c.tint, fontSize = 15.sp, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelCharacters).padding(8.dp))
             }
@@ -199,25 +197,11 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
                     fontSize = 14.sp,
                     lineHeight = 21.sp,
                 )
-                if (state.pendingChars > 0) {
-                    Text(
-                        "开始整理",
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(c.tint)
-                            .clickable(role = Role.Button) { vm.buildCharacters(chapter, block, char) }
-                            .padding(vertical = 13.dp),
-                        textAlign = TextAlign.Center,
-                    )
-                }
+                if (state.pendingChars > 0) PrimaryButton("开始整理", onClick = { vm.buildCharacters(chapter, block, char) })
             }
             state.pendingChars > 0 -> Text("读到的地方之后还有约 ${wan(state.pendingChars)}字没整理，点右上角“更新”。", color = c.secondary, fontSize = 13.sp)
         }
-        state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+        state.error?.let { ErrorText(it) }
         table?.characters?.forEach { ch -> CharacterCard(ch) }
         if (table != null) {
             Text(
@@ -276,7 +260,7 @@ private fun NotesSheet(vm: AppViewModel) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         when {
             state.text.isEmpty() && state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Spinner()
                 Text("正在整理……", color = c.secondary, fontSize = 14.sp)
             }
             state.text.isEmpty() -> {
@@ -291,21 +275,14 @@ private fun NotesSheet(vm: AppViewModel) {
             }
             else -> {
                 SelectionContainer { MarkdownText(state.text) }
-                if (state.loading) InfiniteProgressIndicator(size = 16.dp, color = c.tint)
+                if (state.loading) Spinner()
                 if (!state.loading) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(
                             "复制" to { copyToClipboard(context, state.text) },
                             "分享" to { shareMarkdown(context, "《$title》读书笔记", state.text) },
                             "存为文件" to { saver.launch("《$title》读书笔记.md") },
-                        ).forEach { (label, action) ->
-                            Text(
-                                label,
-                                color = c.tint,
-                                fontSize = 15.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(50)).background(c.tint.copy(alpha = 0.1f)).clickable(role = Role.Button, onClick = action).padding(horizontal = 16.dp, vertical = 9.dp),
-                            )
-                        }
+                        ).forEach { (label, action) -> PillButton(label, action, style = PillStyle.Tinted) }
                     }
                     if (state.at > 0) {
                         Text("整理于 " + java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(state.at)), color = c.tertiary, fontSize = 12.sp)
@@ -313,27 +290,8 @@ private fun NotesSheet(vm: AppViewModel) {
                 }
             }
         }
-        state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+        state.error?.let { ErrorText(it) }
     }
-}
-
-/** 面板里的大按钮：强调色铺满一行。 */
-@Composable
-private fun PrimaryButton(label: String, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Text(
-        label,
-        color = Color.White,
-        fontSize = 16.sp,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(c.tint)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(vertical = 13.dp),
-    )
 }
 
 /** 简单的 Markdown 显示：标题加粗放大，引用灰色带竖线，列表加圆点，**粗体**。 */
@@ -425,16 +383,14 @@ private fun TranslateSheet(vm: AppViewModel, chapter: Int, onClose: () -> Unit) 
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (state.running != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                    Spinner()
                     Text("正在翻译第${state.running!! + 1}章：${state.progress.orEmpty()} 批", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     Text("停止", color = c.tint, fontSize = 15.sp, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelTranslate).padding(8.dp))
                 }
             } else {
-                PrimaryButton(if (translated) "重新翻译本章" else "翻译本章") {
-                    vm.translateChapter(chapter, target)
-                }
+                PrimaryButton(if (translated) "重新翻译本章" else "翻译本章", onClick = { vm.translateChapter(chapter, target) })
             }
-            state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+            state.error?.let { ErrorText(it) }
         }
         if (state.translations.chapters.isNotEmpty()) {
             GroupedSection(
@@ -476,7 +432,7 @@ private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -
         Text(book?.content?.chapters?.getOrNull(chapter)?.title.orEmpty() + " · 按整章生成，建议读完本章再看", color = c.secondary, fontSize = 13.sp)
         when {
             state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Spinner()
                 Text("正在读这一章……", color = c.secondary, fontSize = 14.sp)
             }
             data != null -> {
@@ -507,7 +463,7 @@ private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -
                 }
             }
         }
-        state.error?.takeIf { state.chapter == chapter }?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+        state.error?.takeIf { state.chapter == chapter }?.let { ErrorText(it) }
     }
 }
 
@@ -538,15 +494,15 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
     Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when {
             state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfiniteProgressIndicator(size = 18.dp, color = c.tint)
+                Spinner()
                 Text("正在写讲书稿……", color = c.secondary, fontSize = 14.sp)
             }
             talk == null -> {
                 Text("把${if (scope == TalkScope.CHAPTER) "这一章" else "读过的部分"}讲成一段${if (style == TalkStyle.DUO) "两人对谈的播客" else "讲书节目"}，约 1500 字，再用$voice 读出来。只讲读过的，不剧透。", color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp)
-                PrimaryButton("生成讲书稿") { vm.openTalk(chapter, block, scope, style, char = char) }
+                PrimaryButton("生成讲书稿", onClick = { vm.openTalk(chapter, block, scope, style, char = char) })
             }
         }
-        state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }
+        state.error?.let { ErrorText(it) }
     }
     if (talk != null) {
         val playback = player?.state?.collectAsStateWithLifecycle()?.value
@@ -559,13 +515,18 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
                 Modifier.size(52.dp).clip(androidx.compose.foundation.shape.CircleShape).background(c.tint).clickable(role = Role.Button) { vm.playTalk() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(if (playback?.playing == true) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = if (playback?.playing == true) "暂停" else "播放", tint = Color.White, modifier = Modifier.size(26.dp))
+                Icon(if (playback?.playing == true) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = if (playback?.playing == true) "暂停" else "播放", tint = c.onTint, modifier = Modifier.size(26.dp))
             }
         }
-        playback?.error?.let { Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp)) }
+        playback?.error?.let { ErrorText(it, Modifier.padding(horizontal = 20.dp)) }
         val list = androidx.compose.foundation.lazy.rememberLazyListState()
         val current = playback?.line ?: 0
-        LaunchedEffect(current, playback?.playing) { if (playback?.playing == true) list.animateScrollToItem((current - 1).coerceAtLeast(0)) }
+        LaunchedEffect(current, playback?.playing) {
+            if (playback?.playing != true) return@LaunchedEffect
+            // 跟着读到的句子滚；减少动效时直接跳过去。
+            val target = (current - 1).coerceAtLeast(0)
+            if (Effects.noMotion) list.scrollToItem(target) else list.animateScrollToItem(target)
+        }
         androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), state = list, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 24.dp)) {
             itemsIndexed(talk.lines) { i, line ->
                 val now = playback?.playing == true && i == current

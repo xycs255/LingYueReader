@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -174,17 +175,20 @@ internal fun QuoteCardSheet(
         val c = LocalGroupedColors.current
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
             SheetNavBar("书摘卡片", back = null, action = "分享" to { scope.launch { shareCard(context, bitmap, onMessage) } }) {}
-            Image(
-                bitmap.asImageBitmap(),
-                contentDescription = "书摘卡片预览",
-                contentScale = ContentScale.FillWidth,
-                modifier = Modifier
-                    .padding(horizontal = 32.dp, vertical = 12.dp)
-                    .fillMaxWidth()
-                    .shadow(8.dp, RoundedCornerShape(12.dp))
-                    .clip(RoundedCornerShape(12.dp))
-                    .border(0.5.dp, c.separator, RoundedCornerShape(12.dp)),
-            )
+            // 换配色时旧卡淡出、新卡淡入（原地换内容），不一下跳色；减少动效时直接换。
+            AnimatedContent(bitmap, transitionSpec = { Motion.fadeThrough() }, label = "quoteCardStyle") { card ->
+                Image(
+                    card.asImageBitmap(),
+                    contentDescription = "书摘卡片预览",
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier
+                        .padding(horizontal = 32.dp, vertical = 12.dp)
+                        .fillMaxWidth()
+                        .shadow(8.dp, RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(0.5.dp, c.separator, RoundedCornerShape(12.dp)),
+                )
+            }
             SegmentedControl(CardStyle.entries.map { it to it.label }, style, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { style = it }
             GroupedSection {
                 row { ActionRow("保存图片", centered = true) { save.launch("书摘-${content.bookTitle}-${System.currentTimeMillis() / 1000}.png") } }
