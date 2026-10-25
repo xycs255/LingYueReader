@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -120,6 +121,9 @@ class WritingReviewUiTest {
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** 每道审稿的结果写在卡片第一行，读屏念成“事实关：1 处”（组名里不再写状态）。 */
+    private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
     @Test
     fun threeGatesThenJumpBackToTheSentence() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -130,9 +134,9 @@ class WritingReviewUiTest {
         compose.onNodeWithText("三道审稿").performClick()
         waitForText("还没有审过")
         compose.onNodeWithText("开始审稿").performClick()
-        waitForText("一、事实关 · 1 处")
-        waitForText("二、写法关 · 没发现问题")
-        waitForText("三、规则关 · 1 处")
+        waitForGate("事实关：1 处")
+        waitForGate("写法关：没发现问题")
+        waitForGate("规则关：1 处")
         waitForText("「笑了笑」1 处，不用")
 
         // 事实关：设定包的知识库整份在前面（人物档案、察觉表），后面是这一章的提示：出场人物、还不该知道的事、该回收的伏笔。
@@ -191,8 +195,8 @@ class WritingReviewUiTest {
         factGate.countDown()
         // 回到第三章：接着审完、存下。
         compose.runOnUiThread { vm.replaceTop(Screen.ChapterReview(workId, chapterId)) }
-        waitForText("一、事实关 · 1 处")
-        waitForText("三、规则关 · 1 处")
+        waitForGate("事实关：1 处")
+        waitForGate("规则关：1 处")
         waitFor { store.review(workId, chapterId)?.gate(ReviewGate.RULES) != null }
         assertEquals(null, store.review(workId, firstId))
     }
