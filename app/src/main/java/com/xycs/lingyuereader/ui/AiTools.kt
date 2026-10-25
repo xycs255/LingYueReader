@@ -525,8 +525,8 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
     var style by remember { mutableStateOf(TalkStyle.DUO) }
     DisposableEffect(Unit) { onDispose { vm.stopTalk() } }
     LaunchedEffect(scope, style) {
-        // 换了范围或形式：有存过的稿子就直接打开，没有就等读者点“生成”。
-        if (state.talk != null || state.key.isNotEmpty()) vm.openTalk(chapter, block, scope, style, char = char)
+        // 打开面板、换了范围或形式：有存过的稿子就直接打开，没有就等读者点“生成”（不自动发请求花钱）。
+        vm.openTalk(chapter, block, scope, style, char = char, cachedOnly = true)
     }
     val talk = state.talk
     SheetNavBar("AI 讲书", back = null, action = if (talk != null && !state.loading) "重新生成" to { vm.openTalk(chapter, block, scope, style, regenerate = true, char = char) } else null) {}

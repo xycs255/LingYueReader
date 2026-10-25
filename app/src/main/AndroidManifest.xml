@@ -8,6 +8,8 @@
     <!-- 听书：前台服务保持朗读，通知栏显示控制按钮。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- 锁屏听书：AI 和离线语音在句子之间合成下一句时，CPU 不能睡下（只在朗读时拿着，停下就放）。 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 联网只在读者操作时：AI 助手连读者设置的服务商；书源连读者添加的 OPDS 书目、WebDAV 文件夹。 -->
     <uses-permission android:name="android.permission.INTERNET" />

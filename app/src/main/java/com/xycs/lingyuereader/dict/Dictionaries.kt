@@ -209,7 +209,7 @@ class Dictionaries(private val context: Context) {
     fun isWord(word: String): Boolean {
         val s = settings()
         if (s.builtinEnabled && runCatching { builtinCedict().contains(word) }.getOrDefault(false)) return true
-        return s.dicts.any { it.enabled && open(it)?.contains(word) == true }
+        return s.dicts.any { it.enabled && runCatching { open(it)?.contains(word) }.getOrNull() == true }
     }
 
     fun lookup(word: String): LookupResult {
@@ -223,8 +223,9 @@ class Dictionaries(private val context: Context) {
         }
         val words = if (s.builtinEnabled) builtinCedict().lookup(word) else emptyList()
         val related = if (s.builtinEnabled && word.length <= 4) builtinCedict().withPrefix(word, 12) else emptyList()
+        // 一本导入的词典读坏了只跳过它，不能连内置词典和别的词典的结果一起丢掉。
         val imported = s.dicts.filter { it.enabled }.mapNotNull { d ->
-            open(d)?.lookup(word)?.takeIf { it.isNotEmpty() }?.let { d to it }
+            runCatching { open(d)?.lookup(word) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { d to it }
         }
         return LookupResult(word, chars, words, related, imported)
     }
