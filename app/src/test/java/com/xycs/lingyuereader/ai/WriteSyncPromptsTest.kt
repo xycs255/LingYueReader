@@ -1,7 +1,13 @@
 package com.xycs.lingyuereader.ai
 
+import com.xycs.lingyuereader.data.ChapterSyncs
+import com.xycs.lingyuereader.data.LEDGER_ASPECTS
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.SyncGroup
+import com.xycs.lingyuereader.data.SyncPlace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -35,7 +41,7 @@ class WriteSyncPromptsTest {
 以上。"""
         val r = parse(answer)
         assertEquals(0, r.dropped)
-        val (new, conflicts, aware) = SyncGroup.entries.map { g -> r.items.filter { it.group == g } }
+        val (new, conflicts, aware) = listOf(SyncGroup.NEW, SyncGroup.CONFLICT, SyncGroup.AWARENESS).map { g -> r.items.filter { it.group == g } }
         assertEquals(listOf("新人物：杜娘", "新地名：渡口"), new.map { it.title })
         assertEquals(PackKind.CHARACTER, new[0].kind)
         assertEquals("杜掌柜", new[0].field("称呼"))
@@ -48,6 +54,78 @@ class WriteSyncPromptsTest {
         assertEquals("林月：沈默是朝廷的卧底", aware.single().title)
         assertEquals("第12章", aware.single().field("从第几章起"))
         assertTrue(r.items.all { it.chapter == 12 && it.chapterId == "c1" })
+        // 旧的回法（只有 new、conflicts、awareness）照样能用：察觉记进账本，是一条知情。
+        assertEquals(3, SyncGroup.entries.count { g -> r.items.any { it.group == g } })
+        val know = aware.single().entry!!
+        assertEquals(SyncPlace.LEDGER, aware.single().place)
+        assertEquals(LedgerKind.KNOW, know.kind)
+        assertEquals("林月", know.subject)
+        assertEquals("沈默是朝廷的卧底", know.text)
+        assertEquals(12, know.from)
+        assertEquals("自己看出来的", know.via)
+        assertEquals("林月这才知道沈默是朝廷的卧底。", know.quote)
+        assertEquals(LedgerOrigin.SYNC, know.origin)
+    }
+
+    @Test
+    fun promptCarriesTheLedgerAndAsksForTheNewGroups() {
+        val ledger = ChapterSyncs.ledgerView(
+            listOf(
+                LedgerEntry(kind = LedgerKind.PROMISE, text = "顾长风说三日后再来", from = 8, payoff = 11),
+                LedgerEntry(kind = LedgerKind.STATE, text = "左臂受了伤", subject = "林月", aspect = "身体", from = 10),
+            ),
+            12, present = listOf("林月"),
+        )
+        val p = WritePrompts.sync("第十二章 渡口", 12, chapter, ledger = ledger.text)
+        assertTrue("P1：顾长风说三日后再来（第 8 章埋，计划第 11 章收）" in p && "林月·身体：左臂受了伤" in p && "到上一章（第 11 章）为止" in p)
+        // 账本放在正文后面、要求前面。
+        assertTrue(p.indexOf("林月这才知道") < p.indexOf("P1：") && p.indexOf("P1：") < p.indexOf("只找这几类"))
+        listOf("\"states\"", "\"events\"", "\"awareness\"", "\"threads_opened\"", "\"threads_closed\"", "\"time\"", "\"payoff\"").forEach { assertTrue(it, it in p) }
+        assertTrue(LEDGER_ASPECTS.joinToString("、") in p)
+        assertTrue("账本里已有的" in p && "只能写上面账本“开着的伏笔”里列出的编号" in p)
+        // 账本空着：不带账本，也不说“账本里已有的”。
+        val bare = WritePrompts.sync("第十二章 渡口", 12, chapter)
+        assertFalse("【故事账本" in bare || "账本里已有的" in bare)
+    }
+
+    @Test
+    fun parsesTheLedgerGroupsAndMapsPromiseCodesBack() {
+        val promise = LedgerEntry(id = "p-123", kind = LedgerKind.PROMISE, text = "杜娘说老周会回来", from = 5)
+        val answer = """{"new":[],"conflicts":[],
+            "states":[{"who":"林月","aspect":"所在位置","now":"在渡口的茶馆","quote":"杜娘把茶碗推给林月"},
+                      {"who":"顾长风","aspect":"心情","now":"着急","quote":"顾长风在门外喊她“月丫头”。"},
+                      {"who":"沈默","aspect":"位置","now":"在京城","quote":"沈默在京城看雪"}],
+            "events":[{"what":"老周昨夜死了","quote":"老周昨夜里走了"}],
+            "awareness":[],
+            "threads_opened":[{"what":"顾长风在门外等林月","payoff":"第15章","quote":"顾长风在门外喊她"},{"what":"林月要查清沈默的来历","payoff":null,"quote":"林月这才知道沈默是朝廷的卧底"}],
+            "threads_closed":[{"id":"P1","quote":"老周昨夜里走了"},{"id":"P9","quote":"渡口起了雾。"},{"id":"1","quote":"渡口起了雾。"}],
+            "time":{"when":"入冬后的一个雾天","quote":"渡口起了雾。"}}"""
+        val r = WritePrompts.parseSync(answer, chapter, "c1", 12, mapOf("P1" to promise))
+        // 沈默那条原句是编的：丢掉；P9 不是列出的编号：丢掉，不算原句的。
+        assertEquals(1, r.dropped)
+        val states = r.items.filter { it.group == SyncGroup.STATE }
+        assertEquals(listOf("林月·位置：在渡口的茶馆", "顾长风·心情：着急"), states.map { it.title })
+        // 方面照常用的几项认；认不出的照写。
+        assertEquals(listOf("位置", "心情"), states.map { it.entry!!.aspect })
+        assertEquals(listOf("林月", "顾长风"), states.map { it.entry!!.subject })
+        assertTrue(r.items.all { it.place == SyncPlace.LEDGER && it.writable && it.defaultOn && it.where == "记进故事账本" })
+        val event = r.items.single { it.group == SyncGroup.EVENT }
+        assertEquals(LedgerKind.EVENT, event.entry!!.kind)
+        assertEquals("老周昨夜死了", event.text)
+        assertEquals("老周昨夜里走了", event.entry!!.quote)
+        val promises = r.items.filter { it.group == SyncGroup.PROMISE }
+        assertEquals(listOf("埋下：顾长风在门外等林月", "埋下：林月要查清沈默的来历", "收起：杜娘说老周会回来", "收起：杜娘说老周会回来"), promises.map { it.title })
+        assertEquals(listOf(15, null), promises.take(2).map { it.entry!!.payoff })
+        assertTrue(promises.take(2).all { it.entry!!.kind == LedgerKind.PROMISE && it.entry!!.from == 12 })
+        // 编号认回账本那一条（“1”也当 P1）。
+        assertEquals(listOf("p-123", "p-123"), promises.drop(2).map { it.closes!!.id })
+        val time = r.items.single { it.group == SyncGroup.TIME }
+        assertEquals(LedgerKind.TIME, time.entry!!.kind)
+        assertEquals("入冬后的一个雾天", time.entry!!.text)
+        assertEquals(12, time.entry!!.from)
+        // 只回了账本类的也算按格式回了；time 空着不算一条。
+        assertEquals(1, parse("""{"events":[{"what":"老周昨夜死了","quote":"老周昨夜里走了"}],"time":{}}""").items.size)
+        assertTrue(parse("""{"time":{}}""").items.isEmpty())
     }
 
     @Test

@@ -45,6 +45,7 @@ import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.SyncMark
 import com.xycs.lingyuereader.data.applySync
 import com.xycs.lingyuereader.data.chapterNo
+import com.xycs.lingyuereader.data.syncLedger
 import com.xycs.lingyuereader.data.unsynced
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -1274,6 +1275,8 @@ class WritingAi(
         if (text.isBlank()) return base.copy(error = "这一章还没有正文")
         val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, upTo = true) }
         val system = WritePrompts.system(work.title, assistOf(workId), hints)
+        // 到上一章为止的账本：开着的伏笔带编号，收伏笔时 AI 用编号指认。
+        val ledger = withContext(Dispatchers.IO) { store.syncLedger(workId, chapterId, number, text) }
         val parts = WritePrompts.syncParts(text)
         val meter = AiMeter(AiFeature.SYNC, workId)
         val found = mutableListOf<SyncItem>()
@@ -1284,11 +1287,11 @@ class WritingAi(
             try {
                 val before = parts.getOrNull(i - 1)?.takeLast(WritePrompts.SYNC_OVERLAP).orEmpty()
                 val answer = askWithPack(
-                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before),
+                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text),
                     whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId, meter = meter,
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
-                val parsed = WritePrompts.parseSync(answer, text, chapterId, number)
+                val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes)
                 found += parsed.items
                 dropped += parsed.dropped
                 answered++
@@ -1301,8 +1304,8 @@ class WritingAi(
         // 一段都没整理成：和整章没整理成一样，报错。
         failed?.let { (_, e) -> if (answered == 0) throw e }
         val merged = PackSync.merge(found)
-        val docs = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } }
-        val planned = PackSync.plan(merged, docs)
+        val (docs, entries) = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } to store.ledger(workId) }
+        val planned = PackSync.plan(merged, docs, entries)
         return base.copy(
             items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size,
             error = failed?.let { (i, e) -> "第 $i 段（共 ${parts.size} 段）没整理成：${e.message ?: "请求失败"}；这一章先不记为已整理" },
@@ -1419,14 +1422,24 @@ class WritingAi(
         _sync.update { s -> s?.copy(edits = s.edits + (key to text)) }
     }
 
+    /** 改一条人物状态是哪一方面。 */
+    fun editSyncAspect(key: String, aspect: String) {
+        _sync.update { s -> s?.copy(aspects = s.aspects + (key to aspect)) }
+    }
+
+    /** 改一条新伏笔计划第几章收（空着是没定）。 */
+    fun editSyncPayoff(key: String, payoff: Int?) {
+        _sync.update { s -> s?.copy(payoffs = s.payoffs + (key to payoff)) }
+    }
+
     /**
-     * 把勾选的写进设定包（改过的按改过的写），写之前存历史版本、每条记一笔变更登记；
+     * 把勾选的写进设定包、记进故事账本（改过的按改过的写），写设定包之前存历史版本、每条记一笔变更登记，账本一章一批；
      * 这次整理的各章（没出错的）记成已整理。[then] 拿到一句“写了几条进哪几份文档”；写失败调 [failed]（界面把按钮放开，
      * 可以重试，已经写进去的重试时跳过）。
      */
     fun applySync(workId: String, failed: () -> Unit = {}, then: (String) -> Unit = {}) {
         val session = _sync.value?.takeIf { it.workId == workId && it.running == null } ?: return
-        val picked = session.items.filter { it.writable && it.key in session.picked }.map { i -> session.edits[i.key]?.let { i.copy(text = it) } ?: i }
+        val picked = session.chosen
         scope.launch {
             try {
                 val counts = withContext(Dispatchers.IO) { store.applySync(workId, picked) }
@@ -1436,7 +1449,7 @@ class WritingAi(
                 _sync.value = null
                 then(
                     if (counts.isEmpty()) "没有写进设定包，${marks.size} 章记为已整理"
-                    else "写进了 ${counts.values.sum()} 条：" + counts.entries.joinToString("、") { "《${it.key}》${it.value} 条" },
+                    else "写进了 ${counts.values.sum()} 条：" + counts.entries.joinToString("、") { (k, n) -> if (k == PackSync.LEDGER) "$k $n 条" else "《$k》$n 条" },
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -1531,7 +1544,7 @@ data class ChapterSyncResult(
 
 /**
  * 一次整理（一章，或批量的几章）：[running] 是正在整理的章名（整理完是 null）；
- * [picked] 是勾上的提议（按 [SyncItem.key]），[edits] 是作者改过的文字。
+ * [picked] 是勾上的提议（按 [SyncItem.key]），[edits] 是作者改过的文字，[aspects] 是改过的人物状态方面，[payoffs] 是改过的新伏笔计划第几章收。
  */
 data class SyncSession(
     val workId: String,
@@ -1542,8 +1555,22 @@ data class SyncSession(
     val batch: Boolean = false,
     val picked: Set<String> = emptySet(),
     val edits: Map<String, String> = emptyMap(),
+    val aspects: Map<String, String> = emptyMap(),
+    val payoffs: Map<String, Int?> = emptyMap(),
 ) {
     val items: List<SyncItem> get() = results.flatMap { it.items }
+
+    /** 一条按作者改过的样子：文字、人物状态的方面、新伏笔计划第几章收。 */
+    fun edited(item: SyncItem): SyncItem {
+        val text = edits[item.key] ?: item.text
+        val entry = item.entry?.let { e ->
+            e.copy(aspect = aspects[item.key] ?: e.aspect, payoff = if (item.key in payoffs) payoffs[item.key] else e.payoff)
+        }
+        return item.copy(text = text, entry = entry)
+    }
+
+    /** 要写进去的：勾上的、能写的，按作者改过的样子。 */
+    val chosen: List<SyncItem> get() = items.filter { it.writable && it.key in picked }.map { edited(it) }
 
     /**
      * 前面的章已经提过的同一个新人物、同一处地方、同一件事（按章号，同一章号按整理的先后）：
@@ -1561,7 +1588,7 @@ data class SyncSession(
         }
 
     /**
-     * 加上一章的结果（同一章再整理一次的换掉原来的）：默认勾上新设定和察觉，前面章已有的不勾；
+     * 加上一章的结果（同一章再整理一次的换掉原来的）：默认勾上新设定和记进账本的，前面章已有的不勾；
      * 并进来的是更前面的章时，后面章因此变成重复的几条也取消勾选。
      */
     fun with(r: ChapterSyncResult): SyncSession {

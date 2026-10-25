@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,8 +42,10 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Jump
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.SyncSession
+import com.xycs.lingyuereader.data.LEDGER_ASPECTS
 import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
+import com.xycs.lingyuereader.data.SyncPlace
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
@@ -49,16 +53,21 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
-/** 三组下面的说明。 */
+/** 各组下面的说明。 */
 private fun SyncGroup.hint(): String = when (this) {
     SyncGroup.NEW -> "正文里新出现、设定包里还没有的人物、地名、物件、规矩。"
-    SyncGroup.CONFLICT -> "正文和设定包写法对不上的。默认不勾：看过再决定是改设定包，还是去改正文。"
-    SyncGroup.AWARENESS -> "这一章里谁知道了什么、瞒着谁、误会了什么，写进察觉表。"
+    SyncGroup.CONFLICT -> "正文和设定包（或账本）写法对不上的。默认不勾：看过再决定是改设定包，还是去改正文。"
+    SyncGroup.STATE -> "人物此刻在哪、身体怎样、带着什么、想要什么，记进故事账本；同一人物同一方面以最新的为准。"
+    SyncGroup.EVENT -> "已经发生、会影响后文的事，世界的变化，记进故事账本。"
+    SyncGroup.AWARENESS -> "这一章里谁知道了什么、瞒着谁、误会了什么，记进故事账本。"
+    SyncGroup.PROMISE -> "这一章新埋下的伏笔、悬念、约定，和收掉的伏笔，记进故事账本。"
+    SyncGroup.TIME -> "这一章在故事里是什么时候、离上一章过了多久，记进故事账本。"
 }
 
 /**
- * 整理进设定包的结果：分“新设定”“冲突”“察觉”三组，每条一行（勾选、标题、写进哪份文档），点开看要写进去的原文（可以改）
- * 和正文里的依据（点了回到编辑器、选中那一句）。底下“写进设定包”只写勾上的。
+ * 整理进设定包的结果：“新设定”“冲突”两组写进设定包，人物状态、发生的事、察觉、伏笔、时间几组记进故事账本。
+ * 每条一行（勾选、标题、写到哪），点开看要写进去的原文（可以改；人物状态能改方面，新伏笔能改计划第几章收）
+ * 和正文里的依据（点了回到编辑器、选中那一句）。底下的按钮只写勾上的。
  */
 @Composable
 fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
@@ -87,22 +96,26 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
             if (session != null && session.results.isNotEmpty()) {
                 val repeats = session.repeats
                 SyncGroup.entries.forEach { g ->
+                    val list = session.items.filter { it.group == g }
+                    // 新加的账本类几组没有就不显示，免得一页空组（只回了旧格式的模型就没有这几组）。
+                    if (list.isEmpty() && g.ledger && g != SyncGroup.AWARENESS) return@forEach
                     item(key = "group:${g.name}") {
-                        val list = session.items.filter { it.group == g }
                         GroupedSection(header = g.label, footer = g.hint()) {
                             if (list.isEmpty()) row { EmptyRow("没有。") }
                             list.forEach { item ->
                                 row {
                                     SyncItemRow(
                                         item,
+                                        edited = session.edited(item),
                                         checked = item.key in session.picked,
                                         expanded = item.key in open,
-                                        text = session.edits[item.key] ?: item.text,
                                         showChapter = session.results.size > 1,
                                         repeat = item.key in repeats,
                                         onToggle = { vm.writingAi.toggleSync(item.key, item.key !in session.picked) },
                                         onExpand = { open = if (item.key in open) open - item.key else open + item.key },
                                         onEdit = { vm.writingAi.editSync(item.key, it) },
+                                        onAspect = { vm.writingAi.editSyncAspect(item.key, it) },
+                                        onPayoff = { vm.writingAi.editSyncPayoff(item.key, it) },
                                         onJump = { jump(item) },
                                     )
                                 }
@@ -111,9 +124,17 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                     }
                 }
                 item(key = "write") {
-                    val n = session.items.count { it.writable && it.key in session.picked }
+                    val chosen = session.items.filter { it.writable && it.key in session.picked }
+                    val n = chosen.size
+                    val toLedger = chosen.any { it.place == SyncPlace.LEDGER }
+                    val toPack = chosen.any { it.place != SyncPlace.LEDGER }
                     PrimaryButton(
-                        if (n > 0) "写进设定包（$n 条）" else "不写，标为已整理",
+                        when {
+                            n == 0 -> "不写，标为已整理"
+                            toLedger && toPack -> "写进设定包和账本（$n 条）"
+                            toLedger -> "记进故事账本（$n 条）"
+                            else -> "写进设定包（$n 条）"
+                        },
                         onClick = {
                             writing = true
                             vm.writingAi.applySync(workId, failed = { writing = false }) { msg ->
@@ -144,8 +165,8 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
     val known = session.results.sumOf { it.known }
     val footer = buildList {
         if (dropped > 0) add("有 $dropped 条在正文里找不到 AI 给的原句，没有列出（防止编造）。")
-        if (known > 0) add("有 $known 条设定包里已经有了，没再列。")
-        add("勾上的才会写进设定包；写之前原来的文字先存一个历史版本，每写一条在变更登记里记一笔。")
+        if (known > 0) add("有 $known 条设定包或账本里已经有了，没再列。")
+        add("勾上的才会写进去；写设定包之前原来的文字先存一个历史版本，每写一条在变更登记里记一笔；记进账本的一章一批，账本也存历史版本。")
     }.joinToString("")
     GroupedSection(footer = footer) {
         if (session.running != null) {
@@ -173,24 +194,29 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
 }
 
 /**
- * 一条提议：左边勾选框（“正文写错了”的冲突不能写进设定包，换成小标签），标题，下面一行写进哪份文档（前面章已经提过同一个的，[repeat] 标出来）；
+ * 一条提议：左边勾选框（“正文写错了”的冲突不能写进设定包，换成小标签），标题，下面一行写到哪（前面章已经提过同一个的，[repeat] 标出来）；
  * 点开（高度用 [Motion.MEDIUM] 长出来）看设定包和正文各怎么写、要写进去的原文（可以改）、依据原句。
+ * 人物状态多一行“方面”（下拉选），新伏笔多一格“计划第几章收”，收伏笔写明收的是账本里哪一条。[edited] 是按作者改过的样子。
  */
 @Composable
 private fun SyncItemRow(
     item: SyncItem,
+    edited: SyncItem,
     checked: Boolean,
     expanded: Boolean,
-    text: String,
     showChapter: Boolean,
     repeat: Boolean,
     onToggle: () -> Unit,
     onExpand: () -> Unit,
     onEdit: (String) -> Unit,
+    onAspect: (String) -> Unit,
+    onPayoff: (Int?) -> Unit,
     onJump: () -> Unit,
 ) {
     val c = LocalGroupedColors.current
     val turn by animateFloatAsState(if (expanded) 180f else 0f, Motion.standard(Motion.SHORT), label = "syncChevron")
+    val entry = edited.entry
+    val opens = item.group == SyncGroup.PROMISE && item.closes == null && entry != null
     Column(Modifier.fillMaxWidth()) {
         GroupedRow(onClick = onExpand) {
             if (item.writable) {
@@ -208,7 +234,12 @@ private fun SyncItemRow(
             }
             Column(Modifier.weight(1f).padding(start = if (item.writable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
-                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") + item.where, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+                val extra = when {
+                    opens -> entry.payoff?.let { " · 计划第 $it 章收" }.orEmpty()
+                    item.group == SyncGroup.STATE -> entry?.aspect?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                    else -> ""
+                }
+                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") + item.where + extra, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
             }
             if (!item.writable) Tag(if (item.fixText) "改正文" else "只提示", c.warning, Modifier.padding(start = 8.dp))
             Icon(LingYueIcons.ChevronDown, contentDescription = if (expanded) "收起" else "展开", tint = c.tertiary, modifier = Modifier.padding(start = 6.dp).size(16.dp).rotate(turn))
@@ -218,27 +249,52 @@ private fun SyncItemRow(
             enter = Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM), expandFrom = Alignment.Top) + fadeIn(Motion.standard(Motion.SHORT))),
             exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
         ) {
-            Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (item.group == SyncGroup.CONFLICT) {
-                    if (item.packSays.isNotBlank()) Text("设定包${item.docTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }.orEmpty()}：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
-                    if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+            Column(Modifier.fillMaxWidth()) {
+                if (item.group == SyncGroup.STATE && item.writable && entry != null) {
+                    // 方面：常用的几项，AI 写了别的也列上；“不分”的不顶替别的状态。
+                    val options = (listOf("" to "不分") + (LEDGER_ASPECTS + listOf(entry.aspect).filter { it.isNotBlank() && it !in LEDGER_ASPECTS }).map { it to it })
+                    PickerRow("方面", options, entry.aspect, onSelect = onAspect)
                 }
-                if (item.writable) {
-                    TextField(
-                        value = text,
-                        onValueChange = onEdit,
-                        label = "写进去的原文（可以改）",
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
-                    )
+                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (item.group == SyncGroup.CONFLICT) {
+                        val says = if (item.place == SyncPlace.LEDGER) "账本" else "设定包${item.docTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }.orEmpty()}"
+                        if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    val closes = item.closes
+                    if (closes != null) {
+                        Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    } else if (item.writable) {
+                        TextField(
+                            value = edited.text,
+                            onValueChange = onEdit,
+                            label = if (item.place == SyncPlace.LEDGER) "记进账本的内容（可以改）" else "写进去的原文（可以改）",
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
+                        )
+                    }
+                    if (opens && item.writable) {
+                        var raw by remember(item.key) { mutableStateOf(entry.payoff?.toString().orEmpty()) }
+                        TextField(
+                            value = raw,
+                            onValueChange = { v ->
+                                raw = v.filter { it.isDigit() }.take(5)
+                                onPayoff(raw.toIntOrNull()?.takeIf { it > 0 })
+                            },
+                            label = "计划第几章收（可以空着）",
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onJump).padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("依据：「${item.quote}」", color = c.tint, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+                        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
+                    }
+                    if (!item.writable && item.fixText) PillButton("去改正文", onClick = onJump, style = PillStyle.Tinted)
                 }
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onJump).padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("依据：「${item.quote}」", color = c.tint, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
-                    Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
-                }
-                if (!item.writable && item.fixText) PillButton("去改正文", onClick = onJump, style = PillStyle.Tinted)
             }
         }
     }
@@ -255,7 +311,7 @@ internal fun SyncTipDialog(onDismiss: (Boolean) -> Unit, onSync: (Boolean) -> Un
     GlassDialog(
         show = true,
         title = "要不要顺手整理进设定包？",
-        summary = "AI 读一遍这一章，列出新出现的人物地名、和设定包对不上的地方、谁知道了什么；你勾选以后才写进设定包。",
+        summary = "AI 读一遍这一章，列出新出现的人物地名、和设定包对不上的地方，以及人物状态的变化、谁知道了什么、埋下和收起的伏笔；你勾选以后才写进去。",
         onDismissRequest = { onDismiss(never) },
     ) {
         Row(
