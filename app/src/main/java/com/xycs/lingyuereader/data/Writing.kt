@@ -137,6 +137,8 @@ data class WorkAssist(
     val sampleSkip: List<String> = emptyList(),
     /** 各类范例点了几次“换一段”（[SampleKind] 的名字 → 次数）。 */
     val sampleShift: Map<String, Int> = emptyMap(),
+    /** 这些章的候选稿必须重新审读后才能采纳；只记要求，不持久化“通过”。 */
+    val draftWorkflows: Set<String> = emptySet(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -384,9 +386,15 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
      * 定稿时把正文存一个历史版本，记一条登记。状态没变不记。
      */
     @Synchronized
-    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false): Work? {
-        val work = get(workId) ?: return null
-        val c = work.chapter(chapterId) ?: return null
+    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null): Work? {
+        var work = get(workId) ?: return null
+        var c = work.chapter(chapterId) ?: return null
+        // 编辑器的自动保存可能还在等待停笔。先在同一把锁里保存眼前的正文，
+        // 成功后才锁定；保存失败时保留可编辑状态，不能把旧盘稿误当成定稿。
+        if (status == ChapterStatus.FINAL && currentText != null && !c.locked) {
+            work = requireNotNull(saveText(workId, chapterId, currentText)) { "章节不在了" }
+            c = requireNotNull(work.chapter(chapterId)) { "章节不在了" }
+        }
         if (c.status == status) return work
         if (c.locked) require(reason.isNotBlank()) { "改定稿的章节要先写原因" }
         when {
@@ -564,8 +572,16 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
     @Synchronized
     fun saveDraft(workId: String, chapterId: String, text: String) {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
-        if (text.isEmpty()) draftFile(workId, chapterId).delete()
-        else check(DurableFiles.write(draftFile(workId, chapterId), text.toByteArray())) { "无法保存草稿" }
+        val file = draftFile(workId, chapterId)
+        if (text.isEmpty()) {
+            if (!file.exists()) return
+            check(file.delete()) { "无法删除草稿" }
+        } else {
+            if (file.isFile && file.readText() == text) return
+            check(DurableFiles.write(file, text.toByteArray())) { "无法保存草稿" }
+        }
+        // 草稿也是作者的内容：仅改草稿或明确删除草稿时，备份也必须算新版本。
+        update(workId) { it }
     }
 
     private fun reviewFile(workId: String, chapterId: String): File {
@@ -735,6 +751,16 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         check(DurableFiles.write(File(d, ASSIST), next.toJson().toString().toByteArray())) { "无法保存设定" }
         update(workId) { it }
         return next
+    }
+
+    /** 记住候选稿的审读要求；不改稿件，也不把任何旧报告变成有效的通过记录。 */
+    @Synchronized
+    fun setDraftWorkflow(workId: String, chapterId: String, required: Boolean): WorkAssist {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        val old = assist(workId)
+        val chapters = if (required) old.draftWorkflows + chapterId else old.draftWorkflows - chapterId
+        if (chapters == old.draftWorkflows) return old
+        return updateAssist(workId) { it.copy(draftWorkflows = chapters) }
     }
 
     // ---------- 文风范例的挑选缓存 ----------
@@ -1056,10 +1082,16 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 (0 until docs.length()).forEach { i -> requireNotNull(docs.getJSONObject(i).toPackDoc()) { "设定包索引损坏" } }
             } != null
             val texts = JSONObject()
+            val drafts = JSONObject()
             w.chapters.forEach { c ->
                 val source = chapterFile(w.id, c.id)
                 if (!source.isFile && c.words > 0) skip(source.name, "「${c.title}」的正文文件不见了，备份里这一章是空的")
                 texts.put(c.id, text(w.id, c.id))
+                val draftSource = draftFile(w.id, c.id)
+                // 空字符串明确表示没有草稿（包括作者点了“不要这版”）；读不出的
+                // 草稿不放这个键，恢复时保留另一台手机上的原稿。
+                val draft = if (draftSource.isFile) component(draftSource, "「${c.title}」的 AI 草稿读不出，没有放进备份") { it } else ""
+                draft?.let { drafts.put(c.id, it) }
             }
             val pack = if (!packReadable) null else JSONArray().apply { pack(w.id).forEach { d ->
                 val source = packFile(w.id, d.id)
@@ -1080,7 +1112,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             val assist = if (assistSource.isFile) component(assistSource, "AI 设置和设定集读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
-            val entry = read(w.id).toJson().put("texts", texts).put("cards", cards)
+            val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)
             assist?.let { entry.put("assist", it.toJson()) }
             pack?.let { entry.put("pack", it) }
             changes?.let { entry.put("changes", it) }
@@ -1109,6 +1141,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val incoming: Work,
         val local: Work?,
         val texts: Map<String, String>,
+        val drafts: Map<String, String>?,
         val cards: Map<String, ChapterCard>?,
         val changes: List<ChangeEntry>?,
         val ledger: List<LedgerEntry>?,
@@ -1134,6 +1167,13 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             require(textObject.has(id) && textObject.opt(id) is String) { "备份章节正文缺失或损坏" }
             textObject.getString(id)
         }
+        val drafts = if (o.has("drafts")) {
+            val raw = o.getJSONObject("drafts")
+            raw.keys().asSequence().associateWith { id ->
+                require(id in chapterIds && raw.opt(id) is String) { "备份 AI 草稿缺失或损坏" }
+                raw.getString(id)
+            }
+        } else null
         val cards = if (o.has("cards")) {
             val raw = o.getJSONObject("cards")
             raw.keys().asSequence().associateWith { id ->
@@ -1239,7 +1279,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, cards, changes, ledger, pack, localPack, assist)
+        return RestoreWork(incoming, local, texts, drafts, cards, changes, ledger, pack, localPack, assist)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -1283,6 +1323,11 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         }
         plan.texts.forEach { (id, body) ->
             check(DurableFiles.write(File(destination, id + ".txt"), body.toByteArray())) { "无法暂存章节正文" }
+        }
+        plan.drafts?.forEach { (id, body) ->
+            val file = File(destination, id + ".draft.txt")
+            if (body.isEmpty()) check(!file.exists() || file.delete()) { "无法暂存草稿删除" }
+            else check(DurableFiles.write(file, body.toByteArray())) { "无法暂存 AI 草稿" }
         }
         plan.cards?.forEach { (id, card) ->
             check(DurableFiles.write(File(destination, id + ".card.json"), card.toJson().toString().toByteArray())) { "无法暂存细纲卡" }
@@ -1472,6 +1517,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             .put("sampleFallback", sampleFallback)
             .put("sampleSkip", JSONArray(sampleSkip))
             .put("sampleShift", JSONObject().apply { sampleShift.forEach { (k, v) -> put(k, v) } })
+            .put("draftWorkflows", JSONArray(draftWorkflows.sorted()))
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -1509,6 +1555,12 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 sampleFallback = optBoolean("sampleFallback", true),
                 sampleSkip = optJSONArray("sampleSkip")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() } }.orEmpty(),
                 sampleShift = optJSONObject("sampleShift")?.let { o -> o.keys().asSequence().associateWith { o.optInt(it) } }.orEmpty(),
+                draftWorkflows = if (has("draftWorkflows")) getJSONArray("draftWorkflows").let { a ->
+                    (0 until a.length()).map { i ->
+                        require(a.get(i) is String && ID.matches(a.getString(i))) { "草稿审读状态损坏" }
+                        a.getString(i)
+                    }.toSet()
+                } else emptySet(),
             )
         }
 

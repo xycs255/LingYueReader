@@ -475,9 +475,13 @@ object ChapterBriefs {
         val ledgerAt = items.size
         val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
-        shown?.render(ledgerLimit)?.let { left -= it.length }
+        val ledgerText = shown?.render(ledgerLimit)
+        ledgerText?.let { left -= it.length }
         snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
-        val ledgerKnow = ledger.filter { it.kind == LedgerKind.KNOW && !it.secret }.map { it.text }
+        // 只用本章实际展示的快照替代察觉表。快照被预算截短时，保守保留察觉表，避免删掉恰好没列出的那条。
+        val completeSnapshot = shown?.takeIf { (it.render(Int.MAX_VALUE)?.length ?: 0) <= ledgerLimit }
+        val ledgerKnow = completeSnapshot?.known.orEmpty().filter { ledgerText?.contains(it.text) == true }
+        val ledgerNotYet = completeSnapshot?.notYet.orEmpty().filter { it.until == null || it.until > chapter }.filter { ledgerText?.contains(it.text) == true }
         val ledgerSecret = ledger.filter { it.secret }.map { it.text }
         val ledgerPromise = ledger.filter { it.kind == LedgerKind.PROMISE }.map { it.text }
         fun hide(h: String) {
@@ -498,11 +502,25 @@ object ChapterBriefs {
 
         // 三、察觉：出场人物到这一章为止知道的（离这一章近的在前），以及还不该知道的。
         val allNames = characters.flatMap { it.names }
+        val canonical = characters.flatMap { c -> c.names.map { it to c.name } }.toMap()
+        fun people(names: Collection<String>): Set<String> = names
+            .map { it.replace(Regex("[《》「」“”\\s*]"), "") }
+            .filter { it.isNotBlank() && (canonical.isEmpty() || it in canonical) }
+            .map { canonical[it] ?: it }.toSet()
+        fun holders(k: KnowledgeItem): Set<String> = people(k.holders).ifEmpty { people(k.who) }
+        fun subject(e: LedgerEntry): Set<String> = people(e.subject.split('、', '，', ',', '／', '/', '；', ';'))
         val knowledge = knowledge(sorted.filter { it.first.kind == PackKind.AWARENESS }.map { it.first.title to it.second }, allNames)
         fun reached(k: KnowledgeItem) = k.chapter?.let { it <= chapter } ?: k.volume?.let { it <= volume } ?: true
         val presentAll = present.flatMap { it.names }.toSet()
-        // 账本里已经有的（知情、只有作者知道的）不再从察觉表列。
-        fun inLedger(k: KnowledgeItem) = ledgerKnow.any { same(it, k.what.ifBlank { k.text }) || same(it, k.text) }
+        // 同一事实由不同人物知道，不能互相替代；一行写了多人时，只有每个人都已在快照中才整行省去。
+        // 已知与尚未知分开匹配：未生效或已经失效的账本记录不能吞掉人物当前的知情。
+        fun inLedger(k: KnowledgeItem): Boolean {
+            val candidates = if (reached(k)) ledgerKnow else ledgerNotYet.filter { it.from == k.chapter && (it.from != null || it.volume == k.volume) }
+            val matching = candidates.filter { same(it.text, k.what.ifBlank { k.text }) || same(it.text, k.text) }
+            val who = holders(k)
+            return if (who.isEmpty()) matching.any { it.subject.isBlank() }
+            else who.all { name -> matching.any { name in subject(it) } }
+        }
         val relevant = knowledge.filter { k -> k.who.isEmpty() || k.who.any { it in presentAll } }
         val reachedAll = relevant.filter(::reached).sortedByDescending { it.chapter ?: ((it.volume ?: 0) * 1000) }
         reachedAll.filter { it.secret.isNotBlank() && ledgerSecret.none { s -> same(s, it.hiddenWhat.ifBlank { it.secret }) } }
@@ -664,8 +682,9 @@ fun WorkStore.chapterNo(work: Work, chapterId: String): Int? {
 /**
  * 读设定包、细纲卡和这一章，挑本章资料。[text] 为空时用存盘的正文；[limit] 为空时按作品里设的上限；
  * [style] 为真时带写作规范节选（写正文、写法关另外带全，不用）。
+ * [confirmedOnly] 为真时，前情只用已定稿章的摘要，不把未定稿的摘要或细纲计划当作已经发生的事实。
  */
-fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int? = null, style: Boolean = false): ChapterBrief? {
+fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int? = null, style: Boolean = false, confirmedOnly: Boolean = false): ChapterBrief? {
     val work = get(workId) ?: return null
     val number = chapterNo(work, chapterId) ?: return null
     val docs = pack(workId).map { it to packText(workId, it.id) }
@@ -679,13 +698,13 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
         ?: work.volumeNumber(chapterId)
     // 前情：写了摘要的章用摘要；最近几章没写摘要的，用它的细纲卡（从细纲提取的也算）。
     val index = work.chapters.indexOfFirst { it.id == chapterId }
-    val before = work.chapters.take(index)
+    val before = work.chapters.take(index).filter { !confirmedOnly || it.status == ChapterStatus.FINAL }
     val summaries = before.mapIndexedNotNull { i, c ->
         val stored = card(workId, c.id)
         val no = chapterNo(work, c.id) ?: 0
         when {
             stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary)
-            i >= before.size - ChapterBriefs.RECENT_SUMMARIES ->
+            !confirmedOnly && i >= before.size - ChapterBriefs.RECENT_SUMMARIES ->
                 plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it") }
             else -> null
         }

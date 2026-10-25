@@ -37,8 +37,8 @@ object PackKnowledge {
     /** 目录里每份文档最多列几个小节。 */
     private const val MAX_SECTIONS = 60
 
-    fun build(docs: List<Pair<PackDoc, String>>, budget: Int): AiPack {
-        val live = docs.filter { it.second.isNotBlank() }
+    fun build(docs: List<Pair<PackDoc, String>>, budget: Int, phase: WritingPhase? = null): AiPack {
+        val live = (phase?.let { ProjectSources.forPhase(docs, it) } ?: docs).filter { it.second.isNotBlank() }
         val ordered = live.sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
         val instructions = ordered.filter { it.first.kind == PackKind.INSTRUCTION }
         val always = ordered.filter { it.first.always && it.first.kind != PackKind.INSTRUCTION && it.first.kind != PackKind.RULES }.toMutableList()
@@ -55,7 +55,8 @@ object PackKnowledge {
         out.append("下面是作者这部作品的设定包，是作者写给 AI 用的，照它办事。\n")
         out.append("作者的说明里提到的“知识库”“项目”，就是下面整份给出的文档；提到的“云盘”“文件夹”里的文件、没整份给出的文档，用工具读：")
         out.append("read_doc 读一份文档或其中一节，search 按关键词搜设定包和已写的正文，read_chapter 读某一章正文。\n")
-        out.append("设定资料之间有冲突时，按作者说明里写的优先级；没写的，以总纲为准。\n")
+        if (phase == null) out.append("设定资料之间有冲突时，按作者说明里写的优先级；没写的，以总纲为准。\n")
+        else out.append("本次明确要求优先；目标章细纲与用户已定前文管章内事实和结果，总纲及合订本只核对实际涉及的跨章固定设定。硬事实冲突须列明出处；同版独立和内嵌细纲不叠加事件。规划、样章与待核增量不当作已发生事实。\n")
         if (instructions.isNotEmpty()) {
             out.append("\n=== 作者的工作说明 ===\n")
             instructions.forEach { (d, t) -> out.append("\n【").append(d.title).append("】\n").append(t.trim()).append('\n') }
@@ -128,7 +129,12 @@ object PackOutline {
  * AI 查设定包用的工具：读文档（或其中一节）、搜关键词、读某一章正文。都在本机读，不联网。
  * 一次请求查到的总字数有上限，到了就请 AI 用已有的资料作答。
  */
-class PackTools(private val docs: List<Pair<PackDoc, String>>, private val chapters: List<Pair<WorkChapter, () -> String>>) {
+class PackTools(
+    private val docs: List<Pair<PackDoc, String>>,
+    private val chapters: List<Pair<WorkChapter, () -> String>>,
+    /** Original chapter numbers before FINAL-only filtering; null preserves the legacy ordinal lookup. */
+    private val chapterNumbers: Map<String, Int>? = null,
+) {
     private var used = 0
 
     /** AI 查了什么（给作者看）。 */
@@ -233,7 +239,8 @@ class PackTools(private val docs: List<Pair<PackDoc, String>>, private val chapt
         val key = which.trim()
         val n = key.toIntOrNull() ?: CheckRules.cn(key) ?: ChapterRefs.number(key) ?: ChapterRefs.number("第${key}章")
         val hit = chapters.firstOrNull { (c, _) -> c.title == key }
-            ?: n?.let { num -> chapters.firstOrNull { (c, _) -> ChapterRefs.number(c.title) == num } ?: chapters.getOrNull(num - 1) }
+            ?: n?.let { num -> chapters.firstOrNull { (c, _) -> ChapterRefs.number(c.title) == num }
+                ?: if (chapterNumbers == null) chapters.getOrNull(num - 1) else chapters.firstOrNull { (c, _) -> chapterNumbers[c.id] == num } }
             ?: chapters.firstOrNull { (c, _) -> key.isNotEmpty() && key in c.title }
             ?: return "没有这一章：$which。已写的章：" + chapters.joinToString("、") { it.first.title }.take(2_000)
         val text = hit.second()
@@ -291,16 +298,23 @@ class PackTools(private val docs: List<Pair<PackDoc, String>>, private val chapt
 }
 
 /** 这部作品给写作 AI 的设定包（[budget] 是知识库最多放多少字）。 */
-fun WorkStore.aiPack(workId: String, budget: Int): AiPack =
-    PackKnowledge.build(pack(workId).map { it to packText(workId, it.id) }, budget)
+fun WorkStore.aiPack(workId: String, budget: Int, phase: WritingPhase? = null): AiPack =
+    PackKnowledge.build(pack(workId).map { it to packText(workId, it.id) }, budget, phase)
 
 /** AI 查设定包和正文用的工具。[upTo] 不为空时只能读到这一章为止（防剧透：后面的章不给看）。 */
-fun WorkStore.packTools(workId: String, upTo: String? = null): PackTools {
-    val chapters = get(workId)?.chapters.orEmpty().let { all ->
+fun WorkStore.packTools(workId: String, upTo: String? = null, phase: WritingPhase? = null, confirmedOnly: Boolean = false): PackTools {
+    val allChapters = get(workId)?.chapters.orEmpty()
+    val chapters = allChapters.let { all ->
         val i = upTo?.let { id -> all.indexOfFirst { it.id == id } } ?: -1
-        if (i >= 0) all.take(i + 1) else all
-    }
-    return PackTools(pack(workId).map { it to packText(workId, it.id) }, chapters.map { c -> c to { text(workId, c.id) } })
+        when {
+            i >= 0 -> all.take(i + 1)
+            upTo != null && confirmedOnly -> emptyList()
+            else -> all
+        }
+    }.filter { !confirmedOnly || it.status == ChapterStatus.FINAL }
+    val docs = pack(workId).map { it to packText(workId, it.id) }.let { all -> phase?.let { ProjectSources.forPhase(all, it) } ?: all }
+    val numbers = if (confirmedOnly) allChapters.mapIndexed { i, c -> c.id to (ChapterRefs.number(c.title) ?: i + 1) }.toMap() else null
+    return PackTools(docs, chapters.map { c -> c to { text(workId, c.id) } }, numbers)
 }
 
 /**

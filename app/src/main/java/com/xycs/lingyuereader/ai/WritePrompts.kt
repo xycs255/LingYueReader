@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterTitles
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
@@ -78,6 +79,53 @@ data class BibleProposal(val name: String, val text: String, val existing: Boole
  * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
  */
 object WritePrompts {
+    /** A complete chapter is composed from a bounded task, never from the review or repair template. */
+    fun projectDraft(task: ChapterWritingTask, rules: String): String = buildString {
+        append(task.render()).append("\n\n【当前阶段：创作】\n")
+        append("请写出这一章完整、连贯、好读的小说正文，篇幅遵守本次章节任务。先抓本章主戏与关键选择，再组织场面。")
+        append("只按当前材料和明确认可的前文写，不调用旧稿、旧版项目包或外部史料改写已定故事；未读取的不声称读过。\n")
+        append("对白先想此人对谁说、双方关系、此刻所求和情绪。允许长说、答半句、改口、打断、重复和不接话，")
+        append("保留普通生活话与自然语气，不让人人精准概括、轮流讲课或随时说明责任。\n")
+        append("旁白可讲必要背景、有限心理、闲笔、机锋与温度；解释到读者理解当前选择为止。对白、行动和结果已经说明的意思，不换词再总结。")
+        append("不把事实核验写成论文，不把细纲条目排成办事流水账。事实底稿供核对，不逐项表演；重要选择与交锋写足，重复手续概述。\n")
+        append("消息须有亲见、传递或有根据的推断，核清人物知情、能力、资源和命令权限；跨地留足路程与时间。")
+        append("不为凑字重复解释，不为固定场次或节奏模板改变章界与不可逆结果。\n")
+        if (rules.isNotBlank()) append("\n作者的写作规范与检查规则：\n").append(rules.trim()).append('\n')
+        append("\n完成后在内部连读对白，再连读完整章节，修掉机械模板、统一神态和口号收尾；保留有效的普通话、直接心理和生活细节。")
+        append("正文中不放准备、提纲、审校说明、待核增量或通过记录。当前请求的输出格式优先：只输出完整正文，一行一段，不加Markdown或解释；章名由软件单独管理。")
+    }
+
+    /** Structured evidence is kept outside the manuscript; a missing source is not a proven error. */
+    fun projectReview(task: ChapterWritingTask, text: String, rules: String): String = buildString {
+        append(task.render()).append("\n\n【当前阶段：审读】\n")
+        append("待审完整章稿：\n").append(text).append("\n\n")
+        if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
+        append("先抓最影响这一章的两三处问题，再区分事实必改与审美建议。核时地、在场与知情、资源权限、关键选择、")
+        append("因果、伤亡损失、结果和承接。每项问题给正文一字不差的原句、具体资料依据和影响；资料不足列为missing，不能把推测当错误。\n")
+        append("单独连读对白，检查关系、欲望和情绪是否成立，是否人人准确概括、借角色讲课；检查旁白是否重复对白与结果、是否写成论文。")
+        append("不因生活闲话、直接心理或背景没有推进主线就删，不强制短句、逐句动作、统一场次、微伏笔或快慢配额。")
+        append("保留有效内容，不为评分凑错，不将审美偏好写成硬性规则。\n")
+        append("本阶段只审读，不重写正文，不新增故事事实，不声称已运行脚本或作者已定。输出结构用于软件展示，取代模板中的排版要求。")
+        append("只输出JSON，固定顶层结构：{\"summary\":[],\"missing\":[],\"issues\":[]}。summary放两三项主要判断，missing放确实缺少的硬资料；没有则留空数组。")
+        append("每个issues对象格式为{\"kind\":\"FACT\",\"quote\":\"正文原句\",\"problem\":\"问题与影响\",\"basis\":\"具体资料依据或明确创作要求\",\"fix\":\"在既定事实内的改法\",\"required\":true}。kind只能是FACT或CRAFT。")
+        append("事实错误及明确违反作者要求的写法才required=true；可取舍的审美建议required=false。没有问题如实返回空数组，不伪填通过记录。")
+    }
+
+    /** Repair is based on checked findings, not permission to invent new facts or replace every voice. */
+    fun projectRevision(task: ChapterWritingTask, text: String, review: String, rules: String): String = buildString {
+        append(task.render()).append("\n\n【当前阶段：修订】\n")
+        append("当前完整章稿：\n").append(text).append("\n\n已核实、待处理的审读意见：\n").append(review).append("\n\n")
+        if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
+        append("逐条回原稿与目标章核实意见。修正有依据的事实、因果、视角、承接和明确写法违规；审读意见是线索，")
+        append("不自动成为新设定。误读原稿、资料不足或违背细纲的意见不照办；审美建议按整章效果取舍。\n")
+        append("局部问题在原处修，因果断裂才联动相关场面。保留有效交锋、对白、心理、旁白、生活细节和人物各自的目标；")
+        append("不把所有对白改短，不句句加动作或语气词，不用漂亮总结替代人物当时说的话。")
+        append("写足关键选择与实际代价，删并重复手续和解释，严守篇幅、章界、人物知情与权限。\n")
+        append("两遍校稿：第一遍连读对白并核事实、章界与机械套句；第二遍连读全章，检查改动造成的接话、动作与情绪断裂。")
+        append("修改后旧审核与待核状态增量均作废，必须针对新稿重新检查；不把修改过视为已通过或作者已定。\n")
+        append("只交付修订后的完整正文，一行一段，不加Markdown、说明或意见处理表；章名由软件单独管理。")
+    }
+
     /**
      * 哪些改稿要带文风范例：要写出新句子的（润色、更生动、扩写、缩写、按要求改、续写）。
      * 挑错只改错字，不学文风；写作建议、审稿、整理进设定包等也不带。
@@ -221,7 +269,7 @@ object WritePrompts {
         append(
             when (mode) {
                 InlineMode.SCENE -> "写完眼下这一场就停，停在场面自然收住的地方。"
-                InlineMode.TO_END -> "按细纲卡把这一章剩下的事写完，停在章末钩子上；全章篇幅$length。"
+                InlineMode.TO_END -> "按细纲卡完成本章剩余的关键选择与结果，在既定章末自然收束；全章篇幅$length，不强加悬念。"
                 InlineMode.WORDS -> "写 500 字左右，停在一句话说完的地方。"
                 InlineMode.CUSTOM -> ""
             },
@@ -341,7 +389,7 @@ object WritePrompts {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
         append("请写出这一章「").append(title).append("」的正文。\n")
-        append("- 按本章细纲卡写：细纲卡里的事实都要写到，结果不能改；不越过后文承接边界，不提前写后面的事。\n")
+        append("- 按本章细纲卡写：保留事实成立的条件、关键选择和结果；事实底稿供核对，不逐项表演，不越过章界与后文承接边界，不提前写后面的事。\n")
         append("- 接上上一章的结尾和钩子，人物知道什么、不知道什么以设定资料为准。\n")
         append("- 篇幅").append(length).append("；故事写完就收，不为凑字数加插曲。\n")
         if (instruction.isNotBlank()) append("- 作者这次的要求：").append(instruction.trim()).append('\n')
@@ -352,7 +400,7 @@ object WritePrompts {
     fun draftMore(title: String, written: String, rules: String, length: String): String = buildString {
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
         append("这一章「").append(title).append("」已经写了下面这些（只给出最后一部分）：\n\n").append(written.takeLast(4_000)).append("\n\n")
-        append("请从最后一句接着往下写，直到把细纲卡里的事实写完、停在章末钩子上。全章篇幅").append(length).append("。")
+        append("请从最后一句接着往下写，完成细纲卡的关键选择与结果，在既定章末自然收束，不强加悬念。全章篇幅").append(length).append("。")
         append("不要重复已经写的内容，不要总结。一行一段，不要任何解释。")
     }
 

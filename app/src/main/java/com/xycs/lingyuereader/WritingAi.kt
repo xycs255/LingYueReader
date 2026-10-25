@@ -47,6 +47,13 @@ import com.xycs.lingyuereader.data.applySync
 import com.xycs.lingyuereader.data.chapterNo
 import com.xycs.lingyuereader.data.syncLedger
 import com.xycs.lingyuereader.data.unsynced
+import com.xycs.lingyuereader.data.ChapterWritingTask
+import com.xycs.lingyuereader.data.DraftAssessment
+import com.xycs.lingyuereader.data.DraftChecks
+import com.xycs.lingyuereader.data.DraftStage
+import com.xycs.lingyuereader.data.DraftWorkflow
+import com.xycs.lingyuereader.data.WritingPhase
+import com.xycs.lingyuereader.data.writingTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -190,6 +197,11 @@ class WritingAi(
     fun forget() {
         _assists.value = emptyMap()
         checked.clear()
+        // Restored candidate bytes must not retain the former in-memory manuscript's passing report.
+        draftRuns.clear()
+        draftJobs.values.forEach { it.cancel() }
+        draftJobs.clear()
+        _drafts.value = emptyMap()
     }
 
     private suspend fun assistOf(workId: String): WorkAssist =
@@ -214,10 +226,11 @@ class WritingAi(
                 val chapter = work.chapter(chapterId)
                 val title = chapter?.title.orEmpty()
                 val assist = assistOf(workId)
+                val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId) }
                 val previous = withContext(Dispatchers.IO) {
                     val chapters = work.chapters
                     val i = chapters.indexOfFirst { it.id == chapterId }
-                    chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
+                    if (taskSnapshot?.project == true) taskSnapshot.previous else chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
                 // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
                 val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true) }
@@ -253,7 +266,7 @@ class WritingAi(
                 val meter = AiMeter(feature, workId)
                 // 改稿类的结果要换进正文：被截断（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
                 val answer = if (task == WriteAiTask.Review) ask(label, workId, system, prompt, meter = meter, onText = onPiece)
-                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, stable = samples, meter = meter, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
+                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId, confirmedOnly = taskSnapshot?.project == true, stable = samples, meter = meter, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 if (task is WriteAiTask.Edit && answer.endsWith(STOPPED_NOTE)) {
                     // 模型中途停了：写出来的只是一半，显示出来但不能采纳，那行说明也不能进正文。
                     _state.update { s ->
@@ -488,11 +501,12 @@ class WritingAi(
                 if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
                 val (pack, rules, length, previous) = withContext(Dispatchers.IO) {
                     val i = work.chapters.indexOfFirst { it.id == chapterId }
+                    val taskSnapshot = store.writingTask(workId, chapterId, instruction)
                     listOf(
                         chapterContext(workId, chapterId, text).orEmpty(),
                         writingRules(workId, chapterId, text),
-                        lengthOf(workId),
-                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
+                        taskSnapshot?.takeIf { it.project }?.targetLength ?: lengthOf(workId),
+                        if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(3_000) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
                     )
                 }
                 // 光标前不够长：前面接上一章的结尾。
@@ -505,6 +519,7 @@ class WritingAi(
                 var shown = 0L
                 val answer = askWithPack(
                     "在编辑器里写", workId, system, prompt, maxTokens = draftTokens, stable = samples, meter = meter,
+                    toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
                     onReset = {
                         written = ""
                         shown = 0L
@@ -641,6 +656,8 @@ class WritingAi(
     /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。[upTo] 为真时章目录只列到这一章（查阅工具也只能读到这一章）。 */
     private fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false, upTo: Boolean = false): String? {
         val work = store.get(workId) ?: return null
+        val project = store.writingTask(workId, chapterId)
+        if (project?.project == true) return project.render()
         val chapters = work.chapters
         val i = chapters.indexOfFirst { it.id == chapterId }
         val prev = chapters.getOrNull(i - 1)
@@ -725,6 +742,8 @@ class WritingAi(
         useTools: Boolean = true,
         maxRounds: Int = 6,
         toolsUpTo: String? = null,
+        phase: WritingPhase? = null,
+        confirmedOnly: Boolean = false,
         stable: String? = null,
         meter: AiMeter = AiMeter(featureOf(label), workId),
         onReset: () -> Unit = {},
@@ -732,7 +751,16 @@ class WritingAi(
     ): String {
         if (!canUsePack) return ask(label, workId, rest, prompt, whole, meter, onText)
         val budget = knowledgeBudget(workId)
-        val (pack, tools) = withContext(Dispatchers.IO) { store.aiPack(workId, budget) to store.packTools(workId, toolsUpTo) }
+        val stage = phase ?: when (label) {
+            "写本章", "接着写", "在编辑器里写", "续写" -> WritingPhase.CREATE
+            "事实关", "写法关", "矛盾检查", "读者点评", "写作建议" -> WritingPhase.REVIEW
+            "整理本章" -> WritingPhase.SYNC
+            "润色", "更生动", "扩写", "缩写", "按要求改", "挑错" -> WritingPhase.REVISE
+            else -> WritingPhase.ASSIST
+        }
+        val (pack, tools) = withContext(Dispatchers.IO) {
+            store.aiPack(workId, budget, stage) to store.packTools(workId, toolsUpTo, phase = stage, confirmedOnly = confirmedOnly)
+        }
         val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + if (useTools) "\n\n" + WritePrompts.TOOL_GUIDE else ""
         val sent = SentRequest(label, system, prompt, System.currentTimeMillis())
         _lastRequest.value = sent
@@ -902,9 +930,10 @@ class WritingAi(
                             else {
                                 val (pack, previous) = withContext(Dispatchers.IO) {
                                     val i = work.chapters.indexOfFirst { it.id == chapterId }
-                                    chapterContext(workId, chapterId, text) to (work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
+                                    val taskSnapshot = store.writingTask(workId, chapterId)
+                                    chapterContext(workId, chapterId, text) to (if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(1_500) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
                                 }
-                                val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true)
+                                val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true, toolsUpTo = chapterId, phase = WritingPhase.REVIEW, confirmedOnly = true)
                                 reviewResult(gate, answer)
                             }
                         }
@@ -1062,8 +1091,22 @@ class WritingAi(
     val drafts: StateFlow<Map<Pair<String, String>, DraftState>> = _drafts.asStateFlow()
     private val draftJobs = HashMap<Pair<String, String>, Job>()
     /** 各章当前这一次写的编号：被新的一次或“不要这版”顶掉的旧任务，不能再改状态、存草稿。 */
-    private val draftRuns = HashMap<Pair<String, String>, Int>()
+    private val draftRuns = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Int>()
     private var draftSeq = 0
+    private val draftDisk = Dispatchers.IO.limitedParallelism(1)
+
+    /** All candidate writes share one queue. A superseded stop/clear cannot overwrite a newer run. */
+    private suspend fun persistDraft(key: Pair<String, String>, run: Int, text: String, workflow: Boolean) = withContext(draftDisk) {
+        if (draftRuns[key] != run) return@withContext
+        synchronized(store) {
+            if (draftRuns[key] == run) {
+                // Fail closed if the second write fails: retain the requirement to review a project candidate.
+                if (workflow && text.isNotBlank()) store.setDraftWorkflow(key.first, key.second, true)
+                store.saveDraft(key.first, key.second, text)
+                if (!workflow || text.isBlank()) store.setDraftWorkflow(key.first, key.second, false)
+            }
+        }
+    }
 
     /** 改这一章的草稿状态（[run] 不是这一章当前的那一次就不改）。 */
     private fun updateDraft(key: Pair<String, String>, run: Int, transform: (DraftState) -> DraftState) {
@@ -1076,8 +1119,12 @@ class WritingAi(
         val key = workId to chapterId
         if (key in _drafts.value) return
         scope.launch {
-            val text = withContext(Dispatchers.IO) { runCatching { store.draft(workId, chapterId) }.getOrDefault("") }
-            _drafts.update { m -> if (key in m) m else m + (key to DraftState(workId, chapterId, text)) }
+            val (text, required) = withContext(draftDisk) {
+                val text = runCatching { store.draft(workId, chapterId) }.getOrDefault("")
+                val required = text.isNotBlank() && (chapterId in store.assist(workId).draftWorkflows || store.writingTask(workId, chapterId)?.project == true)
+                text to required
+            }
+            _drafts.update { m -> if (key in m) m else m + (key to DraftState(workId, chapterId, text, workflow = required)) }
         }
     }
 
@@ -1107,7 +1154,7 @@ class WritingAi(
             rule?.min != null && rule.max != null -> "${rule.min} 到 ${rule.max} $unit"
             rule?.min != null -> "不少于 ${rule.min} $unit"
             rule?.max != null -> "不超过 ${rule.max} $unit"
-            else -> "3000 到 5000 字"
+            else -> "依本章细纲；没有明确数字时，以完整自然的章节为准"
         }
     }
 
@@ -1115,7 +1162,11 @@ class WritingAi(
      * AI 写本章：[more] 为真时接着已有的草稿往下写，否则从头写一版（替换草稿）。边写边显示，写完存成草稿，
      * 作者看过再放进正文。
      */
-    fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false) {
+    fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false, workflow: Boolean = false, targetLength: String = "") {
+        if (workflow) {
+            writeProjectDraft(workId, chapterId, instruction, targetLength, more = more)
+            return
+        }
         if (!ready) {
             message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
             return
@@ -1126,7 +1177,7 @@ class WritingAi(
         draftRuns[key] = run
         val start = _drafts.value[key]?.takeIf { more }?.text.orEmpty()
         val prefix = if (start.isEmpty()) "" else start.trimEnd() + "\n"
-        _drafts.update { it + (key to DraftState(workId, chapterId, prefix, loading = true, instruction = instruction)) }
+        _drafts.update { it + (key to DraftState(workId, chapterId, prefix, loading = true, instruction = instruction, targetLength = targetLength)) }
         var written = ""
         val meter = AiMeter(AiFeature.DRAFT, workId)
         draftJobs[key] = scope.launch {
@@ -1134,14 +1185,16 @@ class WritingAi(
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
                 val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
                 if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val taskSnapshot = writingTask(workId, chapterId, instruction, targetLength)
+                if (taskSnapshot?.project == true) check(taskSnapshot.blocking.isEmpty()) { taskSnapshot.blocking.joinToString("；") }
                 val (pack, previous, rules, length) = withContext(Dispatchers.IO) {
                     val i = work.chapters.indexOfFirst { it.id == chapterId }
                     listOf(
                         chapterContext(workId, chapterId, store.text(workId, chapterId)).orEmpty(),
                         // 上一章结尾：能查设定包的模型多给些（要更多它自己读），本机模型少给。
-                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(if (canUsePack) 6_000 else 2_000) }.orEmpty(),
+                        if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(if (canUsePack) 6_000 else 2_000) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(if (canUsePack) 6_000 else 2_000) }.orEmpty(),
                         writingRules(workId, chapterId, store.text(workId, chapterId)),
-                        lengthOf(workId),
+                        taskSnapshot?.targetLength ?: targetLength.ifBlank { lengthOf(workId) },
                     )
                 }
                 val prompt = if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction)
@@ -1150,6 +1203,7 @@ class WritingAi(
                 val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples)
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, stable = samples, meter = meter,
+                    toolsUpTo = chapterId, phase = WritingPhase.CREATE,
                     onReset = {
                         written = ""
                         updateDraft(key, run) { it.copy(text = prefix) }
@@ -1160,7 +1214,7 @@ class WritingAi(
                 }
                 val text = prefix + WritePrompts.cleanDraft(answer)
                 updateDraft(key, run) { it.copy(text = text, loading = false, usage = meter.usage, cost = meter.cost) }
-                withContext(Dispatchers.IO) { store.saveDraft(workId, chapterId, text) }
+                persistDraft(key, run, text, workflow = false)
                 log(workId, chapterId, if (prefix.isEmpty()) "写本章" else "接着写", instruction, text.removePrefix(prefix), meter)
             } catch (e: CancellationException) {
                 // 被取消（应用退出之类）：已经写出来的留着，存成草稿，可以接着写。
@@ -1168,15 +1222,150 @@ class WritingAi(
                 if (draftRuns[key] == run) {
                     val partial = prefix + WritePrompts.cleanDraft(written)
                     updateDraft(key, run) { it.copy(text = partial, loading = false) }
-                    if (partial.isNotBlank()) withContext(NonCancellable + Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, partial) } }
+                    if (partial.isNotBlank()) withContext(NonCancellable) { runCatching { persistDraft(key, run, partial, workflow = false) } }
                 }
                 throw e
             } catch (e: Exception) {
                 updateDraft(key, run) { it.copy(loading = false, error = e.message ?: "请求失败") }
                 // 写了一半也存下来，可以接着写。
                 _drafts.value[key]?.takeIf { draftRuns[key] == run && it.text.isNotBlank() }?.let { d ->
-                    withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, d.text) } }
+                    runCatching { persistDraft(key, run, d.text, workflow = false) }
                 }
+            }
+        }
+    }
+
+    /** Build the same explicit task that the next workflow request will use. Never calls an AI. */
+    suspend fun writingTask(workId: String, chapterId: String, instruction: String = "", targetLength: String = ""): ChapterWritingTask? =
+        withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, instruction, targetLength) }
+
+    /** A restored or interrupted candidate has no valid pass; run the actual review on it again. */
+    fun reviewDraft(workId: String, chapterId: String, instruction: String = "", targetLength: String = "") =
+        writeProjectDraft(workId, chapterId, instruction, targetLength, reviewOnly = true)
+
+    /** An author edit creates a new candidate version and invalidates every earlier assessment. */
+    fun updateDraftText(workId: String, chapterId: String, text: String) {
+        val key = workId to chapterId
+        val d = _drafts.value[key] ?: return
+        val run = ++draftSeq
+        draftRuns[key] = run
+        draftJobs.remove(key)?.cancel()
+        _drafts.update { it + (key to d.copy(text = text, loading = false, assessment = null, stage = DraftStage.IDLE, error = null)) }
+        scope.launch {
+            try { persistDraft(key, run, text, d.workflow) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { message("候选稿保存失败：${e.message ?: "写入出错"}") }
+        }
+    }
+
+    /** Validate the manuscript and material versions immediately before the author adopts a candidate. */
+    suspend fun draftBlocked(workId: String, chapterId: String, instruction: String? = null, targetLength: String? = null): String? {
+        val d = _drafts.value[workId to chapterId] ?: return "没有可采纳的草稿"
+        if (d.loading) return "本章流程还在进行，请先等它完成或停止"
+        if (!d.workflow) return null
+        val task = writingTask(workId, chapterId, instruction ?: d.instruction, targetLength ?: d.targetLength) ?: return "作品或章节不在了"
+        if (task.blocking.isNotEmpty()) return task.blocking.joinToString("；")
+        val report = d.assessment ?: return "本稿尚未完成审读，请先审读此稿"
+        if (!report.matches(d.text, task.fingerprint)) return "正文或项目资料已经变化，旧审读结果已过时，请重新审读"
+        return if (report.passed && d.stage == DraftStage.READY) null else "本稿仍有必改问题或资料缺项，请核对后重新审读"
+    }
+
+    private fun writeProjectDraft(workId: String, chapterId: String, instruction: String, targetLength: String, more: Boolean = false, reviewOnly: Boolean = false) {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        val key = workId to chapterId
+        draftJobs[key]?.cancel()
+        val run = ++draftSeq
+        draftRuns[key] = run
+        val before = _drafts.value[key]
+        _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, "")).copy(
+            loading = true, error = null, workflow = true, stage = DraftStage.PREPARING,
+            assessment = null, instruction = instruction, targetLength = targetLength,
+        )) }
+        val createMeter = AiMeter(AiFeature.DRAFT, workId)
+        val reviewMeter = AiMeter(AiFeature.REVIEW, workId)
+        val reviseMeter = AiMeter(AiFeature.EDIT, workId)
+        val meters = listOf(createMeter, reviewMeter, reviseMeter)
+        draftJobs[key] = scope.launch {
+            try {
+                val task = writingTask(workId, chapterId, instruction, targetLength) ?: error("作品或章节不在了")
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: error("作品不在了")
+                check(work.chapter(chapterId)?.locked != true) { "这一章已定稿：要改先解锁并登记原因" }
+                updateDraft(key, run) { it.copy(task = task) }
+                check(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
+                val rules = withContext(Dispatchers.IO) {
+                    store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+                }
+                val proseRules = withContext(Dispatchers.IO) { writingRules(workId, chapterId, "") }
+                val assist = assistOf(workId)
+                val samples = samplesFor(workId, chapterId)
+                val system = WritePrompts.system(work.title, assist, task.render(), examples = true, samples = samples)
+                val reviewer = WritePrompts.system(work.title, assist, task.render())
+                val saved = before?.text?.takeIf { it.isNotBlank() } ?: withContext(Dispatchers.IO) { store.draft(workId, chapterId) }
+                check(!reviewOnly || saved.isNotBlank()) { "还没有可审读的草稿" }
+                val prefix = if (more && saved.isNotBlank()) saved.trimEnd() + "\n" else ""
+                var written = ""
+                val result = DraftWorkflow.run(
+                    task = task, rules = rules, initial = saved.takeIf { reviewOnly },
+                    create = {
+                        val prompt = if (prefix.isBlank()) WritePrompts.projectDraft(task, proseRules)
+                        else WritePrompts.draftMore(task.title, prefix, proseRules, task.targetLength)
+                        val answer = askWithPack(
+                            "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
+                            toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
+                            stable = samples, meter = createMeter,
+                            onReset = { written = ""; updateDraft(key, run) { it.copy(text = prefix) } },
+                        ) { piece ->
+                            written += piece
+                            updateDraft(key, run) { it.copy(text = prefix + written) }
+                        }
+                        prefix + WritePrompts.cleanDraft(answer)
+                    },
+                    review = { manuscript ->
+                        askWithPack(
+                            "本稿审读", workId, reviewer, WritePrompts.projectReview(task, manuscript, proseRules),
+                            whole = true, toolsUpTo = chapterId, phase = WritingPhase.REVIEW, confirmedOnly = true, meter = reviewMeter,
+                        )
+                    },
+                    revise = { manuscript, findings ->
+                        WritePrompts.cleanDraft(askWithPack(
+                            "本稿修订", workId, system, WritePrompts.projectRevision(task, manuscript, findings, proseRules),
+                            whole = true, maxTokens = draftTokens, toolsUpTo = chapterId, phase = WritingPhase.REVISE,
+                            confirmedOnly = true, stable = samples, meter = reviseMeter,
+                        ))
+                    },
+                    onStage = { stage, manuscript, assessment ->
+                        updateDraft(key, run) { it.copy(stage = stage, text = if (stage == DraftStage.CREATING && manuscript.isBlank()) it.text else manuscript, assessment = assessment) }
+                        if (manuscript.isNotBlank()) persistDraft(key, run, manuscript, workflow = true)
+                    },
+                )
+                val current = writingTask(workId, chapterId, instruction, targetLength)
+                val stale = current?.fingerprint != task.fingerprint
+                updateDraft(key, run) { it.copy(
+                    text = result.text, loading = false, assessment = result.assessment,
+                    stage = if (stale) DraftStage.NEEDS_REVIEW else result.stage,
+                    error = if (stale) "项目资料在写作期间变化，旧审读结果已过时，请重新审读" else null,
+                    usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost },
+                ) }
+                val totalMeter = AiMeter(AiFeature.DRAFT, workId)
+                totalMeter.add(meters.fold(AiUsage()) { all, m -> all + m.usage }, meters.fold(AiCost()) { all, m -> all + m.cost })
+                log(workId, chapterId, if (reviewOnly) "本稿审读" else "项目包写作", instruction, result.text, totalMeter)
+            } catch (e: CancellationException) {
+                if (draftRuns[key] == run) {
+                    updateDraft(key, run) { it.copy(loading = false, stage = DraftStage.STOPPED, assessment = null) }
+                    val candidate = _drafts.value[key]?.text.orEmpty()
+                    if (candidate.isNotBlank()) withContext(NonCancellable) { runCatching { persistDraft(key, run, candidate, workflow = true) } }
+                }
+                throw e
+            } catch (e: Exception) {
+                updateDraft(key, run) { it.copy(
+                    loading = false, stage = DraftStage.ERROR, assessment = null, error = e.message ?: "本章流程未完成",
+                    usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost },
+                ) }
+                val candidate = _drafts.value[key]?.takeIf { draftRuns[key] == run }?.text.orEmpty()
+                if (candidate.isNotBlank()) runCatching { persistDraft(key, run, candidate, workflow = true) }
             }
         }
     }
@@ -1185,21 +1374,23 @@ class WritingAi(
     fun stopDraft(workId: String, chapterId: String) {
         val key = workId to chapterId
         // 换个编号：取消以后还在路上的字、取消时的处理都不再改它。
-        draftRuns[key] = ++draftSeq
+        val run = ++draftSeq
+        draftRuns[key] = run
         draftJobs.remove(key)?.cancel()
         val d = _drafts.value[key] ?: return
-        _drafts.update { it + (key to d.copy(loading = false)) }
-        if (d.text.isNotBlank()) scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, d.text) } } }
+        _drafts.update { it + (key to d.copy(loading = false, stage = if (d.workflow) DraftStage.STOPPED else d.stage, assessment = null)) }
+        if (d.text.isNotBlank()) scope.launch { runCatching { persistDraft(key, run, d.text, d.workflow) } }
     }
 
     /** 草稿放进正文以后（或作者不要了）：清掉。 */
     fun clearDraft(workId: String, chapterId: String) {
         val key = workId to chapterId
         // 换个编号：正在写的那次被取消时不再存草稿。
-        draftRuns[key] = ++draftSeq
+        val run = ++draftSeq
+        draftRuns[key] = run
         draftJobs.remove(key)?.cancel()
         _drafts.update { it + (key to DraftState(workId, chapterId, "")) }
-        scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, "") } } }
+        scope.launch { runCatching { persistDraft(key, run, "", workflow = false) } }
     }
 
     /** 作者把一处问题标为已改、不改（[state] 为空是改回没处理）。 */
@@ -1507,6 +1698,11 @@ data class DraftState(
     /** 这次写用了多少、约多少钱（写完才有）。 */
     val usage: AiUsage? = null,
     val cost: AiCost? = null,
+    val workflow: Boolean = false,
+    val stage: DraftStage = DraftStage.IDLE,
+    val task: ChapterWritingTask? = null,
+    val targetLength: String = "",
+    val assessment: DraftAssessment? = null,
 )
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
@@ -1581,8 +1777,9 @@ data class SyncSession(
             val seen = mutableListOf<SyncItem>()
             val out = HashSet<String>()
             results.withIndex().sortedWith(compareBy({ it.value.number }, { it.index })).forEach { (_, r) ->
-                r.items.forEach { i -> if (seen.any { it.chapterId != i.chapterId && PackSync.sameThing(it, i) }) out += i.key }
-                seen += r.items
+                val current = r.items.map(::edited)
+                current.forEach { i -> if (PackSync.repeatedBefore(i, seen)) out += i.key }
+                seen += current
             }
             return out
         }
@@ -1594,7 +1791,10 @@ data class SyncSession(
     fun with(r: ChapterSyncResult): SyncSession {
         val next = copy(results = results.filterNot { it.chapterId == r.chapterId } + r)
         val repeats = next.repeats
-        return next.copy(picked = picked - (repeats - this.repeats) + r.items.filter { it.defaultOn && it.key !in repeats }.map { it.key })
+        // 后补了中间一章后，原先判重的状态也可能变成了真正的新变化，恢复默认勾选。
+        val restored = this.repeats - repeats
+        val defaults = next.items.filter { it.defaultOn && it.key !in repeats && (it.key in restored || it.chapterId == r.chapterId) }.map { it.key }
+        return next.copy(picked = picked.intersect(next.items.map { it.key }.toSet()) - (repeats - this.repeats) + defaults)
     }
 }
 

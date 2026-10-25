@@ -2588,6 +2588,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     merge("vocabulary.json", vocabulary::merge)
                     merge("stats.json", stats::merge)
                     merge("writing.json") {
+                        // Stop old candidate writers before replacing the bytes they were working from.
+                        writingAi.forget()
                         val report = writing.restoreBackupReport(it)
                         writingAi.forget()
                         // 本机较新或读不出的作品整部没有恢复：说出来，不然作者以为写作也恢复了。

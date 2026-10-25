@@ -10,6 +10,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onNode
+import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -153,6 +156,7 @@ class WritingDraftUiTest {
         compose.onNodeWithText("AI 写一版草稿").performClick()
         waitForText("这一章想怎么写")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("多写对白")
+        waitForText("本章写作任务")
         compose.onNodeWithText("写本章").performClick()
         waitForText("杜娘把门打开，雪灌了进来。")
         // 章名和“本章完”去掉了；草稿存下来了。
@@ -180,6 +184,25 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c2).isEmpty() }
         // 回到编辑器，看到的是新正文。
         waitForText("门外的人没有回答。")
+    }
+
+    @Test
+    fun reopeningACandidateRestoresItsRequestWithoutOverwritingNewEdits() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留人物的迟疑", targetLength = "约30字") }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.text.isNotBlank() } == true }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("保留人物的迟疑")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        waitForText("旧稿一句。")
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("保留人物的迟疑")).performTextReplacement("保留人物的犹豫和改口")
+        compose.waitForIdle()
+        compose.onNode(hasSetTextAction() and hasText("保留人物的犹豫和改口")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
     }
 
     @Test

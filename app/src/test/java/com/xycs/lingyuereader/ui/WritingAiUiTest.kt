@@ -22,6 +22,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -284,6 +285,22 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(3))
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
+        assertTrue(prompts.isEmpty())
+    }
+
+    @Test
+    fun pastingStyleAndLeavingImmediatelyStillSavesIt() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val requested = "合成样本：对白短一些，人物各有语气；叙述保持清楚。"
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitFor { vm.writingAi.assists.value[workId] != null }
+        compose.onNodeWithText("对文风的要求").performScrollTo()
+        // 同一个事件里输入并返回，不给 600ms 防抖机会；退出补存必须读到字段的最新值。
+        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
+            set(AnnotatedString(requested))
+            vm.back()
+        }
+        waitFor { WorkStore(writingDir).assist(workId).style == requested }
         assertTrue(prompts.isEmpty())
     }
 

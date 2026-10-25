@@ -26,12 +26,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +55,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.RealtimeState
 import com.xycs.lingyuereader.Screen
@@ -545,7 +549,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
         vm.writing.loadPack(workId)
     }
     val assist = assists[workId] ?: WorkAssist()
-    var style by remember(assists[workId] != null) { mutableStateOf(assist.style) }
+    val styleField = remember(workId, assists[workId] != null) { mutableStateOf(assist.style) }
+    var style by styleField
     var clearing by remember { mutableStateOf(false) }
     var showSent by remember { mutableStateOf(false) }
     val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
@@ -554,6 +559,17 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
         if (assists[workId] == null || style == assist.style) return@LaunchedEffect
         delay(600)
         vm.writingAi.updateAssist(workId) { it.copy(style = style) }
+    }
+    // 粘贴后立即返回、切后台时，不能等防抖计时。只补存这页的文风，不覆盖同时改的其他选项。
+    val latestStyleField by rememberUpdatedState(styleField)
+    fun saveStyleNow() {
+        val saved = vm.writingAi.assists.value[workId] ?: return
+        val text = latestStyleField.value
+        if (text != saved.style) vm.writingAi.updateAssist(workId) { it.copy(style = text) }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { saveStyleNow() }
+    DisposableEffect(workId) {
+        onDispose { saveStyleNow() }
     }
 
     ProvideGroupedColors {

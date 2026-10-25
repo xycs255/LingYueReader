@@ -344,13 +344,16 @@ class WritingModel(
     }
 
     /** 改章节状态。从定稿改出去要写 [reason]；[canon] 为真表示改动涉及设定，登记里会提醒同步设定包。 */
-    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, then: () -> Unit = {}) {
+    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null, then: () -> Unit = {}) {
         scope.launch {
             try {
-                val work = withContext(disk) {
-                    store.setStatus(workId, chapterId, status, reason, canon).also { refreshChanges(workId) }
+                val (work, stats) = withContext(disk) {
+                    val updated = requireNotNull(store.setStatus(workId, chapterId, status, reason, canon, currentText)) { "章节不在了" }
+                    refreshChanges(workId)
+                    updated to store.stats()
                 }
                 publish(work)
+                _stats.value = stats
                 then()
             } catch (e: CancellationException) {
                 throw e

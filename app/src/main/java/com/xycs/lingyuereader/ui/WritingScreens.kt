@@ -400,12 +400,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var syncConfirm by remember { mutableStateOf(false) }
     var syncTipFor by remember { mutableStateOf<WorkChapter?>(null) }
     var foreshadowNote by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(workId, pack) {
-        val (list, latest) = vm.writing.foreshadows(workId)
+    LaunchedEffect(workId, pack, ledgers[workId]) {
+        val (legacy, latest) = vm.writing.foreshadows(workId)
+        val list = mergeWritingForeshadows(legacy, ledgers[workId].orEmpty()).map { it.display }
         val open = list.filter { !it.done }
         val due = open.count { it.payoff != null && it.payoff <= latest }
         foreshadowNote = when {
-            pack?.none { it.kind == PackKind.FORESHADOW } != false -> null
+            list.isEmpty() -> null
             due > 0 -> "$due 条该回收了"
             else -> "${open.size} 条没回收"
         }
@@ -1509,8 +1510,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             if (statusDialog && chapter != null) {
                 StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
-                    vm.writing.setStatus(workId, chapterId, st, reason, canon)
-                    if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
+                    vm.writing.setStatus(workId, chapterId, st, reason, canon, currentText = current?.text?.toString()) {
+                        if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
+                    }
                 }
             }
             if (syncTip) {

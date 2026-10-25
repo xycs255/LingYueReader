@@ -60,6 +60,13 @@ class LedgerBriefTest {
         PackDoc("f", PackKind.FORESHADOW, "伏笔表", 4, false) to foreshadow,
     )
 
+    private fun awarenessDocs(vararg rows: String): List<Pair<PackDoc, String>> = listOf(
+        PackDoc("people", PackKind.CHARACTER, "人物档案", 3, false) to
+            "| 人物 | 别名 | 身份 |\n|---|---|---|\n| 林月 | 小月 | 药铺学徒 |\n| 沈默 | 子静 | 镖局账房 |",
+        PackDoc("awareness", PackKind.AWARENESS, "察觉表", 4, false) to
+            ("| 谁 | 知道什么 | 从第几章起 |\n|---|---|---|\n" + rows.joinToString("\n")),
+    )
+
     private fun state(who: String, aspect: String, text: String, from: Int?) =
         LedgerEntry(id = "s$who$aspect$from", kind = LedgerKind.STATE, text = text, subject = who, aspect = aspect, from = from)
 
@@ -154,6 +161,100 @@ class LedgerBriefTest {
         // 包含也算重复：账本写得长一点。
         val longer = listOf(know("林月", "杜娘说出玉佩来历，是旧案物证", 2))
         assertFalse(ChapterBriefs.build(docs(), "林月推开门。", "", 2, 1, ledger = longer).items.first { it.group == "察觉" }.text.contains("杜娘说出玉佩来历"))
+    }
+
+    @Test
+    fun anotherCharactersKnowledgeDoesNotRemoveTheViewpointCharactersKnowledge() {
+        val fact = "玉佩是旧案物证"
+        val docs = awarenessDocs("| 林月 | $fact | 第1章 |")
+        val b = ChapterBriefs.build(docs, "林月推开茶馆的门。", "", 3, 1, ledger = listOf(know("沈默", fact, 1)))
+        assertTrue(b.items.any { it.group == "察觉" && fact in it.text })
+        assertTrue(b.ledger?.known.orEmpty().none { it.subject == "沈默" })
+        assertTrue(fact in b.render()!!)
+    }
+
+    @Test
+    fun knowledgeUsesCanonicalPeopleAndTheirAliasesInBothDirections() {
+        val fact = "玉佩是旧案物证"
+        listOf("林月" to "小月", "小月" to "林月").forEach { (tableWho, ledgerWho) ->
+            val b = ChapterBriefs.build(awarenessDocs("| $tableWho | $fact | 第1章 |"), "小月推开茶馆的门。", "", 3, 1, ledger = listOf(know(ledgerWho, fact, 1)))
+            assertFalse(b.items.any { it.group == "察觉" && fact in it.text })
+            assertEquals(1, count(b.render()!!, fact))
+        }
+    }
+
+    @Test
+    fun aSharedAwarenessRowIsKeptUntilEveryHolderIsRepresented() {
+        val fact = "玉佩是旧案物证"
+        val docs = awarenessDocs("| 林月、沈默 | $fact | 第1章 |")
+        val one = ChapterBriefs.build(docs, "林月和沈默在门外等候。", "", 3, 1, ledger = listOf(know("小月", fact, 1)))
+        assertTrue(one.items.any { it.group == "察觉" && fact in it.text })
+        val both = ChapterBriefs.build(docs, "林月和沈默在门外等候。", "", 3, 1, ledger = listOf(know("小月", fact, 1), know("子静", fact, 1)))
+        assertFalse(both.items.any { it.group == "察觉" && fact in it.text })
+        assertEquals(setOf("小月", "子静"), both.ledger!!.known.map { it.subject }.toSet())
+    }
+
+    @Test
+    fun expiredOrNotYetEffectiveKnowledgeCannotRemoveCurrentAwareness() {
+        val fact = "玉佩是旧案物证"
+        val docs = awarenessDocs("| 林月 | $fact | 第1章 |")
+        val expired = know("林月", fact, 1).copy(until = 2)
+        val future = know("小月", fact, 8)
+        listOf(expired, future).forEach { entry ->
+            val b = ChapterBriefs.build(docs, "林月走进茶馆。", "", 3, 1, ledger = listOf(entry))
+            assertTrue(b.items.any { it.group == "察觉" && fact in it.text })
+        }
+    }
+
+    @Test
+    fun futureAwarenessIsReplacedOnlyByTheSameFutureTimeAndPerson() {
+        val fact = "玉佩是旧案物证"
+        val docs = awarenessDocs("| 林月 | $fact | 第8章 |")
+        val matching = ChapterBriefs.build(docs, "小月走进茶馆。", "", 3, 1, ledger = listOf(know("林月", fact, 8)))
+        assertTrue(matching.notYet.isEmpty())
+        assertEquals(fact, matching.ledger!!.notYet.single().text)
+        listOf(know("林月", fact, 9), know("沈默", fact, 8), know("林月", fact, 1)).forEach { entry ->
+            val b = ChapterBriefs.build(docs, "小月走进茶馆。", "", 3, 1, ledger = listOf(entry))
+            assertTrue(b.notYet.any { fact in it })
+        }
+    }
+
+    @Test
+    fun aSnapshotTruncatedBeforeTheKnowledgeSectionDoesNotEraseTheAwarenessRow() {
+        val fact = "玉佩是旧案物证"
+        val events = (1..40).map { LedgerEntry(kind = LedgerKind.EVENT, text = "第${it}处渡口改设了新的夜间岗哨，来往船只都要先行登记。", from = 1) }
+        val b = ChapterBriefs.build(awarenessDocs("| 林月 | $fact | 第1章 |"), "小月走进茶馆。", "", 3, 1, limit = 1_500, ledger = events + know("林月", fact, 1))
+        assertTrue(b.ledger!!.known.any { it.text == fact })
+        assertFalse(fact in b.ledgerText!!)
+        assertTrue(b.items.any { it.group == "察觉" && fact in it.text })
+    }
+
+    @Test
+    fun confirmedContextUsesOnlyFinalSummariesAndNeverFallsBackToPlans() {
+        val store = WorkStore(tmp.newFolder())
+        val work = store.create("长夜")
+        val one = work.chapters.single()
+        val (_, two) = store.addChapter(work.id, work.volumes.single().id, "第二章")!!
+        val (_, three) = store.addChapter(work.id, work.volumes.single().id, "第三章")!!
+        val (_, four) = store.addChapter(work.id, work.volumes.single().id, "第四章")!!
+        val (_, current) = store.addChapter(work.id, work.volumes.single().id, "第五章")!!
+        val (_, later) = store.addChapter(work.id, work.volumes.single().id, "第六章")!!
+        listOf(one, two, three, four, later).forEach { store.saveText(work.id, it.id, "当夜，守门人举起了灯。", count = false) }
+        store.saveCard(work.id, one.id, store.card(work.id, one.id).copy(summary = "已定前情：已到渡口。"))
+        store.saveCard(work.id, two.id, store.card(work.id, two.id).copy(summary = "草稿前情：还在京城。"))
+        store.saveCard(work.id, three.id, store.card(work.id, three.id).copy(summary = "修订前情：先去南门。"))
+        store.saveCard(work.id, four.id, store.card(work.id, four.id).copy(facts = "只有细纲：将去北门。"))
+        store.saveCard(work.id, later.id, store.card(work.id, later.id).copy(summary = "未来前情：已经离城。"))
+        store.setStatus(work.id, one.id, ChapterStatus.FINAL)
+        store.setStatus(work.id, three.id, ChapterStatus.REVISION)
+        store.setStatus(work.id, four.id, ChapterStatus.FINAL)
+        store.setStatus(work.id, later.id, ChapterStatus.FINAL)
+        val ordinary = store.brief(work.id, current.id)!!.items.filter { it.group == "前情" }
+        assertTrue(ordinary.any { "草稿前情" in it.text })
+        assertTrue(ordinary.any { "修订前情" in it.text })
+        assertTrue(ordinary.any { "只有细纲" in it.text })
+        val confirmed = store.brief(work.id, current.id, confirmedOnly = true)!!.items.filter { it.group == "前情" }
+        assertEquals(listOf("已定前情：已到渡口。"), confirmed.map { it.text })
     }
 
     @Test
