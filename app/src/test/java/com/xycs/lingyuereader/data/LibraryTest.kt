@@ -902,7 +902,8 @@ class LibraryTest {
         assertTrue(File(root, entry.id).renameTo(previous))
         File(root, entry.id).apply { mkdirs() }
         File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　新文。\n")
-        library.rename(entry.id, "未提交的新标题")
+        // 模拟事务自己写下的新索引（事务外的写入会先触发回滚，见 anUnfinishedRollbackBlocksWritesUntilItSucceeds）。
+        index.writeText(org.json.JSONArray(index.readText()).apply { getJSONObject(0).put("title", "未提交的新标题") }.toString())
         assertFalse(index.readBytes().contentEquals(before))
 
         val reopened = Library(context)
@@ -924,7 +925,8 @@ class LibraryTest {
         assertTrue(File(root, entry.id).renameTo(previous))
         File(root, entry.id).apply { mkdirs() }
         File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　新文。\n")
-        library.rename(entry.id, "已提交的新标题")
+        // 模拟事务自己写下的新索引（事务外的写入会先触发回滚，见 anUnfinishedRollbackBlocksWritesUntilItSucceeds）。
+        index.writeText(org.json.JSONArray(index.readText()).apply { getJSONObject(0).put("title", "已提交的新标题") }.toString())
         val installedIndex = index.readBytes()
         File(stage, "index-after.json").writeBytes(installedIndex)
         File(stage, "committed-swap").writeText("1")
@@ -1033,5 +1035,263 @@ class LibraryTest {
         assertTrue(dir.isDirectory)
         assertFalse(staging.exists())
         assertEquals(listOf(Block.Para("正文。")), reopened.content(reopened.list().first { it.id == a.id }).chapters.single().blocks)
+    }
+
+    private fun backupBytes(): ByteArray = ByteArrayOutputStream().also { library.backup(it, org.json.JSONObject()) }.toByteArray()
+
+    /** 备份和恢复用同一套上限：恢复时会被拒的文件，备份时当场报错，不写出一个恢复不了的 zip。 */
+    @Test
+    fun backupRefusesFilesThatRestoreWouldReject() {
+        import("顾长风传.txt", ("第一章 起\n　　" + "顾长风走过长街。".repeat(20) + "\n").toByteArray())
+        library.shelfSourceLimit = { 64L }
+        val output = ByteArrayOutputStream()
+
+        val error = runCatching { library.backup(output, org.json.JSONObject()) }.exceptionOrNull()
+
+        assertTrue(error?.message.orEmpty(), error?.message.orEmpty().contains("备份后无法恢复"))
+        assertTrue(error?.message.orEmpty().contains("顾长风传"))
+        assertEquals(0, output.size())
+    }
+
+    /** 单本书超过上限只跳过那一本（列在结果里），其余的书照常恢复。 */
+    @Test
+    fun restoreSkipsAnOversizedBookAndRestoresTheRest() {
+        val big = import("沈默长篇.txt", ("第一章 起\n　　" + "沈默在山里走了很久。".repeat(20) + "\n").toByteArray())
+        val small = import("老周.txt", "第一章 起\n　　老周。\n".toByteArray())
+        val archive = backupBytes()
+        library.remove(big.id)
+        library.remove(small.id)
+        library.shelfSourceLimit = { 64L }
+
+        val result = library.restore(archive.inputStream())
+
+        assertEquals(1, result.books)
+        assertEquals(1, result.skippedBooks)
+        assertEquals(listOf("沈默长篇"), result.skippedTitles)
+        assertEquals(listOf(small.id), library.list().map { it.id })
+        assertFalse(File(context.filesDir, "books/${big.id}").exists())
+        assertTrue(File(context.filesDir, "books").listFiles().orEmpty().none { it.name.startsWith(".unpack-") || it.name.startsWith(".restore-") })
+    }
+
+    /** 书全都超过上限时，设置和附加数据照常返回，不当成坏备份整份拒绝。 */
+    @Test
+    fun restoreStillReturnsSettingsWhenEveryBookIsOversized() {
+        val big = import("杜娘.txt", ("第一章 起\n　　" + "杜娘把灯点上。".repeat(20) + "\n").toByteArray())
+        val archive = ByteArrayOutputStream().also {
+            library.backup(it, org.json.JSONObject().put("ui.mode", org.json.JSONObject().put("s", "DARK")), mapOf("vocabulary.json" to "[]".toByteArray()))
+        }.toByteArray()
+        library.remove(big.id)
+        library.shelfSourceLimit = { 64L }
+
+        val result = library.restore(archive.inputStream())
+
+        assertEquals(0, result.books)
+        assertEquals(1, result.skippedBooks)
+        assertEquals("DARK", result.settings?.getJSONObject("ui.mode")?.getString("s"))
+        assertEquals("[]", result.data["vocabulary.json"])
+        assertTrue(library.list().isEmpty())
+    }
+
+    /** 不再按固定总量拒绝大书架，改为检查剩余空间；空间不够时不改动现有的书。 */
+    @Test
+    fun restoreStopsWithoutChangesWhenStorageRunsOut() {
+        val entry = import("林月.txt", "第一章 起\n　　旧正文。\n".toByteArray())
+        val archive = replacementBackup(mapOf(entry.id to "第一章 起\n　　新正文。\n".toByteArray()))
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+        library.freeSpace = { 0L }
+
+        val error = runCatching { library.restore(archive.inputStream()) }.exceptionOrNull()
+
+        assertTrue(error?.message.orEmpty().contains("存储空间不足"))
+        assertArrayEquals(oldIndex, index.readBytes())
+        assertEquals(listOf(Block.Para("旧正文。")), library.content(entry).chapters.single().blocks)
+        assertTrue(File(context.filesDir, "books").listFiles().orEmpty().none { it.name.startsWith(".unpack-") || it.name.startsWith(".restore-") })
+    }
+
+    /** 已在书架上的书不受新的导入上限约束：旧版导入的大文件缓存失效后照样能读。 */
+    @Test
+    fun shelfSourcesAreNotHeldToTheImportLimit() {
+        val file = File.createTempFile("oversized-shelf-book", ".txt")
+        try {
+            java.io.RandomAccessFile(file, "rw").use { it.setLength(129L * 1024 * 1024) }
+            assertTrue(runCatching { BookParser.SourceBytes(file.name, file).bytes }.exceptionOrNull()?.message.orEmpty().contains("文件过大"))
+            assertEquals(129 * 1024 * 1024, BookParser.SourceBytes(file.name, file, onShelf = true).bytes.size)
+        } finally {
+            file.delete()
+        }
+    }
+
+    /** 删书删到一半被杀，留下同 ID 的目录：恢复把它挪开，而不是整份失败。 */
+    @Test
+    fun restoreMovesAsideAnUnindexedDirectoryWithTheSameId() {
+        val entry = import("顾长风.txt", "第一章 起\n　　备份里的正文。\n".toByteArray())
+        val archive = backupBytes()
+        library.remove(entry.id)
+        File(context.filesDir, "books/${entry.id}").mkdirs()
+        File(context.filesDir, "books/${entry.id}/s0.txt").writeText("删到一半")
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+
+        val restored = library.list().single()
+        assertEquals(entry.id, restored.id)
+        assertEquals(listOf(Block.Para("备份里的正文。")), library.content(restored).chapters.single().blocks)
+    }
+
+    /** 导入或删书被杀留下的无主目录、退役的事务目录、解压临时目录，在后台清理；书架上的书不动。 */
+    @Test
+    fun leftoverDirectoriesAreCleanedUpInTheBackground() {
+        val entry = import("老周.txt", "第一章 起\n　　老周的正文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val orphan = File(root, "123e4567-e89b-12d3-a456-426614174010").apply { mkdirs() }
+        File(orphan, "s0.txt").writeText("导入到一半")
+        val retired = File(root, ".swap-cleanup-123e4567-e89b-12d3-a456-426614174011").apply { mkdirs() }
+        File(retired, "old.txt").writeText("旧副本")
+        val unpack = File(root, ".unpack-123e4567-e89b-12d3-a456-426614174012").apply { mkdirs() }
+
+        library.cleanUpLeftovers()
+
+        assertFalse(orphan.exists())
+        assertFalse(retired.exists())
+        assertFalse(unpack.exists())
+        assertEquals(setOf("index.json", entry.id), root.listFiles().orEmpty().map { it.name }.toSet())
+        assertEquals(listOf(Block.Para("老周的正文。")), library.content(entry).chapters.single().blocks)
+    }
+
+    /** 索引有读不出的记录时，不认定任何书目录无主。 */
+    @Test
+    fun cleanupKeepsUnindexedDirectoriesWhileTheIndexIsDamaged() {
+        import("杜娘.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val unknown = File(root, "123e4567-e89b-12d3-a456-426614174013").apply { mkdirs() }
+        val index = File(root, "index.json")
+        index.writeText(org.json.JSONArray(index.readText()).put(org.json.JSONObject().put("id", "坏记录")).toString())
+
+        library.cleanUpLeftovers()
+
+        assertTrue(unknown.isDirectory)
+    }
+
+    private fun failedRestoreJournal(entry: BookEntry, snapshot: ByteArray): File {
+        val root = File(context.filesDir, "books")
+        val stage = File(root, ".restore-123e4567-e89b-12d3-a456-426614174020")
+        writeSwapJournal(stage, listOf(entry.id), snapshot)
+        val previous = File(stage, "previous/${entry.id}")
+        previous.parentFile!!.mkdirs()
+        assertTrue(File(root, entry.id).renameTo(previous))
+        File(root, entry.id).mkdirs()
+        File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　未提交的新文。\n")
+        return stage
+    }
+
+    /** 事务失败、回滚也没成功：之后写书架先重试回滚，仍不成功就拒绝写入，不能让期间的改动在下次启动时被旧快照冲掉。 */
+    @Test
+    fun anUnfinishedRollbackBlocksWritesUntilItSucceeds() {
+        val entry = import("林月.txt", "第一章 起\n　　原文。\n".toByteArray())
+        val index = File(context.filesDir, "books/index.json")
+        val before = index.readBytes()
+        // 快照暂时读不出，模拟回滚无法完成。
+        val stage = failedRestoreJournal(entry, "{broken".toByteArray())
+
+        val error = runCatching { library.rename(entry.id, "改名") }.exceptionOrNull()
+        assertTrue(error?.message.orEmpty(), error?.message.orEmpty().contains("已停止写入书架"))
+        assertTrue(runCatching { library.saveMarks(entry.id, Marks()) }.isFailure)
+        assertArrayEquals(before, index.readBytes())
+
+        // 快照可读以后（比如清出了空间），下一次写入先完成回滚，再写。
+        File(stage, "index-before.json").writeBytes(before)
+        library.rename(entry.id, "改名")
+        assertFalse(stage.exists())
+        assertEquals("改名", library.list().single().title)
+        assertEquals(listOf(Block.Para("原文。")), library.content(library.list().single()).chapters.single().blocks)
+    }
+
+    /** 启动时回滚失败不能让应用每次启动都闪退：书架照常读得出、写入被拒，并给出提示。 */
+    @Test
+    fun aFailedStartupRecoveryDegradesToReadOnlyInsteadOfThrowing() {
+        val entry = import("沈默.txt", "第一章 起\n　　原文。\n".toByteArray())
+        failedRestoreJournal(entry, "{broken".toByteArray())
+
+        val reopened = Library(context)
+
+        assertTrue(reopened.startupProblem.orEmpty().contains("暂时无法改动书架"))
+        assertEquals(entry.id, reopened.list().single().id)
+        assertTrue(runCatching { reopened.rename(entry.id, "改名") }.isFailure)
+        assertEquals(entry.title, reopened.list().single().title)
+    }
+
+    /** 规则回滚完成后清理目录失败：留下的目录带着“已回滚”标记，不能再拿旧索引快照覆盖之后写下的索引。 */
+    @Test
+    fun aRolledBackRulesStagingNeverRestoresItsOldIndexSnapshotAgain() {
+        val entry = import("规则已回滚.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val stage = File(root, ".rules-${entry.id}-123e4567-e89b-12d3-a456-426614174030").apply { mkdirs() }
+        File(stage, "index-before.json").writeBytes(index.readBytes())
+        File(stage, "abandoned").mkdirs()
+        File(stage, "rolled-back").writeText("1")
+        library.rename(entry.id, "之后改的名字")
+        val after = index.readBytes()
+
+        val reopened = Library(context)
+
+        assertArrayEquals(after, index.readBytes())
+        assertEquals("之后改的名字", reopened.list().single().title)
+        assertFalse(stage.exists())
+    }
+
+    /** 打开书时正在重建缓存，刷新要等重建写完才换目录：旧内容的缓存不能写进新目录、还被当成有效缓存。 */
+    @Test
+    fun refreshWaitsForAnOngoingCacheRebuildBeforeSwappingDirectories() {
+        val pdf = File(context.cacheDir, "杜娘画册.pdf").apply { writeBytes(ByteArray(10) { 1 }) }
+        val pages: (File) -> List<Float> = { f -> List(f.length().toInt() / 10) { 1.4f } }
+        try {
+            BookParser.pdfAspects = pages
+            val entry = library.add(library.describe(listOf(Uri.fromFile(pdf))), null)
+            assertTrue(library.bookFile(entry.id, "cache.bin").delete())
+            val inBuild = java.util.concurrent.CountDownLatch(1)
+            val proceed = java.util.concurrent.CountDownLatch(1)
+            val calls = java.util.concurrent.atomic.AtomicInteger()
+            BookParser.pdfAspects = { f ->
+                if (calls.getAndIncrement() == 0) {
+                    inBuild.countDown()
+                    proceed.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                }
+                pages(f)
+            }
+            val reader = kotlin.concurrent.thread { library.content(entry) }
+            assertTrue(inBuild.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            pdf.writeBytes(ByteArray(20) { 2 })
+            var refreshed: Library.RefreshResult? = null
+            val refresher = kotlin.concurrent.thread { refreshed = library.refresh(entry) }
+            Thread.sleep(300)
+            // 重建还没写完：刷新只能等着，书目录仍是旧的。
+            assertEquals(10L, library.bookFile(entry.id, entry.sources.single().file).length())
+            proceed.countDown()
+            reader.join(10_000)
+            refresher.join(10_000)
+
+            assertEquals(Library.RefreshResult(1, 0), refreshed)
+            val pagesNow = library.content(library.list().single()).chapters.flatMap { it.blocks }.filterIsInstance<Block.Image>()
+            assertEquals(2, pagesNow.size)
+        } finally {
+            BookParser.pdfAspects = PdfPages::aspects
+        }
+    }
+
+    /** 漫画包里的封面条目超过上限时不解出，也不在书籍目录里留下半截文件。 */
+    @Test
+    fun oversizedComicCoverIsNotExtracted() {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(ZipEntry("001.png")); zip.write(PNG); zip.write(ByteArray(33 * 1024 * 1024)); zip.closeEntry()
+            zip.putNextEntry(ZipEntry("002.png")); zip.write(PNG); zip.closeEntry()
+        }
+        val entry = import("超大封面.cbz", out.toByteArray())
+
+        assertEquals(null, entry.cover)
+        val images = File(context.filesDir, "books/${entry.id}/img").listFiles().orEmpty()
+        assertTrue(images.all { it.length() < 1024 * 1024 })
+        assertEquals(2, library.content(entry).chapters.single().blocks.filterIsInstance<Block.Image>().size)
     }
 }

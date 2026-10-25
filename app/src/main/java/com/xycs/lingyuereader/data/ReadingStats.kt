@@ -41,11 +41,24 @@ class ReadingStats internal constructor(private val file: File, private val atom
         update(day) { it.copy(chars = it.chars + chars) }
     }
 
-    /** 恢复备份：按天合并，同一天取较大的数（同一份数据恢复两次不会翻倍）。 */
+    /**
+     * 恢复备份：按天合并，同一天取较大的数（同一份数据恢复两次不会翻倍）。
+     * 本机统计坏了（读得出文件、解析不了）时直接采用备份里的：坏文件先另存，这正是“从备份恢复”要修的情况。
+     * 读盘本身失败（不是内容坏）仍然报错，不覆盖。
+     */
     @Synchronized
     fun merge(json: String) {
         val incoming = parse(json)
-        val all = days().toMutableMap()
+        val local = if (!file.exists() && !File(file.path + ".bak").exists()) emptyMap() else {
+            val bytes = atomicFile.readFully()
+            try {
+                parse(bytes.toString(Charsets.UTF_8))
+            } catch (error: Exception) {
+                check(DurableFiles.keptDamaged(file, bytes)) { "本机阅读统计已损坏，且无法另存原文件，未恢复" }
+                emptyMap()
+            }
+        }
+        val all = local.toMutableMap()
         incoming.forEach { (day, d) ->
             val old = all[day]
             all[day] = if (old == null) d else DayStats(
