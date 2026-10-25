@@ -4,6 +4,7 @@ import com.xycs.lingyuereader.dict.PinyinAnnotator
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import com.xycs.lingyuereader.data.displayText
 import androidx.compose.runtime.DisposableEffect
@@ -402,29 +403,41 @@ internal fun BlockView(
 
     // 插图、表格等非文字块只响应轻点（翻页/菜单）。
     val tapOnly = Modifier.pointerInput(block) { detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }) }
+    // 翻页模式下跨页的块：上方留白、列表符号只在第一段，下方留白只在最后一段。
+    val isStart = range == null || range.first == 0
     when (block) {
         is Block.Para -> SelectableText(
             styles.para,
             modifier.padding(bottom = if (isEnd) gap else 0.dp),
             justify = styles.settings.justify && styles.chinese,
         )
-        is Block.Heading -> SelectableText(styles.heading(block.level), modifier.padding(top = gap * 1.5f, bottom = gap))
-        is Block.Quote -> Row(modifier.padding(bottom = gap).height(IntrinsicSize.Min)) {
-            Box(Modifier.width(3.dp).fillMaxHeight().background(palette.accent.copy(alpha = 0.5f)))
-            SelectableText(styles.quote, Modifier.padding(start = styles.quoteIndent - 3.dp), justify = styles.settings.justify && styles.chinese)
+        is Block.Heading -> SelectableText(
+            styles.heading(block.level),
+            modifier.padding(top = if (isStart) gap * 1.5f else 0.dp, bottom = if (isEnd) gap else 0.dp),
+        )
+        // 左边一道竖线画在背后：文字用 BoxWithConstraints 排版，不支持按固有高度（IntrinsicSize）量，量了会崩。
+        is Block.Quote -> Box(
+            modifier.padding(bottom = if (isEnd) gap else 0.dp).drawBehind {
+                drawRect(palette.accent.copy(alpha = 0.5f), size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height))
+            },
+        ) {
+            SelectableText(styles.quote, Modifier.padding(start = styles.quoteIndent), justify = styles.settings.justify && styles.chinese)
         }
-        is Block.ListItem -> Row(modifier.padding(start = (block.indent * 16).dp, bottom = gap / 2)) {
-            Text(block.marker, style = styles.list.copy(color = palette.accent), modifier = Modifier.width(styles.listMarkerWidth))
+        is Block.ListItem -> Row(modifier.padding(start = (block.indent * 16).dp, bottom = if (isEnd) gap / 2 else 0.dp)) {
+            Text(if (isStart) block.marker else "", style = styles.list.copy(color = palette.accent), modifier = Modifier.width(styles.listMarkerWidth))
             SelectableText(styles.list, Modifier)
         }
         is Block.Table -> Column(
             modifier
                 .then(tapOnly)
-                .padding(bottom = gap)
+                .padding(bottom = if (isEnd) gap else 0.dp)
                 .horizontalScroll(rememberScrollState())
                 .border(1.dp, palette.secondary.copy(alpha = 0.4f)),
         ) {
-            block.rows.forEachIndexed { r, row ->
+            // 翻页模式下表格按行切（[range] 是行号），只画这一页上的几行。
+            val rows = range?.let { r -> r.first.coerceAtLeast(0)..r.last.coerceAtMost(block.rows.lastIndex) } ?: block.rows.indices
+            rows.forEach { r ->
+                val row = block.rows[r]
                 Row(
                     Modifier
                         .height(IntrinsicSize.Min)
@@ -439,7 +452,7 @@ internal fun BlockView(
                         )
                     }
                 }
-                if (r < block.rows.lastIndex) Box(Modifier.fillMaxWidth().height(1.dp).background(palette.secondary.copy(alpha = 0.3f)))
+                if (r < rows.last) Box(Modifier.fillMaxWidth().height(1.dp).background(palette.secondary.copy(alpha = 0.3f)))
             }
         }
         Block.Rule -> Box(

@@ -150,8 +150,10 @@ import com.xycs.lingyuereader.ui.glass.glassHighlight
 import com.xycs.lingyuereader.ui.glass.readerGlass
 import com.xycs.lingyuereader.ui.glass.recordGlass
 import com.xycs.lingyuereader.ui.glass.rememberGlassBackdrop
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
@@ -270,6 +272,13 @@ private fun startOf(screen: Screen.Reader, entry: BookEntry, sourceContent: Book
     return Position(index, block + HEADER_ITEMS, if (p.anchor.text.isEmpty()) p.itemOffset else 0, char)
 }
 
+/**
+ * 听书换了章，阅读页要不要跟过去、跟到哪一章：只在听书的章号真的变了（[before] → [now]）、
+ * 正在读（[playing]），且不是阅读页正在看的那章（[shown]）时跟；否则为空。
+ */
+internal fun followListening(before: Int?, now: Int?, playing: Boolean, shown: Int): Int? =
+    now?.takeIf { it != before && playing && it != shown }
+
 /** 横排分页坐标包含视觉缩进，进度与书签始终使用不含缩进的原文坐标。 */
 internal fun pageSourceChar(chapter: com.xycs.lingyuereader.data.Chapter, block: Int, layoutChar: Int, indent: Boolean): Int =
     (layoutChar - (chapter.blocks.getOrNull(block)?.let { indentOf(it, indent) } ?: 0)).coerceAtLeast(0)
@@ -314,19 +323,34 @@ private fun Reader(
     LaunchedEffect(entry.id) { vm.loadSummaries() }
     val chinese = remember(content) { looksChinese(content.chapters.firstOrNull()?.blocks.orEmpty()) }
     val customFont = remember(settings.font) { vm.fontFamily(settings.font) }
-    // 注音要读字表，后台准备好再用。
-    val annotator by produceState<com.xycs.lingyuereader.dict.PinyinAnnotator?>(null, settings.pinyin) {
-        value = if (settings.pinyin) vm.pinyinAnnotator() else null
+    // 注音要读字表，后台准备好再用。结果记着是为哪个开关读的：刚打开注音、字表还没读完时算“还在准备”；
+    // 读不出字表时不注音，照常排版（不然阅读页一直空着）。
+    val pinyinLoad by produceState<Pair<Boolean, com.xycs.lingyuereader.dict.PinyinAnnotator?>?>(null, settings.pinyin) {
+        value = settings.pinyin to if (settings.pinyin) vm.pinyinAnnotator() else null
     }
+    val annotator = pinyinLoad?.second
+    val pinyinPending = settings.pinyin && pinyinLoad?.first != true
     val styles = remember(settings, palette, chinese, customFont, annotator) { ReaderStyles(settings, palette, chinese, customFont, annotator) }
     // 翻页模式分好的页：换章时阅读区重建，这份留着，前后章不必重分。
     val pageCache = remember(content) { PageCache() }
+    // 竖排排好的页，同上。
+    val verticalCache = remember(content) { ChapterCache<List<VerticalLayout.VPage>>() }
     // 正在翻的那一页翻到哪：书页厚度跟着它走。
     val pageTurn = remember(content) { PageTurn() }
-    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent, vm.landedOn(screen)) }
+    // 这一页存过进度（落了地）没有：存过之后重建阅读页就从进度读起。
+    val landed = remember(screen, content, sourceContent) { vm.landedOn(screen) }
+    val initial = remember(screen, content, sourceContent) { startOf(screen, entry, sourceContent, landed) }
+    // 往回翻进上一章时停在章末；只在刚翻过来、还没存过进度时算数。之后在这一章里往回翻了几页再重建
+    // （旋转屏幕、进搜索再返回、切繁简），按存下的进度恢复，不再跳到章末。
+    val fromEnd = screen.fromEnd && !landed
     var pos by remember(screen, content) { mutableStateOf(initial) }
     val chapterIndex = initial.chapter
     val chapter = content.chapters[chapterIndex]
+    // 本章正文：没在内存里时到后台读（读盘、繁简转换），滚动模式读好之前只露出纸。拿着它，免得软引用被回收后又在界面线程上重读。
+    var chapterBlocks by remember(chapter) { mutableStateOf(chapter.takeIf { it.isLoaded }?.blocks) }
+    LaunchedEffect(chapter) {
+        if (chapterBlocks == null) chapterBlocks = withContext(Dispatchers.IO) { chapter.blocks }
+    }
     var menuVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<ReaderSheet?>(null) }
     // AI 工具面板（对话记录、人物表、读书笔记）。
@@ -339,10 +363,14 @@ private fun Reader(
     val aloud by ReadAloud.state.collectAsStateWithLifecycle()
     val listening = aloud?.takeIf { it.bookId == entry.id }
     val speaking = listening?.takeIf { it.chapterIndex == chapterIndex }?.current
-    // 听书读进下一章时，阅读页跟着换章。
+    // 听书读进下一章时，阅读页跟着换章。只跟“正在读、并且章号真的变了”的那一下：
+    // 第一次组合（比如听书暂停着，从搜索结果跳到别的章）不把读者弹回听书所在的章。
+    val heard = remember { object { var chapter = listening?.chapterIndex } }
     LaunchedEffect(listening?.chapterIndex) {
-        val l = listening ?: return@LaunchedEffect
-        if (l.chapterIndex != chapterIndex) vm.replaceTop(Screen.Reader(entry.id, l.chapterIndex, l.current?.block))
+        val l = listening
+        val target = followListening(heard.chapter, l?.chapterIndex, l?.playing == true, chapterIndex)
+        heard.chapter = l?.chapterIndex
+        if (target != null) vm.replaceTop(Screen.Reader(entry.id, target, l?.current?.block))
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val startListening = {
@@ -685,7 +713,11 @@ private fun Reader(
             LocalImageZoom provides { zoomed = it },
         ) {
             if (settings.pageMode == PageMode.SCROLL) {
-                key(screen, content, settings.layoutKey) {
+                // 注音的字表、本章正文都在后台读：读好之前不排版。不然先按没有拼音排、恢复了位置，
+                // 字表到了行高一变，阅读位置就在段内往前漂（翻页模式同理，见下面）。
+                if (pinyinPending || chapterBlocks == null) {
+                    Unit
+                } else key(screen, content, settings.layoutKey) {
                     val start = remember { pos }
                     val listState = rememberLazyListState(start.item, start.offset)
                     ScrollReader(
@@ -717,7 +749,7 @@ private fun Reader(
                 // 书页夹在两摞纸中间（书页厚度），翻页时两摞跟着换。
                 val turnedReader: @Composable () -> Unit = {
                     // 注音的字表在后台读：读好之前不分页，免得先按没有拼音分一次、字表到了再分一次，页码对不上。
-                    if (settings.pinyin && annotator == null) {
+                    if (pinyinPending) {
                         Unit
                     } else if (settings.pageMode == PageMode.VERTICAL) {
                         key(screen, content, settings.layoutKey) {
@@ -726,7 +758,7 @@ private fun Reader(
                             VerticalReader(
                                 content = content,
                                 chapterIndex = chapterIndex,
-                                start = PageStart(start.block, start.char, screen.fromEnd && start == initial),
+                                start = PageStart(start.block, start.char, fromEnd && start == initial),
                                 styles = styles,
                                 typeface = typeface,
                                 marks = marks,
@@ -742,6 +774,7 @@ private fun Reader(
                                 speaking = speaking,
                                 turn = pageTurn,
                                 selected = lookup?.takeIf { it.chapterIndex == chapterIndex }?.let { l -> l.range?.let { l.block to it } },
+                                pageCache = verticalCache,
                             )
                         }
                     } else {
@@ -752,7 +785,7 @@ private fun Reader(
                             PagedReader(
                                 content = content,
                                 chapterIndex = chapterIndex,
-                                start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), screen.fromEnd && start == initial),
+                                start = PageStart(start.block, pageLayoutChar(chapter, start.block, start.char, settings.indent), fromEnd && start == initial),
                                 styles = styles,
                                 mode = settings.pageMode,
                                 marks = marks,
@@ -1218,7 +1251,7 @@ private fun Reader(
     ) {
         lastCard?.let { c ->
             val typeface = remember(settings.font, settings.serif) { vm.cardTypeface(settings) }
-            QuoteCardSheet(c, typeface, palette, appTint)
+            QuoteCardSheet(c, typeface, palette, appTint, onMessage = vm::showMessage)
         }
     }
     // 注释面板：收起动画期间还显示原来的内容。
