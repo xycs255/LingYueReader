@@ -138,7 +138,8 @@ fun VocabularyScreen(vm: AppViewModel) {
                     // 开了 AI 助手、有词还没释义时：一键补上中文释义。
                     if (!reviewing && aiConfig.ready && anyBlank) {
                         if (filling) {
-                            top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 20.dp, modifier = Modifier.padding(horizontal = 14.dp))
+                            // 顶栏在设置页配色外面，转圈的颜色直接取主题强调色。
+                            Spinner(Modifier.padding(horizontal = 14.dp), size = 20.dp, color = MiuixTheme.colorScheme.primary)
                         } else {
                             IconButton(onClick = vm::fillVocabGlosses) {
                                 Icon(LingYueIcons.Sparkle, contentDescription = "AI 补释义")
@@ -171,37 +172,26 @@ fun VocabularyScreen(vm: AppViewModel) {
             overscrollEffect = null,
         ) {
             item {
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ProvideGroupedColors {
+                ProvideGroupedColors {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                         SegmentedControl(
                             listOf(false to "学习中 ${learning.size}", true to "已掌握 ${words.size - learning.size}"),
                             mastered,
                             Modifier.width(220.dp),
                             height = 36.dp,
                         ) { mastered = it }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (due.isNotEmpty()) {
-                        // 和左边的分段控件一样高的强调色小胶囊，不用一颗大按钮压过整行。
-                        Text(
-                            "复习 ${due.size}",
-                            color = MiuixTheme.colorScheme.onPrimary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier
-                                .height(36.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(MiuixTheme.colorScheme.primary)
-                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { reviewing = true }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                    } else if (learning.isNotEmpty()) {
-                        val next = learning.minOf { it.due }
-                        Text(
-                            "下次复习：${dueLabel(next, now)}",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
+                        Spacer(Modifier.weight(1f))
+                        if (due.isNotEmpty()) {
+                            // 淡色胶囊（和左边的分段控件一样看着 36dp 高），不用一颗大按钮压过整行。
+                            PillButton("复习 ${due.size}", onClick = { reviewing = true }, style = PillStyle.Tinted)
+                        } else if (learning.isNotEmpty()) {
+                            val next = learning.minOf { it.due }
+                            Text(
+                                "下次复习：${dueLabel(next, now)}",
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                        }
                     }
                 }
             }

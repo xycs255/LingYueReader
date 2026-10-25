@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -121,23 +123,18 @@ fun StatsScreen(vm: AppViewModel) {
                     val longest = books.firstOrNull()?.readMillis ?: 1
                     // 书多时先列读得最久的几本（每本都带动画，一次全排出来会卡一下），点“查看全部”再展开。
                     var showAll by rememberSaveable { mutableStateOf(false) }
+                    // 点“查看全部”“收起”时多出来、去掉的几行由卡片的高度动画平滑长高、缩短（GroupedSection 自带）。
                     GroupedSection(header = "各本书") {
                         if (books.isEmpty()) {
-                            row {
-                                Text(
-                                    "还没有阅读记录。一本书读满 1 分钟，就会列在这里。",
-                                    color = c.secondary,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-                                )
-                            }
+                            row { EmptyRow("还没有阅读记录。一本书读满 1 分钟，就会列在这里。") }
                         }
                         (if (showAll) books else books.take(TOP_BOOKS)).forEach { b ->
                             row {
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                                    Row {
-                                        Text(b.title, color = c.label, fontSize = 17.sp, modifier = Modifier.weight(1f), maxLines = 1)
-                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 15.sp)
+                                // 行高、字号同 NavRow：书名 16sp 半粗、右边时长 14sp 灰字，至少 56dp 高。
+                                Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(b.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
                                     }
                                     val grown = animateFromZero(b.readMillis.toFloat() / longest)
                                     Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
@@ -192,7 +189,7 @@ private fun Heatmap(days: Map<LocalDate, DayStats>, today: LocalDate, weeks: Int
     val readDays = days.count { (d, s) -> !d.isBefore(start) && s.millis >= 60_000 }
     // 从左往右一列列亮起来。
     val reveal = remember { Animatable(if (Effects.noMotion) 1f else 0f) }
-    LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(900)) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, Motion.standard(Motion.COUNT_UP)) }
     Canvas(
         Modifier
             .fillMaxWidth()

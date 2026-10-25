@@ -5,13 +5,10 @@ import androidx.compose.runtime.getValue
 import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,16 +17,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,9 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -134,7 +126,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
             },
         ) { padding ->
             if (entry == null || !loaded) {
-                InfiniteProgressIndicator(Modifier.padding(top = padding.calculateTopPadding() + 48.dp).fillMaxWidth())
+                LoadingState("正在读取规则和原文……", Modifier.padding(top = padding.calculateTopPadding()))
                 return@GlassScaffold
             }
             val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
@@ -167,17 +159,21 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
                     GroupedSection(header = "预览") {
                         row {
-                            Text(
-                                when {
-                                    tooSlow -> "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
-                                    list == null -> "正在试分章……"
-                                    list.size <= 1 -> "按这个规则只分出 ${list.size} 章，可能没匹配到章名。"
-                                    else -> "将分为 ${list.size} 章"
-                                },
-                                color = if (tooSlow || list != null && list.size <= 1) c.destructive else c.secondary,
-                                fontSize = 14.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            )
+                            if (list == null && !tooSlow) {
+                                LoadingRow("正在试分章……")
+                            } else {
+                                val count = list?.size ?: 0
+                                Text(
+                                    when {
+                                        tooSlow -> "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
+                                        count <= 1 -> "按这个规则只分出 $count 章，可能没匹配到章名。"
+                                        else -> "将分为 $count 章"
+                                    },
+                                    color = if (tooSlow || count <= 1) c.destructive else c.secondary,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                )
+                            }
                         }
                         if (list != null && list.size > 1) {
                             val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
@@ -186,15 +182,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     }
                     GroupedSection(header = "净化规则") {
                         if (rules.isEmpty()) {
-                            row {
-                                Text(
-                                    "还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。",
-                                    color = c.secondary,
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                )
-                            }
+                            row { EmptyRow("还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。") }
                         }
                         rules.forEachIndexed { i, r ->
                             row {
@@ -245,18 +233,13 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                         }
                     }
                     val canSave = !busy && tocError == null && !tooSlow
-                    Box(
-                        Modifier
-                            .padding(horizontal = 16.dp)
-                            .fillMaxWidth()
-                            .heightIn(min = 50.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(if (canSave) c.tint else c.fill)
-                            .clickable(enabled = canSave) { vm.saveRules(entry, current) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(if (busy) "正在重新整理……" else "保存并重新分章", color = if (canSave) Color.White else c.secondary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                    }
+                    // 主按钮和上面的卡片左右对齐（都缩进 12dp）。
+                    PrimaryButton(
+                        if (busy) "正在重新整理……" else "保存并重新分章",
+                        onClick = { vm.saveRules(entry, current) },
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        enabled = canSave,
+                    )
                     Text(
                         "规则只影响灵阅里的显示，不会改动原文件。",
                         color = c.secondary,

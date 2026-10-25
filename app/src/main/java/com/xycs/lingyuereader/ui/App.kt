@@ -5,6 +5,10 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -387,52 +391,65 @@ internal fun ShelfScreen(vm: AppViewModel) {
             top = padding.calculateTopPadding() + 8.dp,
             bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 20.dp,
         )
-        when {
-            !loaded -> Unit
-            all.isEmpty() -> EmptyShelf(Modifier.padding(padding), pickFiles)
-            shelf.isEmpty() -> if (query.isNotBlank()) {
-                EmptyState(
+        // 列表 ↔ 网格、空状态 ↔ 有书时原地淡出淡入（fadeThrough），不一下子换掉；减少动效时直接换。
+        // 同一种样子里（筛选、排序、删书）不换内容，由各项自己的 animateItem 挪位置。
+        val view = when {
+            !loaded -> ShelfView.LOADING
+            all.isEmpty() -> ShelfView.EMPTY
+            shelf.isEmpty() -> if (query.isNotBlank()) ShelfView.NO_MATCH else ShelfView.EMPTY_GROUP
+            shelfPrefs.list -> ShelfView.LIST
+            else -> ShelfView.GRID
+        }
+        AnimatedContent(
+            view,
+            // 刚打开、书架还没读出来时什么都不画：读出来直接显示，不在启动时多等一下淡入。
+            transitionSpec = { if (initialState == ShelfView.LOADING) EnterTransition.None togetherWith ExitTransition.None else Motion.fadeThrough() },
+            label = "shelfView",
+        ) { shown ->
+            when (shown) {
+                ShelfView.LOADING -> Unit
+                ShelfView.EMPTY -> EmptyShelf(Modifier.padding(padding), pickFiles)
+                ShelfView.NO_MATCH -> EmptyState(
                     LingYueIcons.Search,
                     "书名和作者里没有“${query.trim()}”",
                     "可以到所有书的正文里找找。",
                     Modifier.padding(padding),
                     action = "在正文里搜索" to { vm.openLibrarySearch(query) },
                 )
-            } else {
-                EmptyState(LingYueIcons.Book, "这个分组里还没有书", "长按书，选“分组…”把它加进来。", Modifier.padding(padding))
-            }
-            shelfPrefs.list -> LazyColumn(
-                modifier = listModifier,
-                contentPadding = contentPadding,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                overscrollEffect = null,
-            ) {
-                if (continueReading != null) {
-                    item(key = "continue-reading") {
-                        ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                ShelfView.EMPTY_GROUP -> EmptyState(LingYueIcons.Book, "这个分组里还没有书", "长按书，选“分组…”把它加进来。", Modifier.padding(padding))
+                ShelfView.LIST -> LazyColumn(
+                    modifier = listModifier,
+                    contentPadding = contentPadding,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    overscrollEffect = null,
+                ) {
+                    if (continueReading != null) {
+                        item(key = "continue-reading") {
+                            ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                        }
+                    }
+                    items(shelf, key = { it.id }) { entry ->
+                        ShelfRow(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
                     }
                 }
-                items(shelf, key = { it.id }) { entry ->
-                    ShelfRow(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
-                }
-            }
-            // 手机竖屏一行三本，平板、横屏按宽度多放几本。
-            else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(100.dp),
-                modifier = listModifier,
-                contentPadding = contentPadding,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-                overscrollEffect = null,
-            ) {
-                if (continueReading != null) {
-                    item(key = "continue-reading", span = { GridItemSpan(maxLineSpan) }) {
-                        ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                // 手机竖屏一行三本，平板、横屏按宽度多放几本。
+                ShelfView.GRID -> LazyVerticalGrid(
+                    columns = GridCells.Adaptive(100.dp),
+                    modifier = listModifier,
+                    contentPadding = contentPadding,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    overscrollEffect = null,
+                ) {
+                    if (continueReading != null) {
+                        item(key = "continue-reading", span = { GridItemSpan(maxLineSpan) }) {
+                            ContinueReading(continueReading, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                        }
                     }
-                }
-                items(shelf, key = { it.id }) { entry ->
-                    // 排序、分组筛选、删书时各本书挪到新位置，而不是一下子跳过去。
-                    ShelfItem(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                    items(shelf, key = { it.id }) { entry ->
+                        // 排序、分组筛选、删书时各本书挪到新位置，而不是一下子跳过去。
+                        ShelfItem(entry, vm, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()))
+                    }
                 }
             }
         }
@@ -441,39 +458,61 @@ internal fun ShelfScreen(vm: AppViewModel) {
     pending?.let { files -> ImportDialog(files, vm) }
 }
 
-/** 书架顶部的分组标签：全部、各分组、未分组。长按分组可改名或删除。没有分组时不显示。 */
+/** 书架这一页正显示哪种样子：换样子时原地淡出淡入。 */
+private enum class ShelfView { LOADING, EMPTY, NO_MATCH, EMPTY_GROUP, LIST, GRID }
+
+/**
+ * 书架顶部的分组筛选条：全部、各分组、未分组。长按分组可改名或删除。没有分组时不显示。
+ * 样子同胶囊按钮（[PillButton]）：选中的是淡色胶囊（淡强调色底、强调色字），其余灰底；看着 36dp 高，能点的范围 48dp。
+ * [PillButton] 不能长按，这里照它的取值自己接一个长按。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?, hasUngrouped: Boolean) {
     if (groups.isEmpty()) return
     var editing by remember { mutableStateOf<String?>(null) }
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        @Composable
-        fun Chip(label: String, value: String?, onLongClick: (() -> Unit)? = null) {
-            val on = selected == value
-            val fill by animateColorAsState(
-                if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer,
-                Motion.standard(Motion.SHORT), label = "groupChipFill",
-            )
-            Box(
-                Modifier
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(fill)
-                    .combinedClickable(role = Role.Button, onClick = { vm.selectGroup(value) }, onLongClick = onLongClick)
-                    .padding(horizontal = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(label, fontSize = 14.sp,
-                    color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface)
+    ProvideGroupedColors {
+        val c = LocalGroupedColors.current
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            @Composable
+            fun Chip(label: String, value: String?, onLongClick: (() -> Unit)? = null) {
+                val on = selected == value
+                val source = remember { MutableInteractionSource() }
+                val fill by animateColorAsState(if (on) c.tint.copy(alpha = 0.12f) else c.fill, Motion.standard(Motion.SHORT), label = "groupChipFill")
+                val text by animateColorAsState(if (on) c.tint else c.label, Motion.standard(Motion.SHORT), label = "groupChipText")
+                Box(
+                    Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .combinedClickable(
+                            interactionSource = source,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = { vm.selectGroup(value) },
+                            onLongClick = onLongClick,
+                        )
+                        .semantics { this.selected = on },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .pressScale(source, 0.95f)
+                            .heightIn(min = 36.dp)
+                            .clip(CircleShape)
+                            .background(fill)
+                            .padding(horizontal = 16.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, color = text, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
+                }
             }
+            Chip("全部", null)
+            groups.forEach { g -> Chip(g, g) { editing = g } }
+            if (hasUngrouped) Chip("未分组", ShelfPrefs.UNGROUPED)
         }
-        Chip("全部", null)
-        groups.forEach { g -> Chip(g, g) { editing = g } }
-        if (hasUngrouped) Chip("未分组", ShelfPrefs.UNGROUPED)
     }
     editing?.let { g ->
         var name by remember(g) { mutableStateOf(g) }
@@ -528,7 +567,7 @@ private fun ContinueReading(entry: BookEntry, vm: AppViewModel, modifier: Modifi
     GlassCard(
         modifier.fillMaxWidth(),
         insideMargin = PaddingValues(12.dp),
-        pressFeedbackType = PressFeedbackType.Sink,
+        pressFeedbackType = shelfPressFeedback(),
         onClick = open.click,
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -567,6 +606,9 @@ private fun ContinueReading(entry: BookEntry, vm: AppViewModel, modifier: Modifi
         }
     }
 }
+
+/** 封面、书架卡片按下时下沉（miuix Sink）；墨水屏 / 省电、系统关了动画时不动，免得留残影。 */
+private fun shelfPressFeedback(): PressFeedbackType = if (Effects.noMotion) PressFeedbackType.None else PressFeedbackType.Sink
 
 /** 封面在窗口里的位置，点开时交给 [OpenFrom]，阅读页从这里放大出来。 */
 private class OpenFromCover(val track: Modifier, val click: () -> Unit)
@@ -660,7 +702,7 @@ private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Mo
     val haptic = LocalHapticFeedback.current
     GlassCard(
         modifier = modifier,
-        pressFeedbackType = PressFeedbackType.Sink,
+        pressFeedbackType = shelfPressFeedback(),
         onClick = open.click,
         onLongPress = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -846,7 +888,7 @@ fun BookCover(
         insideMargin = PaddingValues(0.dp),
         onClick = onClick,
         onLongPress = onLongPress,
-        pressFeedbackType = PressFeedbackType.Sink,
+        pressFeedbackType = shelfPressFeedback(),
     ) {
         Box(
             Modifier
