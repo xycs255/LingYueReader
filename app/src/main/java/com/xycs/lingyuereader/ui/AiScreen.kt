@@ -2,7 +2,14 @@ package com.xycs.lingyuereader.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -106,7 +113,7 @@ fun AiScreen(vm: AppViewModel) {
                             "只有你点这些功能时才联网，把选中的文字（前情提要和问这本书是读过部分里的相关原文）发给下面的服务商，不发送后面没读的内容。关闭时灵阅不联网。",
                     ) {
                         row {
-                            ToggleRow("启用 AI 助手", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) { on ->
+                            ToggleRow("启用 AI 助手", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
                                 update(config.copy(enabled = on))
                             }
                         }
@@ -134,69 +141,75 @@ fun AiScreen(vm: AppViewModel) {
                     val custom = config.preset == AiPresets.CUSTOM
                     val editableUrl = custom || config.preset == AiPresets.LOCAL
                     val preset = AiPresets.of(config.preset)
-                    if (config.onDevice) DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) }
-                    if (!config.onDevice) GroupedSection(
-                        header = "接口",
-                        footer = when {
-                            config.baseUrl.trim().startsWith("http://") && !config.lan -> "公网地址只支持 https://：密钥不能明文传输。局域网地址（192.168.x.x、10.x.x.x、xxx.local 等）可以用 http://。"
-                            config.preset == AiPresets.LOCAL -> "填电脑在局域网里的地址：Ollama 默认 http://电脑IP:11434/v1，LM Studio 默认 http://电脑IP:1234/v1。电脑上要让服务监听局域网（Ollama 设 OLLAMA_HOST=0.0.0.0）。密钥可不填。"
-                            config.lan -> "局域网地址，密钥可不填。"
-                            preset.keySite.isNotEmpty() -> "密钥在 ${preset.keySite} 申请。密钥只存在这台手机上，不进备份、不写日志。"
-                            else -> "密钥只存在这台手机上，不进备份、不写日志。"
-                        },
-                    ) {
-                        if (custom) {
-                            row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
-                        }
-                        row {
-                            TextField(
-                                value = config.baseUrl,
-                                onValueChange = { update(config.copy(baseUrl = it.trim())) },
-                                label = "接口地址",
-                                singleLine = true,
-                                enabled = editableUrl,
-                                colors = fieldColors,
-                                textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        row {
-                            TextField(
-                                value = config.model,
-                                onValueChange = { update(config.copy(model = it.trim())) },
-                                label = "模型",
-                                singleLine = true,
-                                colors = fieldColors,
-                                textStyle = mono,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        row {
-                            TextField(
-                                value = config.apiKey,
-                                onValueChange = { update(config.withKey(it.trim())) },
-                                label = if (config.lan) "API 密钥（可不填）" else "API 密钥",
-                                singleLine = true,
-                                colors = fieldColors,
-                                textStyle = mono,
-                                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                                trailingIcon = {
-                                    if (config.apiKey.isNotEmpty()) {
-                                        Text(
-                                            if (showKey) "隐藏" else "显示",
-                                            color = c.tint,
-                                            fontSize = 14.sp,
-                                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(8.dp)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                    // 选不选本机模型换的是一整组（本机模型 / 接口）：一组收起、一组展开，下面的卡片平滑挪过去，不一下跳开。
+                    AnimatedVisibility(config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
+                        Column { DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) } }
+                    }
+                    AnimatedVisibility(!config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
+                        GroupedSection(
+                            header = "接口",
+                            footer = when {
+                                config.baseUrl.trim().startsWith("http://") && !config.lan -> "公网地址只支持 https://：密钥不能明文传输。局域网地址（192.168.x.x、10.x.x.x、xxx.local 等）可以用 http://。"
+                                config.preset == AiPresets.LOCAL -> "填电脑在局域网里的地址：Ollama 默认 http://电脑IP:11434/v1，LM Studio 默认 http://电脑IP:1234/v1。电脑上要让服务监听局域网（Ollama 设 OLLAMA_HOST=0.0.0.0）。密钥可不填。"
+                                config.lan -> "局域网地址，密钥可不填。"
+                                preset.keySite.isNotEmpty() -> "密钥在 ${preset.keySite} 申请。密钥只存在这台手机上，不进备份、不写日志。"
+                                else -> "密钥只存在这台手机上，不进备份、不写日志。"
+                            },
+                        ) {
+                            if (custom) {
+                                row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
+                            }
+                            row {
+                                TextField(
+                                    value = config.baseUrl,
+                                    onValueChange = { update(config.copy(baseUrl = it.trim())) },
+                                    label = "接口地址",
+                                    singleLine = true,
+                                    enabled = editableUrl,
+                                    colors = fieldColors,
+                                    textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            row {
+                                TextField(
+                                    value = config.model,
+                                    onValueChange = { update(config.copy(model = it.trim())) },
+                                    label = "模型",
+                                    singleLine = true,
+                                    colors = fieldColors,
+                                    textStyle = mono,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            row {
+                                TextField(
+                                    value = config.apiKey,
+                                    onValueChange = { update(config.withKey(it.trim())) },
+                                    label = if (config.lan) "API 密钥（可不填）" else "API 密钥",
+                                    singleLine = true,
+                                    colors = fieldColors,
+                                    textStyle = mono,
+                                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                                    trailingIcon = {
+                                        if (config.apiKey.isNotEmpty()) {
+                                            Text(
+                                                if (showKey) "隐藏" else "显示",
+                                                color = c.tint,
+                                                fontSize = 14.sp,
+                                                modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(8.dp)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                         }
                     }
-                    GroupedSection(footer = result?.second) {
+                    // 连接成功的说明写在卡片下面；失败单独一行红字写在卡片里。
+                    GroupedSection(footer = result?.takeIf { it.first }?.second) {
                         row {
                             ActionRow(if (testing != null) "正在测试……" else "测试连接", enabled = config.complete && testing == null) {
                                 result = null
@@ -215,6 +228,7 @@ fun AiScreen(vm: AppViewModel) {
                                 }
                             }
                         }
+                        result?.takeIf { !it.first }?.let { (_, e) -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                     }
                     GroupedSection(header = "回答", footer = "所有 AI 回答的长短；查词的 AI 释义总是简短的。") {
                         row { SegmentedRow(AnswerLength.entries.map { it to it.label }, config.length) { update(config.copy(length = it)) } }
@@ -247,7 +261,7 @@ fun AiScreen(vm: AppViewModel) {
                         }
                     }
                     SpeechSection(config, update, fieldColors, mono, vm)
-                    if (config.enabled && !config.complete) {
+                    AnimatedVisibility(config.enabled && !config.complete, enter = sectionEnter(), exit = sectionExit()) {
                         Text(
                             "填好接口地址、模型和密钥（局域网模型可不填密钥）后，AI 功能才会出现在阅读界面里。",
                             color = c.destructive,
@@ -297,6 +311,10 @@ fun AiScreen(vm: AppViewModel) {
     }
 }
 
+/** 开关、选项带出的一整组：高度从 0 长出来并淡入（标准缓动 [Motion.MEDIUM]），收起反过来；减少动效时直接出现、消失。 */
+private fun sectionEnter() = Effects.enter(expandVertically(Motion.standard(), expandFrom = Alignment.Top) + fadeIn(Motion.standard(Motion.SHORT)))
+private fun sectionExit() = Effects.exit(shrinkVertically(Motion.standard(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit()))
+
 /**
  * AI 朗读：听书、讲书用的语音合成服务商（OpenAI 兼容的 /audio/speech）。
  * 选服务商、填密钥、选声音，可以试听；打开后听书默认用 AI 语音（听书面板里也能切回系统语音）。
@@ -318,15 +336,16 @@ private fun SpeechSection(
     val setSpeech: (SpeechConfig) -> Unit = { update(config.copy(speech = it)) }
     GroupedSection(
         header = "AI 朗读",
-        footer = previewError ?: when {
+        footer = when {
             sp.baseUrl.trim().startsWith("http://") && !sp.lan -> "公网地址只支持 https://（局域网地址可以用 http://）。"
             sp.preset == SpeechPresets.LOCAL -> "局域网里的 Kokoro-FastAPI 等兼容 OpenAI 语音接口的服务，默认端口 8880。密钥可不填。"
             preset.keySite.isNotEmpty() -> "听书、讲书用的语音。密钥在 ${preset.keySite} 申请，按字数计费；读过的句子缓存在本机。"
             else -> "听书、讲书用的语音：任何兼容 OpenAI /audio/speech 接口的服务。"
         },
     ) {
+        // 这张卡片里其余几行（服务商、地址、密钥）都没有图标，开关这行也不带，同一张卡片要么都有要么都没有。
         row {
-            ToggleRow("听书用 AI 语音", sp.enabled, icon = LingYueIcons.VolumeUp, iconBackground = Color(0xFFFF2D55)) {
+            ToggleRow("听书用 AI 语音", sp.enabled) {
                 setSpeech(sp.copy(enabled = it))
                 // 和离线语音只能用一样。
                 if (it) vm.saveOfflineConfig(vm.offlineVoiceState.value.config.copy(enabled = false))
@@ -391,6 +410,8 @@ private fun SpeechSection(
                 vm.previewSpeech { previewError = "试听失败：$it" }
             }
         }
+        // 出错单独一行写在卡片里，不顶掉下面的说明。
+        previewError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
     }
 }
 
@@ -401,9 +422,11 @@ private fun SpeechSection(
 private fun DeviceModelSection(config: AiConfig, state: DeviceModelState, vm: AppViewModel, importModel: () -> Unit, select: (String) -> Unit) {
     val c = LocalGroupedColors.current
     val task = state.task
+    // 要删的模型：id 和名字。
+    var deleting by remember { mutableStateOf<Pair<String, String>?>(null) }
     GroupedSection(
         header = "本机模型",
-        footer = state.error ?: ("在这台手机上算，不联网（下载模型时除外），也不花钱。比联网的大模型慢、写得差一些，手机会发热；" +
+        footer = ("在这台手机上算，不联网（下载模型时除外），也不花钱。比联网的大模型慢、写得差一些，手机会发热；" +
             "上下文短，写作 AI 会少带一些设定资料。模型是 Qwen2.5（Apache-2.0 许可），从 Hugging Face 下载；也可以用电脑下好 .task 文件再导入。"),
     ) {
         DeviceModels.ALL.forEach { m ->
@@ -424,7 +447,7 @@ private fun DeviceModelSection(config: AiConfig, state: DeviceModelState, vm: Ap
             row {
                 when {
                     busy -> ActionRow("取消下载", destructive = true) { vm.cancelDeviceTask() }
-                    installed -> ActionRow("删除「${m.label}」", destructive = true) { vm.deleteDeviceModel(m.id) }
+                    installed -> ActionRow("删除「${m.label}」", destructive = true) { deleting = m.id to m.label }
                     else -> ActionRow("下载「${m.label}」（约 ${m.bytes / 1_000_000} MB）", enabled = task == null) { vm.downloadDeviceModel(m) }
                 }
             }
@@ -433,11 +456,32 @@ private fun DeviceModelSection(config: AiConfig, state: DeviceModelState, vm: Ap
             row {
                 CheckRow(DeviceModels.label(id), selected = config.model == id, subtitle = "导入的模型 · ${(state.sizes[id] ?: 0) / 1_000_000} MB") { select(id) }
             }
-            row { ActionRow("删除「${DeviceModels.label(id)}」", destructive = true) { vm.deleteDeviceModel(id) } }
+            row { ActionRow("删除「${DeviceModels.label(id)}」", destructive = true) { deleting = id to DeviceModels.label(id) } }
         }
         row {
             if (task != null && task.model == null) ActionRow("取消导入（${task.done / 1_000_000} MB）", destructive = true) { vm.cancelDeviceTask() }
             else ActionRow("从文件导入 .task 模型", enabled = task == null) { importModel() }
+        }
+        // 出错单独一行写在卡片里，不替换下面的说明。
+        state.error?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
+    }
+    // 删掉的模型要重新下载（几百 MB 到 1 GB 多）或重新导入：先确认，确认键用红色。
+    deleting?.let { (id, label) ->
+        GlassDialog(
+            show = true,
+            title = "删除模型",
+            summary = if (id.startsWith(DeviceModels.FILE)) "删除「$label」？要用时得重新从文件导入。" else "删除「$label」？要用时得重新下载。",
+            onDismissRequest = { deleting = null },
+        ) {
+            DialogButtons(
+                onDismiss = { deleting = null },
+                onConfirm = {
+                    vm.deleteDeviceModel(id)
+                    deleting = null
+                },
+                confirmText = "删除",
+                destructive = true,
+            )
         }
     }
     if (config.model.isBlank()) Text("先下载或导入一个模型。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp, bottom = 12.dp))

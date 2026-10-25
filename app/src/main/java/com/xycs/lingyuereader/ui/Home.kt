@@ -66,7 +66,8 @@ fun HomeScreen(vm: AppViewModel) {
     val pager = rememberPagerState(initialPage = tab.ordinal) { HomeTab.entries.size }
     LaunchedEffect(tab) {
         if (pager.currentPage != tab.ordinal) {
-            if (Effects.noMotion) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal)
+            // 跟着导航栏指示器（手指拖着走）松手后归位：用不回弹的 settle 弹簧，和指示器一起停稳。
+            if (Effects.noMotion) pager.scrollToPage(tab.ordinal) else pager.animateScrollToPage(tab.ordinal, animationSpec = Motion.settle())
         }
     }
 
