@@ -15,7 +15,6 @@ import com.xycs.lingyuereader.MainActivity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -132,8 +131,8 @@ abstract class FromEndRebuildUiBase(private val mode: String, private val prevTa
         compose.onNodeWithContentDescription("书内搜索").performClick()
         compose.waitUntil(10_000) { page() == null }
         compose.activity.onBackPressedDispatcher.onBackPressed()
-        compose.waitForIdle()
-        assertTrue(page() != null || compose.onAllNodesWithText("河堤", substring = true).fetchSemanticsNodes().isNotEmpty())
+        // 竖排在后台排版，排好之前只露出纸：等它排好（waitForIdle 不等后台线程）。
+        compose.waitUntil(10_000) { page() != null || compose.onAllNodesWithText("河堤", substring = true).fetchSemanticsNodes().isNotEmpty() }
         assertStaysAt(at, saved)
     }
 }
