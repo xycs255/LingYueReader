@@ -36,6 +36,26 @@ class TextFormatTest {
         assertEquals("1 000 人", only("1  000  人", FormatKind.SPACE))
     }
 
+    @Test
+    fun keepsFullWidthSpacesLaidOutOnPurpose() {
+        // 诗歌、对仗、落款：段首的缩进和段内的全角空格都留着。
+        listOf(
+            "　　渡口烟雨远　　孤舟客梦长",
+            "风吹渡口柳　雨打客舟篷",
+            "　　　　　　　　林月　敬上",
+            "　　　　　　　　十月初三",
+            "    　　沈默",
+        ).forEach { assertEquals(it, it, fmt(it)) }
+        // 普通的段首缩进照去。
+        assertEquals("林月推开门。", fmt("　　林月推开门。"))
+        assertEquals("林月推开门。", fmt("　林月推开门。"))
+        assertEquals("沈默没抬头。", fmt("    沈默没抬头。"))
+        // 汉字之间的半角空格照去（“第三章 归来”也排成“第三章归来”），混着的只留全角的。
+        assertEquals("第三章归来", fmt("第三章 归来"))
+        assertEquals("林月　说", fmt("林月 　说"))
+        assertEquals("Hello　　world", fmt("Hello 　　world"))
+    }
+
     // ---------- 3. 空行 ----------
 
     @Test
@@ -61,6 +81,31 @@ class TextFormatTest {
         // 前后隔着空格、问号叹号连用也算。
         assertEquals("真的？！他说", only("真的?!他说", FormatKind.PUNCT))
         assertEquals("林月（Lin Yue）", only("林月(Lin Yue)", FormatKind.PUNCT))
+    }
+
+    @Test
+    fun leavesListNumbersCodeAndEmoticonsAlone() {
+        listOf(
+            "1.力量+5",
+            "3. 他来了",
+            "A.他跑了",
+            "e.g.他",
+            "1)林月",
+            "System.out.println(x);这行代码",
+            "int a=1;沈默说",
+            "哈哈:)",
+            "哈哈:(",
+            "哈哈:-)",
+            "哈哈:D",
+        ).forEach { assertEquals(it, it, fmt(it)) }
+        // 冒号、逗号、句末句号照换，编号的点不换。
+        assertEquals("任务：1.击杀10只狼，2.采集草药。", fmt("任务:1.击杀10只狼,2.采集草药."))
+        assertEquals("【1.林月】", fmt("【1.林月】"))
+        // 汉字后面的字母加点是句号。
+        assertEquals("他选了A。林月说", fmt("他选了A.林月说"))
+        // 配上了的括号不算表情，照换。
+        assertEquals("林月说：（小声）走吧", fmt("林月说:(小声)走吧"))
+        assertEquals("（1）林月", fmt("(1)林月"))
     }
 
     @Test
@@ -90,8 +135,8 @@ class TextFormatTest {
         assertEquals("林月说：“走吧。”", only("林月说：\"走吧。\"", FormatKind.QUOTE))
         // 嵌套：外层双引号、里层单引号分开配。
         assertEquals("沈默说：“老周讲‘渡口没船’。”", only("沈默说：\"老周讲'渡口没船'。\"", FormatKind.QUOTE))
-        // 方向反了的弯引号按顺序摆正。
-        assertEquals("“你来了。”杜娘说。", only("”你来了。“杜娘说。", FormatKind.QUOTE))
+        // 已有的弯引号方向不改（段首的闭引号当跨段对话的续段，后面开着的那个预览里提示）。
+        assertEquals("”你来了。“杜娘说。", only("”你来了。“杜娘说。", FormatKind.QUOTE))
         // 已经是中文引号的不动。
         val done = "“好。”林月说，“走‘这边’。”"
         assertEquals(done, only(done, FormatKind.QUOTE))
@@ -113,6 +158,42 @@ class TextFormatTest {
         val again = TextFormat.format(r.text, all)
         assertEquals(r.text, again.text)
         assertTrue(again.notes.any { it.hint == FormatHint.UNPAIRED })
+    }
+
+    @Test
+    fun curlyQuotesAreAnchorsAndNeverFlipped() {
+        val corner = all.copy(quoteStyle = QuoteStyle.CORNER)
+        // 跨段对话的续段：段首没有开引号就先出现闭引号，原样不动，也不提示。
+        val cont = "第二段结束。”他说，“好。”"
+        val r = TextFormat.format(cont, all)
+        assertEquals(cont, r.text)
+        assertTrue(r.notes.none { it.hint == FormatHint.UNPAIRED })
+        assertEquals("第二段结束。」他说，「好。」", fmt(cont, corner))
+        // 长对话里套了同一种引号：“回家”的开引号不能改成闭引号；外层没关上的提示。
+        val nested = "“你知道吗？他们管这叫“回家”。"
+        val n = TextFormat.format(nested, all)
+        assertEquals(nested, n.text)
+        assertEquals(listOf(0), n.notes.filter { it.hint == FormatHint.UNPAIRED }.map { it.at })
+        // 「」风格下按嵌套层级换：外层「」，里层『』。
+        assertEquals("「你知道吗？他们管这叫『回家』。", fmt(nested, corner))
+        assertEquals("「他说『好』」", fmt("「他说“好”」", corner))
+        assertEquals("「他说『好』」", fmt("“他说‘好’”", corner))
+        // 直引号按续段判断：第一个是闭引号。
+        assertEquals("好吧。”他说，“走。”", fmt("好吧.\"他说,\"走.\""))
+        assertEquals("好吧。」他说，「走。」", fmt("好吧.\"他说,\"走.\"", corner))
+        // 直引号和后面的弯引号一起配。
+        assertEquals("“好，”他说，“走。”", fmt("\"好，\"他说，“走。”"))
+        // 夹在一对弯引号里的两个直引号：可以是里层的一对，也可以是一闭一开，推断不了，不动并提示。
+        val unsure = "“他说\"好\"。”"
+        val u = TextFormat.format(unsure, all)
+        assertEquals(unsure, u.text)
+        assertEquals(2, u.notes.count { it.hint == FormatHint.UNPAIRED })
+        listOf(cont, nested, unsure, "好吧.\"他说,\"走.\"").forEach { t ->
+            listOf(all, corner).forEach { st ->
+                val once = fmt(t, st)
+                assertEquals(once, fmt(once, st))
+            }
+        }
     }
 
     // ---------- 6. 省略号、破折号 ----------
@@ -178,6 +259,21 @@ class TextFormatTest {
                 val once = TextFormat.format(text, s).text
                 assertEquals("排两次和排一次一样：$text", once, TextFormat.format(once, s).text)
                 // 汉字一个不多、一个不少，顺序也不变。
+                assertEquals(text.filter(::isHan), once.filter(::isHan))
+            }
+        }
+    }
+
+    @Test
+    fun randomTextIsIdempotentAndKeepsHanzi() {
+        val alphabet = "林月沈默老周杜娘渡口说走好吧。，！？：；“”‘’「」『』\"'\"'.,!?:;()  　　\t\n\n-—…·*abcAB12:)"
+        val rnd = java.util.Random(20261025)
+        val settings = listOf(all, all.copy(quoteStyle = QuoteStyle.CORNER, mixedSpace = true, limitBangs = true, blankLines = BlankLines.NONE))
+        repeat(3000) {
+            val text = String(CharArray(rnd.nextInt(40)) { alphabet[rnd.nextInt(alphabet.length)] })
+            settings.forEach { s ->
+                val once = TextFormat.format(text, s).text
+                assertEquals("排两次和排一次一样：$text", once, TextFormat.format(once, s).text)
                 assertEquals(text.filter(::isHan), once.filter(::isHan))
             }
         }
