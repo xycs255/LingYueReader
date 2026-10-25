@@ -41,6 +41,18 @@ class StoryLedgerTest {
     }
 
     @Test
+    fun aStateCanReturnToAnEarlierValueInALaterChapter() {
+        val (entries, added) = StoryLedger.apply(
+            emptyList(),
+            listOf(LedgerOp.Add(state("林月", "位置", "在渡口", 3)), LedgerOp.Add(state("林月", "位置", "在京城", 6)), LedgerOp.Add(state("林月", "位置", "在渡口", 9))),
+            1,
+        )
+        assertEquals(3, added)
+        assertEquals("在渡口", StoryLedger.snapshot(entries, 9).states.single().text)
+        assertEquals("在京城", StoryLedger.snapshot(entries, 8).states.single().text)
+    }
+
+    @Test
     fun stateTakesTheLatestEntryPerPersonAndAspect() {
         val entries = listOf(
             state("林月", "位置", "在药铺", 1),

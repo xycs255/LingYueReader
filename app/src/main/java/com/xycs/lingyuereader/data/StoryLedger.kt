@@ -70,8 +70,13 @@ data class LedgerEntry(
         return at > chapter
     }
 
-    /** 用来认重复：类别、谁、哪一方面、内容（去掉空白和标点差异）。 */
-    val key: String get() = kind.name + "|" + subject.trim() + "|" + aspect.trim() + "|" + ChapterSyncs.normalize(text)
+    /**
+     * 用来认重复：类别、谁、哪一方面、内容（去掉空白和标点差异）。人物状态、时间还要算上从第几章起：
+     * 先“在渡口”、去了京城、后来又“在渡口”，是新的一条。
+     */
+    val key: String
+        get() = kind.name + "|" + subject.trim() + "|" + aspect.trim() + "|" + ChapterSyncs.normalize(text) +
+            if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else ""
 
     /** “第 12 章起”“第 3 章埋，计划第 9 章收”这类说明。 */
     val whenLabel: String
