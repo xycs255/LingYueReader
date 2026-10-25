@@ -95,15 +95,29 @@ class Vocabulary internal constructor(private val file: File, private val atomic
         }
     }
 
-    /** 恢复备份：按词合并，两边都有时取较新的。 */
-    fun merge(json: String) = update { list ->
+    /**
+     * 恢复备份：按词合并，两边都有时取较新的。
+     * 本机生词本坏了（读得出文件、解析不了）时直接采用备份里的：坏文件先另存，这正是“从备份恢复”要修的情况。
+     * 读盘本身失败（不是内容坏）仍然报错，不覆盖。
+     */
+    @Synchronized
+    fun merge(json: String) {
         val incoming = parse(json)
+        val local = if (!file.exists() && !File(file.path + ".bak").exists()) emptyList() else {
+            val bytes = atomicFile.readFully()
+            try {
+                parse(bytes.toString(Charsets.UTF_8))
+            } catch (error: Exception) {
+                check(DurableFiles.keptDamaged(file, bytes)) { "本机生词本已损坏，且无法另存原文件，未恢复" }
+                emptyList()
+            }
+        }
         val byWord = LinkedHashMap<String, VocabWord>()
-        (list + incoming).forEach { w ->
+        (local + incoming).forEach { w ->
             val old = byWord[w.word]
             if (old == null || maxOf(w.addedAt, w.reviewedAt) > maxOf(old.addedAt, old.reviewedAt)) byWord[w.word] = w
         }
-        byWord.values.sortedByDescending { it.addedAt }
+        write(byWord.values.sortedByDescending { it.addedAt })
     }
 
     /** 在替换任何本机书籍前先验证备份结构；不读取或修改本机生词本。 */
@@ -126,9 +140,11 @@ class Vocabulary internal constructor(private val file: File, private val atomic
     }
 
     @Synchronized
-    private fun update(transform: (List<VocabWord>) -> List<VocabWord>) {
+    private fun update(transform: (List<VocabWord>) -> List<VocabWord>) = write(transform(list()))
+
+    private fun write(words: List<VocabWord>) {
         val array = JSONArray()
-        transform(list()).forEach { w ->
+        words.forEach { w ->
             array.put(
                 JSONObject().put("word", w.word).put("reading", w.reading).put("gloss", w.gloss).put("context", w.context)
                     .put("bookId", w.bookId).put("bookTitle", w.bookTitle).put("addedAt", w.addedAt)

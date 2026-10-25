@@ -20,4 +20,16 @@ internal object DurableFiles {
         val copy = File(file.parentFile, file.name + ".damaged")
         if (file.isFile && !copy.exists()) runCatching { file.copyTo(copy) }
     }
+
+    /**
+     * 读不出的内容 [bytes] 确实另存下来了才返回 true，之后才能用别的内容（如备份里的）覆盖原文件。
+     * 已有的 .damaged 是更早另存的另一份时，再另存一份带时间的，不覆盖它。
+     */
+    fun keptDamaged(file: File, bytes: ByteArray): Boolean {
+        keepDamaged(file)
+        val copy = File(file.parentFile, file.name + ".damaged")
+        if (copy.isFile && runCatching { copy.readBytes().contentEquals(bytes) }.getOrDefault(false)) return true
+        val dated = File(file.parentFile, file.name + ".damaged-" + System.currentTimeMillis())
+        return !dated.exists() && runCatching { dated.writeBytes(bytes) }.isSuccess && dated.length() == bytes.size.toLong()
+    }
 }

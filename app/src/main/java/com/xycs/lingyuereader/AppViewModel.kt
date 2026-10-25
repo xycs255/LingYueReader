@@ -496,6 +496,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } catch (error: Exception) {
                 _messages.value = error.message ?: "书架读取失败；原文件已保留"
             }
+            // 启动时没撤销完的书架事务：书架降为只读，告诉读者。
+            library.startupProblem?.let { _messages.value = it }
+            // 上次没收拾完的临时目录、无主的书目录，在后台清理。
+            launch(Dispatchers.IO) { runCatching { library.cleanUpLeftovers() } }
             _shelfLoaded.value = true
             maybeAutoBackup()
             com.xycs.lingyuereader.reminder.GoalReminder.schedule(getApplication())
@@ -2363,13 +2367,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             beginBusy()
             var copyingToDestination = false
+            val left = mutableListOf<String>()
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val app = getApplication<Application>()
                     val staged = File.createTempFile("manual-backup-", ".zip", app.cacheDir)
                     try {
                         // 先完成 ZIP；来源文件读到一半失败时，不会碰已选的目标文件。
-                        val count = staged.outputStream().use { library.backup(it, prefs.exportJson(), backupData()) }
+                        val count = staged.outputStream().use { library.backup(it, prefs.exportJson(), backupData(left)) }
                         val output = app.contentResolver.openOutputStream(uri)
                             ?: throw IllegalArgumentException("无法写入备份文件")
                         output.use { dest ->
@@ -2384,7 +2389,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             endBusy()
             _messages.value = result.fold(
-                { "已备份 $it 本书" },
+                { "已备份 $it 本书" + leftOutNote(left) },
                 { "备份失败：${it.message}${if (copyingToDestination) "；目标文件可能不完整，请删除后重试" else ""}" },
             )
         }
@@ -2423,22 +2428,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun runAutoBackup(announce: Boolean) {
         if (autoBackupJob?.isActive == true) return
         autoBackupJob = viewModelScope.launch {
+            val left = mutableListOf<String>()
             val result = withContext(Dispatchers.IO) {
-                autoBackups.run { out -> library.backup(out, prefs.exportJson(), backupData()) }
+                autoBackups.run { out -> library.backup(out, prefs.exportJson(), backupData(left)) }
             }
             _autoBackup.value = autoBackups.state()
-            if (announce) {
-                _messages.value = result.fold({ "已备份到「${_autoBackup.value.label}」：$it" }, { "备份失败：${it.message}" })
+            // 悄悄做的自动备份少了某项数据时也要说：不然坏文件一直没人发现，好的旧备份被轮换删掉。
+            if (announce || (result.isSuccess && left.isNotEmpty())) {
+                _messages.value = result.fold({ "已备份到「${_autoBackup.value.label}」：$it" + leftOutNote(left) }, { "备份失败：${it.message}" })
             }
         }
     }
 
-    /** 备份里除了书以外的数据。 */
-    private fun backupData(): Map<String, ByteArray> = buildMap {
-        vocabulary.raw()?.let { put("vocabulary.json", it) }
-        stats.raw()?.let { put("stats.json", it) }
+    /**
+     * 备份里除了书以外的数据。生词本、阅读统计读不出或解析不过时不打进包（恢复时会被拒），名字记进 [left]，
+     * 书和其余数据照常备份。
+     */
+    private fun backupData(left: MutableList<String>): Map<String, ByteArray> = buildMap {
+        fun add(name: String, label: String, raw: () -> ByteArray?, validate: (String) -> Unit) {
+            try {
+                val bytes = raw() ?: return
+                validate(bytes.toString(Charsets.UTF_8))
+                put(name, bytes)
+            } catch (error: Exception) {
+                left += label
+            }
+        }
+        add("vocabulary.json", "生词本", vocabulary::raw, vocabulary::validateBackup)
+        add("stats.json", "阅读统计", stats::raw, stats::validateBackup)
         writing.backup()?.let { put("writing.json", it) }
     }
+
+    private fun leftOutNote(left: List<String>): String =
+        if (left.isEmpty()) "" else "；${left.joinToString("、")}读不出，没有放进备份（原文件已保留）"
 
     fun restore(uri: Uri) {
         viewModelScope.launch {
@@ -2449,33 +2471,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val result = withContext(Dispatchers.IO) {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
                         ?: throw IllegalArgumentException("无法读取备份文件")
-                    input.use { stream ->
-                        library.restore(stream) { data ->
-                            data["vocabulary.json"]?.let { vocabulary.validateBackup(it) }
-                            data["stats.json"]?.let { stats.validateBackup(it) }
-                            data["writing.json"]?.let { writing.validateBackup(it) }
-                        }
-                    }
+                    // 附加数据有问题不影响恢复书：各项在书恢复之后各自合并，失败的最后一起说。
+                    input.use { stream -> library.restore(stream) }
                 }
                 restoredBooks = result.books
-                result.data.let { data ->
-                    withContext(Dispatchers.IO) {
-                        data["vocabulary.json"]?.let(vocabulary::merge)
-                        data["stats.json"]?.let(stats::merge)
-                        data["writing.json"]?.let(writing::restoreBackup)?.also { writingAi.forget() }
+                val failed = mutableListOf<String>()
+                val labels = mapOf("vocabulary.json" to "生词本", "stats.json" to "阅读统计", "writing.json" to "写作")
+                result.skippedData.forEach { failed += "${labels[it] ?: it}（超过大小上限）" }
+                withContext(Dispatchers.IO) {
+                    fun merge(name: String, apply: (String) -> Unit) {
+                        val json = result.data[name] ?: return
+                        try {
+                            apply(json)
+                        } catch (error: Exception) {
+                            failed += "${labels[name] ?: name}（${error.message ?: "读取失败"}）"
+                        }
                     }
-                    reloadVocabulary()
-                    reloadStats()
+                    merge("vocabulary.json", vocabulary::merge)
+                    merge("stats.json", stats::merge)
+                    merge("writing.json") { writing.restoreBackup(it); writingAi.forget() }
                 }
+                reloadVocabulary()
+                reloadStats()
                 result.settings?.let { settings ->
-                    prefs.importJson(settings)
-                    _settings.value = prefs.settings()
-                    _appearance.value = prefs.appearance()
-                    _shelfPrefs.value = prefs.shelf()
+                    try {
+                        prefs.importJson(settings)
+                        _settings.value = prefs.settings()
+                        _appearance.value = prefs.appearance()
+                        _shelfPrefs.value = prefs.shelf()
+                        // 设置里可能换了阅读目标或提醒开关：按恢复后的设置重新排闹钟。
+                        com.xycs.lingyuereader.reminder.GoalReminder.schedule(getApplication())
+                    } catch (error: Exception) {
+                        failed += "设置（${error.message ?: "读取失败"}）"
+                    }
                 }
                 _messages.value = buildString {
                     append("已恢复 ${result.books} 本书")
-                    if (result.skippedBooks > 0) append("；备份中另有 ${result.skippedBooks} 本无法读取，已跳过")
+                    if (result.skippedBooks > 0) {
+                        append("；备份中另有 ${result.skippedBooks} 本无法读取或过大，已跳过")
+                        if (result.skippedTitles.isNotEmpty()) {
+                            append("：").append(result.skippedTitles.take(5).joinToString("、") { "《$it》" })
+                            if (result.skippedTitles.size > 5) append("等")
+                        }
+                    }
+                    if (failed.isNotEmpty()) append("，但附加数据恢复失败：").append(failed.joinToString("；"))
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled

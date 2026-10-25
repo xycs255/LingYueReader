@@ -83,4 +83,18 @@ class GoalReminderTest {
         GoalReminderReceiver().onReceive(context, android.content.Intent())
         assertEquals(0, notifications.allNotifications.size)
     }
+
+    /** 统计文件坏了：到点的提醒跳过这一次，不能让应用在后台崩溃；坏文件原样留着。 */
+    @Test
+    fun aDamagedStatsFileSkipsTheReminderInsteadOfCrashing() {
+        val prefs = Prefs(context)
+        prefs.saveSettings(prefs.settings().copy(dailyGoal = 30))
+        val notifications = shadowOf(context.getSystemService(NotificationManager::class.java))
+        val file = File(context.filesDir, "stats.json").apply { writeText("{\"days\": [") }
+
+        GoalReminderReceiver().onReceive(context, android.content.Intent())
+
+        assertEquals(0, notifications.allNotifications.size)
+        assertEquals("{\"days\": [", file.readText())
+    }
 }

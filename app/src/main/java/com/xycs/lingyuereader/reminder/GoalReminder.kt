@@ -73,7 +73,12 @@ object GoalReminder {
     fun notifyIfNeeded(context: Context) {
         val settings = Prefs(context).settings()
         if (!settings.goalReminder) return
-        val days = ReadingStats(File(context.filesDir, "stats.json")).days()
+        // 统计文件坏了时 days() 会抛错（原文件已另存）：在广播里抛出去会让应用在后台崩溃，跳过这次提醒。
+        val days = try {
+            ReadingStats(File(context.filesDir, "stats.json")).days()
+        } catch (error: Exception) {
+            return
+        }
         val text = message(settings.dailyGoal, days) ?: return
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED

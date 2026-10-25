@@ -240,4 +240,37 @@ class VocabularyTest {
         assertEquals(0, saved.interval)
         assertFalse(saved.mastered)
     }
+
+    /** 本机生词本坏了：从备份恢复直接采用备份里的词，坏文件先另存；之后照常收词。 */
+    @Test
+    fun mergeReplacesADamagedLocalFileWithTheBackupAndKeepsTheDamagedCopy() {
+        val file = File(tmp.root, "v.json")
+        file.writeText("""[{"word":"银行"},{}]""")
+        val damaged = file.readBytes()
+        val v = Vocabulary(file)
+        assertTrue(runCatching { v.list() }.isFailure)
+
+        v.merge("""[{"word":"门口","addedAt":2,"context":"林月站在门口。"}]""")
+
+        assertEquals(listOf("门口"), v.list().map { it.word })
+        assertArrayEquals(damaged, File(tmp.root, "v.json.damaged").readBytes())
+        v.add(word("排队", 3))
+        assertEquals(listOf("排队", "门口"), v.list().map { it.word })
+    }
+
+    /** 读盘本身失败（不是内容坏）时不能当成坏文件覆盖；坏的备份也不碰本机文件。 */
+    @Test
+    fun mergeDoesNotOverwriteWhenTheLocalFileCannotBeReadOrTheBackupIsBad() {
+        val file = File(tmp.root, "v.json")
+        Vocabulary(file).add(word("银行"))
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            override fun readFully(): ByteArray = throw IOException("injected read failure")
+        }
+
+        assertTrue(runCatching { Vocabulary(file, injected).merge("[]") }.exceptionOrNull() is IOException)
+        assertArrayEquals(original, file.readBytes())
+        assertTrue(runCatching { Vocabulary(file).merge("""[{}]""") }.isFailure)
+        assertArrayEquals(original, file.readBytes())
+    }
 }
