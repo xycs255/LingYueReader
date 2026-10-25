@@ -858,19 +858,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 来源文件全文（净化规则预览用）。 */
     suspend fun bookSourceText(entry: BookEntry): String = withContext(Dispatchers.IO) { library.sourceTexts(entry).joinToString("\n") }
 
-    /** 按 [rules] 试分章，返回章名列表。 */
+    /** 按 [rules] 试分章，返回章名列表。正则太慢时抛 RegexTooSlowException；取消时不再等正则跑完。 */
     suspend fun previewChapters(entry: BookEntry, rules: TextRules): List<String> =
-        withContext(Dispatchers.Default) { library.previewWith(entry, rules).chapters.map { it.title } }
+        kotlinx.coroutines.runInterruptible(Dispatchers.Default) { library.previewWith(entry, rules).chapters.map { it.title } }
 
     fun saveRules(entry: BookEntry, rules: TextRules) {
         viewModelScope.launch {
             beginBusy()
-            val result = withContext(Dispatchers.IO) { runCatching { library.saveRules(entry, rules) } }
-            loadShelf()
-            if (result.isSuccess) bookContentChanged(entry.id)
-            endBusy()
+            // 不管成败（包括正则太慢被放弃），“忙”都要结束，不然导入、下载都会一直提示“正在处理其他任务”。
+            val result = try {
+                withContext(Dispatchers.IO) { runCatching { library.saveRules(entry, rules) } }.also {
+                    loadShelf()
+                    if (it.isSuccess) bookContentChanged(entry.id)
+                }
+            } finally {
+                endBusy()
+            }
             _messages.value = result.fold({ "已按新规则重新整理：${it.chapters.size} 章" }, { "保存失败：${it.message}" })
-            if (result.isSuccess) back()
+            // 整理期间读者可能已经离开规则页（比如打开了这本书）：只在规则页还在最上面时才返回。
+            if (result.isSuccess && (_stack.value.lastOrNull() as? Screen.BookRules)?.bookId == entry.id) back()
         }
     }
 
@@ -2319,6 +2325,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeFromVocabulary(word: String) {
         changeVocabulary { vocabulary.remove(word) }
+    }
+
+    /** 撤销删除：[w] 是删除前的那条记录，原样放回第 [index] 个位置。 */
+    fun restoreToVocabulary(w: VocabWord, index: Int) {
+        changeVocabulary { vocabulary.restore(w, index) }
     }
 
     fun setMastered(word: String, mastered: Boolean) {
