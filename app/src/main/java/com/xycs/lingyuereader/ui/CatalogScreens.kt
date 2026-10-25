@@ -628,7 +628,7 @@ internal fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String 
         contentAlignment = Alignment.Center,
     ) {
         AnimatedContent(stage, transitionSpec = {
-            if (Effects.noMotion) EnterTransition.None togetherWith ExitTransition.None
+            if (Effects.noMotion) (EnterTransition.None togetherWith ExitTransition.None).using(null)
             else (fadeIn(Motion.standard(Motion.SHORT)) + slideInVertically(
                 animationSpec = Motion.standard(Motion.SHORT), initialOffsetY = { -it / 3 },
             )) togetherWith fadeOut(Motion.exit(Motion.SHORT))
