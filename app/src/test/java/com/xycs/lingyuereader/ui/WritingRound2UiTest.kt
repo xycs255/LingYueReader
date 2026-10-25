@@ -134,6 +134,8 @@ class WritingRound2UiTest {
         waitForText("看发给 AI 的内容")
 
         // 第二处：不改。
+        // 审稿中和结果之间是淡入淡出的：过渡途中新旧两份都在，等只剩一份再点。
+        waitFor { compose.onAllNodesWithText("门是锁着的").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("门是锁着的").performScrollTo().performClick()
         compose.onNodeWithText("不改").performClick()
         waitForGate("事实关：1 处没处理")
@@ -149,6 +151,8 @@ class WritingRound2UiTest {
         waitFor { vm.writingAi.reviews.value[workId to chapterId]?.running == null }
 
         // 第一处：按这条让 AI 改。回到编辑器，选中原句，AI 按意见改，先看对比。
+        // 审稿中和结果之间是淡入淡出的：过渡途中新旧两份都在，等只剩一份再点。
+        waitFor { compose.onAllNodesWithText("林月这时还不知道").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
         compose.onNodeWithText("按这条让 AI 改").performClick()
         // 采纳按钮在 AI 回答之前就在面板上：等请求发出、回答回来再点。
@@ -256,6 +260,8 @@ class WritingRound2UiTest {
         assertTrue(top("林月这时还不知道") < top("门是锁着的"))
 
         // 第一处标“不改”：右边挂上“不改”，但还在原来的位置，手指下面没换成别的条目。
+        // 审稿中和结果之间是淡入淡出的：过渡途中新旧两份都在，等只剩一份再点。
+        waitFor { compose.onAllNodesWithText("林月这时还不知道").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
         compose.onNode(hasText("不改") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
         waitForGate("事实关：1 处没处理")
