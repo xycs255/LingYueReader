@@ -593,7 +593,9 @@ object ChapterBriefs {
         val x = ChapterSyncs.normalize(a)
         val y = ChapterSyncs.normalize(b)
         if (x.isEmpty() || y.isEmpty()) return false
-        return x == y || (minOf(x.length, y.length) >= 2 && (x in y || y in x))
+        // 包含也算重复，但短的一方要够长、占长的一方的四成以上：只写“玉佩”的一条不能把所有提到玉佩的都去掉。
+        val short = minOf(x.length, y.length)
+        return x == y || (short >= 4 && short * 5 >= maxOf(x.length, y.length) * 2 && (x in y || y in x))
     }
 
     /**
