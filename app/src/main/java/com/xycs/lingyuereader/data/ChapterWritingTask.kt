@@ -234,18 +234,24 @@ internal object ProjectLengths {
     private fun number(raw: String) = CheckRules.cn(raw.replace('〇', '零'))?.takeIf { it in 1..1_000_000 }
     private val chapterCue = Regex("(?:(?:本章|全章|整章|章节|全文|正文)?(?:目标)?(?:篇幅|字数|汉字数)|本章|全章|整章|全文|正文)")
     private val localScope = Regex("对白|对话|段落|每段|单段|一小段|片段|摘要|示例|范例|样例|样章|摘录|局部|增加|补写|补充|删减|单场|每场")
-    private val lengthLead = Regex("^[\\s：:，,*_]*(?:(?:先按|控制在|保持在|规定为|目标为|定为|应为|要求|仍|为|以|按|可以|可|允许|须|需|应|要|写到|写至|写足|达到)\\s*)*")
+    private val lengthLead = Regex("^[\\s：:*_]*(?:(?:先按|按现行细纲|控制在|保持在|规定为|目标为|定为|应为|要求|仍|为|以|按|可以|可|允许|须|需|应|要|写到|写至|写足|达到)\\s*)*")
     private val lengthValue = Regex("(?:(?:约|大约|不少于|至少|不低于|不超过|至多|最多)\\s*)?$NUM\\s*(?:[—－–\\-~～至到]\\s*$NUM\\s*)?(?:个)?(?:汉字|字)(?:\\s*(?:起步|以上|起|左右|上下))?")
-    private val unitlessValue = Regex("[0-9０-９]{3,6}(?:\\s*[—－–\\-~～至到]\\s*[0-9０-９]{3,6})?(?=$|[\\s，,；;。)）】])")
+    private val unitlessValue = Regex("($NUM)(?:\\s*[—－–\\-~～至到]\\s*($NUM))?(?=$|[\\s，,；;。)）】])")
 
     /** A length must follow its scope directly; never scan across prose to an unrelated number. */
-    private fun leadingLength(text: String, unitless: Boolean = false, flexible: Boolean = false): String? {
+    private fun leadingLength(text: String, fieldUnit: String? = null, flexible: Boolean = false): String? {
         val value = text.replace("**", "").replace("__", "").replaceFirst(lengthLead, "")
         val amount = lengthValue.find(value)?.takeIf { it.range.first == 0 }?.value
-            ?: unitlessValue.find(value)?.takeIf { unitless && it.range.first == 0 }?.value
-            ?: return null
-        // A unitless value is accepted only after an explicit length field, never after “本章”.
-        return find(amount + if (flexible) "（弹性）" else "") ?: find("字数：$amount")
+        if (amount != null) return find(amount + if (flexible) "（弹性）" else "") ?: labelled.find("字数：$amount")?.let { m ->
+            number(m.groupValues[1])?.let { "$it${m.groupValues[3]}" }
+        }
+        // Only an explicit word-count field supplies a missing unit, including Chinese numerals.
+        if (fieldUnit == null) return null
+        val field = unitlessValue.find(value)?.takeIf { it.range.first == 0 } ?: return null
+        val lo = number(field.groupValues[1]) ?: return null
+        val hi = field.groupValues[2].takeIf { it.isNotEmpty() }?.let(::number)
+        if (hi != null && hi < lo) return null
+        return lo.toString() + (hi?.let { "—$it" } ?: "") + fieldUnit
     }
 
     /** A paragraph example's length is not the chapter's target, nor is an editorial increment. */
@@ -254,7 +260,11 @@ internal object ProjectLengths {
             val begin = maxOf(line.lastIndexOf('，', cue.range.first), line.lastIndexOf(',', cue.range.first)) + 1
             val prefix = line.substring(begin, cue.range.first)
             if (localScope.containsMatchIn(prefix)) null
-            else leadingLength(line.substring(cue.range.last + 1), unitless = Regex("字数|篇幅").containsMatchIn(cue.value), flexible = "弹性" in line)
+            else leadingLength(line.substring(cue.range.last + 1), fieldUnit = when {
+                "汉字数" in cue.value -> "汉字"
+                "字数" in cue.value -> "字"
+                else -> null
+            }, flexible = "弹性" in line)
         }
     }
 
@@ -284,7 +294,7 @@ internal object ProjectLengths {
             var order = 0
             text.split(Regex("[。；;！？\\n]")).forEach { sentence ->
                 val refs = chapterRef.findAll(sentence).toList()
-                val lengths = refs.mapIndexed { i, ref -> find(sentence.substring(ref.range.last + 1, refs.getOrNull(i + 1)?.range?.first ?: sentence.length)) }
+                val lengths = refs.mapIndexed { i, ref -> scopedLength(sentence.substring(ref.range.last + 1, refs.getOrNull(i + 1)?.range?.first ?: sentence.length)) }
                 // Several enumerated chapter ranges may share a trailing “允许…字” clause.
                 val shared = lengths.lastOrNull()?.takeIf { lengths.dropLast(1).all { it == null } }
                 refs.forEachIndexed { i, ref ->
@@ -296,6 +306,17 @@ internal object ProjectLengths {
             }
         }
         return candidates.minWithOrNull(compareBy<Candidate>({ it.size }, { it.source }, { -it.order }))?.length
+    }
+
+    private fun scopedLength(text: String): String? {
+        leadingLength(text, flexible = "弹性" in text)?.let { return it }
+        // Enumerated chapter exceptions may explain their scenes before an explicit allowance.
+        // A bare “，约十五万字” in a volume heading is an aggregate budget, not a chapter target.
+        return text.split(Regex("[，,]")).firstNotNullOfOrNull { clause ->
+            chapter(clause) ?: general(listOf(clause)) ?: clause.trim().takeIf {
+                Regex("^(?:允许|可以|可按|可写|先按|仍)").containsMatchIn(it)
+            }?.let { leadingLength(it, flexible = "弹性" in text) }
+        }
     }
 
     fun find(text: String): String? {

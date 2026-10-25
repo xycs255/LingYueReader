@@ -26,9 +26,24 @@ class ChapterLengthSourceTest {
         assertEquals("不少于 5000 字", ProjectLengths.chapter("本章字数：至少五千字。"))
         assertEquals("3000—4000字", ProjectLengths.chapter("片段150字，整章三千至四千字。"))
         assertEquals("6000字", ProjectLengths.chapter("目标字数：6000"))
+        assertEquals("7000—8000字", ProjectLengths.chapter("时间：秋日。**字数：** 七千至八千。"))
+        assertEquals("5000—6000汉字", ProjectLengths.chapter("**汉字数：** 五千至六千。"))
         assertNull(ProjectLengths.chapter("本章先做三件事，补写对白150—250字。"))
         assertNull(ProjectLengths.chapter("本章收束：一、回到院中。正文中不重复说明，另一卷约十五万字。"))
         assertNull(ProjectLengths.chapter("本章引用字数：一、先列事件。"))
+    }
+
+    @Test fun aVolumeBudgetAndPrologueCannotOverrideAChapterRange() {
+        val text = """
+            第一至三章按现行细纲约三千至四千字弹性试写。
+            第一章之前加一个楔子，约五千字，独立成章。
+            第一卷（第1至30章，约十五万字，累计十五万字）。
+            第二卷（第31至60章，约二十万字，累计三十五万字）。
+        """.trimIndent()
+        assertEquals("约 3000—4000字", ProjectLengths.scoped(listOf(text), 1))
+        assertNull(ProjectLengths.scoped(listOf(text), 31))
+        assertNull(ProjectLengths.scoped(listOf("前三卷的节奏（第一至九十章，约四十万字）"), 30))
+        assertEquals("6000—8000字", ProjectLengths.scoped(listOf("第五章安排交接与安置，允许六千至八千字。"), 5))
     }
 
     @Test fun generalLengthCannotScanAcrossSceneAdviceOrVolumeBudgets() {
