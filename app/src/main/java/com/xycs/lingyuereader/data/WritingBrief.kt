@@ -92,6 +92,16 @@ object ChapterBriefs {
     private val nameChars = Regex("^[\\p{IsHan}·]{1,6}$")
     private val aliasPattern = Regex("(?:^|[，、（(\\s；;])(?:字|小名|乳名|又名|别名|外号|人称|绰号)[：:]?[“「]?(\\p{IsHan}{2,3})")
 
+    /** 写明的称呼：“称呼：顾、顾兄、老顾”（一个字的也算：作者写明了）。 */
+    private val calledPattern = Regex("(?:称呼|别称|又称|简称|旁人叫|大家叫)[：:]\\s*([^。\\n|]+)")
+
+    /** 表格里写称呼、别名的列。 */
+    private val aliasColumn = Regex("称呼|别称|别名|又名|外号|小名|字号")
+
+    private fun splitNames(cell: String): List<String> =
+        cell.split('、', '，', ',', '／', '/', '；', ';', ' ', '　').map { it.trim().trim('“', '”', '「', '」', '"') }
+            .filter { it.isNotEmpty() && it.length <= 4 && it.all { ch -> Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN || ch == '·' } }
+
     /** “林月（原创，药铺女儿）”“**沈默**，字子静”“1. 老周”→ 名字；不像名字就是 null。 */
     internal fun cleanName(raw: String): String? {
         var s = raw.replace("*", "").trim()
@@ -100,7 +110,9 @@ object ChapterBriefs {
         return s.takeIf { nameChars.matches(it) && it !in labels && !it.startsWith("第") && it.length >= 2 }
     }
 
-    private fun aliases(text: String, name: String) = aliasPattern.findAll(text).map { it.groupValues[1] }.filter { it != name }.distinct().toList()
+    private fun aliases(text: String, name: String) =
+        (aliasPattern.findAll(text).map { it.groupValues[1] } + calledPattern.findAll(text).flatMap { splitNames(it.groupValues[1]) })
+            .filter { it != name }.distinct().toList()
 
     /**
      * 人物文档里的人物：表格（表头有“人物”“角色”“姓名”的列，一行一人）、
@@ -110,6 +122,7 @@ object ChapterBriefs {
     fun characters(docs: List<Pair<String, String>>): List<CharacterEntry> {
         val found = LinkedHashMap<String, MutableList<String>>()
         val later = HashMap<String, MutableList<String>>()
+        val called = HashMap<String, MutableList<String>>()
         fun add(name: String?, note: String) {
             if (name == null || note.isBlank()) return
             found.getOrPut(name) { mutableListOf() } += note.trim()
@@ -122,6 +135,7 @@ object ChapterBriefs {
                 val col = t.column("人物", "角色", "姓名", "名字")
                 if (col < 0) return@forEach
                 val future = t.header.indices.filter { it != col && futureColumn.containsMatchIn(t.header[it]) }.toSet()
+                val aliasCols = t.header.indices.filter { it != col && aliasColumn.containsMatchIn(t.header[it]) }
                 t.rows.forEach { row ->
                     fun cells(cols: List<Int>) = cols.filter { t.cell(row, it).isNotBlank() && t.cell(row, it) != "—" }.joinToString("；") { "${t.header[it]}：${t.cell(row, it)}" }
                     val name = cleanName(t.cell(row, col))
@@ -129,6 +143,7 @@ object ChapterBriefs {
                     add(name, t.cell(row, col) + if (note.isEmpty()) "" else "——$note")
                     val ahead = cells(future.sorted())
                     if (name != null && ahead.isNotEmpty()) later.getOrPut(name) { mutableListOf() } += ahead
+                    if (name != null) aliasCols.forEach { c -> called.getOrPut(name) { mutableListOf() } += splitNames(t.cell(row, c)) }
                 }
             }
             val lines = text.lines()
@@ -166,7 +181,8 @@ object ChapterBriefs {
         bullets.forEach { (name, note, noted) -> if (noted || name in confirmed || !Regex("[与的及和之]").containsMatchIn(name)) add(name, note) }
         return found.map { (name, notes) ->
             val all = notes.distinct()
-            CharacterEntry(name, all.flatMap { aliases(it, name) }.distinct().filter { a -> a !in found.keys || a == name }, all, later[name].orEmpty().distinct())
+            val alias = (all.flatMap { aliases(it, name) } + called[name].orEmpty()).distinct().filter { a -> a != name && a !in found.keys }
+            CharacterEntry(name, alias, all, later[name].orEmpty().distinct())
         }
     }
 
@@ -315,9 +331,23 @@ object ChapterBriefs {
 
     private val structured = setOf(PackKind.CHARACTER, PackKind.AWARENESS, PackKind.FORESHADOW, PackKind.RULES)
 
+    /** 写作规范、称谓与语气另外节选，不进按块挑的资料。 */
+    private val styleKinds = setOf(PackKind.STYLE, PackKind.VOICE)
+
+    /** 人物卡最多带几个（出场多的在前，其余只列名字）。 */
+    const val MAX_CHARACTERS = 8
+
+    /** 常用文档在这个字数以内的整份带上；更长的切块，和别的文档一起按这一章挑。 */
+    const val SMALL_DOC = 2_500
+
+    /** 按块挑的资料，分数到这个才带上。 */
+    private const val MIN_SCORE = 2.5
+
     /**
-     * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认）。
-     * 先放常用文档（最多一半字数），再放出场人物的人物卡、到这一章为止知道的事和伏笔，最后放提到这一章或出场人物的其他小节。
+     * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认），
+     * [query] 是拿来比用词的（细纲卡、前一两章的细纲或摘要、正文结尾），[skip] 是细纲卡里已经有的段落（不再重复带）。
+     * 先放短的常用文档，再放写作规范节选（[style] 为真时）、前情、出场人物的人物卡、到这一章为止知道的事和伏笔，
+     * 最后把其余文档切块，按写没写到这一章、写没写到出场人物、和细纲用词重合多少打分，分高的先放。
      */
     fun build(
         docs: List<Pair<PackDoc, String>>,
@@ -327,25 +357,41 @@ object ChapterBriefs {
         volume: Int,
         limit: Int = LIMIT,
         summaries: List<ChapterSummary> = emptyList(),
+        query: String = card,
+        skip: List<String> = emptyList(),
+        style: Boolean = false,
     ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
         val hidden = mutableListOf<String>()
         var left = limit
         val sorted = docs.filter { it.second.isNotBlank() }.sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
-        val characters = characters(sorted.filter { it.first.kind == PackKind.CHARACTER }.map { it.first.title to it.second })
+        // 人物从人物档案认；称谓与语气文档里写到的人（怎么说话、怎么称呼）也并进来。
+        val characters = characters(sorted.filter { it.first.kind == PackKind.CHARACTER || it.first.kind == PackKind.VOICE }.map { it.first.title to it.second })
         val scope = "$card\n$text"
         val present = characters.map { it to mentions(it, scope) }.filter { it.second > 0 }.sortedByDescending { it.second }.map { it.first }
         val presentNames = present.map { it.name }
 
-        // 一、常用文档：整份带上（人物、察觉这类按章挑的除外；这一章还认不出人物时，常用的人物文档也整份带）。
-        val always = sorted.filter { (d, _) -> d.always && (d.kind !in structured || (d.kind == PackKind.CHARACTER && present.isEmpty())) }
-        var budget = limit / 2
-        always.forEachIndexed { i, (d, t) ->
-            val quota = budget / (always.size - i)
-            val cut = cut(t.trim(), quota)
-            items += BriefItem(d.kind.label, d.title, cut, "常用（优先级 ${d.priority}）")
-            budget -= cut.length
-            left -= cut.length
+        // 一、短的常用文档整份带上；长的切块和别的文档一起挑（只截开头多半是说明和原则，用不上）。
+        // 这一章还认不出人物时，短的人物文档也整份带。
+        var budget = limit / 4
+        val whole = mutableSetOf<String>()
+        sorted.filter { (d, t) ->
+            d.always && (d.kind !in structured || (d.kind == PackKind.CHARACTER && present.isEmpty())) && d.kind !in styleKinds && t.trim().length <= SMALL_DOC
+        }.forEach { (d, t) ->
+            val body = t.trim()
+            if (body.length > budget) return@forEach
+            items += BriefItem(d.kind.label, d.title, body, "常用（优先级 ${d.priority}）")
+            whole += d.id
+            budget -= body.length
+            left -= body.length
+        }
+        // 写作规范、称谓与语气：节选（写到出场人物的小节、后补的小节优先）。写正文、写法关另外带全，这里不重复。
+        if (style) {
+            val rules = styleFor(sorted.filter { it.first.kind in styleKinds }, presentNames, minOf(STYLE_IN_BRIEF, left / 5))
+            if (rules.isNotBlank()) {
+                items += BriefItem("写作规范", "节选", rules, "写作规范、称谓与语气")
+                left -= rules.length
+            }
         }
 
         // 二、前情：最近几章的摘要，更早的章里写到出场人物的也带（离这一章近的在前）。
@@ -362,11 +408,11 @@ object ChapterBriefs {
         }
 
         // 三、出场人物的人物卡：出现次数多的在前。写到后面章节的句子、“结局”“怎么变”这类格子另列为只有作者知道的。
-        var charBudget = left * 2 / 5
-        present.forEach { c ->
+        var charBudget = left / 3
+        present.take(MAX_CHARACTERS).forEach { c ->
             if (charBudget <= 100) return@forEach
             val (now, ahead) = splitByChapter(c.notes.joinToString("\n"), chapter)
-            val body = cut(now, minOf(charBudget, 1_500))
+            val body = cut(now, minOf(charBudget, 800))
             items += BriefItem("人物", c.name, body, "本章出场" + if (c.aliases.isEmpty()) "" else "（也叫${c.aliases.joinToString("、")}）")
             charBudget -= body.length
             left -= body.length
@@ -405,25 +451,44 @@ object ChapterBriefs {
         val due = open.filter { it.payoff == chapter }
         left -= open.sumOf { it.what.length + 20 }
 
-        // 五、其他按需的文档里提到这一章（或前后一章）、出场人物的小节。
-        val candidates = sorted.filter { (d, _) -> !d.always && d.kind !in structured }.flatMap { (d, t) ->
-            PackSections.split(t).mapNotNull { s ->
-                val refs = ChapterRefs.find(s.text + " " + s.path.joinToString(" "))
-                var score = 0
-                var why = ""
-                if (chapter in refs) { score += 5; why = "提到第 $chapter 章" }
-                else if (chapter - 1 in refs || chapter + 1 in refs) { score += 2; why = "提到前后一章" }
-                val names = presentNames.filter { n -> n in s.text }.take(3)
-                score += names.size
-                if (names.isNotEmpty() && why.isEmpty()) why = "写到" + names.joinToString("、")
-                if (score >= 2) Triple(score, d, s) to why else null
+        // 五、其余文档切块打分：写到这一章（单独写到的最算数，大范围几乎不算）、写到出场人物、和细纲卡用词重合。
+        val skipKeys = skip.map { it.replace(Regex("\\s"), "").take(24) }.filter { it.length >= 4 }
+        val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds }.flatMap { (d, t) ->
+            PackUnits.split(t).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }.map { d to it }
+        }
+        val grams = pool.map { (_, u) -> PackRanking.bigrams(u.text) }
+        val lexicon = PackRanking.Lexicon(grams)
+        val asked = PackRanking.bigrams(query)
+        val ranked = pool.mapIndexedNotNull { i, (d, u) ->
+            val head = u.path.joinToString(" ")
+            val refs = PackRanking.refs(head + "\n" + u.text)
+            val (chapterScore, chapterWhy) = PackRanking.chapterScore(refs, chapter)
+            val names = presentNames.filter { it in u.text }.take(3)
+            val similar = minOf(4.0, lexicon.overlap(grams[i], asked) * 2.0)
+            var score = chapterScore + names.size * 0.8 + similar + (7 - d.priority) * 0.2 + if (d.always) 0.5 else 0.0
+            // 别的卷（标题、粗体小标题里写着“第七卷”）：前面的卷少算，后面隔了一卷以上的是后文，不带。
+            val volumes = PackRanking.volumes(head)
+            if (volumes.isNotEmpty() && volume !in volumes) {
+                if (volumes.all { it > volume + 1 }) return@mapIndexedNotNull null
+                score -= if (volumes.all { it < volume }) 1.5 else 0.5
             }
-        }.sortedWith(compareByDescending<Pair<Triple<Int, PackDoc, PackSection>, String>> { it.first.first }.thenBy { it.first.second.priority })
-        candidates.forEach { (t, why) ->
-            val (_, d, s) = t
+            // 正文里只说到后面隔了一卷以上的（“第十一至十二卷”），多半是后文。
+            val mentioned = PackRanking.volumes(u.text)
+            if (volumes.isEmpty() && mentioned.isNotEmpty() && mentioned.all { it > volume + 1 }) score -= 1.5
+            // 只写到远处几章的：离这一章远的少算，只写后面几章的多半是后文，也少算。
+            if (chapterScore == 0.0 && refs.isNotEmpty()) {
+                if (refs.minOf { r -> if (chapter < r.first) r.first - chapter else chapter - r.last } > 10) score -= 2.0
+                if (refs.all { it.first > chapter + 3 }) score -= 2.0
+            }
+            if (score < MIN_SCORE) return@mapIndexedNotNull null
+            val why = chapterWhy ?: if (names.isNotEmpty()) "写到" + names.joinToString("、") else "和本章细纲相关"
+            Triple(score, d to u, why)
+        }.sortedWith(compareByDescending<Triple<Double, Pair<PackDoc, PackUnit>, String>> { it.first }.thenBy { it.second.first.priority })
+        ranked.forEach { (_, du, why) ->
+            val (d, u) = du
             if (left <= 200) return@forEach
-            val body = cut(s.text, minOf(left, 2_000))
-            items += BriefItem(d.kind.label, (listOf(d.title) + s.path).joinToString(" › "), body, why)
+            val body = cut(u.text, minOf(left, 1_500))
+            items += BriefItem(d.kind.label, (listOf(d.title) + u.path).joinToString(" › "), body, why)
             left -= body.length
         }
         // 只有作者知道的也算字数，限一段，不挤掉别的。
@@ -436,6 +501,44 @@ object ChapterBriefs {
         }
         return ChapterBrief(chapter, volume, presentNames, items, notYet, open, due, hiddenCut)
     }
+
+    /**
+     * 写作规范、称谓与语气太长时节选：每份不超过剩下的字数就整份带；超了就按小节挑——
+     * 先挑写到出场人物的小节，再从后往前挑（规范后面写的多是新补充、以它为准的），按原来的顺序拼回去。
+     */
+    fun styleFor(docs: List<Pair<PackDoc, String>>, present: Collection<String>, limit: Int = STYLE_LIMIT): String {
+        val out = StringBuilder()
+        var left = limit
+        docs.filter { it.second.isNotBlank() }.sortedBy { it.first.priority }.forEach { (d, t) ->
+            if (left <= 200) return@forEach
+            val text = t.trim()
+            if (text.length <= left) {
+                out.append("【").append(d.title).append("】\n").append(text).append("\n\n")
+                left -= text.length
+                return@forEach
+            }
+            val sections = PackSections.split(text)
+            val picked = sortedSetOf<Int>()
+            var budget = left
+            fun take(i: Int) {
+                val n = sections[i].text.length + 20
+                if (i !in picked && n <= budget) { picked += i; budget -= n }
+            }
+            sections.indices.filter { i -> present.any { it.length >= 2 && it in sections[i].text } }.forEach(::take)
+            sections.indices.reversed().forEach(::take)
+            if (picked.isEmpty()) return@forEach
+            out.append("【").append(d.title).append("（节选）】\n")
+            picked.forEach { i -> out.append("## ").append(sections[i].path.joinToString(" › ")).append('\n').append(sections[i].text).append("\n\n") }
+            left = budget
+        }
+        return out.toString().trim()
+    }
+
+    /** 写作规范最多带多少字。 */
+    const val STYLE_LIMIT = 12_000
+
+    /** 本章资料里带的写作规范节选（改稿、灵感这些不另带规范的时候用）。 */
+    const val STYLE_IN_BRIEF = 2_500
 
     /** 带上的前情摘要：前面这几章的都带。 */
     const val RECENT_SUMMARIES = 5
@@ -455,16 +558,43 @@ fun Work.volumeNumber(chapterId: String): Int {
     return volumes.getOrNull(i)?.title?.let { t -> Regex("第(.{1,6}?)卷").find(t)?.let { CheckRules.cn(it.groupValues[1]) } } ?: (i + 1)
 }
 
-/** 读设定包、细纲卡和这一章，挑本章资料。[text] 为空时用存盘的正文。 */
-fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int = ChapterBriefs.LIMIT): ChapterBrief? {
+/** 这一章按设定算是第几章：细纲卡里写了细纲章号就按它，否则按章名、目录顺序。 */
+fun WorkStore.chapterNo(work: Work, chapterId: String): Int? {
+    val plan = card(work.id, chapterId).plan.trim()
+    if (plan.isNotEmpty()) (CheckRules.cn(plan) ?: ChapterRefs.number(plan) ?: ChapterRefs.number("第${plan}章"))?.let { return it }
+    return work.chapterNumber(chapterId)
+}
+
+/**
+ * 读设定包、细纲卡和这一章，挑本章资料。[text] 为空时用存盘的正文；[limit] 为空时按作品里设的上限；
+ * [style] 为真时带写作规范节选（写正文、写法关另外带全，不用）。
+ */
+fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int? = null, style: Boolean = false): ChapterBrief? {
     val work = get(workId) ?: return null
-    val number = work.chapterNumber(chapterId) ?: return null
+    val number = chapterNo(work, chapterId) ?: return null
     val docs = pack(workId).map { it to packText(workId, it.id) }
-    val card = card(workId, chapterId).let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
-    // 目录里排在这一章前面的章的摘要。
+    val entries = outlineEntries(workId)
+    val planned = plannedCard(workId, chapterId, entries)
+    val card = planned.card.let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
+    val own = ChapterOutlines.match(entries, number, work.volumeNumber(chapterId), work.chapter(chapterId)?.title.orEmpty(), planned.card.plan.isNotBlank())
+    // 第几卷：细纲里写这一章的段落在哪一卷；没有就看前面最近一章在哪一卷。
+    val volume = own.firstNotNullOfOrNull { it.volume }
+        ?: entries.filter { it.volume != null && it.from <= number }.maxByOrNull { it.from }?.volume
+        ?: work.volumeNumber(chapterId)
+    // 前情：写了摘要的章用摘要；最近几章没写摘要的，用它的细纲卡（从细纲提取的也算）。
     val index = work.chapters.indexOfFirst { it.id == chapterId }
-    val summaries = work.chapters.take(index).mapNotNull { c ->
-        card(workId, c.id).summary.takeIf { it.isNotBlank() }?.let { ChapterSummary(work.chapterNumber(c.id) ?: 0, c.title, it) }
+    val before = work.chapters.take(index)
+    val summaries = before.mapIndexedNotNull { i, c ->
+        val stored = card(workId, c.id)
+        val no = chapterNo(work, c.id) ?: 0
+        when {
+            stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary)
+            i >= before.size - ChapterBriefs.RECENT_SUMMARIES ->
+                plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it") }
+            else -> null
+        }
     }
-    return ChapterBriefs.build(docs, text ?: text(workId, chapterId), card, number, work.volumeNumber(chapterId), limit, summaries)
+    val body = text ?: text(workId, chapterId)
+    val query = listOf(card, summaries.takeLast(2).joinToString("\n") { it.summary }, body.takeLast(1_500)).joinToString("\n")
+    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style)
 }

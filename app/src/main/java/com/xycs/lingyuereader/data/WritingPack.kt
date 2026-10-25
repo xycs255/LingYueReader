@@ -14,17 +14,18 @@ import java.util.zip.ZipOutputStream
  * [always] 是默认是否“常用”（每次请 AI 都带上；“按需”的只在用到时带）。
  */
 enum class PackKind(val label: String, val priority: Int, val always: Boolean, val hint: String) {
+    INSTRUCTION("工作说明", 0, true, "给 AI 的工作说明：先读什么、以谁为准、怎么改稿；放在最前面，AI 照它办事"),
     OUTLINE("总纲", 1, true, "全书走向、主线、结局；冲突时最终以它为准"),
     INVARIANT("不变量", 2, true, "定下来就不能动的硬数字、生死身份、要回收的原话和物件"),
     VOLUME("卷纲细纲", 2, false, "每卷、每章的事实边界与钩子"),
-    CANON("硬性设定", 3, false, "年代、制度、地理、势力、资源等事实"),
+    CANON("硬性设定", 3, true, "年代、制度、地理、势力、资源等事实"),
     CHARACTER("人物档案", 3, true, "人物卡：想要、害怕、怎么说话、标志物、怎么变"),
-    AWARENESS("察觉表", 4, false, "谁从第几章起知道什么、消息从哪来"),
-    FORESHADOW("伏笔表", 4, false, "埋下了什么、第几章埋、计划第几章回收、回收了没有"),
+    AWARENESS("察觉表", 4, true, "谁从第几章起知道什么、消息从哪来"),
+    FORESHADOW("伏笔表", 4, true, "埋下了什么、第几章埋、计划第几章回收、回收了没有"),
     STYLE("写作规范", 5, true, "怎么把事实写成小说：篇幅、对白、旁白、禁用词"),
-    VOICE("称谓与语气", 5, false, "称谓边界、各人物说话的腔调"),
+    VOICE("称谓与语气", 5, true, "称谓边界、各人物说话的腔调"),
     RULES("检查规则", 5, false, "灵阅在本机逐章检查：篇幅、口头禅次数、禁用词和句式、段落长短"),
-    TECHNIQUE("技法参考", 6, false, "学来的写法，只取方法不抄原文"),
+    TECHNIQUE("技法参考", 6, true, "学来的写法，只取方法不抄原文"),
     REFERENCE("资料", 7, false, "其他参考资料、体检报告、说明"),
 }
 
@@ -60,6 +61,7 @@ object PackImport {
     fun isText(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in setOf("md", "markdown", "txt", "text")
 
     private val rules: List<Pair<Regex, PackKind>> = listOf(
+        Regex("使用说明|工作说明|工作流程|提示词|(?i)readme") to PackKind.INSTRUCTION,
         Regex("检查规则|自查清单|口癖清单") to PackKind.RULES,
         Regex("伏笔") to PackKind.FORESHADOW,
         Regex("不变量") to PackKind.INVARIANT,
@@ -100,12 +102,19 @@ object PackImport {
             if (t != null) out += t to b else if (b.isNotEmpty()) out += fallbackTitle to b
             body.setLength(0)
         }
+        var preface: Pair<String, String>? = null
         for (raw in text.removePrefix("\uFEFF").lines()) {
             val line = raw.trim().trim('　').trim()
             val heading = Regex("""^#{1,4}\s+(.+)$""").matchEntire(line)?.groupValues?.get(1)?.trim()
             val isTitle = heading?.let { ChapterTitles.isTxtChapterTitle(it) || it.startsWith("第") } ?: ChapterTitles.isTxtChapterTitle(line)
             if (isTitle) {
-                flush()
+                // 第一章前面的（“承上一份”“本文件随写作追加”这类说明）不是正文，有章名时不单独成章。
+                if (title == null) {
+                    preface = body.toString().trim().takeIf { it.isNotEmpty() }?.let { fallbackTitle to it }
+                    body.setLength(0)
+                } else {
+                    flush()
+                }
                 title = heading ?: line
                 continue
             }
@@ -115,6 +124,7 @@ object PackImport {
             body.append(line.removePrefix("> ")).append('\n')
         }
         flush()
+        if (out.isEmpty()) preface?.let { out += it }
         return out.filter { it.second.isNotBlank() || it.first.isNotBlank() }
     }
 

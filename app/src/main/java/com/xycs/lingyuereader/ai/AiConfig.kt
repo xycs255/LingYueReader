@@ -7,6 +7,8 @@ import androidx.core.content.edit
 enum class AiProtocol(val label: String) {
     OPENAI("OpenAI 兼容"),
     ANTHROPIC("Anthropic"),
+    /** 在这台手机上跑的模型（[DeviceModels]），不联网。 */
+    DEVICE("本机"),
 }
 
 /** 常用服务商：选了自动填好地址和模型名，读者只需填自己的密钥。模型名可以改。 */
@@ -18,19 +20,23 @@ data class AiPreset(
     val model: String,
     /** 去哪里申请密钥。 */
     val keySite: String,
+    /** 上下文多大（token）：写作 AI 按它决定设定包的知识库能整份放进多少。 */
+    val context: Int = 64_000,
 )
 
 object AiPresets {
     const val CUSTOM = "custom"
     const val LOCAL = "local"
+    const val DEVICE = "device"
 
     val ALL = listOf(
-        AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com"),
-        AiPreset("qwen", "通义千问", AiProtocol.OPENAI, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "阿里云百炼控制台"),
-        AiPreset("kimi", "Kimi", AiProtocol.OPENAI, "https://api.moonshot.cn/v1", "kimi-latest", "platform.moonshot.cn"),
-        AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn"),
-        AiPreset("claude", "Claude", AiProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-opus-5-5", "console.anthropic.com"),
-        AiPreset(LOCAL, "局域网模型", AiProtocol.OPENAI, "http://192.168.1.2:11434/v1", "qwen3:8b", ""),
+        AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com", 128_000),
+        AiPreset("qwen", "通义千问", AiProtocol.OPENAI, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "阿里云百炼控制台", 128_000),
+        AiPreset("kimi", "Kimi", AiProtocol.OPENAI, "https://api.moonshot.cn/v1", "kimi-latest", "platform.moonshot.cn", 128_000),
+        AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn", 128_000),
+        AiPreset("claude", "Claude", AiProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-opus-5-5", "console.anthropic.com", 200_000),
+        AiPreset(LOCAL, "局域网模型", AiProtocol.OPENAI, "http://192.168.1.2:11434/v1", "qwen3:8b", "", 32_000),
+        AiPreset(DEVICE, "本机模型（离线）", AiProtocol.DEVICE, "", "", ""),
         AiPreset(CUSTOM, "自定义", AiProtocol.OPENAI, "", "", ""),
     )
 
@@ -96,14 +102,20 @@ data class AiConfig(
     val lan: Boolean get() = isLanHost(runCatching { java.net.URI(baseUrl.trim()).host }.getOrNull())
 
     /** 地址、模型、密钥都填了（局域网里的模型可以不要密钥）。 */
-    val complete: Boolean get() = baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+    val complete: Boolean get() = if (onDevice) model.isNotBlank() else baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+
+    /** 模型的上下文大约多大（token）：按选的服务商。 */
+    val contextTokens: Int get() = AiPresets.of(preset).context
+
+    /** 用本机模型：不联网，上下文短。 */
+    val onDevice: Boolean get() = protocol == AiProtocol.DEVICE
 
     /** 打开了且填全了：阅读界面里才出现 AI 的入口。 */
     val ready: Boolean get() = enabled && complete
 
     /** 设置页、回答下面显示的服务商名。 */
     val providerLabel: String
-        get() = AiPresets.of(preset).takeIf { it.id != AiPresets.CUSTOM }?.label
+        get() = if (onDevice) "本机" else AiPresets.of(preset).takeIf { it.id != AiPresets.CUSTOM }?.label
             ?: runCatching { java.net.URI(baseUrl.trim()).host }.getOrNull()?.removePrefix("api.")
             ?: "自定义"
 

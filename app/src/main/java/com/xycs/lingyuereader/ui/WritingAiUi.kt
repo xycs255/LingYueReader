@@ -57,6 +57,10 @@ import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.TextDiff
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
+import com.xycs.lingyuereader.data.WordCount
+import com.xycs.lingyuereader.InlineWrite
+import com.xycs.lingyuereader.ai.InlineMode
+import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.data.BibleEntry
 import com.xycs.lingyuereader.data.BibleKind
 import com.xycs.lingyuereader.data.WorkAssist
@@ -93,6 +97,11 @@ internal sealed interface AiBarItem {
         override val label = "按要求改…"
     }
 
+    /** 在光标处直接写（先显示、采纳才进正文）。 */
+    data object Write : AiBarItem {
+        override val label = "AI 接着写"
+    }
+
     data object Ideas : AiBarItem {
         override val label = "灵感…"
     }
@@ -107,12 +116,12 @@ internal sealed interface AiBarItem {
 }
 
 internal val AI_BAR = listOf(
+    AiBarItem.Write,
     AiBarItem.Edit(WriteAction.POLISH),
     AiBarItem.Edit(WriteAction.VIVID),
     AiBarItem.Edit(WriteAction.EXPAND),
     AiBarItem.Edit(WriteAction.CONDENSE),
     AiBarItem.Edit(WriteAction.PROOFREAD),
-    AiBarItem.Edit(WriteAction.CONTINUE),
     AiBarItem.Custom,
     AiBarItem.Ideas,
     AiBarItem.Review,
@@ -168,7 +177,7 @@ internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: St
     return true
 }
 
-/** 改一处实时检查找出的错：在那段里把错的换成对的。段落已经改掉时返回假。 */
+/** 采纳一条写作建议：在那段里把错的换成对的。段落已经改掉时返回假。 */
 internal fun applyIssue(state: TextFieldState, issue: WriteIssue): Boolean {
     val text = state.text.toString()
     val p = text.indexOf(issue.paragraph)
@@ -220,6 +229,8 @@ internal fun WriteAiPanel(
     state: WriteAiState,
     model: String,
     onAccept: (String) -> Unit,
+    /** AI 正在查设定包的什么（查完为空）。 */
+    lookup: String? = null,
     onInsert: (String) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
@@ -239,7 +250,7 @@ internal fun WriteAiPanel(
             Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
             Text(task.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 6.dp))
             Text(
-                if (state.loading) "  生成中……" else "  $model 生成，可能有误",
+                if (state.loading) lookup?.let { "  正在查：$it" } ?: "  生成中……" else "  $model 生成，可能有误",
                 color = c.tertiary,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -285,7 +296,7 @@ internal fun WriteAiPanel(
     }
 }
 
-/** 实时检查找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。 */
+/** 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。 */
 @Composable
 internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, onIgnore: (WriteIssue) -> Unit, onClose: () -> Unit) {
     val c = LocalGroupedColors.current
@@ -332,6 +343,137 @@ internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, o
     }
 }
 
+/** 建议在正文里的位置：找到那一段，再在段里找那几个字。找不到的（段已经改了）不标。 */
+internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<IntRange, WriteIssue>> = issues.mapNotNull { i ->
+    val p = text.indexOf(i.paragraph).takeIf { it >= 0 } ?: return@mapNotNull null
+    val w = i.paragraph.indexOf(i.wrong).takeIf { it >= 0 } ?: return@mapNotNull null
+    val start = p + w
+    (start until start + i.wrong.length) to i
+}
+
+/** 各类建议的颜色：错字红、设定橙、规范蓝、口吻紫。 */
+internal fun suggestColor(kind: String): Color = when (SuggestKind.of(kind)) {
+    SuggestKind.TYPO -> Color(0xFFE5484D)
+    SuggestKind.CANON -> Color(0xFFFF9500)
+    SuggestKind.STYLE -> Color(0xFF007AFF)
+    SuggestKind.VOICE -> Color(0xFFAF52DE)
+}
+
+/**
+ * AI 在编辑器里写：键盘上方一条——在写（或在查设定）时能停，写完能采纳、重写、撤回。
+ * 写的字显示在正文的光标处（浅色），采纳前不算正文。
+ */
+@Composable
+internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit, onAccept: () -> Unit, onRetry: () -> Unit, onDiscard: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .background(c.cell)
+            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
+            val words = WordCount.of(inline.text)
+            Text(
+                when {
+                    inline.error != null -> "出错了：${inline.error}"
+                    inline.loading && lookup != null -> "正在查：$lookup"
+                    inline.loading -> if (words == 0) "AI 正在想……" else "AI 正在写 · $words 字"
+                    else -> "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: "")
+                },
+                color = if (inline.error != null) c.destructive else c.label,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                modifier = Modifier.weight(1f).padding(start = 6.dp),
+            )
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (inline.loading) {
+                PanelButton("停止") { onStop() }
+            } else {
+                PanelButton("采纳", strong = true, enabled = inline.text.isNotBlank() && inline.error == null) { onAccept() }
+                PanelButton("重写") { onRetry() }
+            }
+            PanelButton("撤回") { onDiscard() }
+        }
+    }
+}
+
+/** 选写多少：写下一场、写到本章结尾、写 500 字左右、按要求写。 */
+@Composable
+internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Unit) {
+    val c = LocalGroupedColors.current
+    GlassDialog(show = true, title = "AI 接着写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            InlineMode.entries.forEach { m ->
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onPick(m) }.padding(horizontal = 12.dp, vertical = 12.dp)) {
+                    Text(m.label, color = c.label, fontSize = 16.sp)
+                }
+            }
+        }
+        TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+    }
+}
+
+/**
+ * 光标落在一条建议上：键盘上方显示这条——哪类、原因、依据、改成什么；可以采纳、不改、这类以后不提。
+ */
+@Composable
+internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () -> Unit, onMute: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val kind = SuggestKind.of(issue.kind)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .background(c.cell)
+            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.clip(RoundedCornerShape(6.dp)).background(suggestColor(issue.kind).copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
+                Text(kind.label, color = suggestColor(issue.kind), fontSize = 12.sp)
+            }
+            Text(
+                buildAnnotatedString {
+                    withStyle(SpanStyle(color = Color(0xFFE5484D), textDecoration = TextDecoration.LineThrough)) { append(issue.wrong) }
+                    append("  →  ")
+                    withStyle(SpanStyle(color = Color(0xFF2F9E44), fontWeight = FontWeight.Medium)) { append(issue.right) }
+                },
+                color = c.label,
+                fontSize = 15.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+        }
+        val why = listOf(issue.reason, issue.source.takeIf { it.isNotBlank() }?.let { "依据：$it" }).filterNotNull().filter { it.isNotBlank() }.joinToString("  ")
+        if (why.isNotBlank()) Text(why, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PanelButton("采纳", strong = true) { onFix() }
+            PanelButton("不改") { onIgnore() }
+            PanelButton("${kind.label}类不提") { onMute() }
+        }
+    }
+}
+
+/** 光标落在一处不合检查规则的地方：说是哪条规则（本机检查，不花钱）。 */
+@Composable
+internal fun RuleNote(text: String, onOpen: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(
+        Modifier.fillMaxWidth().background(c.background).clickable { onOpen() }.padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.clip(RoundedCornerShape(6.dp)).background(Color(0x33FFCC00)).padding(horizontal = 6.dp, vertical = 1.dp)) {
+            Text("规则", color = Color(0xFFB8860B), fontSize = 12.sp)
+        }
+        Text(text, color = c.label, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
+    }
+}
+
 /** 输入一句话的对话框（按要求改、起名、随便问）。 */
 @Composable
 internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
@@ -366,7 +508,7 @@ internal fun IdeasDialog(onDismiss: () -> Unit, onPick: (IdeaKind) -> Unit) {
 // ---------- 作品的 AI 设置 ----------
 
 /**
- * 一部作品的 AI 设置：实时检查（默认关）、文风要求、记住的改法、设定集入口。
+ * 一部作品的 AI 设置：写作建议（默认关）、文风要求、记住的改法、设定集入口。
  */
 @Composable
 fun WorkAiScreen(vm: AppViewModel, workId: String) {
@@ -382,6 +524,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     val assist = assists[workId] ?: WorkAssist()
     var style by remember(assists[workId] != null) { mutableStateOf(assist.style) }
     var clearing by remember { mutableStateOf(false) }
+    var showSent by remember { mutableStateOf(false) }
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
     // 文风要求边打边存（停一下再写盘）。
     LaunchedEffect(style) {
         if (assists[workId] == null || style == assist.style) return@LaunchedEffect
@@ -412,7 +556,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     GroupedSection(
                         footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：选中文字（或把光标放在那段）润色、扩写、缩写、挑错、续写；" +
-                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。设定包里“常用”的文档会按优先级带给 AI。",
+                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
@@ -426,13 +570,64 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         }
                     }
                     GroupedSection(
-                        header = "实时检查",
-                        footer = "开启后，停笔几秒，灵阅会自动把刚写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）发给上面的 AI 服务商，" +
-                            "挑出错别字、用错的词和标点，显示在编辑器里由你决定改不改。按服务商的价格计费。只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
+                        header = "记录",
+                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
+                            "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看。",
+                    ) {
+                        row { NavRow("AI 记录", icon = LingYueIcons.History, iconBackground = Color(0xFF8E8E93)) { vm.open(Screen.WorkAiLog(workId)) } }
+                        row {
+                            NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
+                        }
+                    }
+                    GroupedSection(
+                        header = "设定包",
+                        footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
+                            "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
+                            "放得越多，AI 越不用查，但每次请求越大（相同的开头服务商会缓存，后面几次便宜很多）。" +
+                            "本章资料字数上限只给本机模型用：它不能自己查，按章挑着带。",
                     ) {
                         row {
-                            ToggleRow("写作时实时检查", assist.realtime, icon = LingYueIcons.Timer, iconBackground = Color(0xFFFF9500)) { on ->
+                            PickerRow(
+                                "知识库上限",
+                                WorkAssist.KNOWLEDGE_LIMITS.map { it to if (it == 0) "按模型" else "${it / 10_000} 万字" },
+                                assist.knowledgeLimit,
+                            ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
+                        }
+                        row {
+                            PickerRow("本章资料字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                                vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
+                            }
+                        }
+                    }
+                    GroupedSection(
+                        header = "写作建议",
+                        footer = "开启后，你停笔几秒，灵阅会把刚写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
+                            "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。设定、规范、口吻要设定包里有依据，拿不准的不提；" +
+                            "本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次可以在下面设。" +
+                            "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
+                    ) {
+                        row {
+                            ToggleRow("写作时给建议", assist.realtime, icon = LingYueIcons.Timer, iconBackground = Color(0xFFFF9500)) { on ->
                                 vm.writingAi.updateAssist(workId) { it.copy(realtime = on) }
+                            }
+                        }
+                        if (assist.realtime) {
+                            SuggestKind.entries.forEach { k ->
+                                row {
+                                    ToggleRow("查${k.label}", k.name in assist.suggestKinds) { on ->
+                                        vm.writingAi.updateAssist(workId) { a -> a.copy(suggestKinds = if (on) (a.suggestKinds + k.name).distinct() else a.suggestKinds - k.name) }
+                                    }
+                                }
+                            }
+                            row {
+                                PickerRow("两次至少隔", WorkAssist.SUGGEST_GAPS.map { it to "$it 秒" }, assist.suggestGap) { v ->
+                                    vm.writingAi.updateAssist(workId) { it.copy(suggestGap = v) }
+                                }
+                            }
+                            row {
+                                PickerRow("一天最多", WorkAssist.SUGGEST_CAPS.map { it to if (it == 0) "不限" else "$it 次" }, assist.suggestCap) { v ->
+                                    vm.writingAi.updateAssist(workId) { it.copy(suggestCap = v) }
+                                }
                             }
                         }
                     }
@@ -448,11 +643,13 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "学你的改法",
-                        footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你。只存在这台手机上（随灵阅备份）。",
+                        footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
+                            "没采纳的改法记下最近 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。只存在这台手机上（随灵阅备份）。",
                     ) {
                         row { ValueRow("记住的采纳", "${assist.accepted.size} 条") }
+                        row { ValueRow("记住的没采纳", "${assist.declined.size} 条") }
                         row { ValueRow("没用上的建议", "${assist.rejected} 次") }
-                        if (assist.accepted.isNotEmpty() || assist.rejected > 0) {
+                        if (assist.accepted.isNotEmpty() || assist.rejected > 0 || assist.declined.isNotEmpty()) {
                             row { ActionRow("清除记录", destructive = true) { clearing = true } }
                         }
                     }
@@ -462,10 +659,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定集。", onDismissRequest = { clearing = false }) {
                     DialogButtons(confirm = "清除", onDismiss = { clearing = false }) {
                         clearing = false
-                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), rejected = 0) }
+                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
                     }
                 }
             }
+            if (showSent) sent?.let { SentDialog(it) { showSent = false } }
         }
     }
 }

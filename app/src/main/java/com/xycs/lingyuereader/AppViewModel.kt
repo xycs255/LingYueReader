@@ -160,7 +160,7 @@ sealed interface Screen {
     /** 一章的历史版本。 */
     /** 一章（或设定包里一份文档，[docId] 不为空时）的历史版本。 */
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
-    /** 一部作品的 AI 设置：实时检查、文风、学到的改法。 */
+    /** 一部作品的 AI 设置：写作建议、文风、学到的改法。 */
     data class WorkAi(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
@@ -180,6 +180,8 @@ sealed interface Screen {
     data class Foreshadows(val workId: String) : Screen
 
     data class ChapterDraft(val workId: String, val chapterId: String) : Screen
+
+    data class WorkAiLog(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
@@ -1280,13 +1282,93 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
 
-    /** 写作的 AI：改稿、灵感、点评、矛盾检查、实时检查、设定集。 */
+    /** 写作的 AI：改稿、灵感、点评、矛盾检查、写作建议、设定集。 */
     val writingAi = WritingAi(workStore, assistant, viewModelScope) { _messages.value = it }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss
 
-    fun saveAiConfig(c: AiConfig) = assistant.saveConfig(c)
+    fun saveAiConfig(c: AiConfig) {
+        // 不用本机模型了：放掉它占的内存。
+        if (!c.onDevice) assistant.client.device?.release()
+        assistant.saveConfig(c)
+    }
+
+    // ---------- 本机（离线）模型 ----------
+
+    private val deviceFiles = com.xycs.lingyuereader.ai.DeviceModelFiles(java.io.File(app.filesDir, "llm"))
+
+    init {
+        // 本机模型的引擎只有 64 位的手机有（32 位的没带）。
+        if (com.xycs.lingyuereader.ai.DeviceModels.supported) assistant.client.device = com.xycs.lingyuereader.ai.MediaPipeLlm(app, deviceFiles)
+    }
+
+    private val _deviceModels = MutableStateFlow(DeviceModelState())
+    /** 本机模型：装好了哪些、正在下载或导入哪个。 */
+    val deviceModels: StateFlow<DeviceModelState> = _deviceModels.asStateFlow()
+    private var deviceJob: Job? = null
+
+    fun refreshDeviceModels() {
+        viewModelScope.launch {
+            val ids = withContext(Dispatchers.IO) { deviceFiles.installedIds() }
+            _deviceModels.update { it.copy(installed = ids, sizes = ids.associateWith { id -> deviceFiles.size(id) }) }
+        }
+    }
+
+    /** 下载本机模型（读者点了才联网）；下好后选用它。 */
+    fun downloadDeviceModel(m: com.xycs.lingyuereader.ai.DeviceModel) = runDeviceTask(m.id) {
+        deviceFiles.download(m) { phase, done, total -> _deviceModels.update { s -> s.copy(task = DeviceTask(m.id, phase, done, total)) } }
+        m.id
+    }
+
+    /** 从读者选的 .task 文件导入本机模型。 */
+    fun importDeviceModel(uri: Uri) = runDeviceTask(null) {
+        val resolver = getApplication<Application>().contentResolver
+        val size = runCatching { resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } }.getOrNull() ?: -1L
+        val name = runCatching {
+            resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: uri.lastPathSegment.orEmpty()
+        deviceFiles.import(name, { resolver.openInputStream(uri) ?: throw com.xycs.lingyuereader.ai.DeviceModelException("打不开这个文件") }, size) { phase, done, total ->
+            _deviceModels.update { s -> s.copy(task = DeviceTask(null, phase, done, total)) }
+        }
+    }
+
+    private fun runDeviceTask(model: String?, work: suspend () -> String) {
+        if (deviceJob?.isActive == true) return
+        _deviceModels.update { it.copy(task = DeviceTask(model, com.xycs.lingyuereader.ai.DevicePhase.DOWNLOAD), error = null) }
+        deviceJob = viewModelScope.launch {
+            try {
+                val id = work()
+                refreshDeviceModels()
+                // 刚装好的直接选用。
+                saveAiConfig(aiConfig.value.copy(model = id))
+                _deviceModels.update { it.copy(task = null) }
+                _messages.value = "「${com.xycs.lingyuereader.ai.DeviceModels.label(id)}」已装好"
+            } catch (e: CancellationException) {
+                _deviceModels.update { it.copy(task = null) }
+                throw e
+            } catch (e: Exception) {
+                _deviceModels.update { it.copy(task = null, error = (e as? com.xycs.lingyuereader.ai.DeviceModelException)?.message ?: "出错了：${e.message}") }
+            }
+        }
+    }
+
+    /** 取消下载（下了的部分留着，下次接着下）或导入。 */
+    fun cancelDeviceTask() {
+        deviceJob?.cancel()
+        _deviceModels.update { it.copy(task = null) }
+    }
+
+    fun deleteDeviceModel(id: String) {
+        viewModelScope.launch {
+            if (aiConfig.value.onDevice && aiConfig.value.model == id) {
+                assistant.client.device?.release()
+                saveAiConfig(aiConfig.value.copy(model = ""))
+            }
+            withContext(Dispatchers.IO) { deviceFiles.delete(id) }
+            refreshDeviceModels()
+        }
+    }
 
     suspend fun testAi(c: AiConfig): String = assistant.test(c)
 
@@ -2587,3 +2669,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 }
+
+/** 本机模型的状态：装好了哪些（[sizes] 占多大地方）、正在做的下载或导入、出错的原因。 */
+data class DeviceModelState(
+    val installed: List<String> = emptyList(),
+    val sizes: Map<String, Long> = emptyMap(),
+    val task: DeviceTask? = null,
+    val error: String? = null,
+)
+
+/** 正在下载（[model] 是哪个）或导入（[model] 为空）。 */
+data class DeviceTask(val model: String?, val phase: com.xycs.lingyuereader.ai.DevicePhase, val done: Long = 0, val total: Long = 0)

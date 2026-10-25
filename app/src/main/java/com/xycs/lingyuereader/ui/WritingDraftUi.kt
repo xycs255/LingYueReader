@@ -59,17 +59,20 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     LaunchedEffect(workId, chapterId) {
         vm.writingAi.loadDraft(workId, chapterId)
-        card = vm.writing.cards(workId, chapterId).first
+        card = vm.writing.cards(workId, chapterId).first.card
     }
     val draft = state?.takeIf { it.workId == workId && it.chapterId == chapterId }
     val text = draft?.text.orEmpty()
     val loading = draft?.loading == true
+    val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // 写完以后按检查规则看一遍（本机算）。
     val hits by produceState<Int?>(null, text, loading) {
         value = if (loading || text.isBlank()) null else vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { CheckRules.check(text, it).hits.size }
     }
     val snackbar = rememberWritingMessages(vm)
     val locked = chapter?.locked == true
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
+    var showSent by remember { mutableStateOf(false) }
 
     ProvideGroupedColors {
         val c = LocalGroupedColors.current
@@ -122,12 +125,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         if (text.isNotBlank() && !loading) {
                             row { ActionRow("接着写", enabled = aiConfig.ready && !locked) { vm.writingAi.writeDraft(workId, chapterId, more = true) } }
                         }
+                        if (sent != null && sent?.label in setOf("写本章", "接着写")) {
+                            row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
+                        }
                     }
                     if (text.isNotBlank() || loading || draft?.error != null) {
                         GroupedSection(
                             header = buildString {
                                 append("草稿 · ${WordCount.of(text)} 字")
-                                if (loading) append(" · 正在写……")
+                                if (loading) append(lookup?.let { " · 正在查：$it" } ?: " · 正在写……")
                                 hits?.let { append(if (it == 0) " · 合规则" else " · $it 条不合规则") }
                             },
                         ) {
@@ -154,6 +160,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
             }
+            if (showSent) sent?.let { SentDialog(it) { showSent = false } }
             if (placing) {
                 val empty = (chapter?.words ?: 0) == 0
                 GlassDialog(

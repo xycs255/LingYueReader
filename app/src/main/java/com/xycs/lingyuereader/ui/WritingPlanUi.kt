@@ -40,6 +40,9 @@ import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.PlannedCard
+import com.xycs.lingyuereader.data.outlineHash
+import com.xycs.lingyuereader.data.withOutline
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
@@ -155,6 +158,7 @@ private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> =
     Triple("倒计时", "章首交代：离某件事还有多久", { it.countdown }),
     Triple("章末钩子", "一个动作、一句没说完的话、一点异样", { it.hook }),
     Triple("推进的线", "比如：明线、暗线、主角线，或某个配角的弧线", { it.threads }),
+    Triple("细纲章号", "发布章号顺延时填（比如拆成上下章）", { it.plan }),
 )
 
 private fun ChapterCard.with(field: String, value: String) = when (field) {
@@ -163,6 +167,7 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
     "视角人物" -> copy(pov = value)
     "倒计时" -> copy(countdown = value)
     "章末钩子" -> copy(hook = value)
+    "细纲章号" -> copy(plan = value)
     else -> copy(threads = value)
 }
 
@@ -177,6 +182,10 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     var saved by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     var previous by remember(chapterId) { mutableStateOf<Pair<WorkChapter, ChapterCard>?>(null) }
+    var info by remember(chapterId) { mutableStateOf<PlannedCard?>(null) }
+    var replacing by remember { mutableStateOf(false) }
+    var planning by remember { mutableStateOf(false) }
+    var proposal by remember { mutableStateOf<ChapterCard?>(null) }
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -184,8 +193,9 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val snackbar = rememberWritingMessages(vm)
     LaunchedEffect(workId, chapterId) {
         val (mine, prev) = vm.writing.cards(workId, chapterId)
-        card = mine
-        saved = mine
+        card = mine.card
+        saved = mine.card
+        info = mine
         previous = prev
     }
     // 停一下再存；离开时存。
@@ -245,10 +255,38 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     val now = card
                     if (now != null) {
+                        val planned = info
+                        val fromOutline = planned?.source != null && now.auto != 0 && now.auto == now.outlineHash()
+                        val outline = planned?.outline?.takeIf { it.outlineHash() != now.outlineHash() }
                         GroupedSection(
                             header = "本章",
                             footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、查矛盾时都会带上它，以及上一章的钩子和承接边界。",
                         ) {
+                            val note = when {
+                                fromOutline -> "从${planned?.source}自动提取。细纲文档改了，这里跟着变；在这里改过以后就按你改的来。"
+                                outline != null -> "改过了，不再跟着细纲变。细纲里这一章（${planned.outlineSource}）和这里不一样，可以换回去。"
+                                planned?.missing != null -> "设定包的卷纲细纲里没找到这一章（${planned.missing}）。章号对不上时填下面的“细纲章号”。"
+                                else -> null
+                            }
+                            if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
+                            row {
+                                ActionRow(if (planning) "AI 正在拟细纲……" else "AI 拟这一章的细纲", enabled = !planning && aiConfig.ready) {
+                                    planning = true
+                                    scope.launch {
+                                        try {
+                                            proposal = vm.writingAi.planCard(workId, chapterId)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            vm.showMessage(e.message ?: "拟细纲失败")
+                                        } finally {
+                                            planning = false
+                                        }
+                                    }
+                                }
+                            }
+                            if (outline != null) row { ActionRow("用细纲里的替换") { replacing = true } }
                             CARD_FIELDS.forEach { (label, hint, get) ->
                                 row {
                                     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -295,6 +333,56 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            proposal?.let { p ->
+                GlassDialog(show = true, title = "AI 拟的细纲", summary = "按总纲、前后几章和上一章结尾拟的，看过再用", onDismissRequest = { proposal = null }) {
+                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CARD_FIELDS.dropLast(1).forEach { (label, _, get) ->
+                            val v = get(p)
+                            if (v.isNotBlank()) {
+                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = 13.sp)
+                                Text(v, color = LocalGroupedColors.current.label, fontSize = 15.sp, lineHeight = 22.sp)
+                            }
+                        }
+                    }
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TextButton(text = "不用", onClick = { proposal = null }, modifier = Modifier.weight(1f))
+                        TextButton(
+                            text = "用这份",
+                            onClick = {
+                                proposal = null
+                                card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0)
+                                info = info?.copy(source = null)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                        )
+                    }
+                }
+            }
+            val outline = info?.outline
+            if (replacing && outline != null) {
+                GlassDialog(show = true, title = "用细纲里的替换", summary = info?.outlineSource, onDismissRequest = { replacing = false }) {
+                    Text(
+                        "前六项换成细纲文档里这一章现在写的，你在这里改的会被覆盖。以后细纲再改，这里跟着变。摘要和细纲章号不动。",
+                        color = LocalGroupedColors.current.secondary,
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                    )
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TextButton(text = "取消", onClick = { replacing = false }, modifier = Modifier.weight(1f))
+                        TextButton(
+                            text = "替换",
+                            onClick = {
+                                replacing = false
+                                card = card?.withOutline(outline)
+                                info = info?.copy(source = info?.outlineSource)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                        )
                     }
                 }
             }

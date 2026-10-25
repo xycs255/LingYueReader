@@ -79,6 +79,8 @@ android {
             useLegacyPackaging = true
             // sherpa-onnx 的 C / C++ 接口库，Kotlin 用不到（只用 JNI 那个）。
             excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")
+            // 本机模型的推理引擎只带 64 位的：32 位的手机跑不动 1.5B 的模型，带上只是白占 19 MB。
+            excludes += listOf("lib/armeabi-v7a/libllm_inference_engine_jni.so")
         }
     }
 }
@@ -104,6 +106,8 @@ dependencies {
     implementation(libs.okhttp)
     // 离线语音：sherpa-onnx 引擎（Apache-2.0），模型由读者按需下载；模型包是 .tar.bz2，用 commons-compress 解。
     implementation(variantOf(libs.sherpa.onnx) { artifactType("aar") })
+    // 本机（离线）模型：MediaPipe 的 LLM 推理（Apache-2.0），模型由读者按需下载或导入。
+    implementation(libs.mediapipe.genai)
     implementation(libs.commons.compress)
     testImplementation(libs.junit)
     testImplementation(libs.org.json)

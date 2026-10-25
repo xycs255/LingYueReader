@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
@@ -115,7 +116,7 @@ class WritingUiTest {
         compose.onAllNodesWithText("第二章 天亮")[0].performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("预览本章").performClick()
+        compose.onNodeWithText("预览本章").performScrollTo().performClick()
         // 阅读页打开到第二章（编辑器里也有这句，等编辑框没了再找）。
         val indexFile = File(context.filesDir, "books/index.json")
         // 编辑框的光标一直在闪，界面不会“空闲”，测试框架就不替主线程处理消息：这里手动处理，预览的协程才能往下走。
@@ -139,7 +140,7 @@ class WritingUiTest {
         compose.waitUntil(10_000) { ShadowLooper.idleMainLooper(); compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("正文").performTextInput("鸡叫了三遍。")
         compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("预览本章").performClick()
+        compose.onNodeWithText("预览本章").performScrollTo().performClick()
         compose.waitUntil(20_000) {
             ShadowLooper.idleMainLooper()
             compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isEmpty() &&

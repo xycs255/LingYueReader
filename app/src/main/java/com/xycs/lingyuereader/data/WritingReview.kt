@@ -13,8 +13,15 @@ enum class ReviewGate(val label: String, val hint: String) {
     RULES("规则关", "检查规则，在本机算"),
 }
 
-/** 一处问题：原文里的一句、问题在哪、怎么改（可无）。 */
-data class ReviewIssue(val quote: String, val problem: String, val fix: String = "")
+/** 一处问题：原文里的一句、问题在哪、怎么改（可无）；[state] 是作者标的：已改、不改，空着是还没处理。 */
+data class ReviewIssue(val quote: String, val problem: String, val fix: String = "", val state: String = "") {
+    val open: Boolean get() = state.isEmpty()
+
+    companion object {
+        const val FIXED = "fixed"
+        const val IGNORED = "ignored"
+    }
+}
 
 /** 一道审稿的结果：问题，或出错的原因。 */
 data class GateResult(val gate: ReviewGate, val issues: List<ReviewIssue> = emptyList(), val error: String? = null, val at: Long = 0)
@@ -30,7 +37,7 @@ data class ChapterReview(val textHash: Int, val at: Long, val gates: List<GateRe
                 put(
                     JSONObject().put("gate", g.gate.name).put("at", g.at).put("error", g.error ?: JSONObject.NULL).put(
                         "issues",
-                        JSONArray().apply { g.issues.forEach { put(JSONObject().put("quote", it.quote).put("problem", it.problem).put("fix", it.fix)) } },
+                        JSONArray().apply { g.issues.forEach { put(JSONObject().put("quote", it.quote).put("problem", it.problem).put("fix", it.fix).put("state", it.state)) } },
                     ),
                 )
             }
@@ -50,13 +57,39 @@ data class ChapterReview(val textHash: Int, val at: Long, val gates: List<GateRe
                     GateResult(
                         gate,
                         (0 until issues.length()).mapNotNull { j ->
-                            issues.optJSONObject(j)?.let { ReviewIssue(it.optString("quote"), it.optString("problem"), it.optString("fix")) }
+                            issues.optJSONObject(j)?.let { ReviewIssue(it.optString("quote"), it.optString("problem"), it.optString("fix"), it.optString("state")) }
                         },
                         if (g.isNull("error")) null else g.optString("error"),
                         g.optLong("at"),
                     )
                 },
             )
+        }
+    }
+}
+
+/**
+ * 写作 AI 的一条记录（灵感、读者点评、矛盾检查、写本章）：哪一章、做了什么、AI 的回答，以及作者觉得有没有用
+ * （[rating] 1 有用、-1 没用、0 没评）。存在本机，方便回头翻，也方便作者判断哪些提示词好用。
+ */
+data class WriteRecord(
+    val id: String,
+    val at: Long,
+    val chapterId: String,
+    val chapterTitle: String,
+    val kind: String,
+    val ask: String,
+    val text: String,
+    val rating: Int = 0,
+) {
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("at", at).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
+        .put("kind", kind).put("ask", ask).put("text", text).put("rating", rating)
+
+    companion object {
+        const val KEEP = 100
+
+        fun fromJson(o: JSONObject): WriteRecord? = o.optString("id").takeIf { it.isNotEmpty() }?.let {
+            WriteRecord(it, o.optLong("at"), o.optString("chapterId"), o.optString("chapterTitle"), o.optString("kind"), o.optString("ask"), o.optString("text"), o.optInt("rating"))
         }
     }
 }
