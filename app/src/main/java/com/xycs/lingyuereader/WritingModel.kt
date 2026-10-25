@@ -27,6 +27,8 @@ import com.xycs.lingyuereader.data.WritingRestore
 import com.xycs.lingyuereader.data.WritingStats
 import com.xycs.lingyuereader.data.brief
 import com.xycs.lingyuereader.data.chapterNo
+import com.xycs.lingyuereader.data.SyncMark
+import com.xycs.lingyuereader.data.unsynced
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -407,6 +409,9 @@ class WritingModel(
 
     /** 存盘的正文（排在还没写完的保存后面读）。 */
     suspend fun savedText(workId: String, chapterId: String): String = withContext(disk) { store.text(workId, chapterId) }
+
+    /** 有正文、还没整理进设定包（或整理以后正文改过）的章的 id。[marks] 是界面上看到的 AI 设置里记的（可能还没落盘）。 */
+    suspend fun unsynced(workId: String, marks: Map<String, SyncMark>): Set<String> = withContext(disk) { store.unsynced(workId, marks).map { it.id }.toSet() }
 
     /** 从审稿页点了一处问题：回到编辑器，选中原文里的这一句；带了 [Jump.instruction] 时接着按它让 AI 改。编辑器用掉后清空。 */
     val jump = MutableStateFlow<Jump?>(null)

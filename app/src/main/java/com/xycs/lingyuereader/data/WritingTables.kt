@@ -32,8 +32,8 @@ object ChapterRefs {
     }
 }
 
-/** 一张 Markdown 表格：表头、各行；[lines] 是每行在原文里的行号（改某一格时用）。 */
-data class MdTable(val header: List<String>, val rows: List<List<String>>, val lines: List<Int>) {
+/** 一张 Markdown 表格：表头、各行；[lines] 是每行在原文里的行号（改某一格时用），[start] 是表头那一行的行号。 */
+data class MdTable(val header: List<String>, val rows: List<List<String>>, val lines: List<Int>, val start: Int = -1) {
     /** 表头里第一个含这些字的列。 */
     fun column(vararg keys: String): Int = header.indexOfFirst { h -> keys.any { it in h } }
 
@@ -59,7 +59,7 @@ data class MdTable(val header: List<String>, val rows: List<List<String>>, val l
                         at += j
                         j++
                     }
-                    out += MdTable(header, rows, at)
+                    out += MdTable(header, rows, at, i)
                     i = j
                 } else {
                     i++

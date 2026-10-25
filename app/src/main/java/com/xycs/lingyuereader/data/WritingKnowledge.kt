@@ -294,10 +294,13 @@ class PackTools(private val docs: List<Pair<PackDoc, String>>, private val chapt
 fun WorkStore.aiPack(workId: String, budget: Int): AiPack =
     PackKnowledge.build(pack(workId).map { it to packText(workId, it.id) }, budget)
 
-/** AI 查设定包和正文用的工具。 */
-fun WorkStore.packTools(workId: String): PackTools {
-    val work = get(workId)
-    return PackTools(pack(workId).map { it to packText(workId, it.id) }, work?.chapters.orEmpty().map { c -> c to { text(workId, c.id) } })
+/** AI 查设定包和正文用的工具。[upTo] 不为空时只能读到这一章为止（防剧透：后面的章不给看）。 */
+fun WorkStore.packTools(workId: String, upTo: String? = null): PackTools {
+    val chapters = get(workId)?.chapters.orEmpty().let { all ->
+        val i = upTo?.let { id -> all.indexOfFirst { it.id == id } } ?: -1
+        if (i >= 0) all.take(i + 1) else all
+    }
+    return PackTools(pack(workId).map { it to packText(workId, it.id) }, chapters.map { c -> c to { text(workId, c.id) } })
 }
 
 /**

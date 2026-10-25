@@ -186,6 +186,9 @@ sealed interface Screen {
     data class ChapterDraft(val workId: String, val chapterId: String) : Screen
 
     data class WorkAiLog(val workId: String) : Screen
+
+    /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
+    data class ChapterSync(val workId: String) : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
