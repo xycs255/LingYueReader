@@ -107,18 +107,7 @@ internal fun CatalogSheet(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Box(
-                    Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .clickable(onClickLabel = "关闭目录", onClick = onClose)
-                        .semantics { contentDescription = "关闭目录" },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.size(32.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
-                        Icon(LingYueIcons.Close, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
-                    }
-                }
+                PanelCloseButton("关闭目录", onClose)
             }
             Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 SegmentedControl(

@@ -361,9 +361,13 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
                 Chips(listOf(true to "常用", false to "按需"), always, "") { always = it }
             }
         }
-        DialogButtons(confirm = "好", onDismiss = onDismiss) {
-            onSave(item.copy(include = include, asChapters = chapters, kind = kind, priority = priority, always = always))
-        }
+        DialogButtons(
+            onDismiss = onDismiss,
+            onConfirm = {
+                onSave(item.copy(include = include, asChapters = chapters, kind = kind, priority = priority, always = always))
+            },
+            confirmText = "好",
+        )
     }
 }
 
@@ -376,7 +380,7 @@ private fun NewDocDialog(onDismiss: () -> Unit, onCreate: (PackKind, String) -> 
         Chips(KIND_OPTIONS, kind, "类型") { kind = it }
         Text(kind.hint, color = LocalGroupedColors.current.secondary, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 8.dp))
         TextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
-        DialogButtons(confirm = "新建", onDismiss = onDismiss) { onCreate(kind, title) }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onCreate(kind, title) }, confirmText = "新建")
     }
 }
 
@@ -396,7 +400,7 @@ private fun DocPropsDialog(doc: PackDoc, onDismiss: () -> Unit, onSave: (PackDoc
             Chips(PRIORITY_OPTIONS, priority, "优先级") { priority = it }
             Chips(listOf(true to "常用：每次都带给 AI", false to "按需：用到时才带"), always, "") { always = it }
         }
-        DialogButtons(confirm = "保存", onDismiss = onDismiss) { onSave(doc.copy(title = title, kind = kind, priority = priority, always = always)) }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(doc.copy(title = title, kind = kind, priority = priority, always = always)) }, confirmText = "保存")
     }
 }
 
@@ -519,12 +523,17 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
             }
             if (deleting && doc != null) {
                 GlassDialog(show = true, title = "删除“${doc.title}”", summary = "这份文档会从设定包里删除，删除前的内容会留一份在历史版本文件里。", onDismissRequest = { deleting = false }) {
-                    DialogButtons(confirm = "删除", onDismiss = { deleting = false }) {
-                        deleting = false
-                        deleted = true
-                        vm.writing.deleteDoc(workId, docId)
-                        vm.back()
-                    }
+                    DialogButtons(
+                        onDismiss = { deleting = false },
+                        onConfirm = {
+                            deleting = false
+                            deleted = true
+                            vm.writing.deleteDoc(workId, docId)
+                            vm.back()
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }

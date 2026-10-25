@@ -114,9 +114,10 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
         pack = runCatching { vm.writingAi.aiPack(workId) }.getOrNull()
         loaded = true
     }
-    val c = LocalGroupedColors.current
     WritingPage(vm, "本章资料", content = {
         item {
+            // 配色要在 WritingPage 提供的配色里面读，不能在外面先读好（外面读到的是默认的浅色）。
+            val c = LocalGroupedColors.current
             val b = brief
             val p = pack
             // 联网的服务商：设定包照作者的工作说明整份给，AI 自己查；这里列出它拿到了什么，下面是随这一章带的提示。
@@ -176,6 +177,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             }
         }
     }) {
+        val c = LocalGroupedColors.current
         open?.let { item ->
             GlassDialog(show = true, title = item.title, summary = item.reason, onDismissRequest = { open = null }) {
                 Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
@@ -206,7 +208,6 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val mine = runs[workId to chapterId]
     val review = mine?.review
     val running = mine?.running
-    val c = LocalGroupedColors.current
 
     fun start() {
         scope.launch {
@@ -231,6 +232,8 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
 
     WritingPage(vm, "三道审稿", content = {
         item {
+            // 配色要在 WritingPage 提供的配色里面读，不能在外面先读好（外面读到的是默认的浅色）。
+            val c = LocalGroupedColors.current
             GroupedSection(
                 footer = buildString {
                     append("次序：先核事实、因果、视角和承接，再按你的写作规范审写法，最后对照检查规则。")
@@ -341,9 +344,10 @@ fun ForeshadowScreen(vm: AppViewModel, workId: String) {
     var open by remember { mutableStateOf<Foreshadow?>(null) }
     LaunchedEffect(workId) { vm.writing.loadPack(workId) }
     LaunchedEffect(workId, pack) { data = vm.writing.foreshadows(workId) }
-    val c = LocalGroupedColors.current
     WritingPage(vm, "伏笔", content = {
         item {
+            // 配色要在 WritingPage 提供的配色里面读，不能在外面先读好（外面读到的是默认的浅色）。
+            val c = LocalGroupedColors.current
             val (list, latest) = data ?: (emptyList<Foreshadow>() to 0)
             val due = list.filter { !it.done && it.payoff != null && it.payoff <= latest }
             val waiting = list.filter { !it.done } - due.toSet()

@@ -148,10 +148,15 @@ fun DictionariesScreen(vm: AppViewModel) {
             // 弹窗要放在 Scaffold 里面才显示得出来。
             removing?.let { d ->
                 GlassDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
-                    DialogButtons(confirm = "删除", onDismiss = { removing = null }) {
-                        vm.removeDict(d.id)
-                        removing = null
-                    }
+                    DialogButtons(
+                        onDismiss = { removing = null },
+                        onConfirm = {
+                            vm.removeDict(d.id)
+                            removing = null
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }

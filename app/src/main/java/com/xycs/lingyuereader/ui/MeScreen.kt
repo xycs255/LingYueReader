@@ -213,10 +213,14 @@ fun MeScreen(vm: AppViewModel) {
                     summary = "备份里的书会加回书架；同一本书会用备份里的版本（含进度、书签批注）覆盖。阅读设置、生词本和阅读统计也会恢复。",
                     onDismissRequest = { confirmRestore = null },
                 ) {
-                    DialogButtons(confirm = "恢复", onDismiss = { confirmRestore = null }) {
-                        vm.restore(uri)
-                        confirmRestore = null
-                    }
+                    DialogButtons(
+                        onDismiss = { confirmRestore = null },
+                        onConfirm = {
+                            vm.restore(uri)
+                            confirmRestore = null
+                        },
+                        confirmText = "恢复",
+                    )
                 }
             }
         }

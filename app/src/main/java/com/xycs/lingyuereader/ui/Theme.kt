@@ -131,3 +131,26 @@ fun contrastRatio(a: Color, b: Color): Float {
     val lb = b.luminance()
     return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
 }
+
+/** 强调色这类有色底上的字：优先用 [preferred]（通常是白），不够 4.5:1 就在黑白里挑对比度高的那个（总能到 4.5:1 以上）。 */
+fun contentColorOn(background: Color, preferred: Color = Color.White): Color =
+    if (contrastRatio(preferred, background) >= 4.5f) preferred
+    else listOf(Color.Black, Color.White).maxBy { contrastRatio(it, background) }
+
+/**
+ * 有色的字（警告、成功这类）在 [backgrounds] 上都要读得清：不够 [target] 就往黑（浅底）或白（深底）里调，
+ * 只调到刚好够，颜色尽量留着。和书页次要字一样留一点余量，免得环境光、日落变暖一调就跌破 4.5:1。
+ */
+fun Color.readableOn(backgrounds: List<Color>, target: Float = 4.7f): Color {
+    fun minimumContrast(color: Color) = backgrounds.minOf { contrastRatio(color, it) }
+    if (minimumContrast(this) >= target) return this
+    val anchor = listOf(Color.Black, Color.White).maxBy(::minimumContrast)
+    if (minimumContrast(anchor) < target) return anchor
+    var low = 0f
+    var high = 1f
+    repeat(12) {
+        val middle = (low + high) / 2f
+        if (minimumContrast(lerp(this, anchor, middle)) >= target) high = middle else low = middle
+    }
+    return lerp(this, anchor, high)
+}

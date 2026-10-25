@@ -521,10 +521,15 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     summary = "作品的全部章节和历史版本都会删除，不能恢复。要留底的话先导出一份。",
                     onDismissRequest = { deleting = false },
                 ) {
-                    DialogButtons(confirm = "删除", onDismiss = { deleting = false }) {
-                        deleting = false
-                        vm.writing.delete(workId)
-                    }
+                    DialogButtons(
+                        onDismiss = { deleting = false },
+                        onConfirm = {
+                            deleting = false
+                            vm.writing.delete(workId)
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
             chapterMenu?.let { ch ->
@@ -634,10 +639,15 @@ private fun ChapterDialog(
         onDismissRequest = onDismiss,
     ) {
         if (confirmDelete) {
-            DialogButtons(confirm = "删除", onDismiss = { confirmDelete = false }) {
-                onDelete()
-                onDismiss()
-            }
+            DialogButtons(
+                onDismiss = { confirmDelete = false },
+                onConfirm = {
+                    onDelete()
+                    onDismiss()
+                },
+                confirmText = "删除",
+                destructive = true,
+            )
             return@GlassDialog
         }
         TextField(value = name, onValueChange = { name = it }, label = "章名", singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -676,10 +686,15 @@ private fun VolumeDialog(v: Volume, canDelete: Boolean, onDismiss: () -> Unit, o
         onDismissRequest = onDismiss,
     ) {
         if (confirmDelete) {
-            DialogButtons(confirm = "删除", onDismiss = { confirmDelete = false }) {
-                onDelete()
-                onDismiss()
-            }
+            DialogButtons(
+                onDismiss = { confirmDelete = false },
+                onConfirm = {
+                    onDelete()
+                    onDismiss()
+                },
+                confirmText = "删除",
+                destructive = true,
+            )
             return@GlassDialog
         }
         TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1315,11 +1330,15 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
                     Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                         Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
                     }
-                    DialogButtons(confirm = "换回这一版", onDismiss = { open = null }) {
-                        open = null
-                        if (docId != null) vm.writing.restoreDoc(workId, docId, s.at) { vm.back() }
-                        else vm.writing.restore(workId, chapterId, s.at) { vm.back() }
-                    }
+                    DialogButtons(
+                        onDismiss = { open = null },
+                        onConfirm = {
+                            open = null
+                            if (docId != null) vm.writing.restoreDoc(workId, docId, s.at) { vm.back() }
+                            else vm.writing.restore(workId, chapterId, s.at) { vm.back() }
+                        },
+                        confirmText = "换回这一版",
+                    )
                 }
             }
         }

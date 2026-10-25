@@ -104,7 +104,8 @@ fun HomeScreen(vm: AppViewModel) {
         },
         // 各页自己处理状态栏等边距；导航栏让出的高度由 LocalTabBarInset 告诉各页。
         contentWindowInsets = WindowInsets(0),
-        popupHost = { GlassPopupHost() },
+        // 各页弹出的菜单、对话框画在这里，拿不到各页里提供的配色：宿主这里按主题补一套设置页配色。
+        popupHost = { ProvideGroupedColors { GlassPopupHost() } },
     ) { _ ->
         CompositionLocalProvider(LocalTabBarInset provides tabBarInset(appearance.floatingBar)) {
             HorizontalPager(

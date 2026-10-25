@@ -75,6 +75,11 @@ import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.basic.Text
 import com.xycs.lingyuereader.ui.contrastRatio
+import com.xycs.lingyuereader.ui.ProvideGroupedColorsValue
+import com.xycs.lingyuereader.ui.currentGroupedColorsOrNull
+import com.xycs.lingyuereader.ui.currentGroupedColorsOrTheme
+import androidx.compose.foundation.layout.ime
+import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.MiuixPopupHost
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 
@@ -285,7 +290,11 @@ fun GlassMenu(content: @Composable () -> Unit) {
     }
 }
 
-/** 对话框：手机上贴着屏幕底部弹出。 */
+/**
+ * 对话框：手机上贴着屏幕底部弹出。
+ * 内容画在最外层的弹层宿主里，拿不到这里的 CompositionLocal：调用处的设置页配色（没有就按主题现算）先取下来，在对话框里重新提供。
+ * 减少动效时换成直接出现、直接消失的 [StillDialog]。
+ */
 @Composable
 fun GlassDialog(
     show: Boolean,
@@ -294,6 +303,12 @@ fun GlassDialog(
     onDismissRequest: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
+    val grouped = currentGroupedColorsOrTheme()
+    val inner: @Composable () -> Unit = { ProvideGroupedColorsValue(grouped, content) }
+    if (Effects.noMotion) {
+        StillDialog(show, title, summary, onDismissRequest, inner)
+        return
+    }
     val glass = Modifier.glass(
         backdrop = LocalGlassBackdrop.current,
         shape = RoundedCornerShape(32.dp),
@@ -309,8 +324,77 @@ fun GlassDialog(
         modifier = glass,
         backgroundColor = if (LocalGlassBackdrop.current != null && liquidGlassSupported()) Color.Transparent else MiuixTheme.colorScheme.background,
         onDismissRequest = onDismissRequest,
-        content = content,
+        content = inner,
     )
+}
+
+/**
+ * 不动的对话框：减少动效时用。miuix 的对话框没有关动画的开关（进出场写死在 OverlayDialog 里，只认 show），
+ * 换成系统对话框窗口、关掉窗口动画：直接出现、直接消失，点外面或按返回就关。底色用不透明的纯色（不画玻璃），
+ * 圆角、边距、标题和说明的字照 miuix 的对话框。
+ */
+@Composable
+private fun StillDialog(
+    show: Boolean,
+    title: String?,
+    summary: String?,
+    onDismissRequest: (() -> Unit)?,
+    content: @Composable () -> Unit,
+) {
+    if (!show) return
+    val dismiss = { onDismissRequest?.invoke(); Unit }
+    Dialog(
+        onDismissRequest = dismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            window?.setWindowAnimations(0)
+            window?.setDimAmount(0f)
+        }
+        val outside = DialogDefaults.outsideMargin
+        val inside = DialogDefaults.insideMargin
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.3f))
+                .clickable(interactionSource = null, indication = null, onClick = dismiss)
+                .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
+                .padding(horizontal = outside.width, vertical = outside.height),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = DialogDefaults.MaxWidth)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(32.dp))
+                    .background(MiuixTheme.colorScheme.background)
+                    .clickable(interactionSource = null, indication = null) {}
+                    .padding(horizontal = inside.width, vertical = inside.height),
+            ) {
+                if (title != null) {
+                    Text(
+                        title,
+                        color = DialogDefaults.titleColor(),
+                        style = MiuixTheme.textStyles.title4,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    )
+                }
+                if (summary != null) {
+                    Text(
+                        summary,
+                        color = DialogDefaults.summaryColor(),
+                        style = MiuixTheme.textStyles.body1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    )
+                }
+                content()
+            }
+        }
+    }
 }
 
 /** 底部面板。[background] 是面板的底色（阅读页传书页配色）。 */
@@ -332,6 +416,9 @@ fun GlassSheet(
     val preferredTitle = if (mode == ColorSchemeMode.Dark) Color(0xFFE6DCC4) else Color(0xFF2A2724)
     val titleColor = if (contrastRatio(preferredTitle, background) >= 4.5f) preferredTitle
         else listOf(Color.Black, Color.White).maxBy { contrastRatio(it, background) }
+    // 面板也画在最外层的宿主里：调用处提供了设置页配色就带进去；没提供时不补（阅读页的面板在内容里自己提供书页配色）。
+    val grouped = currentGroupedColorsOrNull()
+    val body: @Composable () -> Unit = if (grouped == null) content else ({ ProvideGroupedColorsValue(grouped, content) })
     MiuixTheme(controller = controller) {
         if (Effects.reduced) {
             // 墨水屏 / 省电：miuix 的面板没有关动画的开关，换成一个直接出现、直接消失的面板。
@@ -346,7 +433,7 @@ fun GlassSheet(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
                     )
                 }
-                content()
+                body()
             }
             return@MiuixTheme
         }
@@ -378,7 +465,7 @@ fun GlassSheet(
                 )
             }
             // miuix 在拖动条下面给（这里没用的）内置标题留了 18dp，往上收回来，标题栏紧贴拖动条。
-            Box(Modifier.pullUp(18.dp)) { content() }
+            Box(Modifier.pullUp(18.dp)) { body() }
         }
     }
 }

@@ -32,7 +32,7 @@ class CatalogDownloadPillTest {
         var requests = 0
         compose.setContent {
             LingYueTheme {
-                DownloadPill(inShelf.value, downloading.value, onClick = { requests++ })
+                ProvideGroupedColors { DownloadPill(inShelf.value, downloading.value, onClick = { requests++ }) }
             }
         }
 

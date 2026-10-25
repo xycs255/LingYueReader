@@ -91,7 +91,7 @@ fun StatsScreen(vm: AppViewModel) {
                             // 今天最要紧，写大；本周、本月、今年并排小一号。
                             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                                 Text("今天", fontSize = 13.sp, color = c.secondary)
-                                val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat(), 900)
+                                val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat())
                                 Text(minutes(todayShown.toLong()), color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
                                 Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
                                 Row(Modifier.fillMaxWidth()) {
@@ -159,7 +159,7 @@ fun StatsScreen(vm: AppViewModel) {
 @Composable
 private fun Figure(label: String, millis: Long, modifier: Modifier = Modifier) {
     // 打开统计页时数字从 0 往上数。
-    val shown = animateFromZero(millis.toFloat(), 900)
+    val shown = animateFromZero(millis.toFloat())
     val c = LocalGroupedColors.current
     Column(modifier) {
         Text(minutes(shown.toLong()), color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium)
@@ -264,7 +264,7 @@ private fun GoalSection(vm: AppViewModel, todayMinutes: Int) {
                         )
                     }
                     Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.fill)) {
-                        val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f), 900)
+                        val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f))
                         Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(c.tint))
                     }
                 }

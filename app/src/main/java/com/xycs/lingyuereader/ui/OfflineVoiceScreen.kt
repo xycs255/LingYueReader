@@ -143,18 +143,27 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                     summary = "要下载 ${m.sizeLabel}，装好后约占 ${m.installedMb} MB。建议连 Wi-Fi。下到一半中断的，下次接着下。",
                     onDismissRequest = { confirmDownload = null },
                 ) {
-                    DialogButtons(confirm = "下载", onDismiss = { confirmDownload = null }) {
-                        vm.downloadOfflineModel(m)
-                        confirmDownload = null
-                    }
+                    DialogButtons(
+                        onDismiss = { confirmDownload = null },
+                        onConfirm = {
+                            vm.downloadOfflineModel(m)
+                            confirmDownload = null
+                        },
+                        confirmText = "下载",
+                    )
                 }
             }
             removing?.let { m ->
                 GlassDialog(show = true, title = "删除模型", summary = "删除「${m.label}」？要用时可以再下载。", onDismissRequest = { removing = null }) {
-                    DialogButtons(confirm = "删除", onDismiss = { removing = null }) {
-                        vm.deleteOfflineModel(m)
-                        removing = null
-                    }
+                    DialogButtons(
+                        onDismiss = { removing = null },
+                        onConfirm = {
+                            vm.deleteOfflineModel(m)
+                            removing = null
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }

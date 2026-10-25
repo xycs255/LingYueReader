@@ -682,10 +682,15 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
             }
             if (clearing) {
                 GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定集。", onDismissRequest = { clearing = false }) {
-                    DialogButtons(confirm = "清除", onDismiss = { clearing = false }) {
-                        clearing = false
-                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
-                    }
+                    DialogButtons(
+                        onDismiss = { clearing = false },
+                        onConfirm = {
+                            clearing = false
+                            vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
+                        },
+                        confirmText = "清除",
+                        destructive = true,
+                    )
                 }
             }
             if (showSent) sent?.let { SentDialog(it) { showSent = false } }
@@ -714,6 +719,6 @@ internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, o
                 }
             }
         }
-        DialogButtons(confirm = "加入设定集", onDismiss = onDismiss) { onAdd(list.filter { it.name in chosen }) }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onAdd(list.filter { it.name in chosen }) }, confirmText = "加入设定集")
     }
 }

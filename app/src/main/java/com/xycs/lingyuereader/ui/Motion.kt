@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
@@ -7,6 +11,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
@@ -58,6 +66,8 @@ object Motion {
     /** 跳转落点那一段的淡强调色：停 [LANDING_HOLD] 再用 [LANDING_FADE] 褪掉。 */
     const val LANDING_HOLD = 700
     const val LANDING_FADE = 1600
+    /** 统计页打开时数字从 0 往上数（[animateFromZero] 的默认时长）。 */
+    const val COUNT_UP = 900
 
     /** 标准：起步快、收尾柔，屏幕内的移动都用它。 */
     val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -93,6 +103,29 @@ object Motion {
 
     /** 列表项的增删、换位；省电时不动。 */
     fun <T> listItem(): FiniteAnimationSpec<T>? = if (reduced) null else spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+
+    /**
+     * 浮层从它贴着的底边升起（一半高度）并淡入：编辑器键盘上方的面板、页底的条。
+     * 和阅读页的听书条、自动滚动条一样：强调缓动 [MEDIUM] 升起、[SHORT] 淡入；减少动效时直接出现。
+     */
+    fun edgeEnter(): EnterTransition =
+        Effects.enter(slideInVertically(emphasized(MEDIUM)) { it / 2 } + fadeIn(standard(SHORT)))
+
+    /** [edgeEnter] 的反向：用离场缓动落回底边并淡出；减少动效时直接消失。 */
+    fun edgeExit(): ExitTransition =
+        Effects.exit(slideOutVertically(exit()) { it / 2 } + fadeOut(exit()))
+
+    /**
+     * 原地换内容（标签页、上一条 / 下一条）：旧的 [SHORT] 里淡出，新的稍后淡入，高矮用标准缓动过去；
+     * 给 AnimatedContent 的 transitionSpec 用。减少动效时直接换，高度也不渐变。
+     */
+    fun fadeThrough(): ContentTransform =
+        if (reduced) ContentTransform(EnterTransition.None, ExitTransition.None, sizeTransform = null)
+        else ContentTransform(
+            fadeIn(standard(MEDIUM, delay = SHORT / 2)),
+            fadeOut(exit(SHORT)),
+            sizeTransform = SizeTransform(clip = false) { _, _ -> standard(MEDIUM) },
+        )
 }
 
 /** 按下时缩小一点，松手弹回。 */
@@ -134,7 +167,7 @@ object OpenFrom {
 
 /** 第一次出现时从 0 长到 [target]，之后数值变了再平滑过去（统计数字、进度条）。 */
 @Composable
-fun animateFromZero(target: Float, duration: Int = 700): Float {
+fun animateFromZero(target: Float, duration: Int = Motion.COUNT_UP): Float {
     val value = remember { Animatable(if (Effects.noMotion) target else 0f) }
     LaunchedEffect(target) { value.animateTo(target, Motion.emphasized(duration)) }
     return value.value

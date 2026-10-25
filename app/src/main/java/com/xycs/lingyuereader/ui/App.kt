@@ -773,20 +773,28 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            DialogButtons(confirm = "确定", onDismiss = { dialogs.grouping = false }) {
-                vm.setBookGroups(entry, (all + extra).filter { it in chosen })
-                dialogs.grouping = false
-            }
+            DialogButtons(
+                onDismiss = { dialogs.grouping = false },
+                onConfirm = {
+                    vm.setBookGroups(entry, (all + extra).filter { it in chosen })
+                    dialogs.grouping = false
+                },
+                confirmText = "确定",
+            )
         }
     }
     if (dialogs.renaming) {
         var title by remember { mutableStateOf(entry.title) }
         GlassDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
             TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            DialogButtons(confirm = "确定", onDismiss = { dialogs.renaming = false }) {
-                vm.rename(entry, title)
-                dialogs.renaming = false
-            }
+            DialogButtons(
+                onDismiss = { dialogs.renaming = false },
+                onConfirm = {
+                    vm.rename(entry, title)
+                    dialogs.renaming = false
+                },
+                confirmText = "确定",
+            )
         }
     }
     if (dialogs.removing) {
@@ -796,25 +804,17 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
             summary = "会删除本机副本、阅读进度和书签批注，原文件不受影响。",
             onDismissRequest = { dialogs.removing = false },
         ) {
-            DialogButtons(confirm = "移除", onDismiss = { dialogs.removing = false }) {
-                vm.remove(entry)
-                dialogs.removing = false
-                onRemoved()
-            }
+            DialogButtons(
+                onDismiss = { dialogs.removing = false },
+                onConfirm = {
+                    vm.remove(entry)
+                    dialogs.removing = false
+                    onRemoved()
+                },
+                confirmText = "移除",
+                destructive = true,
+            )
         }
-    }
-}
-
-@Composable
-internal fun DialogButtons(confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-        TextButton(
-            text = confirm,
-            onClick = onConfirm,
-            modifier = Modifier.weight(1f),
-            colors = ButtonDefaults.textButtonColorsPrimary(),
-        )
     }
 }
 
@@ -920,9 +920,13 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
         }
-        DialogButtons(confirm = "导入", onDismiss = vm::dismissImport) {
-            vm.importBooks(files, merge, title)
-        }
+        DialogButtons(
+            onDismiss = vm::dismissImport,
+            onConfirm = {
+                vm.importBooks(files, merge, title)
+            },
+            confirmText = "导入",
+        )
     }
 }
 

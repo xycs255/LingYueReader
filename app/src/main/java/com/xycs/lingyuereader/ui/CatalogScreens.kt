@@ -331,11 +331,16 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
             }
             if (confirmDelete && existing != null) {
                 GlassDialog(show = true, title = "删除书源", summary = "删除“${existing.name}”？已经下载到书架的书不受影响。", onDismissRequest = { confirmDelete = false }) {
-                    DialogButtons(confirm = "删除", onDismiss = { confirmDelete = false }) {
-                        confirmDelete = false
-                        vm.removeCatalog(existing.id)
-                        vm.back()
-                    }
+                    DialogButtons(
+                        onDismiss = { confirmDelete = false },
+                        onConfirm = {
+                            confirmDelete = false
+                            vm.removeCatalog(existing.id)
+                            vm.back()
+                        },
+                        confirmText = "删除",
+                        destructive = true,
+                    )
                 }
             }
         }
