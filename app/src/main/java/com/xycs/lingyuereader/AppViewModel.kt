@@ -269,6 +269,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         /** Activity 销毁后仍完成已接收的阅读进度写盘。 */
         private val progressScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val progressRevisions = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+        /** 备份时写作里跳过的一项（整句说明），和“生词本”“阅读统计”这类短名分开说。 */
+        private const val WRITING_LEFT = "\u0000写作:"
     }
 
     private val library = com.xycs.lingyuereader.data.SharedLibrary.get(app)
@@ -2487,11 +2489,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         add("vocabulary.json", "生词本", vocabulary::raw, vocabulary::validateBackup)
         add("stats.json", "阅读统计", stats::raw, stats::validateBackup)
-        writing.backup()?.let { put("writing.json", it) }
+        // 写作里读不出的文件单独跳过，不拖垮整份备份；跳过的每一项都说清是哪部作品的哪个文件。
+        writing.backupReport()?.let { report ->
+            put("writing.json", report.bytes)
+            left += report.skipped.map { WRITING_LEFT + it.label }
+        }
     }
 
-    private fun leftOutNote(left: List<String>): String =
-        if (left.isEmpty()) "" else "；${left.joinToString("、")}读不出，没有放进备份（原文件已保留）"
+    private fun leftOutNote(left: List<String>): String {
+        val (works, items) = left.partition { it.startsWith(WRITING_LEFT) }
+        return buildString {
+            if (items.isNotEmpty()) append("；${items.joinToString("、")}读不出，没有放进备份（原文件已保留）")
+            works.take(5).forEach { append("；").append(it.removePrefix(WRITING_LEFT)) }
+            if (works.size > 5) append("；写作另有 ${works.size - 5} 处没有放进备份")
+        }
+    }
 
     fun restore(uri: Uri) {
         viewModelScope.launch {
@@ -2520,7 +2532,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     merge("vocabulary.json", vocabulary::merge)
                     merge("stats.json", stats::merge)
-                    merge("writing.json") { writing.restoreBackup(it); writingAi.forget() }
+                    merge("writing.json") {
+                        val report = writing.restoreBackupReport(it)
+                        writingAi.forget()
+                        // 本机较新或读不出的作品整部没有恢复：说出来，不然作者以为写作也恢复了。
+                        report.skipped.take(5).forEach { skip -> failed += "写作 ${skip.label}" }
+                        if (report.skipped.size > 5) failed += "写作另有 ${report.skipped.size - 5} 部没有恢复"
+                    }
                 }
                 reloadVocabulary()
                 reloadStats()
