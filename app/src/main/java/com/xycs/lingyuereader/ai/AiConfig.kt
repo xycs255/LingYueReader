@@ -90,7 +90,7 @@ data class AiConfig(
     val embeddingModel: String = "",
     /** AI 朗读（听书、讲书用的语音合成）。 */
     val speech: SpeechConfig = SpeechConfig(),
-    /** 作者自己填的单价（按服务商；填了就不用内置的参考价）。见 [AiPricing]。 */
+    /** 作者自己填的单价（按服务商 + 接口主机 + 模型记，键见 [AiPricing.priceKey]；只有服务商 id 的是旧数据的通用价）。见 [AiPricing]。 */
     val prices: Map<String, AiPrice> = emptyMap(),
     /** 美元折人民币的汇率：用量页把 Claude 的美元花费折成人民币加总时用，作者可以改。 */
     val usdRate: Double = DEFAULT_USD_RATE,
@@ -150,7 +150,8 @@ data class AiConfig(
 class AiStore(context: Context) {
     private val sp = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
-    fun load(): AiConfig = AiConfig(
+    /** 读设置；以前只按服务商记的单价顺带迁移成按模型记（[AiPricing.migrate]）。 */
+    fun load(): AiConfig = AiPricing.migrate(AiConfig(
         enabled = sp.getBoolean("enabled", false),
         preset = sp.getString("preset", null) ?: AiConfig().preset,
         protocol = runCatching { AiProtocol.valueOf(sp.getString("protocol", null)!!) }.getOrDefault(AiConfig().protocol),
@@ -179,7 +180,7 @@ class AiStore(context: Context) {
                 keys = SpeechPresets.ALL.mapNotNull { p -> sp.getString("speech.key.${p.id}", null)?.takeIf { it.isNotEmpty() }?.let { p.id to it } }.toMap(),
             )
         },
-    )
+    ))
 
     private fun decodeAsks(raw: String): List<QuickAsk>? = runCatching {
         val a = org.json.JSONArray(raw)

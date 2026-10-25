@@ -213,8 +213,38 @@ object AiPricing {
         return ReferencePrice(AiPrice(input, cached, output, usd = true, cacheWrite = input * 1.25), CLAUDE_SOURCE, CLAUDE_DATE)
     }
 
-    /** 现在用的单价：作者填的优先，其次参考价；都没有为空。 */
-    fun price(c: AiConfig): AiPrice? = c.prices[c.preset] ?: reference(c)?.price
+    /**
+     * 作者填的单价按“服务商 + 接口地址的主机 + 模型名”记（[AiConfig.prices] 的键），换了模型就对不上、不会按别的模型的价算。
+     * 以前只按服务商记的（键只有服务商的 id）是“这家服务商的通用价”，不知道是哪个模型的，排在专门填的后面。
+     */
+    fun priceKey(c: AiConfig): String {
+        val host = runCatching { java.net.URI(c.baseUrl.trim()).host }.getOrNull().orEmpty().lowercase()
+        return "${c.preset}|$host|${c.model.trim().lowercase()}"
+    }
+
+    /** 现在的单价从哪来：给这个模型专门填的、这家服务商的通用价（旧数据，未指定模型）、内置参考价。 */
+    enum class PriceKind { MODEL, PROVIDER, REFERENCE }
+
+    class PriceChoice(val price: AiPrice, val kind: PriceKind)
+
+    /** 现在用的单价：给当前模型填的优先，其次这家服务商的通用价（旧数据），再其次参考价；都没有为空（没估钱）。 */
+    fun choose(c: AiConfig): PriceChoice? =
+        c.prices[priceKey(c)]?.let { PriceChoice(it, PriceKind.MODEL) }
+            ?: c.prices[c.preset]?.let { PriceChoice(it, PriceKind.PROVIDER) }
+            ?: reference(c)?.let { PriceChoice(it.price, PriceKind.REFERENCE) }
+
+    fun price(c: AiConfig): AiPrice? = choose(c)?.price
+
+    /**
+     * 旧数据迁移：以前单价只按服务商记。当前服务商的那份，存的时候和现在存着的模型在一起，按“当时的模型”改记到它名下；
+     * 别家服务商的不知道是哪个模型，留作那家的通用价（界面上写明“未指定模型”）。
+     */
+    fun migrate(c: AiConfig): AiConfig {
+        val old = c.prices[c.preset] ?: return c
+        if (c.onDevice || c.model.isBlank()) return c
+        val key = priceKey(c)
+        return c.copy(prices = c.prices - c.preset + (key to (c.prices[key] ?: old)))
+    }
 
     /** 这次用量约多少钱；没有单价时记一次“没估钱”。 */
     fun cost(c: AiConfig, u: AiUsage): AiCost = price(c)?.cost(u) ?: AiCost(unpriced = u.requests)
