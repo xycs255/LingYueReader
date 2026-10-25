@@ -47,7 +47,7 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 常用的净化规则，点一下填进表单。 */
-private val REPLACE_TEMPLATES = listOf(
+internal val REPLACE_TEMPLATES = listOf(
     "网址" to ReplaceRule("""(https?://|www\.)[\w./?=&%#-]+""", "", regex = true),
     "整行“本章未完…”" to ReplaceRule("""^.*本章未完.*$""", "", regex = true),
     "整行求票求收藏" to ReplaceRule("""^.*(求月票|求推荐票|求收藏|求订阅).*$""", "", regex = true),
@@ -70,8 +70,10 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     var rules by rememberSaveable(stateSaver = RulesSaver) { mutableStateOf(listOf<ReplaceRule>()) }
     var source by remember { mutableStateOf<String?>(null) }
     var chapters by remember { mutableStateOf<List<String>?>(null) }
-    // 试分章时正则太慢、被放弃了：这时不让保存。
-    var tooSlow by remember { mutableStateOf(false) }
+    // 试分章时正则太慢、被放弃了（或上一个太慢的正则还在跑）：这时不让保存。
+    var tooSlow by remember { mutableStateOf<String?>(null) }
+    // 写法像会灾难性回溯、作者点了“仍然试一下”的正则。
+    var allowed by remember { mutableStateOf(setOf<String>()) }
     var pattern by rememberSaveable { mutableStateOf("") }
     var replacement by rememberSaveable { mutableStateOf("") }
     var regex by rememberSaveable { mutableStateOf(false) }
@@ -88,19 +90,23 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     }
     val loaded = rulesRead && source != null
     val current = TextRules(rules, toc.trim())
+    // 分章正则的写法像会灾难性回溯（如 (\w+\s?)+）：先不试分章，免得丢下一条停不下来的线程；作者点“仍然试一下”再试。
+    val tocRisk = current.toc.takeIf { it.isNotBlank() && TextRules.error(it) == null }?.let(TextRules::risky)
+    val tocHeld = tocRisk != null && current.toc !in allowed
     // 停手半秒再试分章：整本重新解析，不能每敲一个字就跑一遍。
-    LaunchedEffect(current, loaded) {
+    LaunchedEffect(current, loaded, tocHeld) {
         val e = entry ?: return@LaunchedEffect
         if (!loaded) return@LaunchedEffect
         chapters = null
-        tooSlow = false
+        tooSlow = null
+        if (tocHeld) return@LaunchedEffect
         delay(500)
         chapters = try {
             vm.previewChapters(e, current)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (slow: RegexTooSlowException) {
-            tooSlow = true
+            tooSlow = if (slow.busy) "上一个正则还在跑（太慢），请先改写它，等它停下再试。" else "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
             null
         } catch (failed: Exception) {
             null
@@ -159,22 +165,29 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
                     GroupedSection(header = "预览") {
                         row {
-                            if (list == null && !tooSlow) {
+                            if (tocHeld) {
+                                Text(
+                                    "分章正则$tocRisk。先没试分章，请改写；确定没问题可以仍然试一下。",
+                                    color = c.destructive,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                )
+                            } else if (list == null && tooSlow == null) {
                                 LoadingRow("正在试分章……")
                             } else {
                                 val count = list?.size ?: 0
                                 Text(
-                                    when {
-                                        tooSlow -> "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
+                                    tooSlow ?: when {
                                         count <= 1 -> "按这个规则只分出 $count 章，可能没匹配到章名。"
                                         else -> "将分为 $count 章"
                                     },
-                                    color = if (tooSlow || count <= 1) c.destructive else c.secondary,
+                                    color = if (tooSlow != null || count <= 1) c.destructive else c.secondary,
                                     fontSize = 14.sp,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                                 )
                             }
                         }
+                        if (tocHeld) row { ActionRow("仍然试一下") { allowed = allowed + current.toc } }
                         if (list != null && list.size > 1) {
                             val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
                             shown.forEach { title -> row { Text(title, color = if (title == "……") c.secondary else c.label, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
@@ -189,7 +202,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                                 val preview = rememberPreview(r, source.orEmpty())
                                 RuleRow(
                                     rule = r,
-                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { "正则太慢" }) ?: "统计中……",
+                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { if ((it as? RegexTooSlowException)?.busy == true) "上一个正则还在跑" else "正则太慢" }) ?: "统计中……",
                                     samples = preview?.getOrNull()?.second.orEmpty(),
                                     onToggle = { on -> rules = rules.toMutableList().also { it[i] = r.copy(enabled = on) } },
                                     onDelete = { rules = rules.filterIndexed { j, _ -> j != i } },
@@ -199,12 +212,18 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     }
                     val draft = ReplaceRule(pattern, replacement, regex)
                     val error = if (regex && pattern.isNotEmpty()) TextRules.error(pattern) else null
-                    val draftPreview = rememberPreview(draft, source.orEmpty())
+                    // 写法像会灾难性回溯的正则先不统计（统计也要整本跑一遍），作者点“仍然试一下”再统计。
+                    val draftRisk = if (regex && pattern.isNotEmpty() && error == null) TextRules.risky(pattern) else null
+                    val draftHeld = draftRisk != null && pattern !in allowed
+                    val draftPreview = rememberPreview(draft, source.orEmpty(), run = !draftHeld)
                     val draftSlow = draftPreview?.isFailure == true
                     GroupedSection(
                         header = "添加规则",
                         footer = when {
                             error != null -> "正则有误：$error"
+                            draftHeld -> "这个正则$draftRisk。先没统计，请改写；确定没问题可以仍然试一下。"
+                            draftSlow && (draftPreview?.exceptionOrNull() as? RegexTooSlowException)?.busy == true ->
+                                "上一个正则还在跑（太慢），请先改写它，等它停下再试。"
                             draftSlow -> "正则太慢，在这本书上跑不完。请改写，避免 (\\w+\\s?)+ 这类套在一起的重复。"
                             pattern.isNotEmpty() -> (draftPreview?.getOrNull()?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
                                 draftPreview?.getOrNull()?.second.orEmpty().joinToString("") { "\n$it" }
@@ -222,6 +241,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                         row { TextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
                         row { TextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, colors = fieldColors, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
                         row { ToggleRow("按正则匹配", regex) { regex = it } }
+                        if (draftHeld) row { ActionRow("仍然试一下") { allowed = allowed + pattern } }
                         row {
                             // 正则要等统计完、确认不慢才能添加。
                             ActionRow("添加", enabled = pattern.isNotEmpty() && error == null && !draftSlow && (!regex || draftPreview != null)) {
@@ -232,7 +252,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                             }
                         }
                     }
-                    val canSave = !busy && tocError == null && !tooSlow
+                    val canSave = !busy && tocError == null && tooSlow == null && !tocHeld
                     // 主按钮和上面的卡片左右对齐（都缩进 12dp）。
                     PrimaryButton(
                         if (busy) "正在重新整理……" else "保存并重新分章",
@@ -278,13 +298,13 @@ private fun RuleRow(rule: ReplaceRule, matches: String, samples: List<String>, o
 
 /**
  * 在后台统计规则匹配几处（整本书的文字可能有十几兆，不能在主线程上算）；停手 300 毫秒再算。
- * 统计中为 null；正则太慢、被放弃时是失败（[RegexTooSlowException]）。改了规则就不再等上一次的结果。
+ * 统计中（或 [run] 为假、先不统计）为 null；正则太慢、被放弃时是失败（[RegexTooSlowException]）。改了规则就不再等上一次的结果。
  */
 @Composable
-private fun rememberPreview(rule: ReplaceRule, source: String): Result<Pair<Int, List<String>>>? {
-    val state = produceState<Result<Pair<Int, List<String>>>?>(null, rule, source) {
+private fun rememberPreview(rule: ReplaceRule, source: String, run: Boolean = true): Result<Pair<Int, List<String>>>? {
+    val state = produceState<Result<Pair<Int, List<String>>>?>(null, rule, source, run) {
         value = null
-        if (rule.pattern.isEmpty()) return@produceState
+        if (rule.pattern.isEmpty() || !run) return@produceState
         delay(300)
         value = try {
             Result.success(runInterruptible(Dispatchers.Default) { TextRules.preview(rule, source) })

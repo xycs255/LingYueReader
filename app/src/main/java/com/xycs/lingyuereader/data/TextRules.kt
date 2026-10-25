@@ -5,8 +5,10 @@ import org.json.JSONObject
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
 
 /** 一条净化规则：把匹配到的文字换成 [replacement]（留空即删除）。 */
 data class ReplaceRule(
@@ -17,8 +19,12 @@ data class ReplaceRule(
     val enabled: Boolean = true,
 )
 
-/** 用户写的正则在这段文字上跑得太久（多半是嵌套的重复，如 `(\w+\s?)+$`，在长行上反复回溯），已放弃。 */
-class RegexTooSlowException(val pattern: String) : RuntimeException("正则太慢，请改写：$pattern")
+/**
+ * 用户写的正则在这段文字上跑得太久（多半是嵌套的重复，如 `(\w+\s?)+$`，在长行上反复回溯），已放弃。
+ * [busy] 为真：上一个太慢的正则（[pattern]）放弃以后还在后台跑，没等它停下就不再跑新的正则。
+ */
+class RegexTooSlowException(val pattern: String, val busy: Boolean = false) :
+    RuntimeException(if (busy) "上一个正则还在跑（太慢），请先改写它：$pattern" else "正则太慢，请改写：$pattern")
 
 /** 分章规则的预设。 */
 data class TocPreset(val label: String, val pattern: String)
@@ -54,17 +60,21 @@ data class TextRules(
 
     /**
      * 分章判断：有自定义规则就用它（只看 [MAX_TITLE] 字以内的行），否则用内置识别。
-     * 给了全文 [text] 时，先在一次限时里把全文的短行都判一遍（整本只换一次线程）；没判过的行再逐行限时判。
+     * 给了全文 [text] 时，先把全文的短行按小批（每批 [TITLE_BATCH] 行）判一遍，每批各自限时——
+     * 大书在慢手机上整本加起来跑得久，但正常的规则每批都很快；只有哪一批超时才算太慢。没判过的行再逐行限时判。
      * 太慢的正则抛 [RegexTooSlowException]。
      */
     fun titleMatcher(text: String = ""): (String) -> Boolean {
         val re = toc.takeIf { it.isNotBlank() }?.let(::compile) ?: return ChapterTitles::isTxtChapterTitle
         // 和 TxtParser 一样去掉行首行尾的空白；去法对不上时，下面逐行判，结果一样，只是慢一点。
-        val known: Map<String, Boolean> = if (text.isEmpty()) emptyMap() else guarded(toc, text) { timed ->
+        val known: Map<String, Boolean> = if (text.isEmpty()) emptyMap() else HashMap<String, Boolean>().also { known ->
             text.lineSequence().map { it.trim().trim('　').trim() }
                 .filter { it.isNotEmpty() && it.length <= MAX_TITLE }
                 .distinct()
-                .associateWith { re.containsMatchIn(timed(it)) }
+                .chunked(TITLE_BATCH)
+                .forEach { batch ->
+                    known += guarded(toc, batch.joinToString("\n"), timeoutMillis) { timed -> batch.associateWith { re.containsMatchIn(timed(it)) } }
+                }
         }
         return { line -> line.length <= MAX_TITLE && (known[line] ?: guarded(toc, line) { timed -> re.containsMatchIn(timed(line)) }) }
     }
@@ -80,6 +90,9 @@ data class TextRules(
 
     companion object {
         const val MAX_TITLE = 60
+
+        /** 试分章时每批判多少行（每批各自限时）。 */
+        internal const val TITLE_BATCH = 2_000
 
         fun fromJson(o: JSONObject): TextRules {
             val arr = o.optJSONArray("replace") ?: JSONArray()
@@ -135,12 +148,42 @@ data class TextRules(
             return ranges.size to examples
         }
 
-        /** 一次正则操作（整段文字一起算）最多跑多久。测试里可以调短。 */
+        /** 一次正则操作最多跑多久（整段文字一起算的按字数放宽，见 [limitFor]）。测试里可以调短。 */
         @Volatile
         internal var timeoutMillis = 5_000L
 
+        /** 整段文字一起算的正则（净化、统计）：每 100 万字多给一份 [timeoutMillis]，大书在慢手机上正常的规则不会被判太慢。 */
+        internal fun limitFor(length: Int): Long = timeoutMillis * (1 + length / 1_000_000)
+
+        /**
+         * 正则的写法明显会灾难性回溯时，给一句说明，否则为 null：套在一起的重复，如 `(a+)+`、`(a*)*`、`(\w+\s?)+`
+         * （括号里只有一处不限次数的重复、其余都可有可无，括号外又不限次数地重复），以及 `(a|a)*` 这种重复里有两个一样的分支。
+         * 只认得出最常见的几种，宁可漏报，不误报正常的写法；占有量词（`++`）和固化分组（`(?>…)`）不回溯，不算。
+         */
+        fun risky(pattern: String): String? =
+            runCatching { RegexRisk(pattern).scan() }.getOrNull()?.let { "有套在一起的重复 $it，在长行上可能回溯很久、跑不完" }
+
         /** 跑正则的线程：太慢的那次停不下来时只能丢下它，不能占着协程的线程池。 */
         private val regexThreads = Executors.newCachedThreadPool { task -> Thread(task, "regex-guard").apply { isDaemon = true } }
+
+        /**
+         * 跑着的那一次正则：[state] 0 还没开始、1 在跑、2 跑完（或没开始就取消了）。
+         * 同一时间只跑一次（[gate]），跑完才放开；调用方不等了（超时、取消）而它还在跑，就记成 [abandoned]。
+         */
+        private class Run(val pattern: String, val deadline: Long) {
+            val state = AtomicInteger(0)
+            val running: Boolean get() = state.get() == 1
+        }
+
+        /** 同一时间只让一个正则在跑：Android 上超时的那次停不下来，它跑完之前不再起新的线程，停不下来的线程最多这一条。 */
+        private val gate = Semaphore(1)
+
+        /** 调用方已经不等了、可能还在跑的那一次。 */
+        @Volatile
+        private var abandoned: Run? = null
+
+        /** 过了期限多久还没停，才算停不下来（JVM 上读文字的那一层很快就让它停下）。 */
+        private const val GRACE_NANOS = 100_000_000L
 
         /** 已经超时过的“正则 + 文字”，不再重跑（每重跑一次，可能又多一条停不下来的线程）。 */
         private val slow = object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
@@ -152,17 +195,44 @@ data class TextRules(
          * [block] 拿 timed(文字) 去匹配：包了一层到点就抛异常的 CharSequence，正则引擎逐字读文字时（JVM）能马上停下。
          * Android 的正则引擎（ICU）先把文字复制成 String、在本地代码里匹配，读不到这一层，
          * 所以另起线程跑、调用方只等到期限为止；那条线程停不下来，只能丢下它。
+         * 丢下的线程全局最多一条：同一时间只跑一次，上一次过了期限还停不下来时，新的请求直接抛 busy 的
+         * [RegexTooSlowException]，不再起线程；它跑完以后才恢复。期限 [limit] 默认按 [text] 的字数放宽（[limitFor]）。
          */
-        private fun <T> guarded(pattern: String, text: String, block: ((CharSequence) -> CharSequence) -> T): T {
+        internal fun <T> guarded(pattern: String, text: String, limit: Long = limitFor(text.length), block: ((CharSequence) -> CharSequence) -> T): T {
             val key = "${pattern.length}:$pattern|${text.length}:${text.hashCode()}"
             if (synchronized(slow) { slow.containsKey(key) }) throw RegexTooSlowException(pattern)
-            val limit = timeoutMillis
+            while (!gate.tryAcquire(20, TimeUnit.MILLISECONDS)) {
+                val stuck = abandoned
+                if (stuck != null && stuck.running && System.nanoTime() - stuck.deadline > GRACE_NANOS) throw RegexTooSlowException(stuck.pattern, busy = true)
+            }
             val deadline = System.nanoTime() + limit * 1_000_000
-            val task = regexThreads.submit(Callable { block { chars -> TimedChars(chars, deadline, pattern) } })
-            try {
-                return task.get(limit, TimeUnit.MILLISECONDS)
-            } catch (timeout: TimeoutException) {
+            val run = Run(pattern, deadline)
+            val task = try {
+                regexThreads.submit(
+                    Callable {
+                        if (!run.state.compareAndSet(0, 1)) return@Callable null
+                        try {
+                            block { chars -> TimedChars(chars, deadline, pattern) }
+                        } finally {
+                            run.state.set(2)
+                            gate.release()
+                        }
+                    },
+                )
+            } catch (rejected: Exception) {
+                gate.release()
+                throw rejected
+            }
+            // 调用方不等了：还没开始的，自己放开；已经在跑的，记下来，等它跑完再放开。
+            fun giveUp() {
                 task.cancel(true)
+                if (run.state.compareAndSet(0, 2)) gate.release() else abandoned = run
+            }
+            try {
+                @Suppress("UNCHECKED_CAST")
+                return task.get(limit, TimeUnit.MILLISECONDS) as T
+            } catch (timeout: TimeoutException) {
+                giveUp()
                 synchronized(slow) { slow[key] = Unit }
                 throw RegexTooSlowException(pattern)
             } catch (failed: ExecutionException) {
@@ -170,7 +240,7 @@ data class TextRules(
                 if (cause is RegexTooSlowException) synchronized(slow) { slow[key] = Unit }
                 throw cause
             } catch (interrupted: InterruptedException) {
-                task.cancel(true)
+                giveUp()
                 Thread.currentThread().interrupt()
                 throw interrupted
             }
@@ -194,4 +264,175 @@ private class TimedChars(private val text: CharSequence, private val deadline: L
     override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = TimedChars(text.subSequence(startIndex, endIndex), deadline, pattern)
 
     override fun toString(): String = text.toString()
+}
+
+/**
+ * 按正则的结构找明显会灾难性回溯的写法（见 [TextRules.risky]）：逐个读“单元”（字、转义、字符类、括号），
+ * 记下每个分支里不限次数的重复有几处、必须匹配的单元有几个。找到了返回那一段写法，没找到返回 null。
+ */
+private class RegexRisk(private val p: String) {
+    private var i = 0
+
+    /** 一层括号：[alts] 是各分支的原文，[unbounded]、[required] 是当前分支里不限次数的单元数、必须匹配的单元数。 */
+    private class Group(val start: Int, val atomic: Boolean, val zeroWidth: Boolean) {
+        val alts = mutableListOf(StringBuilder())
+        var unbounded = 0
+        var required = 0
+
+        /** 有一个分支只靠一处不限次数的重复（其余可有可无）就能匹配：外面再套一层重复，切法就有指数多种。 */
+        var selfRepeat = false
+
+        fun endAlt() {
+            if (unbounded == 1 && required == 0) selfRepeat = true
+            unbounded = 0
+            required = 0
+        }
+    }
+
+    fun scan(): String? {
+        val stack = ArrayDeque<Group>().apply { addLast(Group(0, atomic = false, zeroWidth = false)) }
+        while (i < p.length) {
+            val atomStart = i
+            var group: Group? = null
+            var zeroWidth = false
+            when (val ch = p[i]) {
+                '\\' -> zeroWidth = escape()
+                '[' -> charClass()
+                '(' -> {
+                    if (p.startsWith("(?", i) && flagsOnly()) continue
+                    val look = p.startsWith("(?=", i) || p.startsWith("(?!", i) || p.startsWith("(?<=", i) || p.startsWith("(?<!", i)
+                    val atomic = p.startsWith("(?>", i)
+                    stack.addLast(Group(i, atomic, look))
+                    i = when {
+                        p.startsWith("(?<=", i) || p.startsWith("(?<!", i) -> i + 4
+                        p.startsWith("(?<", i) -> p.indexOf('>', i).let { if (it < 0) return null else it + 1 }
+                        // (?:  (?=  (?!  (?>  (?i:  (?-m:
+                        p.startsWith("(?", i) -> {
+                            var j = i + 2
+                            while (j < p.length && (p[j].isLetter() || p[j] == '-')) j++
+                            if (j >= p.length || p[j] !in ":=!>") return null
+                            j + 1
+                        }
+                        else -> i + 1
+                    }
+                    continue
+                }
+                ')' -> {
+                    if (stack.size < 2) return null
+                    group = stack.removeLast()
+                    group.endAlt()
+                    zeroWidth = group.zeroWidth
+                    i++
+                }
+                '|' -> {
+                    val g = stack.last()
+                    g.endAlt()
+                    g.alts += StringBuilder()
+                    i++
+                    continue
+                }
+                '^', '$' -> {
+                    zeroWidth = true
+                    i++
+                }
+                else -> {
+                    i += Character.charCount(p.codePointAt(i))
+                    if (ch == '*' || ch == '+' || ch == '?' || ch == '{' && quantifierAt(i - 1) != null) return null // 量词前面没有东西：写错了
+                }
+            }
+            val q = quantifier()
+            val text = p.substring(group?.start ?: atomStart, i)
+            val parent = stack.last()
+            if (group != null && q != null && q.unbounded && !q.possessive && !group.atomic && !group.zeroWidth) {
+                // 一样的分支：`(a|a)*`。
+                val alts = group.alts.map { it.toString() }
+                if (group.selfRepeat || alts.size > 1 && alts.toSet().size < alts.size) return text
+            }
+            val unbounded = q != null && q.unbounded && !q.possessive || group != null && group.selfRepeat && !group.atomic
+            val optional = zeroWidth || q != null && q.min == 0
+            if (unbounded) parent.unbounded++ else if (!optional) parent.required++
+            parent.alts.last().append(text)
+        }
+        return null
+    }
+
+    private class Quantifier(val min: Int, val unbounded: Boolean, val possessive: Boolean)
+
+    /** 读单元后面的量词（含懒惰的 `?`、占有的 `+`），没有为 null。 */
+    private fun quantifier(): Quantifier? {
+        if (i >= p.length) return null
+        val q = when (p[i]) {
+            '*' -> Quantifier(0, true, false).also { i++ }
+            '+' -> Quantifier(1, true, false).also { i++ }
+            '?' -> Quantifier(0, false, false).also { i++ }
+            '{' -> quantifierAt(i)?.also { i = p.indexOf('}', i) + 1 } ?: return null
+            else -> return null
+        }
+        return when {
+            i < p.length && p[i] == '+' -> Quantifier(q.min, q.unbounded, true).also { i++ }
+            i < p.length && p[i] == '?' -> q.also { i++ }
+            else -> q
+        }
+    }
+
+    /** `{n}`、`{n,}`、`{n,m}`；不是这几种（照字面的花括号）为 null。 */
+    private fun quantifierAt(at: Int): Quantifier? {
+        val end = p.indexOf('}', at)
+        if (end < 0) return null
+        val m = Regex("""(\d+)(,(\d*))?""").matchEntire(p.substring(at + 1, end)) ?: return null
+        val min = m.groupValues[1].toIntOrNull() ?: return null
+        val unbounded = m.groupValues[2].isNotEmpty() && m.groupValues[3].isEmpty()
+        return Quantifier(min, unbounded, false)
+    }
+
+    /** 读一个转义，返回它是不是零宽的（`\b` 这类）。 */
+    private fun escape(): Boolean {
+        val next = p.getOrNull(i + 1) ?: run { i++; return false }
+        i += 2
+        when (next) {
+            'p', 'P', 'x', 'N' -> if (p.getOrNull(i) == '{') i = p.indexOf('}', i).let { if (it < 0) p.length else it + 1 } else if (next != 'x') i++ else i += 2
+            'k' -> if (p.getOrNull(i) == '<') i = p.indexOf('>', i).let { if (it < 0) p.length else it + 1 }
+            'Q' -> i = p.indexOf("\\E", i).let { if (it < 0) p.length else it + 2 }
+            'u' -> i += 4
+            'b', 'B', 'A', 'z', 'Z', 'G' -> return true
+        }
+        i = i.coerceAtMost(p.length)
+        return false
+    }
+
+    /** 读一个字符类 `[…]`（可以套着 `[a-z&&[^e]]`）。 */
+    private fun charClass() {
+        var depth = 0
+        while (i < p.length) {
+            val ch = p[i]
+            when {
+                ch == '\\' -> i++
+                ch == '[' -> {
+                    depth++
+                    // 开头的 ^ 和紧跟着的 ] 照字面算。
+                    if (p.getOrNull(i + 1) == '^') i++
+                    if (p.getOrNull(i + 1) == ']') i++
+                }
+                ch == ']' -> {
+                    depth--
+                    if (depth == 0) {
+                        i++
+                        return
+                    }
+                }
+            }
+            i++
+        }
+    }
+
+    /** `(?i)`、`(?-m)` 这种只改选项的括号：跳过，返回真。 */
+    private fun flagsOnly(): Boolean {
+        var j = i + 2
+        while (j < p.length && (p[j].isLetter() || p[j] == '-')) j++
+        if (j > i + 2 && p.getOrNull(j) == ')') {
+            i = j + 1
+            return true
+        }
+        return false
+    }
 }

@@ -1417,22 +1417,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- AI 用量 ----------
 
     private val usageStore = com.xycs.lingyuereader.ai.UsageStore(java.io.File(app.filesDir, com.xycs.lingyuereader.ai.UsageStore.FILE))
-    private val _usage = MutableStateFlow(com.xycs.lingyuereader.ai.UsageBook())
-    /** AI 用量账本（按天、按作品、按功能；只有数字）。 */
-    val aiUsage: StateFlow<com.xycs.lingyuereader.ai.UsageBook> = _usage.asStateFlow()
+    /** AI 用量账本（按天、按作品、按功能；只有数字）。账本在锁里写盘时一起更新，几个请求同时结束也不会显示旧账。 */
+    val aiUsage: StateFlow<com.xycs.lingyuereader.ai.UsageBook> = usageStore.book
 
     init {
-        viewModelScope.launch { _usage.value = withContext(Dispatchers.IO) { usageStore.load() } }
+        viewModelScope.launch(Dispatchers.IO) { usageStore.load() }
         // 每发完一次请求记一笔（在发请求的线程上，写盘很小）；超过每天的提醒线提示一次，不会自动停。
         assistant.client.onUsage = { e ->
             val meter = e.meter
             val book = usageStore.add(meter?.workId.orEmpty(), meter?.feature ?: com.xycs.lingyuereader.ai.AiFeature.OTHER, e.usage, e.cost)
-            _usage.value = book
             val c = aiConfig.value
             val today = java.time.LocalDate.now()
             val spent = book.day(today).cost.inCny(c.usdRate)
-            if (c.dailyAlert > 0 && spent >= c.dailyAlert && book.alerted != today.toString()) {
-                _usage.value = usageStore.markAlerted(today)
+            // 检查和记下“今天提醒过了”在账本的锁里一起做：几个请求同时越线也只提醒一次。
+            if (c.dailyAlert > 0 && spent >= c.dailyAlert && usageStore.markAlerted(today)) {
                 _messages.value = "今天 AI 已经花了约 ¥${com.xycs.lingyuereader.ai.AiPricing.amount(spent)}，超过了你设的 ¥${com.xycs.lingyuereader.ai.AiPricing.plain(c.dailyAlert)}（不会自动停，用量页能看明细）"
             }
         }
@@ -1440,7 +1438,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 清除用量记录。 */
     fun clearAiUsage() {
-        viewModelScope.launch { _usage.value = withContext(Dispatchers.IO) { usageStore.clear() } }
+        viewModelScope.launch(Dispatchers.IO) { usageStore.clear() }
     }
 
     // ---------- 本机（离线）模型 ----------
