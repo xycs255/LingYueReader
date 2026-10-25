@@ -58,6 +58,7 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.ai.BibleProposal
 import com.xycs.lingyuereader.data.PackDoc
+import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PackImportItem
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.WordCount
@@ -213,6 +214,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                                         if (r.added > 0) append("：新加 ${r.added} 份")
                                         if (r.replaced > 0) append("，替换 ${r.replaced} 份（旧版在历史版本里）")
                                         if (r.chapters > 0) append("，正文 ${r.chapters} 章")
+                                        if (r.renamed.isNotEmpty()) append("；重名的加了编号：${r.renamed.take(3).joinToString("、")}${if (r.renamed.size > 3) " 等 ${r.renamed.size} 个" else ""}")
                                     },
                                 )
                             }
@@ -301,9 +303,12 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
 private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, onEdit: (Int) -> Unit, onImport: () -> Unit) {
     val c = LocalGroupedColors.current
     val count = items.count { it.include }
+    // 导入后的标题：和前面导入的文档重名的加编号（导入时也按这个算）。
+    val titles = remember(items, existing) { PackImport.docTitles(items, existing) }
     GroupedSection(
         header = "${items.size} 个文件",
-        footer = "按文件名自动归类，点一行可以改。同名的文档会被替换，旧的内容存进历史版本；“正文”会按章名拆开，接在最后一卷后面。",
+        footer = "按文件名自动归类，点一行可以改。同名的文档会被替换，旧的内容存进历史版本；这次导入的文件之间重名的加编号，都留着。" +
+            "“正文”会按章名拆开，接在最后一卷后面，重名的章同样加编号。",
     ) {
         items.forEachIndexed { i, item ->
             row {
@@ -315,7 +320,8 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                             buildString {
                                 if (item.asChapters) append("正文（拆成章节）") else append("${item.kind.label} · 优先级 ${item.priority} · ${if (item.always) "常用" else "按需"}")
                                 append(" · ${size(WordCount.of(item.text))}")
-                                if (!item.asChapters && item.title in existing) append(" · 替换同名")
+                                if (!item.asChapters && item.include && titles[i] != item.title) append(" · 和前面的重名，导入为「${titles[i]}」")
+                                else if (!item.asChapters && item.title in existing) append(" · 替换同名")
                             },
                             color = c.secondary,
                             fontSize = 13.sp,

@@ -139,6 +139,21 @@ data class WorkAssist(
 /** 历史版本：[at] 是存下的时间，也是文件名。 */
 data class Snapshot(val at: Long, val words: Int)
 
+/**
+ * 备份或恢复写作时没有处理的一项：[work] 是作品名（作品信息读不出时尽量从文件里认出书名，认不出是“作品 + id 开头”；码字统计为空），
+ * [file] 是作品文件夹里的哪个文件（恢复时整部跳过为空），[reason] 是为什么。
+ */
+data class WritingSkip(val work: String, val file: String, val reason: String) {
+    /** 给人看的一句：“《长夜》abc.card.json：「第3章」的细纲卡读不出，没有放进备份”。 */
+    val label: String get() = listOf(if (work.isEmpty()) "" else "《$work》", file).joinToString("").let { if (it.isEmpty()) reason else "$it：$reason" }
+}
+
+/** 写作部分的备份：[bytes] 放进灵阅的备份（writing.json）；[skipped] 是读不出、没放进去或只放了空的文件，要告诉作者。 */
+class WritingBackup(val bytes: ByteArray, val skipped: List<WritingSkip>)
+
+/** 从备份恢复写作的结果：恢复了 [restored] 部；[skipped] 是整部没有恢复的作品（本机的较新，或本机的文件读不出）。 */
+data class WritingRestore(val restored: Int, val skipped: List<WritingSkip>)
+
 /** 码字统计：每天净增的字数和每天的目标。 */
 data class WritingStats(val days: Map<LocalDate, Int> = emptyMap(), val goal: Int = 0) {
     fun on(day: LocalDate): Int = days[day] ?: 0
@@ -491,6 +506,23 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         update(workId) { it }
     }
 
+    /**
+     * 按字段改细纲卡：在同一把锁里读出现在的卡、改、写回，只动 [transform] 改到的字段
+     * （比如 `updateCard(w, c) { it.copy(summary = 摘要) }`），不会拿旧卡片把别处刚写的字段盖掉。
+     * 返回改后的卡；没改动不写盘，返回原卡。
+     */
+    @Synchronized
+    fun updateCard(workId: String, chapterId: String, transform: (ChapterCard) -> ChapterCard): ChapterCard {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        val old = card(workId, chapterId)
+        val changed = transform(old)
+        if (changed.copy(updatedAt = old.updatedAt) == old) return old
+        val next = changed.copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
+        check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+        update(workId) { it }
+        return next
+    }
+
     /** 删一卷，连同卷里的章。至少留一卷。 */
     @Synchronized
     fun deleteVolume(workId: String, volumeId: String): Work? {
@@ -543,9 +575,8 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         if (file.isFile && file.readText() == text) return work
         check(!old.locked) { "这一章已定稿，先解锁再改" }
         val words = WordCount.of(text)
-        // A damaged stats.json must stop the edit before replacing chapter text;
-        // otherwise the later stats write would silently replace the only copy.
-        val previousStats = if (count && words != old.words) strictStats() else null
+        // 统计坏了（原文件已另存一份）：正文照常保存，只是这次不计数，也不覆盖坏的统计文件。
+        val previousStats = if (count && words != old.words) statsOrDamaged() else null
         check(DurableFiles.write(file, text.toByteArray())) { "无法保存正文" }
         previousStats?.let { s -> saveStats(s.copy(days = s.days + (today to s.on(today) + words - old.words))) }
         return update(workId) { w ->
@@ -732,41 +763,56 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
 
     /**
      * 导入：设定类的文件，同名（标题相同）的替换（旧版存进历史），没有的新加；正文类的拆成章节，接在最后一卷后面，
-     * 不算进今天的码字数。
+     * 不算进今天的码字数。同一次导入里新加的文档和章不参与同名匹配，导入项之间重名的加编号（见 [PackImport.docTitles]）。
      */
     @Synchronized
     fun importPack(workId: String, items: List<PackImportItem>): PackImportResult {
         var added = 0
         var replaced = 0
         var chapters = 0
-        // 新建作品自带的空白“第1章”：导入正文时用不上，删掉。
+        val renamed = mutableListOf<String>()
+        // 新建作品自带的空白“第1章”：导入正文时用不上，删掉；它也不参与同名匹配（不然同名的第1章会写进它再被删掉）。
         val blank = get(workId)?.chapters?.singleOrNull()?.takeIf { it.words == 0 && it.title == "第1章" && text(workId, it.id).isBlank() }
-        // 正文文件按文件名里的数字排（“第6-10章”在“第11-15章”前面）。
-        val ordered = items.filter { it.include }.sortedWith { a, b ->
-            if (a.asChapters && b.asChapters) BookParser.NaturalOrder.compare(a.fileName.substringAfterLast('/'), b.fileName.substringAfterLast('/')) else 0
-        }
-        ordered.forEach { item ->
-            if (item.asChapters) {
-                PackImport.chapters(item.text, item.title).forEach { (title, body) ->
-                    val work = get(workId) ?: return@forEach
-                    // 同名的章再导一次：换成新稿（旧稿进历史），不重复加。
-                    val same = work.chapters.firstOrNull { it.title == title }
-                    val c = same ?: addChapter(workId, work.volumes.last().id, title)?.second ?: return@forEach
-                    if (same != null) {
-                        val old = text(workId, c.id)
-                        if (old == body) return@forEach
-                        if (old.isNotBlank()) snapshot(workId, c.id, old)
-                        // 定稿的章换稿：先解锁，变更登记里记一笔。
-                        if (same.locked) setStatus(workId, c.id, ChapterStatus.REVISION, "重新导入正文：${item.fileName.substringAfterLast('/')}")
-                    }
-                    saveText(workId, c.id, body, count = false)
-                    // 文件名写着“已定”“定稿”的正文，导进来就是定稿。
-                    if (Regex("已定|定稿").containsMatchIn(item.fileName)) setStatus(workId, c.id, ChapterStatus.FINAL, "导入已定正文")
-                    chapters++
+        val included = items.filter { it.include }
+        // 正文文件按去掉文件夹的文件名里的数字排（“第6-10章”在“第11-15章”前面），设定文档保持原来的顺序。
+        val manuscripts = included.filter { it.asChapters }.sortedWith(
+            compareBy<PackImportItem, String>(BookParser.NaturalOrder) { it.fileName.substringAfterLast('/') }
+                .thenBy(BookParser.NaturalOrder) { it.fileName },
+        )
+        val createdChapters = HashSet<String>()
+        val chapterTitles = HashSet<String>()
+        manuscripts.forEach { item ->
+            val fileName = item.fileName.substringAfterLast('/')
+            PackImport.chapters(item.text, item.title).forEach { (heading, body) ->
+                val work = get(workId) ?: return@forEach
+                // 两卷都从“第1章”编号这类：后一章加编号另起一章，不把本次前面导入的那章盖掉。
+                val title = if (heading in chapterTitles) PackImport.uniqueTitle(heading, chapterTitles + work.chapters.map { it.title }) else heading
+                chapterTitles += title
+                if (title != heading) renamed += title
+                // 同名的章再导一次：换成新稿（旧稿进历史），不重复加。
+                val same = if (title != heading) null
+                else work.chapters.firstOrNull { it.title == title && it.id != blank?.id && it.id !in createdChapters }
+                val c = same ?: addChapter(workId, work.volumes.last().id, title)?.second?.also { createdChapters += it.id } ?: return@forEach
+                if (same != null) {
+                    val old = text(workId, c.id)
+                    if (old == body) return@forEach
+                    if (old.isNotBlank()) snapshot(workId, c.id, old)
+                    // 定稿的章换稿：先解锁，变更登记里记一笔。
+                    if (same.locked) setStatus(workId, c.id, ChapterStatus.REVISION, "重新导入正文：$fileName")
                 }
-                return@forEach
+                saveText(workId, c.id, body, count = false)
+                // 文件名（不看文件夹）写着“已定”“定稿”的正文，导进来就是定稿；“未定稿”“待定稿”不算。
+                if (FINAL_NAME.containsMatchIn(fileName)) setStatus(workId, c.id, ChapterStatus.FINAL, "导入已定正文")
+                chapters++
             }
-            val existing = pack(workId).firstOrNull { it.title == item.title }
+        }
+        val docs = included.filterNot { it.asChapters }
+        val titles = PackImport.docTitles(docs, pack(workId).map { it.title }.toSet())
+        val createdDocs = HashSet<String>()
+        docs.forEachIndexed { i, item ->
+            val title = titles[i]
+            if (title != item.title) renamed += title
+            val existing = if (title != item.title) null else pack(workId).firstOrNull { it.title == title && it.id !in createdDocs }
             if (existing != null) {
                 val old = packText(workId, existing.id)
                 if (old.isNotBlank() && old != item.text) snapshot(workId, docKey(existing.id), old)
@@ -774,12 +820,14 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 updatePackDoc(workId, existing.id) { it.copy(kind = item.kind, priority = item.priority, always = item.always) }
                 replaced++
             } else {
-                addPackDoc(workId, item.kind, item.title, item.text, item.priority, item.always)
+                createdDocs += addPackDoc(workId, item.kind, title, item.text, item.priority, item.always).id
                 added++
             }
         }
-        if (blank != null && chapters > 0 && (get(workId)?.chapters?.size ?: 0) > 1) deleteChapter(workId, blank.id)
-        return PackImportResult(added, replaced, chapters)
+        // 删之前再看一眼：空白章确实还空着才删。
+        val stillBlank = blank?.let { b -> get(workId)?.chapter(b.id)?.let { it.words == 0 && text(workId, it.id).isBlank() } } == true
+        if (blank != null && stillBlank && chapters > 0 && (get(workId)?.chapters?.size ?: 0) > 1) deleteChapter(workId, blank.id)
+        return PackImportResult(added, replaced, chapters, renamed)
     }
 
     // ---------- 码字统计 ----------
@@ -827,66 +875,128 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         return value
     }
 
+    /**
+     * 改统计前严格读一次。文件读不出时先另存一份（[DurableFiles.keepDamaged]；已有的副本内容不同就另起一个名字），
+     * 存下了返回 null，由调用方跳过计数或从空的重新记；连副本都存不下就报错，绝不覆盖唯一的一份。
+     */
+    private fun statsOrDamaged(): WritingStats? = try {
+        strictStats()
+    } catch (e: Exception) {
+        DurableFiles.keepDamaged(statsFile)
+        val bytes = statsFile.readBytes()
+        val copies = root.listFiles().orEmpty().filter { it.isFile && it.name.startsWith(statsFile.name + ".damaged") }
+        if (copies.none { it.readBytes().contentEquals(bytes) }) {
+            val extra = File(root, statsFile.name + ".damaged-" + clock())
+            check(runCatching { statsFile.copyTo(extra) }.isSuccess) { "码字统计损坏，且无法另存一份" }
+        }
+        null
+    }
+
+    /** 记净增的字数。统计文件坏了时跳过（坏文件已另存一份）。 */
     @Synchronized
     fun addWords(day: LocalDate, delta: Int) {
         if (delta == 0) return
-        val s = strictStats()
+        val s = statsOrDamaged() ?: return
         saveStats(s.copy(days = s.days + (day to s.on(day) + delta)))
     }
 
+    /** 设每天的目标。统计文件坏了时（坏文件已另存一份）从空的统计重新记，作者设目标就是一条修好的路。 */
     @Synchronized
-    fun setGoal(goal: Int) = saveStats(strictStats().copy(goal = goal.coerceAtLeast(0)))
+    fun setGoal(goal: Int) = saveStats((statsOrDamaged() ?: WritingStats()).copy(goal = goal.coerceAtLeast(0)))
 
     // ---------- 备份 ----------
 
-    /** 所有作品（含正文，不含历史版本）和码字统计打成一个 JSON，放进灵阅的备份。没有作品时为空。 */
+    /** 所有作品（含正文，不含历史版本）和码字统计打成一个 JSON，放进灵阅的备份。没有作品时为空。读不出的文件见 [backupReport]。 */
     @Synchronized
-    fun backup(): ByteArray? {
+    fun backup(): ByteArray? = backupReport()?.bytes
+
+    /**
+     * 同 [backup]，另外报告没能放进去的文件。某个文件读不出时不再让整份备份失败：
+     * - 作品信息（work.json）读不出：这部作品整部不放；
+     * - 细纲卡读不出：这张卡不放；变更登记、AI 设置、设定包索引读不出：这一项不放（恢复时保留那台手机上的）；
+     * - 码字统计读不出：统计不放；
+     * - 章节正文、设定文档的文件不见了：放空的，也报告出来。
+     * 读不出的文件都先另存一份（.damaged）。
+     */
+    @Synchronized
+    fun backupReport(): WritingBackup? {
+        val dirs = works.listFiles().orEmpty().filter { it.isDirectory && ID.matches(it.name) }
+        if (dirs.isEmpty() && !statsFile.isFile) return null
+        val skipped = mutableListOf<WritingSkip>()
         // list() is deliberately tolerant for the shelf UI. A backup must not silently
-        // omit a work whose metadata failed to parse: that archive might be the only copy.
-        val all = works.listFiles().orEmpty()
-            .filter { it.isDirectory && ID.matches(it.name) }
-            .map { read(it.name) }
-        if (all.isEmpty() && !statsFile.isFile) return null
+        // omit a work whose metadata failed to parse: it is reported to the caller instead.
+        val all = dirs.mapNotNull { d ->
+            try {
+                read(d.name)
+            } catch (e: Exception) {
+                // 读不出也尽量认出书名，好让作者知道是哪一部。
+                val raw = runCatching { File(d, WORK).readText() }.getOrDefault("")
+                val title = Regex(""""title"\s*:\s*"([^"\\]+)"""").find(raw)?.groupValues?.get(1) ?: "作品 ${d.name.take(8)}"
+                skipped += WritingSkip(title, WORK, "作品信息读不出，整部作品没有放进备份")
+                null
+            }
+        }
         val array = JSONArray()
         all.forEach { w ->
-            val index = File(packDir(w.id), PACK_INDEX)
-            if (index.isFile) {
-                val docs = JSONArray(index.readText())
-                (0 until docs.length()).forEach { i ->
-                    requireNotNull(docs.getJSONObject(i).toPackDoc()) { "设定包索引损坏" }
-                }
+            fun skip(file: String, reason: String) { skipped += WritingSkip(w.title, file, reason) }
+            /** 读一个附加文件；读不出就另存一份、记下来，返回 null。 */
+            fun <T> component(file: File, reason: String, parse: (String) -> T): T? = try {
+                parse(file.readText())
+            } catch (e: Exception) {
+                DurableFiles.keepDamaged(file)
+                skip(file.relativeTo(dir(w.id)).path, reason)
+                null
             }
+            val index = File(packDir(w.id), PACK_INDEX)
+            val packReadable = !index.isFile || component(index, "设定包索引读不出，设定包没有放进备份") { raw ->
+                val docs = JSONArray(raw)
+                (0 until docs.length()).forEach { i -> requireNotNull(docs.getJSONObject(i).toPackDoc()) { "设定包索引损坏" } }
+            } != null
             val texts = JSONObject()
             w.chapters.forEach { c ->
                 val source = chapterFile(w.id, c.id)
-                check(source.isFile || c.words == 0) { "作品《${w.title}》的章节正文缺失：${c.title}" }
+                if (!source.isFile && c.words > 0) skip(source.name, "「${c.title}」的正文文件不见了，备份里这一章是空的")
                 texts.put(c.id, text(w.id, c.id))
             }
-            val pack = JSONArray().apply { pack(w.id).forEach { d ->
+            val pack = if (!packReadable) null else JSONArray().apply { pack(w.id).forEach { d ->
                 val source = packFile(w.id, d.id)
-                check(source.isFile || d.words == 0) { "作品《${w.title}》的设定文档缺失：${d.title}" }
+                if (!source.isFile && d.words > 0) skip("$PACK/${source.name}", "设定文档「${d.title}」的文件不见了，备份里是空的")
                 put(d.toJson().put("text", packText(w.id, d.id)))
             } }
             val cards = JSONObject().apply { w.chapters.forEach { c ->
                 val source = cardFile(w.id, c.id)
-                val card = if (source.isFile) JSONObject(source.readText()).toCard() else ChapterCard()
-                card.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 }
+                val card = if (source.isFile) component(source, "「${c.title}」的细纲卡读不出，没有放进备份") { JSONObject(it).toCard() } else ChapterCard()
+                card?.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 }
                     ?.let { put(c.id, it.toJson()) }
             } }
             val changesSource = File(dir(w.id), changesFile)
-            val changes = if (changesSource.isFile) JSONArray(changesSource.readText()).also { raw ->
-                (0 until raw.length()).forEach { i -> requireNotNull(raw.getJSONObject(i).toChange()) { "变更登记损坏" } }
+            val changes = if (changesSource.isFile) component(changesSource, "变更登记读不出，没有放进备份") { text ->
+                JSONArray(text).also { raw -> (0 until raw.length()).forEach { i -> requireNotNull(raw.getJSONObject(i).toChange()) { "变更登记损坏" } } }
             } else JSONArray()
             val assistSource = File(dir(w.id), ASSIST)
-            val assist = if (assistSource.isFile) JSONObject(assistSource.readText()).toAssist() else WorkAssist()
+            val assist = if (assistSource.isFile) component(assistSource, "AI 设置和设定集读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
             // pack() may migrate an old settings bundle and touch the work timestamp.
-            array.put(read(w.id).toJson().put("texts", texts).put("assist", assist.toJson()).put("pack", pack).put("cards", cards).put("changes", changes))
+            // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
+            val entry = read(w.id).toJson().put("texts", texts).put("cards", cards)
+            assist?.let { entry.put("assist", it.toJson()) }
+            pack?.let { entry.put("pack", it) }
+            changes?.let { entry.put("changes", it) }
+            array.put(entry)
         }
-        val stats = strictStats()
-        val days = JSONObject()
-        stats.days.forEach { (d, n) -> days.put(d.toString(), n) }
-        return JSONObject().put("format", 1).put("works", array).put("goal", stats.goal).put("days", days).toString().toByteArray()
+        val backup = JSONObject().put("format", 1).put("works", array)
+        val stats = try {
+            strictStats()
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(statsFile)
+            skipped += WritingSkip("", statsFile.name, "码字统计读不出，没有放进备份")
+            null
+        }
+        stats?.let { value ->
+            val days = JSONObject()
+            value.days.forEach { (d, n) -> days.put(d.toString(), n) }
+            backup.put("goal", value.goal).put("days", days)
+        }
+        return WritingBackup(backup.toString().toByteArray(), skipped)
     }
 
     private data class RestoreWork(
@@ -900,8 +1010,11 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val assist: WorkAssist?,
     )
 
-    /** Reject malformed archive components before changing any live work. */
-    private fun parseRestoreWork(o: JSONObject): RestoreWork? {
+    /**
+     * Reject malformed archive components before changing any live work.
+     * 返回 null 表示这部不恢复：本机的较新、或本机的文件读不出时，记进 [skipped] 告诉作者。
+     */
+    private fun parseRestoreWork(o: JSONObject, skipped: MutableList<WritingSkip>): RestoreWork? {
         val incoming = o.toWork()
         require(ID.matches(incoming.id)) { "备份作品 id 无效" }
         val volumeIds = incoming.volumes.map { it.id }
@@ -914,12 +1027,6 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             require(textObject.has(id) && textObject.opt(id) is String) { "备份章节正文缺失或损坏" }
             textObject.getString(id)
         }
-        val localDir = dir(incoming.id)
-        val local = if (localDir.exists()) {
-            require(localDir.isDirectory) { "本机作品路径无效" }
-            // Do not use get(): a damaged local work must never be mistaken for an absent one.
-            JSONObject(File(localDir, WORK).readText()).toWork()
-        } else null
         val cards = if (o.has("cards")) {
             val raw = o.getJSONObject("cards")
             raw.keys().asSequence().associateWith { id ->
@@ -959,19 +1066,33 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
 
-        val localPack = if (local != null) {
-            val index = File(File(localDir, PACK), PACK_INDEX)
-            if (!index.isFile) emptyList() else {
-                val raw = JSONArray(index.readText())
-                (0 until raw.length()).map { indexAt ->
-                    requireNotNull(raw.getJSONObject(indexAt).toPackDoc()) { "本机设定索引损坏" }
-                }
+        val localDir = dir(incoming.id)
+        if (localDir.exists()) require(localDir.isDirectory) { "本机作品路径无效" }
+        // Do not use get(): a damaged local work must never be mistaken for an absent one.
+        // 本机的作品信息或设定索引读不出：这一部原样不动（坏文件另存一份），报告出来，不让整份恢复失败。
+        fun <T> readLocal(file: File, parse: (String) -> T): T? = try {
+            parse(file.readText())
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            skipped += WritingSkip(incoming.title, file.relativeTo(localDir).path, "本机的这个文件读不出，这部作品没有用备份覆盖")
+            null
+        }
+        val local = if (localDir.exists()) readLocal(File(localDir, WORK)) { JSONObject(it).toWork() } ?: return null else null
+        val localIndex = File(File(localDir, PACK), PACK_INDEX)
+        val localPack = if (local == null || !localIndex.isFile) emptyList() else readLocal(localIndex) { text ->
+            val raw = JSONArray(text)
+            (0 until raw.length()).map { indexAt ->
+                requireNotNull(raw.getJSONObject(indexAt).toPackDoc()) { "本机设定索引损坏" }
             }
-        } else emptyList()
+        } ?: return null
 
         // Old app versions did not touch Work.updatedAt for pack/card edits. A backup
         // cannot replace a component whose own timestamp does not prove it newer.
-        if (local != null && local.updatedAt >= incoming.updatedAt) return null
+        if (local != null && local.updatedAt >= incoming.updatedAt) {
+            // 时间一样是同一版，不用提；本机的更新才告诉作者。
+            if (local.updatedAt > incoming.updatedAt) skipped += WritingSkip(local.title, "", "本机的比备份里的新，保留本机的")
+            return null
+        }
         if (local != null) {
             val incomingDocs = pack?.associate { it.first.id to it.first }
             if (incomingDocs != null) {
@@ -984,17 +1105,25 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                         (current != replacement || currentText != incomingText) && replacement.updatedAt <= current.updatedAt
                     }
                 }
-                if (hasUnresolvedDoc) return null
+                if (hasUnresolvedDoc) {
+                    skipped += WritingSkip(local.title, "", "本机有设定文档比备份里的新，保留本机的")
+                    return null
+                }
             }
             if (cards != null) {
                 val hasUnresolvedCard = cards.any { (chapterId, replacement) ->
                     val source = File(localDir, chapterId + ".card.json")
                     if (!source.isFile) false else {
-                        val current = JSONObject(source.readText()).toCard()
+                        // 本机的卡读不出：另存一份，用备份里的。
+                        val current = runCatching { JSONObject(source.readText()).toCard() }
+                            .onFailure { DurableFiles.keepDamaged(source) }.getOrNull() ?: return@any false
                         current != replacement && replacement.updatedAt <= current.updatedAt
                     }
                 }
-                if (hasUnresolvedCard) return null
+                if (hasUnresolvedCard) {
+                    skipped += WritingSkip(local.title, "", "本机有细纲卡比备份里的新，保留本机的")
+                    return null
+                }
             }
         }
         return RestoreWork(incoming, local, texts, cards, changes, pack, localPack, assist)
@@ -1006,14 +1135,17 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         preflightRestoreBackup(JSONObject(json))
     }
 
-    private fun preflightRestoreBackup(backup: JSONObject): Pair<List<RestoreWork>, Map<LocalDate, Int>?> {
+    private class RestorePreflight(val plans: List<RestoreWork>, val days: Map<LocalDate, Int>?, val skipped: List<WritingSkip>)
+
+    private fun preflightRestoreBackup(backup: JSONObject): RestorePreflight {
         val array = if (backup.has("works")) backup.getJSONArray("works") else JSONArray()
         val seen = mutableSetOf<String>()
+        val skipped = mutableListOf<WritingSkip>()
         val plans = (0 until array.length()).mapNotNull { index ->
             val entry = array.getJSONObject(index)
             val id = entry.getString("id")
             require(seen.add(id)) { "备份作品 id 重复" }
-            parseRestoreWork(entry)
+            parseRestoreWork(entry, skipped)
         }
         val days = if (backup.has("days")) {
             val raw = backup.getJSONObject("days")
@@ -1024,7 +1156,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             }
         } else null
         backup.checkedInteger("goal", 0, Int.MAX_VALUE.toLong(), "备份码字目标损坏")
-        return plans to days
+        return RestorePreflight(plans, days, skipped)
     }
 
     private fun stageRestoreWork(plan: RestoreWork, destination: File) {
@@ -1081,12 +1213,19 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
      * journal. On process death the next WorkStore initialization restores all old works.
      */
     @Synchronized
-    fun restoreBackup(json: String): Int {
+    fun restoreBackup(json: String): Int = restoreBackupReport(json).restored
+
+    /** 同 [restoreBackup]，另外报告整部没有恢复的作品（本机的较新，或本机的文件读不出）。 */
+    @Synchronized
+    fun restoreBackupReport(json: String): WritingRestore {
         val backup = JSONObject(json)
-        val (plans, days) = preflightRestoreBackup(backup)
-        if (plans.isEmpty() && days == null) return 0
+        val preflight = preflightRestoreBackup(backup)
+        val plans = preflight.plans
+        val days = preflight.days
+        if (plans.isEmpty() && days == null) return WritingRestore(0, preflight.skipped)
         val mergedStats = days?.let { incoming ->
-            val current = strictStats()
+            // 本机的统计读不出（已另存一份）：直接用备份里的。
+            val current = statsOrDamaged() ?: WritingStats()
             val combined = current.days.toMutableMap()
             incoming.forEach { (day, count) -> combined[day] = maxOf(combined[day] ?: 0, count) }
             current.copy(days = combined, goal = if (current.goal == 0) backup.optInt("goal", 0) else current.goal)
@@ -1138,7 +1277,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             throw failure
         }
         if (File(stage, "journal.json").delete()) stage.deleteRecursively()
-        return plans.size
+        return WritingRestore(plans.size, preflight.skipped)
     }
 
     companion object {
@@ -1149,6 +1288,8 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         private const val PACK = "pack"
         private const val PACK_INDEX = "index.json"
         private const val RESTORE_PREFIX = ".restore-writing-"
+        /** 文件名写着“已定”“定稿”的正文是定稿；前面是“未”“待”“非”“不”的不算。 */
+        private val FINAL_NAME = Regex("(?<![未待非不])(?:已定|定稿)")
         private val ID = Regex("""[A-Za-z0-9-]{1,64}""")
 
         internal fun newId() = UUID.randomUUID().toString()

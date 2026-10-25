@@ -53,10 +53,32 @@ data class PackImportItem(
     val title: String = fileName.substringAfterLast('/').substringBeforeLast('.').trim().ifEmpty { fileName },
 )
 
-/** 导入的结果：新加几份、替换几份（旧版进历史）、导入几章正文。 */
-data class PackImportResult(val added: Int, val replaced: Int, val chapters: Int)
+/** 导入的结果：新加几份、替换几份（旧版进历史）、导入几章正文；[renamed] 是和同一次导入里前面的项重名、加了编号的标题。 */
+data class PackImportResult(val added: Int, val replaced: Int, val chapters: Int, val renamed: List<String> = emptyList())
 
 object PackImport {
+    /** 和 [taken] 里的标题重名时加编号：“人物档案”→“人物档案（2）”。 */
+    fun uniqueTitle(title: String, taken: Set<String>): String {
+        if (title !in taken) return title
+        var n = 2
+        while ("$title（$n）" in taken) n++
+        return "$title（$n）"
+    }
+
+    /**
+     * 各导入项导入后的标题：设定文档和同一次导入里前面的文档重名时加编号（当新文档加，不把前面那份盖掉），
+     * 编号不和作品里已有的标题 [existing] 撞；正文和不导的项原样。导入和导入前的预览都按它算。
+     */
+    fun docTitles(items: List<PackImportItem>, existing: Set<String>): List<String> {
+        val used = HashSet<String>()
+        return items.map { item ->
+            if (!item.include || item.asChapters) return@map item.title
+            val title = if (item.title in used) uniqueTitle(item.title, used + existing) else item.title
+            used += title
+            title
+        }
+    }
+
     /** 认得的文本文件。 */
     fun isText(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in setOf("md", "markdown", "txt", "text")
 
@@ -135,6 +157,7 @@ object PackImport {
     /** 设定包打成 zip：每份文档一个 .md，外加 pack.json 记类型、优先级、常用与否，导回来原样还原。 */
     fun writeZip(docs: List<Pair<PackDoc, String>>, out: OutputStream) {
         val used = HashSet<String>()
+        val titles = HashSet<String>()
         val manifest = JSONArray()
         ZipOutputStream(out).use { zip ->
             docs.forEach { (doc, text) ->
@@ -142,10 +165,12 @@ object PackImport {
                 var name = "$base.md"
                 var n = 2
                 while (!used.add(name)) name = "$base（${n++}）.md"
+                // 标题也去重：两份同名的文档导回来时不会按同名互相替换。
+                val title = uniqueTitle(doc.title, titles).also { titles += it }
                 zip.putNextEntry(ZipEntry(name))
                 zip.write(text.toByteArray())
                 zip.closeEntry()
-                manifest.put(JSONObject().put("file", name).put("title", doc.title).put("kind", doc.kind.name).put("priority", doc.priority).put("always", doc.always))
+                manifest.put(JSONObject().put("file", name).put("title", title).put("kind", doc.kind.name).put("priority", doc.priority).put("always", doc.always))
             }
             zip.putNextEntry(ZipEntry(MANIFEST))
             zip.write(JSONObject().put("format", 1).put("docs", manifest).toString(2).toByteArray())
