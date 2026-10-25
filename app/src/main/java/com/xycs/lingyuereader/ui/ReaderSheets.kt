@@ -1,5 +1,14 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
@@ -13,6 +22,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -115,9 +125,27 @@ internal fun CatalogSheet(
                     tab,
                 ) { tab = it }
             }
-            if (tab == 0 && summary != null) SummaryBar(summary)
-            Box(Modifier.fillMaxWidth().height(460.dp).padding(top = 6.dp)) {
-                when (tab) {
+            // 速读入口只在目录页：跟着标签页收起、展开，不一下把下面的列表顶开。
+            AnimatedVisibility(
+                visible = tab == 0 && summary != null,
+                enter = Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM)) + fadeIn(Motion.standard(Motion.SHORT))),
+                exit = Effects.exit(shrinkVertically(Motion.standard(Motion.MEDIUM)) + fadeOut(Motion.exit())),
+            ) {
+                // 收起动画期间 summary 可能已经为空（关了 AI 助手），这时什么都不画。
+                summary?.let { SummaryBar(it) }
+            }
+            // 三个标签内容跟着上面的分段滑块按方向横移：往右边的标签切，新内容从右边进来，反之从左边；减少动效时直接换。
+            AnimatedContent(
+                targetState = tab,
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    (slideInHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) it / 4 else -it / 4 } + fadeIn(Motion.standard(Motion.SHORT)))
+                        .togetherWith(slideOutHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) -it / 4 else it / 4 } + fadeOut(Motion.exit()))
+                },
+                label = "catalogTab",
+                modifier = Modifier.fillMaxWidth().height(460.dp).padding(top = 6.dp),
+            ) { page ->
+                when (page) {
                     0 -> {
                         val state = rememberLazyListState((current - 3).coerceAtLeast(0))
                         LazyColumn(state = state, contentPadding = PaddingValues(bottom = 16.dp)) {
@@ -168,12 +196,13 @@ internal fun CatalogSheet(
                         }
                     }
                     1 -> if (marks.bookmarks.isEmpty()) {
-                        EmptyHint("还没有书签。在阅读时点顶栏的书签按钮，或长按段落选“加书签”。", palette)
+                        EmptyHint("还没有书签。在阅读时点顶栏的书签按钮，或长按段落选“加书签”。")
                     } else {
                         val list = marks.bookmarks.sortedWith(compareBy({ it.chapterIndex }, { it.itemIndex }))
                         LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                             itemsIndexed(list, key = { _, b -> b.id }) { i, b ->
-                                GroupedListCell(i, list.size) {
+                                // 删掉一条：它淡出，下面的平滑补上来。
+                                GroupedListCell(i, list.size, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
                                     MarkRow(
                                         title = if (b.lost) "原文已改动 · ${b.chapterTitle}" else chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
                                         body = b.excerpt,
@@ -188,7 +217,7 @@ internal fun CatalogSheet(
                         }
                     }
                     else -> if (marks.notes.isEmpty()) {
-                        EmptyHint("还没有批注。长按正文段落即可划线、写批注。", palette)
+                        EmptyHint("还没有批注。长按正文段落即可划线、写批注。")
                     } else {
                         val list = marks.notes.sortedWith(compareBy({ it.lost }, { it.chapterIndex }, { it.blockIndex }, { it.start }))
                         LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
@@ -196,7 +225,7 @@ internal fun CatalogSheet(
                                 GroupedSection { row { ActionRow("导出全部批注（Markdown）", onClick = onExportNotes) } }
                             }
                             itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
-                                GroupedListCell(i, list.size) {
+                                GroupedListCell(i, list.size, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
                                     MarkRow(
                                         title = if (n.lost) "原文已改动 · ${n.chapterTitle}" else chapters.getOrNull(n.chapterIndex)?.title ?: n.chapterTitle,
                                         body = n.quote,
@@ -218,7 +247,13 @@ internal fun CatalogSheet(
 
 /** 长列表里的一格：同一组的格子连成一张圆角卡片（首尾圆角、中间细线），像分组列表但可以懒加载。 */
 @Composable
-private fun GroupedListCell(index: Int, count: Int, @Suppress("UNUSED_PARAMETER") separatorStart: Dp = 0.dp, content: @Composable () -> Unit) {
+private fun GroupedListCell(
+    index: Int,
+    count: Int,
+    modifier: Modifier = Modifier,
+    @Suppress("UNUSED_PARAMETER") separatorStart: Dp = 0.dp,
+    content: @Composable () -> Unit,
+) {
     val c = LocalGroupedColors.current
     val r = 16.dp
     val shape = RoundedCornerShape(
@@ -228,14 +263,20 @@ private fun GroupedListCell(index: Int, count: Int, @Suppress("UNUSED_PARAMETER"
         bottomEnd = if (index == count - 1) r else 0.dp,
     )
     // miuix 卡片里不画分隔线，一行行靠留白分开。
-    Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
+    Column(modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
         content()
     }
 }
 
+/** 书签、批注还没有时：和列表一样的一张卡片，里面一行灰字（[EmptyRow]），不在面板中间飘一段字。 */
 @Composable
-private fun EmptyHint(text: String, @Suppress("UNUSED_PARAMETER") palette: ReaderPalette) {
-    Text(text, color = LocalGroupedColors.current.secondary, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(32.dp))
+private fun EmptyHint(text: String) {
+    // 标签页那块是定高的，外面套一层 Box 让卡片按自己的高矮排，不被撑满。
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(LocalGroupedColors.current.cell)) {
+            EmptyRow(text)
+        }
+    }
 }
 
 @Composable
@@ -504,7 +545,7 @@ private fun SummaryBar(s: SummaryControls) {
     Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (s.running) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator(size = 16.dp, color = c.tint)
+                Spinner()
                 Text("AI 速读生成中 ${s.progress.orEmpty()} 章", color = c.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
                 Text("停止", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = s.onCancel).padding(8.dp))
             }
@@ -527,6 +568,6 @@ private fun SummaryBar(s: SummaryControls) {
                 }
             }
         }
-        s.error?.let { Text(it, color = c.destructive, fontSize = 13.sp) }
+        s.error?.let { ErrorText(it) }
     }
 }

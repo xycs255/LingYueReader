@@ -47,6 +47,8 @@ import top.yukonga.miuix.kmp.basic.Text
 /** 听书时浮在底部的控制条：播放/暂停、设置、停止。 */
 @Composable
 internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSettings: () -> Unit) {
+    // 出错用阅读面板配色里的删除色（随书页深浅调过），不用强调色——强调色在这里是“播放”的意思。
+    val danger = remember(palette) { readerGroupedColors(palette, palette.accent).destructive }
     Row(
         Modifier
             .windowInsetsPadding(WindowInsets.navigationBars)
@@ -75,7 +77,7 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
         ) {
             Text(
                 state.error ?: if (state.playing) "正在听书" else "已暂停",
-                color = if (state.error != null) palette.accent else palette.text,
+                color = if (state.error != null) danger else palette.text,
                 fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -159,7 +161,7 @@ internal fun ReadAloudSheet(
                         .semantics { contentDescription = if (state.playing) "暂停听书" else "继续听书" },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(if (state.playing) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                    Icon(if (state.playing) LingYueIcons.Pause else LingYueIcons.Play, contentDescription = null, tint = c.onTint, modifier = Modifier.size(30.dp))
                 }
                 IconButton(onClick = ReadAloud::nextSentence) {
                     Icon(LingYueIcons.ChevronForward, contentDescription = "下一句", tint = c.label, modifier = Modifier.size(30.dp))
@@ -177,9 +179,7 @@ internal fun ReadAloudSheet(
                     ) { rate = it }
                 }
             }
-            state.error?.let {
-                Text(it, color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
-            }
+            state.error?.let { ErrorText(it, Modifier.padding(horizontal = 28.dp, vertical = 4.dp)) }
             if (engines.size > 1 || onOfflineSetup != null) {
                 val engine = when {
                     state.offline -> ReadAloudEngine.OFFLINE
