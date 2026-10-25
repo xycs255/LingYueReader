@@ -152,7 +152,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
                 ) {
                     GroupedSection(header = "草稿") {
-                        row { DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits)) }
+                        row {
+                            Column {
+                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits))
+                                if (!loading) UsageNote(draft?.usage, draft?.cost, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
+                            }
+                        }
                         draft?.error?.let { e -> row { ErrorText("没写成：$e", Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                         if (text.isNotBlank()) {
                             row {

@@ -230,6 +230,7 @@ fun AiScreen(vm: AppViewModel) {
                         }
                         result?.takeIf { !it.first }?.let { (_, e) -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                     }
+                    PriceSection(vm, config)
                     GroupedSection(header = "回答", footer = "所有 AI 回答的长短；查词的 AI 释义总是简短的。") {
                         row { SegmentedRow(AnswerLength.entries.map { it to it.label }, config.length) { update(config.copy(length = it)) } }
                     }

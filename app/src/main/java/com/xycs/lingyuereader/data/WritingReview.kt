@@ -1,6 +1,9 @@
 package com.xycs.lingyuereader.data
 
 import org.json.JSONArray
+import com.xycs.lingyuereader.ai.AiCost
+import com.xycs.lingyuereader.ai.AiUsage
+import com.xycs.lingyuereader.ai.UsageRow
 import org.json.JSONObject
 
 /**
@@ -81,15 +84,20 @@ data class WriteRecord(
     val ask: String,
     val text: String,
     val rating: Int = 0,
+    /** 这次请求的用量、约多少钱（只有数字；旧记录没有）。 */
+    val usage: AiUsage? = null,
+    val cost: AiCost? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().put("id", id).put("at", at).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
         .put("kind", kind).put("ask", ask).put("text", text).put("rating", rating)
+        .apply { usage?.let { u -> put("usage", UsageRow("", "", u, cost ?: AiCost()).toJson()) } }
 
     companion object {
         const val KEEP = 100
 
         fun fromJson(o: JSONObject): WriteRecord? = o.optString("id").takeIf { it.isNotEmpty() }?.let {
-            WriteRecord(it, o.optLong("at"), o.optString("chapterId"), o.optString("chapterTitle"), o.optString("kind"), o.optString("ask"), o.optString("text"), o.optInt("rating"))
+            val usage = o.optJSONObject("usage")?.let(UsageRow::fromJson)
+            WriteRecord(it, o.optLong("at"), o.optString("chapterId"), o.optString("chapterTitle"), o.optString("kind"), o.optString("ask"), o.optString("text"), o.optInt("rating"), usage?.usage, usage?.cost)
         }
     }
 }

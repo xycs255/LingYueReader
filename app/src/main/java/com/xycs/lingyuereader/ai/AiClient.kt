@@ -5,6 +5,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,11 +74,23 @@ object AiWire {
     /** Claude 5 一代支持调思考力度：读书助手的问题不难，用 low，回得快、花得少。 */
     private fun supportsEffort(model: String): Boolean = Regex("^claude-(opus|sonnet|haiku|fable|mythos)-5").containsMatchIn(model.trim())
 
+    /**
+     * 流式请求要服务商在最后一块里带上用量（`stream_options: {include_usage: true}`）。不是每家都认这个参数（不认的可能回 400），
+     * 只给核对过支持的几家加：OpenAI、DeepSeek、通义千问（百炼的兼容接口）。别家照样解析流里自带的 usage（智谱、Kimi 在最后一块里就有），
+     * 都没有就按字数估。
+     */
+    fun streamUsage(c: AiConfig): Boolean {
+        if (c.protocol != AiProtocol.OPENAI) return false
+        val host = runCatching { java.net.URI(c.baseUrl.trim()).host }.getOrNull().orEmpty()
+        return host in setOf("api.openai.com", "api.deepseek.com", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com")
+    }
+
     fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true): String {
         val list = JSONArray()
         val o = JSONObject().put("model", c.model.trim()).put("stream", stream)
         when (c.protocol) {
             AiProtocol.OPENAI -> {
+                if (stream && streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
                 if (system.isNotEmpty()) list.put(JSONObject().put("role", "system").put("content", system))
                 messages.forEach { list.put(JSONObject().put("role", it.role).put("content", it.content)) }
             }
@@ -93,8 +106,8 @@ object AiWire {
         return o.put("messages", list).toString()
     }
 
-    /** 流里的一条事件带来的东西。 */
-    data class Delta(val text: String = "", val done: Boolean = false, val refused: Boolean = false, val truncated: Boolean = false)
+    /** 流里的一条事件带来的东西；[usage] 是这条里带的用量（多半在最后一块）。 */
+    data class Delta(val text: String = "", val done: Boolean = false, val refused: Boolean = false, val truncated: Boolean = false, val usage: AiUsage? = null)
 
     /** 解析 SSE 里一行 `data:` 后面的内容。服务端在流里报错时抛 [AiException]。 */
     fun delta(protocol: AiProtocol, data: String): Delta {
@@ -105,18 +118,22 @@ object AiWire {
         o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").ifEmpty { it.toString() }.take(160)}") }
         return when (protocol) {
             AiProtocol.OPENAI -> {
-                val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return Delta()
+                // 用量：include_usage 时在最后一块（choices 是空的）；Kimi 写在 choices[0].usage 里。
+                val choice = o.optJSONArray("choices")?.optJSONObject(0)
+                val usage = AiUsage.openAi(o.optJSONObject("usage")) ?: AiUsage.openAi(choice?.optJSONObject("usage"))
+                if (choice == null) return Delta(usage = usage)
                 val text = choice.optJSONObject("delta")?.optStringOrEmpty("content") ?: ""
                 val finish = choice.optStringOrEmpty("finish_reason")
-                Delta(text, refused = finish == "content_filter", truncated = finish == "length")
+                Delta(text, refused = finish == "content_filter", truncated = finish == "length", usage = usage)
             }
             AiProtocol.ANTHROPIC -> when (o.optString("type")) {
+                "message_start" -> Delta(usage = AiUsage.anthropic(o.optJSONObject("message")?.optJSONObject("usage")))
                 "content_block_delta" -> {
                     val delta = o.optJSONObject("delta")
                     if (delta?.optString("type") == "text_delta") Delta(delta.optString("text")) else Delta()
                 }
                 "message_delta" -> o.optJSONObject("delta")?.optString("stop_reason").let { reason ->
-                    Delta(refused = reason == "refusal", truncated = reason == "max_tokens")
+                    Delta(refused = reason == "refusal", truncated = reason == "max_tokens", usage = AiUsage.anthropic(o.optJSONObject("usage")))
                 }
                 "message_stop" -> Delta(done = true)
                 else -> Delta()
@@ -132,6 +149,16 @@ object AiWire {
             AiProtocol.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.optStringOrEmpty("finish_reason") == "length"
             AiProtocol.ANTHROPIC -> o.optString("stop_reason") == "max_tokens"
             AiProtocol.DEVICE -> false
+        }
+    }
+
+    /** 一整个 JSON 的回答里的用量。 */
+    fun wholeUsage(protocol: AiProtocol, body: String): AiUsage? {
+        val o = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        return when (protocol) {
+            AiProtocol.OPENAI -> AiUsage.openAi(o.optJSONObject("usage"))
+            AiProtocol.ANTHROPIC -> AiUsage.anthropic(o.optJSONObject("usage"))
+            AiProtocol.DEVICE -> null
         }
     }
 
@@ -179,6 +206,22 @@ object AiWire {
 class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }) {
     /** 本机模型（选了“本机模型（离线）”时用）；手机不支持时为空。 */
     var device: DeviceLlm? = null
+
+    /** 每发完一次请求（联网的），用量交给它记账（只有数字，没有内容）；在发请求的线程上调。 */
+    @Volatile
+    var onUsage: ((AiUsageEvent) -> Unit)? = null
+
+    /**
+     * 记一次用量：加进协程上下文里的 [AiMeter]（调用方据此显示这一次花了多少），再交给 [onUsage]。
+     * 服务商没返回用量时按发出、收到的字数估。
+     */
+    private suspend fun report(config: AiConfig, usage: AiUsage?, sent: () -> String, received: String) {
+        val u = usage ?: AiUsage.estimate(sent(), received)
+        val cost = AiPricing.cost(config, u)
+        val meter = coroutineContext[AiMeter]
+        meter?.add(u, cost)
+        runCatching { onUsage?.invoke(AiUsageEvent(config, u, cost, meter)) }
+    }
 
     /**
      * 不自动跟随重定向：系统跟随到别的主机时只去掉 Authorization，x-api-key 之类的密钥头照样带过去，
@@ -230,6 +273,10 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 throw AiException(networkError(e, url))
             }
             val watcher = disconnectOnCancel(conn)
+            val out = StringBuilder()
+            var usage: AiUsage? = null
+            var reported = false
+            val sent = { system + messages.joinToString("") { it.content } }
             try {
                 conn.requestMethod = "POST"
                 conn.connectTimeout = 15_000
@@ -244,7 +291,6 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     throw AiException(AiWire.error(code, err))
                 }
                 val type = conn.contentType.orEmpty()
-                val out = StringBuilder()
                 var refused = false
                 var truncated = false
                 conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
@@ -252,6 +298,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                         val body = reader.readText()
                         val text = AiWire.whole(config.protocol, body)
                         truncated = AiWire.wholeTruncated(config.protocol, body)
+                        usage = AiWire.wholeUsage(config.protocol, body)
                         out.append(text)
                         onText(text)
                         return@use
@@ -261,6 +308,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                         val line = reader.readLine() ?: break
                         if (!line.startsWith("data:")) continue
                         val d = AiWire.delta(config.protocol, line.removePrefix("data:"))
+                        usage = if (config.protocol == AiProtocol.ANTHROPIC) AiUsage.merge(usage, d.usage) else d.usage ?: usage
                         if (d.text.isNotEmpty()) {
                             out.append(d.text)
                             onText(d.text)
@@ -270,6 +318,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                         if (d.done) break
                     }
                 }
+                // 收完了就记用量（之后截断报错也照样花了钱）。
+                reported = true
+                report(config, usage, sent, out.toString())
                 if (truncated) {
                     if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
                     val note = "\n\n（回答太长，后面被截断了。）"
@@ -291,6 +342,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
             } finally {
                 watcher.cancel()
                 conn.disconnect()
+                // 中途停下、断了：已经收到的部分照样花了钱，按收到的估一份（服务商已经给了用量就用它的）。
+                if (!reported && (out.isNotEmpty() || usage != null)) withContext(NonCancellable) { report(config, usage, sent, out.toString()) }
             }
         }
 
@@ -354,6 +407,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
 
     /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。 */
     private suspend fun post(config: AiConfig, body: String, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
+        val collector = AiToolWire.Collector(config.protocol, onText)
+        var reported = false
         val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
             ?: throw AiException("接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
         val conn = try {
@@ -376,7 +431,6 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                 throw AiException(AiWire.error(code, err))
             }
-            val collector = AiToolWire.Collector(config.protocol, onText)
             val type = conn.contentType.orEmpty()
             conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 if (type.contains("json") && !type.contains("event-stream")) {
@@ -391,7 +445,10 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     if (collector.finished) break
                 }
             }
-            collector.finish()
+            collector.finish().also { turn ->
+                reported = true
+                report(config, turn.usage, { body }, turn.text + turn.calls.joinToString("") { it.name + it.arguments })
+            }
         } catch (e: AiException) {
             throw e
         } catch (e: IOException) {
@@ -400,6 +457,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         } finally {
             watcher.cancel()
             conn.disconnect()
+            if (!reported && (collector.received.isNotEmpty() || collector.usage != null)) {
+                withContext(NonCancellable) { report(config, collector.usage, { body }, collector.received) }
+            }
         }
     }
 

@@ -319,6 +319,7 @@ internal fun WriteAiPanel(
                     if (canDiff && state.text.trim() == edit!!.original.trim()) {
                         Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                     }
+                    UsageNote(state.usage, state.cost, Modifier.padding(top = 6.dp))
                 }
             }
         }
@@ -420,16 +421,28 @@ internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit,
                     },
                     line,
                 )
-                else -> Text(
-                    "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: ""),
-                    color = c.label,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    modifier = line,
-                )
+                else -> Column(line) {
+                    Text(
+                        "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: ""),
+                        color = c.label,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                    )
+                    UsageNote(inline.usage, inline.cost, Modifier.padding(top = 2.dp))
+                }
             }
         }
     }
+}
+
+/**
+ * 写完以后的一行小字：“约 ¥0.003 · 缓存命中 92%”（没有单价时写 token 数）。次要色、12sp，不打扰；
+ * 没有用量（还在写、本机模型）时什么也不显示。
+ */
+@Composable
+internal fun UsageNote(usage: com.xycs.lingyuereader.ai.AiUsage?, cost: com.xycs.lingyuereader.ai.AiCost?, modifier: Modifier = Modifier) {
+    val text = usage?.let { com.xycs.lingyuereader.ai.AiPricing.brief(it, cost ?: com.xycs.lingyuereader.ai.AiCost()) } ?: return
+    Text(text, color = LocalGroupedColors.current.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
 }
 
 /** 选写多少：写下一场、写到本章结尾、写 500 字左右、按要求写。 */
@@ -582,12 +595,21 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     GroupedSection(
                         header = "记录",
                         footer = "灵感、读者点评、矛盾检查、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
-                            "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看。",
+                            "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看；也写着这次用了多少 token、约多少钱。" +
+                            "“用量”按天、按功能记这部作品花了多少（只有数字）。",
                     ) {
                         // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。
                         row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
                         row {
                             NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
+                        }
+                        row {
+                            val usage by vm.aiUsage.collectAsStateWithLifecycle()
+                            val today = com.xycs.lingyuereader.ai.UsageBook.total(usage.days[java.time.LocalDate.now()].orEmpty().filter { it.work == workId })
+                            NavRow(
+                                "用量",
+                                value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (com.xycs.lingyuereader.ai.AiPricing.money(today.cost)?.let { "约 $it" } ?: "${today.usage.requests} 次"),
+                            ) { vm.open(Screen.AiUsage(workId)) }
                         }
                     }
                     GroupedSection(

@@ -60,7 +60,8 @@ internal fun DialogOkButton(text: String, primary: Boolean = true, onClick: () -
 @Composable
 internal fun SentDialog(sent: SentRequest, onDismiss: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    GlassDialog(show = true, title = "发给 AI 的内容", summary = "${sent.label} · ${whenLabel(sent.at)} · 共 ${sent.size} 字", onDismissRequest = onDismiss) {
+    GlassDialog(show = true, title = "发给 AI 的内容", summary = "${sent.label} · ${whenLabel(sent.at)} · 共 ${sent.size} 字" +
+            (sent.usage?.let { com.xycs.lingyuereader.ai.AiPricing.brief(it, sent.cost ?: com.xycs.lingyuereader.ai.AiCost()) }?.let { " · $it" }.orEmpty()), onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("系统提示（${sent.system.length} 字）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -71,6 +72,13 @@ internal fun SentDialog(sent: SentRequest, onDismiss: () -> Unit) {
                 Text("AI 查了（${sent.lookups.size} 次）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
                 sent.lookups.forEach { Text("· $it", color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
             }
+            Text("用量", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                sent.usage?.let { com.xycs.lingyuereader.ai.AiPricing.detail(it, sent.cost ?: com.xycs.lingyuereader.ai.AiCost()) } ?: "还在等服务商回答，或这次没有用量（本机模型不计）",
+                color = c.label,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+            )
         }
         // 左边“复制”（复制了不关），右边“好”。
         DialogButtons(
@@ -134,7 +142,8 @@ fun WorkAiLogScreen(vm: AppViewModel, workId: String) {
                                     -1 -> "没用"
                                     else -> null
                                 },
-                                subtitle = whenLabel(r.at) + " · " + r.text.replace('\n', ' ').take(60),
+                                subtitle = whenLabel(r.at) + (r.usage?.let { u -> com.xycs.lingyuereader.ai.AiPricing.brief(u, r.cost ?: com.xycs.lingyuereader.ai.AiCost())?.let { " · $it" } }.orEmpty()) +
+                                    " · " + r.text.replace('\n', ' ').take(60),
                             ) { open = r }
                         }
                     }
@@ -153,7 +162,8 @@ fun WorkAiLogScreen(vm: AppViewModel, workId: String) {
             GlassDialog(
                 show = true,
                 title = r.kind + (if (r.chapterTitle.isNotBlank()) " · ${r.chapterTitle}" else ""),
-                summary = whenLabel(r.at) + if (r.ask.isNotBlank()) " · 要求：${r.ask}" else "",
+                summary = whenLabel(r.at) + (if (r.ask.isNotBlank()) " · 要求：${r.ask}" else "") +
+                    (r.usage?.let { "\n" + com.xycs.lingyuereader.ai.AiPricing.detail(it, r.cost ?: com.xycs.lingyuereader.ai.AiCost()) }.orEmpty()),
                 onDismissRequest = { open = null },
             ) {
                 Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {

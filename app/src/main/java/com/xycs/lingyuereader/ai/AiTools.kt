@@ -38,6 +38,7 @@ object AiToolWire {
         val o = JSONObject().put("model", c.model.trim()).put("stream", true)
         when (c.protocol) {
             AiProtocol.OPENAI -> {
+                if (AiWire.streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
                 val list = JSONArray()
                 if (system.isNotEmpty()) list.put(JSONObject().put("role", "system").put("content", system))
                 for (i in 0 until turns.length()) list.put(turns.get(i))
@@ -82,9 +83,9 @@ object AiToolWire {
 
     /**
      * 一轮回答拼出来的东西：说的话、要用的工具，以及原样交回下一轮用的那条 assistant 消息。
-     * [truncated] 是到了长度上限，[refused] 是拒答。
+     * [truncated] 是到了长度上限，[refused] 是拒答，[usage] 是服务商给的这一轮用量（没给为空）。
      */
-    class Turn(val text: String, val calls: List<AiToolCall>, val message: JSONObject, val truncated: Boolean, val refused: Boolean)
+    class Turn(val text: String, val calls: List<AiToolCall>, val message: JSONObject, val truncated: Boolean, val refused: Boolean, val usage: AiUsage? = null)
 
     /** 一轮流式回答的拼装器：一行行喂 `data:` 后面的内容，最后 [finish]。 */
     class Collector(private val protocol: AiProtocol, private val onText: (String) -> Unit) {
@@ -93,6 +94,13 @@ object AiToolWire {
         private var truncated = false
         private var refused = false
         private var done = false
+
+        /** 服务商在流里给的用量（OpenAI 兼容在最后一块，Anthropic 在 message_start 和 message_delta 里）。 */
+        var usage: AiUsage? = null
+            private set
+
+        /** 已经收到的字（说的话、思考、工具参数）：中途断了、服务商没给用量时按它估。 */
+        val received: String get() = text.toString() + reasoning + openAiCalls.values.joinToString("") { it.third } + blocks.values.joinToString("") { it.text.toString() + it.json }
 
         // OpenAI：按 index 拼的工具调用（id、名字、参数）。
         private val openAiCalls = sortedMapOf<Int, Triple<StringBuilder, StringBuilder, StringBuilder>>()
@@ -118,7 +126,9 @@ object AiToolWire {
             o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").ifEmpty { it.toString() }.take(160)}") }
             when (protocol) {
                 AiProtocol.OPENAI -> {
-                    val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return
+                    val choice = o.optJSONArray("choices")?.optJSONObject(0)
+                    (AiUsage.openAi(o.optJSONObject("usage")) ?: AiUsage.openAi(choice?.optJSONObject("usage")))?.let { usage = it }
+                    if (choice == null) return
                     val delta = choice.optJSONObject("delta") ?: choice.optJSONObject("message")
                     if (delta != null) {
                         delta.optString("content").takeIf { !delta.isNull("content") && it.isNotEmpty() }?.let { text.append(it); onText(it) }
@@ -141,6 +151,7 @@ object AiToolWire {
                     }
                 }
                 AiProtocol.ANTHROPIC -> when (o.optString("type")) {
+                    "message_start" -> usage = AiUsage.merge(usage, AiUsage.anthropic(o.optJSONObject("message")?.optJSONObject("usage")))
                     "content_block_start" -> {
                         val block = o.optJSONObject("content_block") ?: return
                         blocks[o.optInt("index")] = Block(block.optString("type"), block)
@@ -155,9 +166,12 @@ object AiToolWire {
                             "input_json_delta" -> b.json.append(delta.optString("partial_json"))
                         }
                     }
-                    "message_delta" -> when (o.optJSONObject("delta")?.optString("stop_reason")) {
-                        "max_tokens" -> truncated = true
-                        "refusal" -> refused = true
+                    "message_delta" -> {
+                        usage = AiUsage.merge(usage, AiUsage.anthropic(o.optJSONObject("usage")))
+                        when (o.optJSONObject("delta")?.optString("stop_reason")) {
+                            "max_tokens" -> truncated = true
+                            "refusal" -> refused = true
+                        }
                     }
                     "message_stop" -> done = true
                 }
@@ -169,6 +183,7 @@ object AiToolWire {
         fun feedWhole(body: String) {
             val o = runCatching { JSONObject(body) }.getOrNull() ?: throw AiException("看不懂服务商的回复")
             o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").take(160)}") }
+            usage = AiWire.wholeUsage(protocol, body)
             when (protocol) {
                 AiProtocol.OPENAI -> {
                     val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return
@@ -218,7 +233,7 @@ object AiToolWire {
                         }
                     }
                 }
-                Turn(text.toString(), calls, JSONObject().put("role", "assistant").put("content", content), truncated, refused)
+                Turn(text.toString(), calls, JSONObject().put("role", "assistant").put("content", content), truncated, refused, usage)
             }
             else -> {
                 val calls = openAiCalls.entries.mapNotNull { (i, s) ->
@@ -233,7 +248,7 @@ object AiToolWire {
                         calls.forEach { (c, raw) -> put(JSONObject().put("id", c.id).put("type", "function").put("function", JSONObject().put("name", c.name).put("arguments", raw.ifBlank { "{}" }))) }
                     })
                 }
-                Turn(text.toString(), calls.map { it.first }, msg, truncated, refused)
+                Turn(text.toString(), calls.map { it.first }, msg, truncated, refused, usage)
             }
         }
     }

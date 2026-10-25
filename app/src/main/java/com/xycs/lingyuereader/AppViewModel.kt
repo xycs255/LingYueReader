@@ -187,6 +187,9 @@ sealed interface Screen {
 
     data class WorkAiLog(val workId: String) : Screen
 
+    /** AI 用量：今天、本月、按功能、按作品；[workId] 不为空时先只看这部作品。 */
+    data class AiUsage(val workId: String?) : Screen
+
     /** 作品的文风范例：看看挑了哪几段，换一段、不用这段。 */
     data class WorkStyleSamples(val workId: String) : Screen
 
@@ -1411,6 +1414,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         assistant.saveConfig(c)
     }
 
+    // ---------- AI 用量 ----------
+
+    private val usageStore = com.xycs.lingyuereader.ai.UsageStore(java.io.File(app.filesDir, com.xycs.lingyuereader.ai.UsageStore.FILE))
+    private val _usage = MutableStateFlow(com.xycs.lingyuereader.ai.UsageBook())
+    /** AI 用量账本（按天、按作品、按功能；只有数字）。 */
+    val aiUsage: StateFlow<com.xycs.lingyuereader.ai.UsageBook> = _usage.asStateFlow()
+
+    init {
+        viewModelScope.launch { _usage.value = withContext(Dispatchers.IO) { usageStore.load() } }
+        // 每发完一次请求记一笔（在发请求的线程上，写盘很小）；超过每天的提醒线提示一次，不会自动停。
+        assistant.client.onUsage = { e ->
+            val meter = e.meter
+            val book = usageStore.add(meter?.workId.orEmpty(), meter?.feature ?: com.xycs.lingyuereader.ai.AiFeature.OTHER, e.usage, e.cost)
+            _usage.value = book
+            val c = aiConfig.value
+            val today = java.time.LocalDate.now()
+            val spent = book.day(today).cost.inCny(c.usdRate)
+            if (c.dailyAlert > 0 && spent >= c.dailyAlert && book.alerted != today.toString()) {
+                _usage.value = usageStore.markAlerted(today)
+                _messages.value = "今天 AI 已经花了约 ¥${com.xycs.lingyuereader.ai.AiPricing.amount(spent)}，超过了你设的 ¥${com.xycs.lingyuereader.ai.AiPricing.plain(c.dailyAlert)}（不会自动停，用量页能看明细）"
+            }
+        }
+    }
+
+    /** 清除用量记录。 */
+    fun clearAiUsage() {
+        viewModelScope.launch { _usage.value = withContext(Dispatchers.IO) { usageStore.clear() } }
+    }
+
     // ---------- 本机（离线）模型 ----------
 
     private val deviceFiles = com.xycs.lingyuereader.ai.DeviceModelFiles(java.io.File(app.filesDir, "llm"))
@@ -1878,7 +1910,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 batches.forEachIndexed { i, batch ->
                     mine { it.copy(progress = "${i}/${batches.size}") }
-                    val answer = assistant.complete(aiBook, AiTranslate.prompt(batch, target), AnswerLength.LONG)
+                    val answer = assistant.complete(aiBook, AiTranslate.prompt(batch, target), AnswerLength.LONG, feature = com.xycs.lingyuereader.ai.AiFeature.TRANSLATE)
                     result.putAll(AiTranslate.parse(answer, batch))
                 }
                 val hashes = result.keys.associateWith { b -> AiTranslate.hash(chapter.blocks.getOrNull(b)) }

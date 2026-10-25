@@ -90,7 +90,18 @@ data class AiConfig(
     val embeddingModel: String = "",
     /** AI 朗读（听书、讲书用的语音合成）。 */
     val speech: SpeechConfig = SpeechConfig(),
+    /** 作者自己填的单价（按服务商；填了就不用内置的参考价）。见 [AiPricing]。 */
+    val prices: Map<String, AiPrice> = emptyMap(),
+    /** 美元折人民币的汇率：用量页把 Claude 的美元花费折成人民币加总时用，作者可以改。 */
+    val usdRate: Double = DEFAULT_USD_RATE,
+    /** 每天花费提醒（人民币）：今天的花费超过它时提示一次，不会自动停；0 是不提醒。 */
+    val dailyAlert: Double = 0.0,
 ) {
+    companion object {
+        /** 默认汇率：只是个大概，作者可以在用量页改。 */
+        const val DEFAULT_USD_RATE = 7.1
+    }
+
     /** 听书用 AI 语音：AI 助手开着、AI 朗读开着且填全了。 */
     val speechReady: Boolean get() = enabled && speech.enabled && speech.complete
 
@@ -149,6 +160,14 @@ class AiStore(context: Context) {
         asks = sp.getString("asks", null)?.let(::decodeAsks) ?: QuickAsk.DEFAULTS,
         length = runCatching { AnswerLength.valueOf(sp.getString("length", null)!!) }.getOrDefault(AnswerLength.MEDIUM),
         embeddingModel = sp.getString("embeddingModel", null).orEmpty(),
+        prices = sp.getString("prices", null)?.let { raw ->
+            runCatching {
+                val o = org.json.JSONObject(raw)
+                o.keys().asSequence().mapNotNull { k -> AiPrice.fromJson(o.optJSONObject(k))?.let { k to it } }.toMap()
+            }.getOrNull()
+        }.orEmpty(),
+        usdRate = sp.getFloat("usdRate", AiConfig.DEFAULT_USD_RATE.toFloat()).toDouble(),
+        dailyAlert = sp.getFloat("dailyAlert", 0f).toDouble(),
         speech = SpeechConfig().let { d ->
             SpeechConfig(
                 enabled = sp.getBoolean("speech.enabled", false),
@@ -177,6 +196,9 @@ class AiStore(context: Context) {
             putString("asks", org.json.JSONArray().apply { c.asks.forEach { put(org.json.JSONObject().put("label", it.label).put("instruction", it.instruction)) } }.toString())
             putString("length", c.length.name)
             putString("embeddingModel", c.embeddingModel.trim())
+            putString("prices", org.json.JSONObject().apply { c.prices.forEach { (k, v) -> put(k, v.toJson()) } }.toString())
+            putFloat("usdRate", c.usdRate.toFloat())
+            putFloat("dailyAlert", c.dailyAlert.toFloat())
             putBoolean("speech.enabled", c.speech.enabled)
             putString("speech.preset", c.speech.preset)
             putString("speech.baseUrl", c.speech.baseUrl.trim())
