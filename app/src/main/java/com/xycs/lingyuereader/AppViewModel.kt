@@ -1382,7 +1382,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val assistant = AiAssistant(viewModelScope, AiStore(app), bookFile = { id, name -> library.bookFile(id, name) })
 
     /** 写作的 AI：改稿、灵感、点评、矛盾检查、写作建议、设定集。 */
-    val writingAi = WritingAi(workStore, assistant, viewModelScope) { _messages.value = it }
+    val writingAi = WritingAi(workStore, assistant, viewModelScope, app.getSharedPreferences("writing_ai", android.content.Context.MODE_PRIVATE)) { _messages.value = it }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss

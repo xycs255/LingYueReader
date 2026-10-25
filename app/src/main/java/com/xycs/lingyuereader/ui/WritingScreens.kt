@@ -732,6 +732,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val locked = chapter?.locked == true
+    // 定稿锁定、AI 在写（或写完等采纳）时正文只读：快捷标点、撤销重做也不能改。
+    val readOnly = locked || inline != null
     var statusDialog by remember { mutableStateOf(false) }
     // 规则检查：规则从设定包读（文档改过就重读），正文停笔 0.4 秒重新检查，都在本机算。
     var rulesOpen by remember(workId, chapterId) { mutableStateOf(check) }
@@ -749,6 +751,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     LaunchedEffect(workId, chapterId) {
         val text = vm.writing.open(workId, chapterId)
         savedText = text
+        // 写作建议只查打开以后改过、新写的段：已有的段落算查过。
+        vm.writingAi.baseline(workId, chapterId, text)
         state = TextFieldState(text).apply { edit { placeCursorAtEnd() } }
     }
     val current = state
@@ -791,7 +795,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         onDispose {
             latest?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
             vm.writingAi.stopRealtime()
-            if (vm.writingAi.state.value?.chapterId == chapterId) vm.writingAi.close()
+            // 只停下、收起：作者没看完就离开（或旋转屏幕），不算“不采纳”。
+            if (vm.writingAi.state.value?.chapterId == chapterId) vm.writingAi.dismiss()
         }
     }
 
@@ -871,10 +876,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             fontSize = 12.sp,
                         )
                     }
-                    IconButton(onClick = { current?.undoState?.undo() }, enabled = current?.undoState?.canUndo == true) {
+                    IconButton(onClick = { if (!readOnly) current?.undoState?.undo() }, enabled = !readOnly && current?.undoState?.canUndo == true) {
                         Icon(LingYueIcons.Undo, contentDescription = "撤销")
                     }
-                    IconButton(onClick = { current?.undoState?.redo() }, enabled = current?.undoState?.canRedo == true) {
+                    IconButton(onClick = { if (!readOnly) current?.undoState?.redo() }, enabled = !readOnly && current?.undoState?.canRedo == true) {
                         Icon(LingYueIcons.Redo, contentDescription = "重做")
                     }
                     Box(Modifier.padding(end = 8.dp)) {
@@ -926,7 +931,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         ) { padding ->
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 val focus = remember { FocusRequester() }
-                // 从审稿页点回来：选中那一句（找不到整句就找开头几个字）。
+                // 从审稿页点回来：选中那一句。找不到整句（可能改过了）只提示，不按开头几个字猜，免得选中、改到别处。
                 if (current != null) {
                     LaunchedEffect(current) {
                         vm.writing.jump.collect { j ->
@@ -934,9 +939,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             vm.writing.jump.value = null
                             val text = current.text.toString()
                             val quote = j.quote
-                            val at = text.indexOf(quote).takeIf { it >= 0 } ?: text.indexOf(quote.take(12)).takeIf { quote.length > 12 && it >= 0 }
+                            val at = text.indexOf(quote).takeIf { quote.isNotEmpty() && it >= 0 }
                             if (at == null) {
-                                vm.showMessage("正文里没找到这一句，可能已经改过了")
+                                vm.showMessage("正文里没找到这一句，可能已经改过了" + if (j.instruction != null) "；没有让 AI 改" else "")
                             } else {
                                 current.edit { selection = TextRange(at, at + minOf(quote.length, text.length - at)) }
                                 runCatching { focus.requestFocus() }
@@ -988,7 +993,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         BasicTextField(
                             state = current,
                             // 定稿的正文锁定：只能看、能选中复制，不能改。AI 在写（或写完等采纳）时也先不能改。
-                            readOnly = locked || inline != null,
+                            readOnly = readOnly,
                             outputTransformation = output,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1047,8 +1052,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         model = "${aiConfig.providerLabel} · ${aiConfig.model}",
                         onAccept = { result ->
                             val task = panel.task as WriteAiTask.Edit
-                            if (applyEdit(current, task, result)) vm.writingAi.accepted(workId, task.action, task.original, result)
-                            else vm.showMessage("那段原文已经改动，没找到要替换的地方")
+                            when (applyEdit(current, task, result)) {
+                                EditApply.DONE -> vm.writingAi.accepted(workId, task.action, task.original, result)
+                                EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
+                                EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
+                            }
                         },
                         onInsert = { result ->
                             if (locked) {
@@ -1087,11 +1095,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     RulesPanel(
                         report,
                         hasRules = rules?.isEmpty == false,
-                        onJump = { hit ->
+                        onJump = jump@{ hit ->
+                            if (hit.ranges.isEmpty()) return@jump
                             val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
                             val r = hit.ranges[i % hit.ranges.size]
                             lastJump = hit.key to i
-                            current.edit { selection = TextRange(r.first, r.last + 1) }
+                            current.edit { selection = clampRange(r, length) }
                             runCatching { focus.requestFocus() }
                         },
                         onOpenRules = { vm.open(Screen.WorkRules(workId)) },
@@ -1159,7 +1168,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     Modifier
                                         .padding(horizontal = 2.dp)
                                         .clip(RoundedCornerShape(8.dp))
-                                        .combinedClickableCompat { if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else current?.let { insert(it, s) } }
+                                        .combinedClickableCompat {
+                                            when {
+                                                locked -> vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再改正文")
+                                                else -> current?.let { insert(it, s) }
+                                            }
+                                        }
                                         .semantics { contentDescription = "插入$s" }
                                         .padding(horizontal = 12.dp, vertical = 8.dp),
                                 ) {
@@ -1208,6 +1223,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             }
         }
     }
+}
+
+/** 检查结果是停笔 0.4 秒后算的：刚删了一大段时，命中的位置可能已经超出正文，夹在正文里面。 */
+internal fun clampRange(r: IntRange, length: Int): TextRange {
+    val start = r.first.coerceIn(0, length)
+    return TextRange(start, (r.last + 1).coerceIn(start, length))
 }
 
 /** 插入文字：成对的符号（「」“”『』）插入后光标停在中间；选中了文字时把它包起来。 */

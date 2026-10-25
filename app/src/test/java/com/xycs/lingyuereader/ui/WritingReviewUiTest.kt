@@ -46,6 +46,9 @@ class WritingReviewUiTest {
     /** 发给假服务商的（系统提示，用户消息）。 */
     private val asked: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
     private val chapterText = "林月早就知道玉佩的来历。她笑了笑，把门闩上。"
+    private var firstId = ""
+    @Volatile private var slowFact = false
+    private val factGate = java.util.concurrent.CountDownLatch(1)
 
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -55,6 +58,8 @@ class WritingReviewUiTest {
                     val system = (0 until msgs.length()).map { msgs.getJSONObject(it) }.firstOrNull { it.getString("role") == "system" }?.getString("content").orEmpty()
                     val user = msgs.getJSONObject(msgs.length() - 1).getString("content")
                     asked += system to user
+                    // 事实关等测试放行再回答：测试在审的途中去看别的章。
+                    if (slowFact && "请做事实审稿" in user) factGate.await(30, java.util.concurrent.TimeUnit.SECONDS)
                     val answer = when {
                         "请做事实审稿" in user ->
                             """{"issues":[{"quote":"林月早就知道玉佩的来历","problem":"察觉表里林月第五章才知道玉佩来历","fix":"改成她只觉得眼熟"}]}"""
@@ -66,6 +71,7 @@ class WritingReviewUiTest {
                     ex.sendResponseHeaders(200, bytes.size.toLong())
                     ex.responseBody.use { it.write(bytes) }
                 }
+                executor = java.util.concurrent.Executors.newCachedThreadPool()
                 start()
             }
             val files = context.filesDir
@@ -94,9 +100,11 @@ class WritingReviewUiTest {
             store.addPackDoc(w.id, PackKind.RULES, "检查规则", "禁用：笑了笑\n")
             workId = w.id
             chapterId = three.id
+            firstId = w.chapters[0].id
         }
 
         override fun after() {
+            factGate.countDown()
             server.stop(0)
         }
     }
@@ -165,5 +173,41 @@ class WritingReviewUiTest {
         val store = WorkStore(writingDir)
         waitFor { store.pack(workId).first { it.kind == PackKind.FORESHADOW }.let { "已回收" in store.packText(workId, it.id) } }
         waitForText("已回收")
+    }
+
+    @Test
+    fun anotherChaptersReviewIsLeftAlone() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        slowFact = true
+        compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, chapterId)) }
+        waitForText("还没有审过")
+        compose.onNodeWithText("开始审稿").performClick()
+        waitForText("正在审事实关")
+        // 第三章在审时去看第一章的审稿页：第一章还没审过，第三章照样在审。
+        compose.runOnUiThread { vm.replaceTop(Screen.ChapterReview(workId, firstId)) }
+        waitForText("还没有审过")
+        assertEquals(ReviewGate.FACT, vm.writingAi.reviews.value[workId to chapterId]?.running)
+        factGate.countDown()
+        // 回到第三章：接着审完、存下。
+        compose.runOnUiThread { vm.replaceTop(Screen.ChapterReview(workId, chapterId)) }
+        waitForText("一、事实关 · 1 处")
+        waitForText("三、规则关 · 1 处")
+        waitFor { store.review(workId, chapterId)?.gate(ReviewGate.RULES) != null }
+        assertEquals(null, store.review(workId, firstId))
+    }
+
+    @Test
+    fun jumpingToASentenceThatChangedOnlyTellsTheAuthor() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
+        waitForText("这一章计划回收的伏笔")
+        // 开头十几个字一样、后面不一样：不按开头猜，不选中，也不让 AI 改。
+        compose.runOnUiThread { vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, "林月早就知道玉佩的来历。她却一直没说", "改成她只觉得眼熟") }
+        waitForText("正文里没找到这一句")
+        val selection = compose.onNodeWithContentDescription("正文").fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange]
+        assertTrue(selection.collapsed)
+        assertTrue(vm.writingAi.state.value == null)
+        assertTrue(asked.isEmpty())
     }
 }

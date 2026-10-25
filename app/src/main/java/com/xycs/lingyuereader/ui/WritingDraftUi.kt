@@ -50,7 +50,7 @@ import top.yukonga.miuix.kmp.utils.overScrollVertical
  */
 @Composable
 fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
-    val state by vm.writingAi.draft.collectAsStateWithLifecycle()
+    val drafts by vm.writingAi.drafts.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
@@ -61,7 +61,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         vm.writingAi.loadDraft(workId, chapterId)
         card = vm.writing.cards(workId, chapterId).first.card
     }
-    val draft = state?.takeIf { it.workId == workId && it.chapterId == chapterId }
+    val draft = drafts[workId to chapterId]
     val text = draft?.text.orEmpty()
     val loading = draft?.loading == true
     val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
@@ -117,7 +117,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         if (card?.isEmpty == true) row { NavRow("先写细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                         row {
                             when {
-                                loading -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft() }
+                                loading -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft(workId, chapterId) }
                                 text.isBlank() -> ActionRow("写本章", enabled = aiConfig.ready && !locked) { vm.writingAi.writeDraft(workId, chapterId, instruction) }
                                 else -> ActionRow("重写一版", enabled = aiConfig.ready && !locked) { vm.writingAi.writeDraft(workId, chapterId, instruction) }
                             }
