@@ -121,6 +121,39 @@ import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.time.LocalDate
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import com.xycs.lingyuereader.InlineWrite
+import com.xycs.lingyuereader.RealtimeState
+import com.xycs.lingyuereader.WriteAiState
+import com.xycs.lingyuereader.ai.WriteIssue
+import com.xycs.lingyuereader.data.RuleHit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** 每天码字目标的选项。 */
 private val GOALS = listOf(0, 1000, 2000, 3000, 4000, 6000, 8000, 10000)
@@ -903,14 +936,21 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         Text(chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
-                        Text(
-                            (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · " +
-                                (if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中") +
-                                (report?.hits?.size?.takeIf { it > 0 }?.let { " · $it 条不合规则" } ?: "") +
-                                if (realtimeOn) " · 写作建议已开" else "",
-                            color = c.secondary,
-                            fontSize = 12.sp,
-                        )
+                        val head = (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · "
+                        val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
+                        val tail = (report?.hits?.size?.takeIf { it > 0 }?.let { " · $it 条不合规则" } ?: "") + if (realtimeOn) " · 写作建议已开" else ""
+                        // 保存状态“编辑中 / 已保存”只淡入淡出（[Motion.SHORT]），不挪动别的字（几种状态都是三个字宽）；读屏照旧念一整行。
+                        Row(Modifier.clearAndSetSemantics { this.text = AnnotatedString(head + saving + tail) }) {
+                            Text(head, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+                            AnimatedContent(
+                                saving,
+                                transitionSpec = {
+                                    ContentTransform(Effects.enter(fadeIn(Motion.standard(Motion.SHORT))), Effects.exit(fadeOut(Motion.exit())), sizeTransform = null)
+                                },
+                                label = "saveState",
+                            ) { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1) }
+                            Text(tail, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        }
                     }
                     IconButton(onClick = { if (!readOnly) current?.undoState?.undo() }, enabled = !readOnly && current?.undoState?.canUndo == true) {
                         Icon(LingYueIcons.Undo, contentDescription = "撤销")
@@ -988,7 +1028,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     }
                 }
 
-                // 正文里标出来的：写作建议（按类上色、划线）、不合检查规则的（黄底）。只是显示，不改正文。
+                // 正文里标出来的：写作建议（按类上色、划线）、不合检查规则的（提醒色底）。只是显示，不改正文。
+                // 一次检查出来的标记不整片冒出来、整片消失：新的淡入，去掉的在原处淡掉。
+                val effects = rememberCoroutineScope()
+                val accepted = remember(current) { AcceptSettle() }
                 val textNow = current?.text?.toString().orEmpty()
                 val issueSpans = remember(textNow, realtime.issues, realtimeOn) {
                     if (!realtimeOn || realtime.chapterId != chapterId) emptyList() else locateIssues(textNow, realtime.issues)
@@ -996,25 +1039,44 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val ruleSpans = remember(textNow, report) {
                     report?.hits.orEmpty().flatMap { h -> h.ranges.filter { it.last < textNow.length }.map { it to h } }.take(300)
                 }
-                val marks = remember(issueSpans, ruleSpans) {
-                    ruleSpans.map { (r, _) -> Triple(r.first, r.last + 1, SpanStyle(background = Color(0x33FFCC00))) } +
-                        issueSpans.map { (r, i) ->
-                            val col = suggestColor(i.kind)
-                            Triple(r.first, r.last + 1, SpanStyle(textDecoration = TextDecoration.Underline, background = col.copy(alpha = 0.14f)))
-                        }
+                val marks = remember(issueSpans, ruleSpans, c) {
+                    // 按“哪条建议”“哪条规则的第几处”认，不按位置：正文一改位置就变，淡入淡出不能跟着乱。
+                    val nth = HashMap<String, Int>()
+                    val ruleBack = c.warning.copy(alpha = 0.2f)
+                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack, underline = false) } +
+                        issueSpans.map { (r, i) -> TextMark(i, r.first, r.last + 1, suggestColor(i.kind, c).copy(alpha = 0.14f), underline = true) }
                 }
+                val markFades = remember(current) { MarkFades(effects) }
+                SideEffect { markFades.update(marks) }
+                // AI 写的字：新来的一截淡入；采纳后那一段从浅色过渡到正文色。
+                val inlineFade = remember(current) { InlineFade(effects) }
+                val inlineLength = inline?.text?.length ?: 0
+                SideEffect { inlineFade.update(inlineLength) }
                 val pendingStyle = SpanStyle(color = scheme.primary, background = scheme.primary.copy(alpha = 0.08f))
                 val inlineNow by rememberUpdatedState(inline)
-                val marksNow by rememberUpdatedState(marks)
                 val pendingNow by rememberUpdatedState(pendingStyle)
+                val bodyNow by rememberUpdatedState(scheme.onSurface)
                 val output = remember(current) {
                     OutputTransformation {
                         val d = inlineNow
-                        if (d != null && d.text.isNotEmpty() && d.at <= length) {
+                        // 采纳那一下：正文已经插好，AI 那段的状态还没收起，不能再叠一遍（写的时候正文只读，长度对得上才是还没采纳）。
+                        if (d != null && d.text.isNotEmpty() && d.at <= length && length == d.base.length) {
                             replace(d.at, d.at, d.text)
                             addStyle(pendingNow, d.at, d.at + d.text.length)
+                            inlineFade.forEachFading(d.text.length) { from, to, alpha ->
+                                addStyle(SpanStyle(color = pendingNow.color.copy(alpha = pendingNow.color.alpha * alpha)), d.at + from, d.at + to)
+                            }
                         } else {
-                            marksNow.forEach { (start, end, style) -> if (start in 0 until end && end <= length) addStyle(style, start, end) }
+                            markFades.forEach { m, alpha -> if (alpha > 0f && m.start in 0 until m.end && m.end <= length) addStyle(m.style(alpha), m.start, m.end) }
+                            accepted.range?.let { r ->
+                                val start = r.first.coerceIn(0, length)
+                                val end = (r.last + 1).coerceIn(start, length)
+                                val f = accepted.progress.value
+                                if (start < end && f < 1f) {
+                                    val back = pendingNow.background
+                                    addStyle(SpanStyle(color = lerp(pendingNow.color, bodyNow, f), background = back.copy(alpha = back.alpha * (1f - f))), start, end)
+                                }
+                            }
                         }
                     }
                 }
@@ -1022,6 +1084,18 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val caret = current?.selection?.takeIf { it.collapsed }?.start
                 val focusIssue = caret?.let { at -> issueSpans.firstOrNull { (r, _) -> at in r.first..r.last + 1 }?.second }
                 val focusRule = caret?.takeIf { focusIssue == null }?.let { at -> ruleSpans.firstOrNull { (r, _) -> at in r.first..r.last + 1 }?.second }
+                // 光标停稳一会儿（CARET_SETTLE）才换：光标掠过划线的地方不一闪一闪，挪开了也等停稳再收。
+                // 那条已经改掉、忽略、规则不再命中了就马上收。规则按它的 key 认（正文一改，检查结果是新算的）。
+                val pointed: Any? = focusIssue ?: focusRule?.let { RuleAt(it.key) }
+                var settled by remember(workId, chapterId) { mutableStateOf<Any?>(null) }
+                LaunchedEffect(pointed) {
+                    if (pointed != settled) {
+                        delay(CARET_SETTLE)
+                        settled = pointed
+                    }
+                }
+                val shownIssue = (settled as? WriteIssue)?.takeIf { s -> issueSpans.any { it.second == s } }
+                val shownRule = (settled as? RuleAt)?.let { s -> focusRule?.takeIf { it.key == s.key } ?: ruleSpans.firstOrNull { it.second.key == s.key }?.second }
 
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     if (current != null) {
@@ -1051,7 +1125,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         )
                     }
                 }
-                if (locked && chapter != null) {
+                // 键盘上方的几样（定稿锁定条、AI 的面板、写作建议、伏笔提醒）出现、收起都平滑：高矮慢慢变，正文框跟着慢慢变高变矮，
+                // 正在写的那一行不猛跳；只淡入、升起，不横着动。减少动效时直接出现、直接消失。
+                AnimatedVisibility(locked && chapter != null, enter = barEnter(), exit = barExit()) {
                     Row(
                         Modifier.fillMaxWidth().background(c.background).padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1060,165 +1136,188 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         TextButton(text = "解锁修改", onClick = { statusDialog = true })
                     }
                 }
-                // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。
-                val panel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
-                if (inline != null && current != null) {
-                    InlineBar(
-                        inline,
-                        lookup = aiLookup,
-                        onStop = { vm.writingAi.stopInline() },
-                        onAccept = {
-                            val done = vm.writingAi.acceptInline(current.text.toString())
-                            if (done == null) {
-                                vm.showMessage("正文已经改动，没法插进去")
-                            } else {
-                                current.edit {
-                                    replace(0, length, done.first)
-                                    selection = TextRange(done.second)
-                                }
-                            }
-                        },
-                        onRetry = { vm.writingAi.retryInline() },
-                        onDiscard = { vm.writingAi.discardInline() },
-                    )
-                } else if (panel != null && current != null) {
-                    WriteAiPanel(
-                        panel,
-                        lookup = aiLookup,
-                        model = "${aiConfig.providerLabel} · ${aiConfig.model}",
-                        onAccept = { result ->
-                            val task = panel.task as WriteAiTask.Edit
-                            when (applyEdit(current, task, result)) {
-                                EditApply.DONE -> vm.writingAi.accepted(workId, task.action, task.original, result)
-                                EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
-                                EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
-                            }
-                        },
-                        onInsert = { result ->
-                            if (locked) {
-                                vm.showMessage("这一章已定稿：要改先解锁并登记原因")
-                            } else {
-                                current.edit { replace(selection.min, selection.max, result) }
-                                vm.writingAi.close()
-                            }
-                        },
-                        onRetry = { vm.writingAi.retry() },
-                        onClose = { vm.writingAi.close() },
-                    )
-                } else if (focusIssue != null && current != null && !locked) {
-                    SuggestionBar(
-                        focusIssue,
-                        onFix = {
-                            if (!applyIssue(current, focusIssue)) vm.showMessage("那段已经改动了")
-                            vm.writingAi.dismissIssue(focusIssue)
-                        },
-                        onIgnore = { vm.writingAi.ignoreIssue(focusIssue) },
-                        onMute = { vm.writingAi.muteKind(workId, focusIssue.kind) },
-                    )
-                } else if (focusRule != null && !rulesOpen) {
-                    RuleNote(focusRule.message) { rulesOpen = true }
-                } else if (issuesOpen && realtimeOn && current != null) {
-                    IssuesPanel(
-                        realtime,
-                        onFix = { i ->
-                            if (!applyIssue(current, i)) vm.showMessage("那段已经改动了")
-                            vm.writingAi.dismissIssue(i)
-                        },
-                        onIgnore = { vm.writingAi.ignoreIssue(it) },
-                        onClose = { issuesOpen = false },
-                    )
-                } else if (rulesOpen && current != null) {
-                    RulesPanel(
-                        report,
-                        hasRules = rules?.isEmpty == false,
-                        onJump = jump@{ hit ->
-                            if (hit.ranges.isEmpty()) return@jump
-                            val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
-                            val r = hit.ranges[i % hit.ranges.size]
-                            lastJump = hit.key to i
-                            current.edit { selection = clampRange(r, length) }
-                            runCatching { focus.requestFocus() }
-                        },
-                        onOpenRules = { vm.open(Screen.WorkRules(workId)) },
-                        onClose = { rulesOpen = false },
-                    )
-                } else if (realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null || realtime.waiting != null) && realtime.chapterId == chapterId) {
-                    Row(
-                        Modifier.fillMaxWidth().background(c.background).combinedClickableCompat { if (realtime.issues.isNotEmpty()) issuesOpen = true }
-                            .padding(horizontal = 18.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
-                        Text(
-                            when {
-                                realtime.issues.isNotEmpty() -> "${realtime.issues.size} 条写作建议（正文里划线的地方，光标点上去看）"
-                                realtime.checking -> "正在看刚写的段落……"
-                                realtime.waiting != null -> realtime.waiting.orEmpty()
-                                else -> "写作建议出错：${realtime.error}"
-                            },
-                            color = if (realtime.issues.isNotEmpty()) c.tint else c.secondary,
-                            fontSize = 14.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f).padding(start = 6.dp),
+                // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
+                val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
+                val panel: EditorPanel = when {
+                    current == null -> EditorPanel.None
+                    inline != null -> EditorPanel.Inline(inline)
+                    aiPanel != null -> EditorPanel.Ai(aiPanel)
+                    shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
+                    shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
+                    issuesOpen && realtimeOn -> EditorPanel.Issues
+                    rulesOpen -> EditorPanel.Rules
+                    realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null || realtime.waiting != null) && realtime.chapterId == chapterId ->
+                        EditorPanel.Realtime
+                    else -> EditorPanel.None
+                }
+                AnimatedContent(
+                    panel,
+                    transitionSpec = {
+                        // 换了一种：旧的落回底边、新的从底边升起，高矮用标准缓动过去。同一种（换一条建议、结果长出来）
+                        // 不在这里量高矮，交给面板自己平滑，免得两层一前一后地拖。
+                        val sameKind = initialState::class == targetState::class
+                        (Motion.edgeEnter() togetherWith Motion.edgeExit()) using (
+                            if (Effects.noMotion) null
+                            else SizeTransform(clip = true) { _, _ -> if (sameKind) snap() else Motion.standard(Motion.MEDIUM) }
                         )
-                        if (realtime.issues.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
+                    },
+                    contentAlignment = Alignment.BottomCenter,
+                    contentKey = { it::class },
+                    label = "editorPanel",
+                ) { p ->
+                    val st = current
+                    if (st != null) when (p) {
+                        is EditorPanel.Inline -> InlineBar(
+                            p.write,
+                            lookup = aiLookup,
+                            onStop = { vm.writingAi.stopInline() },
+                            onAccept = {
+                                val w = p.write
+                                val done = vm.writingAi.acceptInline(st.text.toString())
+                                if (done == null) {
+                                    vm.showMessage("正文已经改动，没法插进去")
+                                } else {
+                                    st.edit {
+                                        replace(0, length, done.first)
+                                        selection = TextRange(done.second)
+                                    }
+                                    // 刚放进正文的那一段从浅色过渡到正文色。
+                                    effects.launch { accepted.play(w.at until w.at + w.text.length) }
+                                }
+                            },
+                            onRetry = { vm.writingAi.retryInline() },
+                            onDiscard = { vm.writingAi.discardInline() },
+                        )
+                        is EditorPanel.Ai -> WriteAiPanel(
+                            p.state,
+                            lookup = aiLookup,
+                            model = "${aiConfig.providerLabel} · ${aiConfig.model}",
+                            onAccept = { result ->
+                                val task = p.state.task as WriteAiTask.Edit
+                                when (applyEdit(st, task, result)) {
+                                    EditApply.DONE -> vm.writingAi.accepted(workId, task.action, task.original, result)
+                                    EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
+                                    EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
+                                }
+                            },
+                            onInsert = { result ->
+                                if (locked) {
+                                    vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                } else {
+                                    st.edit { replace(selection.min, selection.max, result) }
+                                    vm.writingAi.close()
+                                }
+                            },
+                            onRetry = { vm.writingAi.retry() },
+                            onClose = { vm.writingAi.close() },
+                        )
+                        is EditorPanel.Suggestion -> SuggestionBar(
+                            p.issue,
+                            onFix = {
+                                if (!applyIssue(st, p.issue)) vm.showMessage("那段已经改动了")
+                                vm.writingAi.dismissIssue(p.issue)
+                            },
+                            onIgnore = { vm.writingAi.ignoreIssue(p.issue) },
+                            onMute = { vm.writingAi.muteKind(workId, p.issue.kind) },
+                        )
+                        is EditorPanel.Rule -> RuleNote(p.hit.message) { rulesOpen = true }
+                        EditorPanel.Issues -> IssuesPanel(
+                            realtime,
+                            onFix = { i ->
+                                if (!applyIssue(st, i)) vm.showMessage("那段已经改动了")
+                                vm.writingAi.dismissIssue(i)
+                            },
+                            onIgnore = { vm.writingAi.ignoreIssue(it) },
+                            onClose = { issuesOpen = false },
+                        )
+                        EditorPanel.Rules -> RulesPanel(
+                            report,
+                            hasRules = rules?.isEmpty == false,
+                            onJump = jump@{ hit ->
+                                if (hit.ranges.isEmpty()) return@jump
+                                val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
+                                val r = hit.ranges[i % hit.ranges.size]
+                                lastJump = hit.key to i
+                                st.edit { selection = clampRange(r, length) }
+                                runCatching { focus.requestFocus() }
+                            },
+                            onOpenRules = { vm.open(Screen.WorkRules(workId)) },
+                            onClose = { rulesOpen = false },
+                        )
+                        EditorPanel.Realtime -> RealtimeLine(realtime) { if (realtime.issues.isNotEmpty()) issuesOpen = true }
+                        EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }
                 }
-                if (due.isNotEmpty() && panel == null && !rulesOpen && !issuesOpen) {
+                AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !rulesOpen && !issuesOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
                 // 键盘上方的条：左边 ✦ 在标点和 AI 操作之间切换；上面一道细线和正文隔开。
                 Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
                 Row(Modifier.fillMaxWidth().background(c.background), verticalAlignment = Alignment.CenterVertically) {
+                    // ✦ 的底色、图标色渐变过去（[Motion.SHORT]）。
+                    val toggleBack by animateColorAsState(if (aiBar) c.tint.copy(alpha = 0.15f) else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "aiToggleBack")
+                    val toggleTint by animateColorAsState(if (aiBar) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "aiToggleTint")
                     Box(
                         Modifier
                             .padding(start = 8.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(if (aiBar) c.tint.copy(alpha = 0.15f) else Color.Transparent)
+                            .background(toggleBack)
                             .combinedClickableCompat { aiBar = !aiBar }
                             .semantics { contentDescription = if (aiBar) "换回标点" else "AI 写作" }
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                     ) {
-                        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = if (aiBar) c.tint else c.secondary, modifier = Modifier.size(20.dp))
+                        Icon(LingYueIcons.Sparkle, contentDescription = null, tint = toggleTint, modifier = Modifier.size(20.dp))
                     }
-                    Row(
-                        Modifier.weight(1f).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (aiBar) {
-                            AI_BAR.forEach { item ->
-                                Box(
-                                    Modifier
-                                        .padding(horizontal = 2.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .combinedClickableCompat { onAiItem(item) }
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                ) {
-                                    Text(item.label, color = c.label, fontSize = 15.sp)
+                    // 两排工具上下换：AI 操作从下面上来，换回标点时反过来（[Motion.MEDIUM]）。
+                    AnimatedContent(
+                        aiBar,
+                        modifier = Modifier.weight(1f),
+                        transitionSpec = {
+                            val up = targetState
+                            Effects.enter(slideInVertically(Motion.standard(Motion.MEDIUM)) { if (up) it else -it } + fadeIn(Motion.standard(Motion.SHORT))) togetherWith
+                                Effects.exit(slideOutVertically(Motion.standard(Motion.MEDIUM)) { if (up) -it else it } + fadeOut(Motion.exit())) using
+                                SizeTransform(clip = true) { _, _ -> snap() }
+                        },
+                        label = "toolRow",
+                    ) { ai ->
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (ai) {
+                                AI_BAR.forEach { item ->
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 2.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .combinedClickableCompat { onAiItem(item) }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    ) {
+                                        Text(item.label, color = c.label, fontSize = 15.sp)
+                                    }
                                 }
-                            }
-                        } else {
-                            QUICK_INSERTS.forEach { s ->
-                                Box(
-                                    Modifier
-                                        .padding(horizontal = 2.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .combinedClickableCompat {
-                                            when {
-                                                locked -> vm.showMessage("这一章已定稿：要改先解锁并登记原因")
-                                                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再改正文")
-                                                else -> current?.let { insert(it, s) }
+                            } else {
+                                QUICK_INSERTS.forEach { s ->
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 2.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .combinedClickableCompat {
+                                                when {
+                                                    locked -> vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                                    inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再改正文")
+                                                    else -> current?.let { insert(it, s) }
+                                                }
                                             }
-                                        }
-                                        .semantics { contentDescription = "插入$s" }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                ) {
-                                    Text(s, color = c.label, fontSize = 17.sp)
+                                            .semantics { contentDescription = "插入$s" }
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    ) {
+                                        Text(s, color = c.label, fontSize = 17.sp)
+                                    }
                                 }
                             }
+                            Spacer(Modifier.width(8.dp))
                         }
-                        Spacer(Modifier.width(8.dp))
                     }
                 }
             }
@@ -1259,6 +1358,187 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             }
         }
     }
+}
+
+/** 光标在一处划线上停稳多久才显示那条建议（光标掠过时不一闪一闪）。 */
+private const val CARET_SETTLE = 150L
+
+/** 键盘上方那块放什么：一次放一样，换了种类才升起、落下，同一种只换里面的字。 */
+private sealed interface EditorPanel {
+    data class Inline(val write: InlineWrite) : EditorPanel
+    data class Ai(val state: WriteAiState) : EditorPanel
+    data class Suggestion(val issue: WriteIssue) : EditorPanel
+    data class Rule(val hit: RuleHit) : EditorPanel
+    data object Issues : EditorPanel
+    data object Rules : EditorPanel
+    data object Realtime : EditorPanel
+    data object None : EditorPanel
+}
+
+/** 光标指着的那条规则：按规则认（停笔重新检查后，命中的位置和对象都是新的）。 */
+private data class RuleAt(val key: String)
+
+/** 正文和键盘之间的一条（定稿锁定、伏笔提醒）：长高并淡入，正文框跟着慢慢变矮；减少动效时直接出现。 */
+private fun barEnter(): EnterTransition =
+    Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM), expandFrom = Alignment.Bottom) + fadeIn(Motion.standard(Motion.SHORT)))
+
+private fun barExit(): ExitTransition =
+    Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Bottom) + fadeOut(Motion.exit()))
+
+/** 写作建议的一行状态：几条建议、在查（带小转圈）、在等、没查成。 */
+@Composable
+private fun RealtimeLine(realtime: RealtimeState, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(
+        Modifier.fillMaxWidth().background(c.background).combinedClickableCompat(onClick).padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (realtime.checking && realtime.issues.isEmpty()) Spinner() else Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
+        val text = when {
+            realtime.issues.isNotEmpty() -> "${realtime.issues.size} 条写作建议（正文里划线的地方，光标点上去看）"
+            realtime.checking -> "正在看刚写的段落……"
+            realtime.waiting != null -> realtime.waiting
+            else -> null
+        }
+        if (text != null) {
+            Text(
+                text,
+                color = if (realtime.issues.isNotEmpty()) c.tint else c.secondary,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 6.dp),
+            )
+        } else {
+            ErrorText("写作建议没查成：${realtime.error}", Modifier.weight(1f).padding(start = 6.dp))
+        }
+        if (realtime.issues.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
+    }
+}
+
+/** 正文里的一处标记：[key] 认的是哪条建议、哪条规则的第几处，不是位置（正文一改位置就变）。 */
+private data class TextMark(val key: Any, val start: Int, val end: Int, val color: Color, val underline: Boolean) {
+    fun style(alpha: Float) = SpanStyle(
+        background = color.copy(alpha = color.alpha * alpha),
+        // 划线没法单独调透明度：淡到一半再画上，和底色一起出来、一起走。
+        textDecoration = if (underline && alpha >= 0.5f) TextDecoration.Underline else null,
+    )
+}
+
+/**
+ * 正文标记的淡入淡出：一次检查出来的新标记从无到有，去掉的留在原处淡掉再拿走（[Motion.SHORT]）；
+ * 减少动效时直接出现、直接消失。透明度在 OutputTransformation 里读，一变正文的样式就跟着重画。
+ */
+private class MarkFades(private val scope: CoroutineScope) {
+    private val alpha = mutableStateMapOf<Any, Animatable<Float, AnimationVector1D>>()
+    /** 正在淡掉的，停在最后的位置。 */
+    private val leaving = mutableStateMapOf<Any, TextMark>()
+    private var marks by mutableStateOf<List<TextMark>>(emptyList())
+    private var shown: Map<Any, TextMark> = emptyMap()
+
+    fun update(next: List<TextMark>) {
+        if (next === marks) return
+        val now = next.associateBy { it.key }
+        marks = next
+        if (Effects.noMotion) {
+            alpha.clear()
+            leaving.clear()
+        } else {
+            now.keys.filter { it !in shown }.forEach { key ->
+                leaving.remove(key)
+                fade(key, 1f)
+            }
+            shown.filterKeys { it !in now }.forEach { (key, mark) ->
+                leaving[key] = mark
+                fade(key, 0f) {
+                    leaving.remove(key)
+                    alpha.remove(key)
+                }
+            }
+        }
+        shown = now
+    }
+
+    private fun fade(key: Any, to: Float, then: () -> Unit = {}) {
+        val a = alpha.getOrPut(key) { Animatable(1f - to) }
+        scope.launch {
+            // 中途又反过来（刚去掉又回来）时这一次被打断，不收尾。
+            a.animateTo(to, Motion.standard(Motion.SHORT))
+            then()
+        }
+    }
+
+    /** 每处标记和它现在的透明度：还在的用现在的位置，去掉的用最后的位置。 */
+    fun forEach(block: (TextMark, Float) -> Unit) {
+        marks.forEach { block(it, alpha[it.key]?.value ?: 1f) }
+        leaving.values.forEach { block(it, alpha[it.key]?.value ?: 0f) }
+    }
+}
+
+/**
+ * AI 写的字一截截来：每截从透明淡到浅色（[Motion.SHORT]），前面已经出来的不动，淡完就不再管。
+ * 字变少了（重写、撤回）从头算；减少动效时直接出现。
+ */
+private class InlineFade(private val scope: CoroutineScope) {
+    private val chunks = mutableStateListOf<Pair<Int, Animatable<Float, AnimationVector1D>>>()
+    private var seen = 0
+
+    fun update(length: Int) {
+        if (length < seen) chunks.clear()
+        if (length <= seen || Effects.noMotion) {
+            seen = length
+            return
+        }
+        val chunk = seen to Animatable(0f)
+        seen = length
+        chunks += chunk
+        scope.launch {
+            try {
+                chunk.second.animateTo(1f, Motion.standard(Motion.SHORT))
+            } finally {
+                chunks -= chunk
+            }
+        }
+    }
+
+    /** 还在淡入的每一截：在 AI 写的字里的 [from, to) 和现在的透明度。 */
+    fun forEachFading(length: Int, block: (Int, Int, Float) -> Unit) {
+        val list = chunks.toList()
+        list.forEachIndexed { i, (from, a) ->
+            val to = minOf(list.getOrNull(i + 1)?.first ?: length, length)
+            if (from < to) block(from, to, a.value)
+        }
+    }
+}
+
+/** 采纳 AI 写的那段：从浅色过渡到正文色（[Motion.MEDIUM]），看得出“写进正文”这一下；减少动效时直接变。 */
+private class AcceptSettle {
+    var range by mutableStateOf<IntRange?>(null)
+        private set
+    val progress = Animatable(1f)
+
+    suspend fun play(r: IntRange) {
+        range = r
+        try {
+            progress.snapTo(0f)
+            progress.animateTo(1f, Motion.standard(Motion.MEDIUM))
+        } finally {
+            if (range == r) range = null
+        }
+    }
+}
+
+/**
+ * 换章（上一章、下一章、写下一章）时往哪边滑：往后从右边进来，往前从左边进来，和进下一层、返回一样。
+ * 不是同一部作品里换章时返回 null（照栈的深浅定方向）。
+ */
+internal fun editorStepForward(vm: AppViewModel, from: Screen, to: Screen): Boolean? {
+    if (from !is Screen.Editor || to !is Screen.Editor || from.workId != to.workId || from.chapterId == to.chapterId) return null
+    val chapters = vm.writing.works.value.firstOrNull { it.id == to.workId }?.chapters ?: return true
+    val a = chapters.indexOfFirst { it.id == from.chapterId }
+    val b = chapters.indexOfFirst { it.id == to.chapterId }
+    // 刚写的下一章可能还没进列表：当往后。
+    return a < 0 || b < 0 || b > a
 }
 
 /** 检查结果是停笔 0.4 秒后算的：刚删了一大段时，命中的位置可能已经超出正文，夹在正文里面。 */

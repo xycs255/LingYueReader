@@ -3,9 +3,12 @@ package com.xycs.lingyuereader.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
@@ -33,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -74,7 +79,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -225,25 +229,20 @@ private fun copy(context: Context, text: String) {
     cm.setPrimaryClip(ClipData.newPlainText("灵阅", text))
 }
 
-/** 面板底下的一个按钮。 */
+/** 面板里的一行“正在……”：行内小转圈加次要色的字（减少动效时转圈换成不动的三个点）。 */
 @Composable
-private fun PanelButton(label: String, strong: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
-    val scheme = MiuixTheme.colorScheme
+internal fun PanelBusy(text: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (strong) scheme.primary else c.fill)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        Text(label, color = if (strong) scheme.onPrimary else if (enabled) c.label else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Spinner()
+        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
     }
 }
 
 /**
  * 写作助手的结果面板：改稿类先显示对比（删的划掉、加的标绿），可以切到“改后”看全文；
  * 采纳才改稿。灵感、点评、矛盾检查只给人看，灵感可以插到光标处。
+ * 流式输出时跟着滚到底；“正在想”和结果、对比和改后之间原地淡过去（高矮由面板平滑跟上）。
  */
 @Composable
 internal fun WriteAiPanel(
@@ -260,91 +259,86 @@ internal fun WriteAiPanel(
     val context = LocalContext.current
     val task = state.task
     var showDiff by remember(task) { mutableStateOf(true) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(c.cell)
-            .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
+    val edit = task as? WriteAiTask.Edit
+    val canDiff = edit != null && edit.original.isNotEmpty() && !state.loading && state.error == null
+    // 对比在后台算，同样的原文和结果只算一次（长段落比一次要一会儿，不能卡住界面）；算好之前先显示改后的全文。
+    val original = edit?.original.orEmpty()
+    val removed = c.destructive
+    val added = c.success
+    val compared by produceState<AnnotatedString?>(null, canDiff, original, state.text, removed, added) {
+        value = null
+        if (!canDiff) return@produceState
+        val pieces = withContext(Dispatchers.Default) { TextDiff.diff(original, state.text) }
+        value = pieces?.let { diffText(it, removed, added) }
+    }
+    val done = !state.loading && state.error == null && state.text.isNotBlank()
+    InlinePanel(
+        title = task.title,
+        onClose = onClose,
+        icon = LingYueIcons.Sparkle,
+        status = if (state.loading) lookup?.let { "正在查：$it" } ?: "生成中……" else "$model 生成，可能有误",
+        closeLabel = "关闭 AI 面板",
+        actions = {
+            if (edit != null) {
+                PillButton(if (edit.action == WriteAction.CONTINUE) "接在后面" else "采纳", { onAccept(state.text) }, style = PillStyle.Filled, enabled = done)
+            } else if (task is WriteAiTask.Idea) {
+                PillButton("插到光标处", { onInsert(state.text) }, style = PillStyle.Filled, enabled = done)
+            }
+            PillButton("复制", { copy(context, state.text) }, enabled = done)
+            PillButton("再来一次", onRetry, enabled = !state.loading)
+            PillButton(if (edit != null) "不用了" else "关闭", onClose)
+        },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
-            Text(task.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 6.dp))
-            Text(
-                if (state.loading) lookup?.let { "  正在查：$it" } ?: "  生成中……" else "  $model 生成，可能有误",
-                color = c.tertiary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onClose) { Icon(LingYueIcons.Close, contentDescription = "关闭 AI 面板", tint = c.secondary) }
-        }
-        val edit = task as? WriteAiTask.Edit
-        val canDiff = edit != null && edit.original.isNotEmpty() && !state.loading && state.error == null
-        if (canDiff) {
+        AnimatedVisibility(canDiff, enter = Effects.enter(fadeIn(Motion.standard(Motion.SHORT))), exit = Effects.exit(fadeOut(Motion.exit()))) {
             Row(Modifier.padding(vertical = 4.dp)) {
                 SegmentedControl(listOf(true to "对比", false to "改后"), showDiff) { showDiff = it }
             }
         }
-        // 对比在后台算，同样的原文和结果只算一次（长段落比一次要一会儿，不能卡住界面）；算好之前先显示改后的全文。
-        val original = edit?.original.orEmpty()
-        val compared by produceState<AnnotatedString?>(null, canDiff, original, state.text) {
-            value = null
-            if (!canDiff) return@produceState
-            val pieces = withContext(Dispatchers.Default) { TextDiff.diff(original, state.text) }
-            value = pieces?.let { diffText(it, Color(0xFFE5484D), Color(0xFF2F9E44)) }
-        }
-        Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(vertical = 6.dp)) {
-            val body: AnnotatedString = compared?.takeIf { canDiff && showDiff } ?: AnnotatedString(state.text)
-            if (state.text.isNotEmpty()) Text(body, color = c.label, fontSize = 16.sp, lineHeight = 26.sp)
-            else if (state.loading) Text("正在想……", color = c.secondary, fontSize = 15.sp)
-            state.error?.let { Text("出错了：$it", color = c.destructive, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(top = 6.dp)) }
-            if (canDiff && state.text.trim() == edit!!.original.trim()) {
-                Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        val scroll = rememberScrollState()
+        // 结果长出来时跟着滚到底；作者往上翻着看时不打扰。减少动效时直接跳到底。
+        LaunchedEffect(state.text.length) {
+            if (state.loading && scroll.maxValue - scroll.value < 600) {
+                if (Effects.noMotion) scroll.scrollTo(scroll.maxValue) else scroll.animateScrollTo(scroll.maxValue)
             }
         }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            val done = !state.loading && state.error == null && state.text.isNotBlank()
-            if (edit != null) {
-                PanelButton(if (edit.action == WriteAction.CONTINUE) "接在后面" else "采纳", strong = true, enabled = done) { onAccept(state.text) }
-            } else if (task is WriteAiTask.Idea) {
-                PanelButton("插到光标处", strong = true, enabled = done) { onInsert(state.text) }
+        val waiting = state.loading && state.text.isEmpty()
+        // 高矮交给面板去平滑，这里只淡入淡出（两层都量高矮会一前一后地拖）。
+        AnimatedContent(waiting, transitionSpec = { Motion.fadeThrough() using null }, label = "aiWaiting") { w ->
+            if (w) {
+                PanelBusy("正在想……", Modifier.padding(vertical = 10.dp))
+            } else {
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(scroll).padding(vertical = 6.dp)) {
+                    if (state.text.isNotEmpty()) {
+                        val diffShown = canDiff && showDiff && compared != null
+                        AnimatedContent(diffShown, transitionSpec = { Motion.fadeThrough() using null }, label = "aiDiff") { d ->
+                            val body = compared?.takeIf { d } ?: AnnotatedString(state.text)
+                            Text(body, color = c.label, fontSize = 16.sp, lineHeight = 26.sp)
+                        }
+                    }
+                    state.error?.let { ErrorText(it, Modifier.padding(top = 6.dp)) }
+                    if (canDiff && state.text.trim() == edit!!.original.trim()) {
+                        Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                    }
+                }
             }
-            PanelButton("复制", enabled = done) { copy(context, state.text) }
-            PanelButton("再来一次", enabled = !state.loading) { onRetry() }
-            PanelButton(if (edit != null) "不用了" else "关闭") { onClose() }
         }
     }
 }
 
-/** 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。 */
+/** 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。改掉、忽略的那条淡出，下面的平滑补上来。 */
 @Composable
 internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, onIgnore: (WriteIssue) -> Unit, onClose: () -> Unit) {
     val c = LocalGroupedColors.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(c.cell)
-            .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("可能的问题", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            IconButton(onClick = onClose) { Icon(LingYueIcons.Close, contentDescription = "收起", tint = c.secondary) }
-        }
-        Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
-            if (realtime.issues.isEmpty()) Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-            realtime.issues.forEach { i ->
-                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    InlinePanel("可能的问题", onClose = onClose, closeLabel = "收起") {
+        if (realtime.issues.isEmpty()) Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+            items(realtime.issues, key = { "${it.paragraph}\u0000${it.wrong}" }) { i ->
+                Column(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 8.dp)) {
                     Text(
                         buildAnnotatedString {
-                            withStyle(SpanStyle(color = Color(0xFFE5484D), textDecoration = TextDecoration.LineThrough)) { append(i.wrong) }
+                            withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(i.wrong) }
                             append("  →  ")
-                            withStyle(SpanStyle(color = Color(0xFF2F9E44), fontWeight = FontWeight.Medium)) { append(i.right) }
+                            withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(i.right) }
                         },
                         color = c.label,
                         fontSize = 16.sp,
@@ -358,9 +352,9 @@ internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, o
                         lineHeight = 19.sp,
                         modifier = Modifier.padding(top = 2.dp),
                     )
-                    Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PanelButton("改", strong = true) { onFix(i) }
-                        PanelButton("忽略") { onIgnore(i) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillButton("改", { onFix(i) }, style = PillStyle.Filled)
+                        PillButton("忽略", { onIgnore(i) })
                     }
                 }
             }
@@ -376,52 +370,64 @@ internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<Int
     (start until start + i.wrong.length) to i
 }
 
-/** 各类建议的颜色：错字红、设定橙、规范蓝、口吻紫。 */
-internal fun suggestColor(kind: String): Color = when (SuggestKind.of(kind)) {
-    SuggestKind.TYPO -> Color(0xFFE5484D)
-    SuggestKind.CANON -> Color(0xFFFF9500)
-    SuggestKind.STYLE -> Color(0xFF007AFF)
-    SuggestKind.VOICE -> Color(0xFFAF52DE)
-}
+/**
+ * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、
+ * 口吻取强调色和删除色的中间（默认的蓝配红是紫）。都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。
+ */
+internal fun suggestColor(kind: String, c: GroupedColors): Color = when (SuggestKind.of(kind)) {
+    SuggestKind.TYPO -> c.destructive
+    SuggestKind.CANON -> c.warning
+    SuggestKind.STYLE -> c.tint
+    SuggestKind.VOICE -> lerp(c.tint, c.destructive, 0.5f)
+}.readableOn(listOf(c.cell, c.background))
 
 /**
  * AI 在编辑器里写：键盘上方一条——在写（或在查设定）时能停，写完能采纳、重写、撤回。
- * 写的字显示在正文的光标处（浅色），采纳前不算正文。
+ * 写的字显示在正文的光标处（浅色），采纳前不算正文。在写、写好、出错之间原地淡过去；写的时候带一个小转圈。
  */
 @Composable
 internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit, onAccept: () -> Unit, onRetry: () -> Unit, onDiscard: () -> Unit) {
     val c = LocalGroupedColors.current
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(c.cell)
-            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
-            val words = WordCount.of(inline.text)
-            Text(
-                when {
-                    inline.error != null -> "出错了：${inline.error}"
-                    inline.loading && lookup != null -> "正在查：$lookup"
-                    inline.loading -> if (words == 0) "AI 正在想……" else "AI 正在写 · $words 字"
-                    else -> "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: "")
-                },
-                color = if (inline.error != null) c.destructive else c.label,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-                modifier = Modifier.weight(1f).padding(start = 6.dp),
-            )
-        }
-        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val phase = when {
+        inline.error != null -> 2
+        inline.loading -> 0
+        else -> 1
+    }
+    InlinePanel(
+        title = "AI 续写",
+        onClose = null,
+        icon = LingYueIcons.Sparkle,
+        actions = {
             if (inline.loading) {
-                PanelButton("停止") { onStop() }
+                PillButton("停止", onStop)
             } else {
-                PanelButton("采纳", strong = true, enabled = inline.text.isNotBlank() && inline.error == null) { onAccept() }
-                PanelButton("重写") { onRetry() }
+                PillButton("采纳", onAccept, style = PillStyle.Filled, enabled = inline.text.isNotBlank() && inline.error == null)
+                PillButton("重写", onRetry)
             }
-            PanelButton("撤回") { onDiscard() }
+            PillButton("撤回", onDiscard)
+        },
+    ) {
+        AnimatedContent(phase, transitionSpec = { Motion.fadeThrough() using null }, label = "inlinePhase") { p ->
+            val words = WordCount.of(inline.text)
+            val line = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+            when (p) {
+                2 -> ErrorText(inline.error.orEmpty(), line)
+                0 -> PanelBusy(
+                    when {
+                        lookup != null -> "正在查：$lookup"
+                        words == 0 -> "AI 正在想……"
+                        else -> "AI 正在写 · $words 字"
+                    },
+                    line,
+                )
+                else -> Text(
+                    "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: ""),
+                    color = c.label,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    modifier = line,
+                )
+            }
         }
     }
 }
@@ -429,56 +435,50 @@ internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit,
 /** 选写多少：写下一场、写到本章结尾、写 500 字左右、按要求写。 */
 @Composable
 internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Unit) {
-    val c = LocalGroupedColors.current
     GlassDialog(show = true, title = "AI 接着写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            InlineMode.entries.forEach { m ->
-                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onPick(m) }.padding(horizontal = 12.dp, vertical = 12.dp)) {
-                    Text(m.label, color = c.label, fontSize = 16.sp)
-                }
-            }
-        }
+        DialogOptionList(InlineMode.entries.map { it to it.label }, onPick = onPick)
         TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
     }
 }
 
 /**
  * 光标落在一条建议上：键盘上方显示这条——哪类、原因、依据、改成什么；可以采纳、不改、这类以后不提。
+ * 光标挪到另一条建议上时面板不动，里面的字原地淡过去。
  */
 @Composable
 internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () -> Unit, onMute: () -> Unit) {
     val c = LocalGroupedColors.current
     val kind = SuggestKind.of(issue.kind)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(c.cell)
-            .padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 8.dp),
+    InlinePanel(
+        title = "写作建议",
+        onClose = null,
+        icon = LingYueIcons.Sparkle,
+        actions = {
+            PillButton("采纳", onFix, style = PillStyle.Filled)
+            PillButton("不改", onIgnore)
+            PillButton("${kind.label}类不提", onMute)
+        },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.clip(RoundedCornerShape(6.dp)).background(suggestColor(issue.kind).copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
-                Text(kind.label, color = suggestColor(issue.kind), fontSize = 12.sp)
+        AnimatedContent(issue, transitionSpec = { Motion.fadeThrough() using null }, label = "suggestion") { shown ->
+            Column(Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Tag(SuggestKind.of(shown.kind).label, suggestColor(shown.kind, c))
+                    Text(
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(shown.wrong) }
+                            append("  →  ")
+                            withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(shown.right) }
+                        },
+                        color = c.label,
+                        fontSize = 15.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(start = 8.dp),
+                    )
+                }
+                val why = listOf(shown.reason, shown.source.takeIf { it.isNotBlank() }?.let { "依据：$it" }).filterNotNull().filter { it.isNotBlank() }.joinToString("  ")
+                if (why.isNotBlank()) Text(why, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
             }
-            Text(
-                buildAnnotatedString {
-                    withStyle(SpanStyle(color = Color(0xFFE5484D), textDecoration = TextDecoration.LineThrough)) { append(issue.wrong) }
-                    append("  →  ")
-                    withStyle(SpanStyle(color = Color(0xFF2F9E44), fontWeight = FontWeight.Medium)) { append(issue.right) }
-                },
-                color = c.label,
-                fontSize = 15.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
-            )
-        }
-        val why = listOf(issue.reason, issue.source.takeIf { it.isNotBlank() }?.let { "依据：$it" }).filterNotNull().filter { it.isNotBlank() }.joinToString("  ")
-        if (why.isNotBlank()) Text(why, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
-        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PanelButton("采纳", strong = true) { onFix() }
-            PanelButton("不改") { onIgnore() }
-            PanelButton("${kind.label}类不提") { onMute() }
         }
     }
 }
@@ -491,9 +491,7 @@ internal fun RuleNote(text: String, onOpen: () -> Unit) {
         Modifier.fillMaxWidth().background(c.background).clickable { onOpen() }.padding(horizontal = 18.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.clip(RoundedCornerShape(6.dp)).background(Color(0x33FFCC00)).padding(horizontal = 6.dp, vertical = 1.dp)) {
-            Text("规则", color = Color(0xFFB8860B), fontSize = 12.sp)
-        }
+        Tag("规则", c.warning)
         Text(text, color = c.label, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
@@ -505,16 +503,7 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
     var text by remember { mutableStateOf("") }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
         TextField(value = text, onValueChange = { text = it }, label = hint, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = confirm,
-                enabled = text.isNotBlank(),
-                onClick = { onConfirm(text.trim()) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(text.trim()) }, confirmText = confirm, confirmEnabled = text.isNotBlank())
     }
 }
 
@@ -522,11 +511,7 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
 @Composable
 internal fun IdeasDialog(onDismiss: () -> Unit, onPick: (IdeaKind) -> Unit) {
     GlassDialog(show = true, title = "灵感", summary = "根据写到这里的内容和设定集给建议，不会改你的稿子。", onDismissRequest = onDismiss) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            IdeaKind.entries.forEach { k ->
-                TextButton(text = k.label, onClick = { onPick(k) }, modifier = Modifier.fillMaxWidth())
-            }
-        }
+        DialogOptionList(IdeaKind.entries.map { it to it.label }, onPick = onPick)
     }
 }
 
@@ -599,7 +584,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         footer = "灵感、读者点评、矛盾检查、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
                             "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看。",
                     ) {
-                        row { NavRow("AI 记录", icon = LingYueIcons.History, iconBackground = Color(0xFF8E8E93)) { vm.open(Screen.WorkAiLog(workId)) } }
+                        // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。
+                        row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
                         row {
                             NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
                         }
@@ -632,7 +618,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
                     ) {
                         row {
-                            ToggleRow("写作时给建议", assist.realtime, icon = LingYueIcons.Timer, iconBackground = Color(0xFFFF9500)) { on ->
+                            // 开了以后下面带出几行“查某类”，都不带图标，这一行也不带。
+                            ToggleRow("写作时给建议", assist.realtime) { on ->
                                 vm.writingAi.updateAssist(workId) { it.copy(realtime = on) }
                             }
                         }
