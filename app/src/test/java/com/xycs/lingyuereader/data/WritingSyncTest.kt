@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.data
 
+import com.xycs.lingyuereader.ChapterSyncResult
+import com.xycs.lingyuereader.SyncSession
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -218,5 +220,132 @@ class WritingSyncTest {
         assertFalse("卧底" in read(s.packTools(w.id, upTo = one.id), "第二章 真相"))
         assertTrue("渡口起了雾" in read(s.packTools(w.id, upTo = one.id), "第一章 渡口"))
         assertTrue("卧底" in read(s.packTools(w.id), "第二章 真相"))
+    }
+
+    @Test
+    fun theSamePersonPlaceOrAwarenessFromSeveralChaptersIsWrittenOnce() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        val people = s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |")
+        val canon = s.addPackDoc(w.id, PackKind.CANON, "硬性设定", "## 地名\n- 青石镇：林月的家乡")
+        val docs = s.pack(w.id).map { it to s.packText(w.id, it.id) }
+        // 第 3、4、5 章各提一次老周、渡口、林月知道沈默是卧底：每章都拿同一份旧设定包定位置，都会提出来。
+        val items = (3..5).flatMap { n ->
+            PackSync.plan(
+                listOf(
+                    person("老周", "身份" to "渡口的船夫", "本章" to "撑船").copy(chapterId = c, chapter = n),
+                    SyncItem(SyncGroup.NEW, "新地名：渡口", "原句", PackKind.CANON, section = "地名", name = "渡口", text = if (n == 3) "城东的渡口" else "城东渡口，常起雾", chapterId = c, chapter = n),
+                    knows("林月", if (n == 3) "沈默是朝廷的卧底" else "沈默是朝廷派来的卧底").copy(chapterId = c, chapter = n),
+                ),
+                docs,
+            )
+        }
+        assertEquals(9, items.size)
+        // 写的时候用已经写进去的文字再查：每样只写一次。
+        assertEquals(mapOf("人物档案" to 1, "硬性设定" to 1, "察觉表" to 1), s.applySync(w.id, items))
+        assertEquals(1, s.packText(w.id, people.id).lines().count { "老周" in it })
+        assertEquals("## 地名\n- 青石镇：林月的家乡\n- 渡口：城东的渡口", s.packText(w.id, canon.id))
+        val awareness = s.pack(w.id).single { it.kind == PackKind.AWARENESS }
+        assertEquals(1, s.packText(w.id, awareness.id).lines().count { "卧底" in it })
+        assertEquals(3, s.changes(w.id).size)
+    }
+
+    @Test
+    fun aPersonGivenASectionByAnEarlierChapterOnlyGetsTheLaterChapterLine() {
+        val text = "# 人物\n\n## 林月\n想要：查清旧案"
+        val docs = listOf(doc(PackKind.CHARACTER, "人物档案", text))
+        val three = PackSync.plan(listOf(person("老周", "身份" to "船夫", "本章" to "撑船送林月过河").copy(chapter = 3)), docs).single()
+        val four = PackSync.plan(listOf(person("老周", "身份" to "船夫", "本章" to "在渡口等沈默").copy(chapter = 4)), docs).single()
+        assertTrue(PackSync.sameThing(three, four))
+        // 第 4 章的不再新起一节“## 老周”，并进第 3 章起的那一节。
+        assertEquals(text + "\n\n## 老周\n- 身份：船夫\n- 第3章：撑船送林月过河\n- 第4章：在渡口等沈默", PackSync.apply(PackSync.apply(text, three), four))
+    }
+
+    @Test
+    fun syncingTheSameChapterAgainDoesNotRepeatItsLine() {
+        val text = "## 林月\n想要：查清旧案\n\n## 沈默\n想要：活下去"
+        val first = PackSync.plan(listOf(person("林月", "本章" to "在渡口茶馆听说老周死了")), listOf(doc(PackKind.CHARACTER, "人物档案", text))).single()
+        val once = PackSync.apply(text, first)
+        assertEquals("## 林月\n想要：查清旧案\n- 第12章：在渡口茶馆听说老周死了\n\n## 沈默\n想要：活下去", once)
+        val now = listOf(doc(PackKind.CHARACTER, "人物档案", once))
+        // 再整理一次（AI 换了个说法）：这一节里已经有第 12 章，不再提。
+        assertTrue(PackSync.plan(listOf(person("林月", "本章" to "听杜娘说老周走了")), now).isEmpty())
+        // 两次的结果都写（或写到一半重试）：还是只有一行。
+        assertEquals(once, PackSync.apply(once, first))
+        assertEquals(once, PackSync.apply(once, first.copy(text = "- 第12章：听杜娘说老周走了")))
+        // 新的称呼照样补，本章这一行不重复。
+        assertEquals("- 称呼：月丫头", PackSync.plan(listOf(person("林月", "称呼" to "月丫头", "本章" to "听杜娘说老周走了")), now).single().text)
+        // 写成“- 名字：……”一条的人物也一样。
+        val bullets = "- 林月：药铺掌柜的女儿；第12章：听说老周死了"
+        assertEquals(bullets, PackSync.apply(bullets, first.copy(text = "- 第12章：听杜娘说老周走了")))
+    }
+
+    @Test
+    fun formattingPunctuationAndBlankLinesKeepsAChapterSynced() {
+        val raw = "渡口起了雾,林月说:\"走吧...\"\n\n\n  沈默没动--他在等人."
+        val mark = SyncMark(ChapterSyncs.hash(raw), 1L)
+        // 排版：全角标点、弯引号、省略号、破折号、空行、段首空格。
+        assertTrue(ChapterSyncs.isSynced(mark, "渡口起了雾，林月说：“走吧……”\n\n　　沈默没动——他在等人。"))
+        assertFalse(ChapterSyncs.isSynced(mark, "渡口起了大雾，林月说：“走吧……”\n沈默没动——他在等人。"))
+        // 早先按正文直接算的哈希也认。
+        assertTrue(ChapterSyncs.isSynced(SyncMark(raw.hashCode(), 1L), raw))
+        val s = store()
+        val w = s.create("长夜")
+        val one = w.chapters[0]
+        s.saveText(w.id, one.id, raw, count = false)
+        s.updateAssist(w.id) { it.copy(synced = mapOf(one.id to mark)) }
+        s.saveText(w.id, one.id, "渡口起了雾，林月说：“走吧……”\n沈默没动——他在等人。", count = false)
+        assertTrue(s.unsynced(w.id).isEmpty())
+    }
+
+    @Test
+    fun writingAgainAfterAFailureSkipsWhatIsAlreadyThere() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |")
+        val docs = s.pack(w.id).map { it to s.packText(w.id, it.id) }
+        val items = PackSync.plan(listOf(person("杜娘", "身份" to "渡口茶馆老板娘"), knows("林月", "沈默是朝廷的卧底")).map { it.copy(chapterId = c) }, docs)
+        assertEquals(mapOf("人物档案" to 1, "察觉表" to 1), s.applySync(w.id, items))
+        val texts = s.pack(w.id).associate { it.id to s.packText(w.id, it.id) }
+        // 再写一次（上次写到一半出错，重试）：已经有了的不再写，也不再新建第二份察觉表。
+        assertEquals(emptyMap<String, Int>(), s.applySync(w.id, items))
+        assertEquals(texts, s.pack(w.id).associate { it.id to s.packText(w.id, it.id) })
+        assertEquals(2, s.changes(w.id).size)
+    }
+
+    @Test
+    fun laterChaptersRepeatingAnEarlierOneAreNotPickedByDefault() {
+        val docs = listOf(doc(PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |"))
+        fun result(id: String, n: Int, vararg items: SyncItem) = ChapterSyncResult(id, "第${n}章", n, 0, PackSync.plan(items.map { it.copy(chapterId = id, chapter = n) }, docs))
+        val s4 = SyncSession("w").with(result("c4", 4, person("老周", "身份" to "船夫"), knows("林月", "沈默是朝廷的卧底")))
+        assertEquals(2, s4.picked.size)
+        val s5 = s4.with(result("c5", 5, person("老周", "身份" to "船夫"), person("杜娘")))
+        val (zhou5, du5) = s5.results.last().items
+        // 第 5 章的老周：前面章已有，不勾；杜娘照样勾上。
+        assertEquals(setOf(zhou5.key), s5.repeats)
+        assertFalse(zhou5.key in s5.picked)
+        assertTrue(du5.key in s5.picked)
+        // 后来单独整理了更前面的第 3 章，并进来：第 3 章的老周勾上，第 4 章的老周变成重复、取消勾选。
+        val s3 = s5.with(result("c3", 3, person("老周", "身份" to "船夫")))
+        assertEquals(3, s3.results.size)
+        assertTrue(s3.results.last().items.single().key in s3.picked)
+        assertFalse(s3.results.first().items.first().key in s3.picked)
+        assertTrue(s3.results.first().items.last().key in s3.picked)
+        // 同一章再整理一次：换掉原来的结果。
+        assertEquals(3, s3.with(result("c3", 3, person("老周"))).results.size)
+    }
+
+    @Test
+    fun partsOfALongChapterMergeTheSamePerson() {
+        val a = person("老周", "身份" to "船夫", "本章" to "撑船送林月过河")
+        val b = person("老周", "关系" to "杜娘的表哥", "本章" to "在渡口等沈默")
+        val merged = PackSync.merge(listOf(a, knows("林月", "沈默是朝廷的卧底"), b, knows("林月", "沈默是朝廷派来的卧底")))
+        assertEquals(2, merged.size)
+        val zhou = merged.first()
+        assertEquals("船夫", zhou.field("身份"))
+        assertEquals("杜娘的表哥", zhou.field("关系"))
+        assertEquals("撑船送林月过河；在渡口等沈默", zhou.field("本章"))
     }
 }

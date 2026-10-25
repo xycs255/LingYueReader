@@ -306,8 +306,9 @@ fun WorkStore.packTools(workId: String, upTo: String? = null): PackTools {
 /**
  * 写某一章时随请求带的（每次不一样的部分，放在设定包后面）：这一章是第几章、细纲里写这一章的原文、出场人物、
  * 到这一章还不该知道的事、伏笔、只有作者知道的、前情，以及已写的章目录（用 read_chapter 读）。
+ * [upTo] 为真时章目录只列到这一章为止（和只能读到这一章的查阅工具一致，防剧透）。
  */
-fun WorkStore.chapterHints(workId: String, chapterId: String, text: String): String {
+fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo: Boolean = false): String {
     val work = get(workId) ?: return ""
     val b = brief(workId, chapterId, text, limit = 4_000)
     val entries = outlineEntries(workId)
@@ -338,6 +339,7 @@ fun WorkStore.chapterHints(workId: String, chapterId: String, text: String): Str
         if (b.hidden.isNotEmpty()) out.append("\n【只有作者知道的（结局、后文走向、对手底牌）：只用来把握方向，不能写进正文】\n").append(b.hidden.joinToString("\n") { "- $it" }).append('\n')
     }
     out.append("\n【已写的章（用 read_chapter 读全文）】\n")
-    out.append(work.chapters.joinToString("；") { c -> c.title + "（" + c.words + " 字" + (if (c.id == chapterId) "，就是这一章" else "") + "）" }.take(4_000)).append('\n')
+    val listed = if (upTo) work.chapters.indexOfFirst { it.id == chapterId }.let { i -> if (i >= 0) work.chapters.take(i + 1) else work.chapters } else work.chapters
+    out.append(listed.joinToString("；") { c -> c.title + "（" + c.words + " 字" + (if (c.id == chapterId) "，就是这一章" else "") + "）" }.take(4_000)).append('\n')
     return out.toString().trim()
 }
