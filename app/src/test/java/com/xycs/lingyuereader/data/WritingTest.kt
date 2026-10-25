@@ -8,7 +8,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.File
 import java.time.LocalDate
 
 class WritingTest {
@@ -221,6 +224,282 @@ class WritingTest {
         assertNull(s.backup())
         assertNull(s.get("../x"))
         val evil = """{"works":[{"id":"../../evil","title":"x","volumes":[]}]}"""
-        assertEquals(0, s.restoreBackup(evil))
+        assertTrue(runCatching { s.restoreBackup(evil) }.isFailure)
+    }
+
+    @Test
+    fun corruptWorkMetadataCannotBeSilentlyOmittedFromBackup() {
+        val folder = tmp.newFolder()
+        val s = WorkStore(folder)
+        val work = s.create("不能遗漏")
+        File(folder, "works/${work.id}/work.json").writeText("{broken")
+        assertTrue(runCatching { s.backup() }.isFailure)
+    }
+
+    @Test
+    fun corruptStatsCannotBeOverwrittenByGoalWordsOrChapterSave() {
+        val folder = tmp.newFolder()
+        val s = WorkStore(folder)
+        val work = s.create("保留统计")
+        val chapter = work.chapters.single().id
+        val source = File(folder, "stats.json")
+        source.writeText("{damaged stats")
+        assertTrue(runCatching { s.setGoal(2000) }.isFailure)
+        assertTrue(runCatching { s.addWords(LocalDate.of(2026, 10, 25), 20) }.isFailure)
+        assertTrue(runCatching { s.saveText(work.id, chapter, "新稿") }.isFailure)
+        assertTrue(runCatching { s.backup() }.isFailure)
+        assertEquals("{damaged stats", source.readText())
+        assertEquals("", s.text(work.id, chapter))
+    }
+
+    @Test
+    fun negativeDailyNetChangeRemainsValidWritingStats() {
+        val source = WorkStore(tmp.newFolder())
+        val day = LocalDate.of(2026, 10, 25)
+        source.addWords(day, -5)
+        source.setGoal(100)
+        val destination = WorkStore(tmp.newFolder())
+        val archive = String(source.backup()!!)
+        destination.validateBackup(archive)
+        destination.restoreBackup(archive)
+        // Existing merge semantics keep the larger per-day count; the source file
+        // itself must still be readable and writable with a negative net change.
+        assertEquals(-5, source.stats().on(day))
+        source.setGoal(200)
+        assertEquals(200, source.stats().goal)
+    }
+
+    @Test
+    fun missingTextOrMalformedLaterWorkRejectsWholeBackupBeforeWriting() {
+        val source = WorkStore(tmp.newFolder())
+        val first = source.create("第一部")
+        source.saveText(first.id, first.chapters.single().id, "正文甲")
+        val second = source.create("第二部")
+        source.saveText(second.id, second.chapters.single().id, "正文乙")
+        val archive = JSONObject(String(source.backup()!!))
+        val workEntries = archive.getJSONArray("works")
+        val secondJson = (0 until workEntries.length()).map { workEntries.getJSONObject(it) }
+            .first { it.getString("id") == second.id }
+        secondJson.getJSONObject("texts").remove(second.chapters.single().id)
+
+        val destination = WorkStore(tmp.newFolder())
+        assertTrue(runCatching { destination.validateBackup(archive.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(archive.toString()) }.isFailure)
+        assertNull(destination.get(first.id))
+        assertNull(destination.get(second.id))
+        assertTrue(destination.list().isEmpty())
+    }
+
+    @Test
+    fun legacyBackupWithoutOptionalWritingComponentsStillRestoresText() {
+        val source = WorkStore(tmp.newFolder())
+        val work = source.create("旧备份")
+        val chapter = work.chapters.single().id
+        source.saveText(work.id, chapter, "旧格式里的正文")
+        val archive = JSONObject(String(source.backup()!!))
+        archive.getJSONArray("works").getJSONObject(0).apply {
+            remove("cards")
+            remove("pack")
+            remove("changes")
+            remove("assist")
+        }
+        val destination = WorkStore(tmp.newFolder())
+        destination.validateBackup(archive.toString())
+        assertEquals(1, destination.restoreBackup(archive.toString()))
+        assertEquals("旧格式里的正文", destination.text(work.id, chapter))
+    }
+
+    @Test
+    fun malformedCardAndPackAreRejectedWithoutReplacingLocalText() {
+        val source = WorkStore(tmp.newFolder())
+        val work = source.create("验证附件")
+        val chapter = work.chapters.single().id
+        source.saveText(work.id, chapter, "备份正文")
+        source.saveCard(work.id, chapter, ChapterCard(facts = "事实"))
+        source.addPackDoc(work.id, PackKind.REFERENCE, "设定", "设定正文")
+        val archive = String(source.backup()!!)
+        val destination = WorkStore(tmp.newFolder())
+        assertEquals(1, destination.restoreBackup(archive))
+        destination.saveText(work.id, chapter, "本机正文")
+
+        val badCard = JSONObject(archive)
+        badCard.getJSONArray("works").getJSONObject(0).getJSONObject("cards").put(chapter, "bad")
+        assertTrue(runCatching { destination.validateBackup(badCard.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(badCard.toString()) }.isFailure)
+
+        val badPack = JSONObject(archive)
+        badPack.getJSONArray("works").getJSONObject(0).getJSONArray("pack").getJSONObject(0).put("text", 17)
+        assertTrue(runCatching { destination.validateBackup(badPack.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(badPack.toString()) }.isFailure)
+
+        val badAuto = JSONObject(archive)
+        badAuto.getJSONArray("works").getJSONObject(0).getJSONObject("cards")
+            .getJSONObject(chapter).put("auto", "invalid")
+        assertTrue(runCatching { destination.validateBackup(badAuto.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(badAuto.toString()) }.isFailure)
+
+        val badPackTime = JSONObject(archive)
+        badPackTime.getJSONArray("works").getJSONObject(0).getJSONArray("pack")
+            .getJSONObject(0).put("updatedAt", "yesterday")
+        assertTrue(runCatching { destination.validateBackup(badPackTime.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(badPackTime.toString()) }.isFailure)
+
+        val badPackFlag = JSONObject(archive)
+        badPackFlag.getJSONArray("works").getJSONObject(0).getJSONArray("pack")
+            .getJSONObject(0).put("always", "false")
+        assertTrue(runCatching { destination.validateBackup(badPackFlag.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(badPackFlag.toString()) }.isFailure)
+
+        val overflow = JSONObject(archive).put("goal", Int.MAX_VALUE.toLong() + 1)
+        assertTrue(runCatching { destination.validateBackup(overflow.toString()) }.isFailure)
+        assertTrue(runCatching { destination.restoreBackup(overflow.toString()) }.isFailure)
+        assertEquals("本机正文", destination.text(work.id, chapter))
+    }
+
+    @Test
+    fun olderBackupKeepsLegacyPackAndCardEditsWhoseWorkTimestampDidNotChange() {
+        val source = WorkStore(tmp.newFolder())
+        val work = source.create("设定")
+        val chapter = work.chapters.single().id
+        source.saveCard(work.id, chapter, ChapterCard(facts = "旧细纲"))
+        val doc = source.addPackDoc(work.id, PackKind.REFERENCE, "资料", "旧设定")
+        val original = JSONObject(String(source.backup()!!))
+        val destinationFolder = tmp.newFolder()
+        val destination = WorkStore(destinationFolder)
+        assertEquals(1, destination.restoreBackup(original.toString()))
+        destination.saveCard(work.id, chapter, ChapterCard(facts = "新细纲"))
+        destination.savePackText(work.id, doc.id, "新设定")
+
+        // Legacy versions saved these components without touching work.json. Even an
+        // apparently newer backup must not replace newer component revisions.
+        val workFile = File(destinationFolder, "works/${work.id}/work.json")
+        val metadata = JSONObject(workFile.readText())
+        workFile.writeText(metadata.put("updatedAt", original.getJSONArray("works").getJSONObject(0).getLong("updatedAt")).toString())
+        original.getJSONArray("works").getJSONObject(0).put("updatedAt", System.currentTimeMillis() + 100_000)
+        assertEquals(0, destination.restoreBackup(original.toString()))
+        assertEquals("新细纲", destination.card(work.id, chapter).facts)
+        assertEquals("新设定", destination.packText(work.id, doc.id))
+    }
+
+    @Test
+    fun newerCardAndPackRevisionsRestoreTogether() {
+        val source = WorkStore(tmp.newFolder())
+        val work = source.create("设定同步")
+        val chapter = work.chapters.single().id
+        source.saveCard(work.id, chapter, ChapterCard(facts = "旧事实"))
+        val doc = source.addPackDoc(work.id, PackKind.REFERENCE, "设定", "旧内容")
+        val destination = WorkStore(tmp.newFolder())
+        assertEquals(1, destination.restoreBackup(String(source.backup()!!)))
+
+        source.saveCard(work.id, chapter, ChapterCard(facts = "新事实"))
+        source.savePackText(work.id, doc.id, "新内容")
+        assertEquals(1, destination.restoreBackup(String(source.backup()!!)))
+        assertEquals("新事实", destination.card(work.id, chapter).facts)
+        assertEquals("新内容", destination.packText(work.id, doc.id))
+    }
+
+    @Test
+    fun olderCardAndPackObjectsMayOmitNewOptionalFields() {
+        val source = WorkStore(tmp.newFolder())
+        val work = source.create("旧附件")
+        val chapter = work.chapters.single().id
+        source.saveCard(work.id, chapter, ChapterCard(facts = "旧事实"))
+        val doc = source.addPackDoc(work.id, PackKind.REFERENCE, "资料", "旧资料")
+        val archive = JSONObject(String(source.backup()!!))
+        val entry = archive.getJSONArray("works").getJSONObject(0)
+        entry.getJSONObject("cards").getJSONObject(chapter).apply { remove("auto"); remove("updatedAt") }
+        entry.getJSONArray("pack").getJSONObject(0).apply {
+            remove("priority"); remove("always"); remove("updatedAt"); remove("words")
+        }
+        val destination = WorkStore(tmp.newFolder())
+        destination.validateBackup(archive.toString())
+        assertEquals(1, destination.restoreBackup(archive.toString()))
+        assertEquals("旧事实", destination.card(work.id, chapter).facts)
+        assertEquals("旧资料", destination.packText(work.id, doc.id))
+    }
+
+    @Test
+    fun failedSwapOnSecondWorkRollsBackBothWorks() {
+        val source = WorkStore(tmp.newFolder())
+        val first = source.create("甲")
+        val second = source.create("乙")
+        val c1 = first.chapters.single().id
+        val c2 = second.chapters.single().id
+        source.saveText(first.id, c1, "第一版甲")
+        source.saveText(second.id, c2, "第一版乙")
+        val destinationFolder = tmp.newFolder()
+        val destination = WorkStore(destinationFolder)
+        assertEquals(2, destination.restoreBackup(String(source.backup()!!)))
+        source.saveText(first.id, c1, "第二版甲")
+        source.saveText(second.id, c2, "第二版乙")
+        var swaps = 0
+        val failing = WorkStore(destinationFolder) { if (++swaps == 2) throw IOException("inject second swap failure") }
+        assertTrue(runCatching { failing.restoreBackup(String(source.backup()!!)) }.isFailure)
+        val reopened = WorkStore(destinationFolder)
+        assertEquals("第一版甲", reopened.text(first.id, c1))
+        assertEquals("第一版乙", reopened.text(second.id, c2))
+        assertTrue(File(destinationFolder, "works/${first.id}/work.json").isFile)
+        assertTrue(File(destinationFolder, "works/${second.id}/work.json").isFile)
+    }
+
+    @Test
+    fun startupRecoversInterruptedRestoreJournal() {
+        val folder = tmp.newFolder()
+        val first = WorkStore(folder)
+        val work = first.create("尚未提交")
+        val chapter = work.chapters.single().id
+        first.saveText(work.id, chapter, "原来的稿")
+        val stage = File(folder, ".restore-writing-interrupted")
+        val previous = File(stage, "previous").apply { mkdirs() }
+        File(stage, "prepared").mkdirs()
+        File(stage, "journal.json").writeText(JSONObject().put("ids", org.json.JSONArray().put(work.id)).put("stats", false).toString())
+        assertTrue(File(folder, "works/${work.id}").renameTo(File(previous, work.id)))
+
+        val reopened = WorkStore(folder)
+        assertEquals("原来的稿", reopened.text(work.id, chapter))
+        assertFalse(stage.exists())
+    }
+
+    @Test
+    fun repeatedRecoveryDoesNotDeleteWorkAlreadyRolledBack() {
+        val folder = tmp.newFolder()
+        val first = WorkStore(folder)
+        val work = first.create("原稿")
+        val chapter = work.chapters.single().id
+        first.saveText(work.id, chapter, "应保留")
+        val stage = File(folder, ".restore-writing-repeat")
+        File(stage, "previous").mkdirs()
+        File(stage, "prepared").mkdirs()
+        // An earlier recovery already moved previous/id back to works/id, but the
+        // process died before removing the journal. Recovery must be idempotent.
+        File(stage, "journal.json").writeText(JSONObject()
+            .put("ids", org.json.JSONArray().put(work.id))
+            .put("existing", org.json.JSONArray().put(work.id))
+            .put("stats", false).toString())
+        val reopened = WorkStore(folder)
+        assertEquals("应保留", reopened.text(work.id, chapter))
+        assertFalse(stage.exists())
+    }
+
+    @Test
+    fun startupDropsUncommittedNewWorkAndKeepsUntouchedExistingWork() {
+        val folder = tmp.newFolder()
+        val store = WorkStore(folder)
+        val existing = store.create("本机原有")
+        val existingChapter = existing.chapters.single().id
+        store.saveText(existing.id, existingChapter, "原有正文")
+        val added = store.create("恢复到一半的新作品")
+        val stage = File(folder, ".restore-writing-new-work-interrupted")
+        File(stage, "previous").mkdirs()
+        File(stage, "prepared/${existing.id}").mkdirs()
+        File(stage, "journal.json").writeText(JSONObject()
+            .put("ids", org.json.JSONArray().put(added.id).put(existing.id))
+            .put("existing", org.json.JSONArray().put(existing.id))
+            .put("stats", false).toString())
+
+        val reopened = WorkStore(folder)
+        assertNull(reopened.get(added.id))
+        assertEquals("原有正文", reopened.text(existing.id, existingChapter))
+        assertFalse(stage.exists())
     }
 }

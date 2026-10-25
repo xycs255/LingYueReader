@@ -127,4 +127,90 @@ class ReadingStatsTest {
         assertEquals(60_000L, saved.millis)
         assertEquals(100L, saved.chars)
     }
+
+    @Test
+    @Config(sdk = [26, 28, 29, 36])
+    fun readFailureBeforeUpdatePreservesReadingStatsInsteadOfWritingEmptyMap() {
+        val file = File(tmp.root, "s.json")
+        ReadingStats(file).addTime("b1", 60_000, today)
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            var failRead = true
+            var startedWrites = 0
+
+            override fun readFully(): ByteArray {
+                if (failRead) throw IOException("injected readFully before update")
+                return super.readFully()
+            }
+
+            override fun startWrite(): FileOutputStream {
+                startedWrites++
+                return super.startWrite()
+            }
+        }
+        val stats = ReadingStats(file, injected)
+
+        assertTrue(runCatching { stats.days() }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { stats.addChars(100, today) }.exceptionOrNull() is IllegalStateException)
+        assertEquals(0, injected.startedWrites)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, File(tmp.root, "s.json.damaged").readBytes())
+
+        injected.failRead = false
+        stats.addChars(100, today)
+        assertEquals(60_000L, stats.days().getValue(today).millis)
+        assertEquals(100L, stats.days().getValue(today).chars)
+    }
+
+    @Test
+    fun malformedExistingDaysCannotBeSilentlyReplacedByNextUpdate() {
+        val file = File(tmp.root, "s.json")
+        file.writeText("""{"days":[]}""")
+        val original = file.readBytes()
+        val stats = ReadingStats(file)
+
+        assertTrue(runCatching { stats.addChars(100, today) }.exceptionOrNull() is IllegalStateException)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, File(tmp.root, "s.json.damaged").readBytes())
+    }
+
+    @Test
+    fun invalidExistingNumbersCannotBeCoercedToZeroAndOverwritten() {
+        val badValues = listOf(
+            """{"days":{"2026-10-23":{"ms":"bad","chars":8}}}""",
+            """{"days":{"2026-10-23":{"ms":1.5,"chars":8}}}""",
+            """{"days":{"2026-10-23":{"ms":8,"chars":-1}}}""",
+            """{"days":{"2026-10-23":{"ms":8,"books":{"b1":"bad"}}}}""",
+            """{"days":{"2026-10-23":{"ms":8,"books":{"b1":-1}}}}""",
+        )
+        badValues.forEachIndexed { i, json ->
+            val file = File(tmp.root, "bad-$i.json").apply { writeText(json) }
+            val original = file.readBytes()
+
+            assertTrue(runCatching { ReadingStats(file).addChars(100, today) }.exceptionOrNull() is IllegalStateException)
+            assertArrayEquals(original, file.readBytes())
+            assertArrayEquals(original, File(tmp.root, "bad-$i.json.damaged").readBytes())
+        }
+    }
+
+    @Test
+    fun missingNumericFieldsInOlderStatsStillDefaultToZero() {
+        val file = File(tmp.root, "legacy.json").apply { writeText("""{"days":{"2026-10-23":{}}}""") }
+        val stats = ReadingStats(file)
+        stats.addChars(100, today)
+        assertEquals(DayStats(chars = 100), stats.days().getValue(today))
+    }
+
+    @Test
+    fun backupValidationRejectsBadNumbersWithoutTouchingLocalStats() {
+        val file = File(tmp.root, "s.json")
+        val stats = ReadingStats(file)
+        stats.addChars(50, today)
+        val original = file.readBytes()
+
+        assertTrue(runCatching { stats.validateBackup("""{"days":{"2026-10-23":{"chars":"bad"}}}""") }.isFailure)
+        assertArrayEquals(original, file.readBytes())
+        stats.validateBackup("""{"days":{"2026-10-23":{}}}""")
+        assertArrayEquals(original, file.readBytes())
+    }
 }

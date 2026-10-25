@@ -27,6 +27,34 @@ class AiPromptsTest {
     }
 
     @Test
+    fun aLongCurrentParagraphIsCutAtTheExactCharacterBeforeSendingOrIndexing() {
+        val text = "已读的线索：蓝布衫。未读的谜底：他是儿子。"
+        val boundary = text.indexOf("未读")
+        val longParagraph = BookContent("书", null, listOf(Chapter("第一章", listOf(Block.Para(text)))))
+        val position = ReadPos(0, 0, boundary)
+
+        val recap = AiPrompts.recentText(longParagraph, position)
+        assertTrue(recap.contains("蓝布衫"))
+        assertFalse(recap.contains("儿子"))
+
+        val index = BookIndex.build(longParagraph, position)
+        assertTrue(index.texts.single().contains("蓝布衫"))
+        assertFalse(index.texts.single().contains("儿子"))
+        assertTrue(BookIndex.build(longParagraph, ReadPos(0, 0, 0)).texts.isEmpty())
+    }
+
+    @Test
+    fun boldMarkupDoesNotShiftTheVisibleReadingBoundary() {
+        val content = BookContent("书", null, listOf(Chapter("第一章", listOf(Block.Para("**甲**乙未读谜底")))))
+        val pos = ReadPos(0, 0, 2) // 屏幕显示“甲乙”，其后的文字还没读到
+        val recap = AiPrompts.recentText(content, pos)
+        assertTrue(recap.contains("甲乙"))
+        assertFalse(recap.contains("未读"))
+        assertFalse(recap.contains("**"))
+        assertEquals(listOf("甲乙"), BookIndex.build(content, pos).texts)
+    }
+
+    @Test
     fun recentTextKeepsTheLatestPartWhenTooLong() {
         val text = AiPrompts.recentText(book, ReadPos(1, 1), limit = 12)
         assertTrue(text.contains("旧信"))

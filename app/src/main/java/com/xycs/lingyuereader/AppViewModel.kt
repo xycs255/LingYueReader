@@ -90,9 +90,11 @@ import com.xycs.lingyuereader.ai.AiStore
 import com.xycs.lingyuereader.ai.QuickAsk
 import com.xycs.lingyuereader.ai.ReadPos
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,6 +106,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -260,6 +264,12 @@ internal object SelectionSnap {
 data class OpenBook(val entry: BookEntry, val content: BookContent, val sourceContent: BookContent = content)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
+
+    companion object {
+        /** Activity 销毁后仍完成已接收的阅读进度写盘。 */
+        private val progressScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val progressRevisions = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    }
 
     private val library = com.xycs.lingyuereader.data.SharedLibrary.get(app)
     /**
@@ -505,7 +515,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 从当前阅读位置开始听书：开了离线语音就用手机上的模型，设了 AI 朗读就用服务商的语音，否则系统语音。 */
-    fun startReadAloud(chapterIndex: Int, block: Int, char: Int) {
+    fun startReadAloud(chapterIndex: Int, block: Int, char: Int, startPaused: Boolean = false) {
         val book = _openBook.value ?: return
         ReadAloud.start(
             getApplication(), book.entry.id, book.entry.title, book.content,
@@ -513,6 +523,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _settings.value.ttsVoice.ifEmpty { null },
             ai = offlineVoice() ?: aiVoice(),
             saveProgress = listeningSaver(book.entry.id, book.sourceContent),
+            startPaused = startPaused,
         )
     }
 
@@ -561,8 +572,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = ReadAloud.state.value ?: return
         if (_openBook.value?.entry?.id != s.bookId) return
         val at = s.current
-        startReadAloud(s.chapterIndex, at?.block ?: 0, at?.start ?: 0)
-        if (!s.playing) ReadAloud.pause()
+        startReadAloud(s.chapterIndex, at?.block ?: 0, at?.start ?: 0, startPaused = !s.playing)
     }
 
     /** 设置页的“试听”：用当前的 AI 朗读设置读一句。 */
@@ -619,11 +629,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(disk) {
             try {
                 block()
-                reportedWriteFailures.remove(what)
+                synchronized(reportedWriteFailures) { reportedWriteFailures.remove(what) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (reportedWriteFailures.add(what)) _messages.value = "${what}失败：${error.message ?: "写入出错"}"
+                if (synchronized(reportedWriteFailures) { reportedWriteFailures.add(what) }) _messages.value = "${what}失败：${error.message ?: "写入出错"}"
             }
         }
     }
@@ -670,7 +680,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 阅读页在前台的时长，离开或切到后台时累加。 */
     fun reloadStats() {
-        viewModelScope.launch { _stats.value = withContext(Dispatchers.IO) { stats.days() } }
+        viewModelScope.launch {
+            try {
+                _stats.value = withContext(Dispatchers.IO) { stats.days() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "阅读统计读取失败，原文件已保留：${error.message ?: "请从备份恢复"}"
+            }
+        }
     }
 
     private var pendingChars = 0L
@@ -687,8 +705,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         pendingChars = 0
         if (chars <= 0) return
         viewModelScope.launch(Dispatchers.IO) {
-            stats.addChars(chars)
-            _stats.value = stats.days()
+            try {
+                stats.addChars(chars)
+                _stats.value = stats.days()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "阅读统计保存失败，原文件已保留：${error.message ?: "写入出错"}"
+            }
         }
     }
 
@@ -699,8 +723,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             // 书架索引写不进去时，阅读统计照样记。
             runCatching { library.addReadingTime(bookId, millis) }
-            stats.addTime(bookId, millis)
-            _stats.value = stats.days()
+            try {
+                stats.addTime(bookId, millis)
+                _stats.value = stats.days()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "阅读统计保存失败，原文件已保留：${error.message ?: "写入出错"}"
+            }
         }
     }
 
@@ -897,6 +927,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 阅读页进来时调用；已加载的同一本书不重复解析。 */
     /** 最近打开的书（重新加载同一本书时 _openBook 会暂时为空，靠它分辨是不是换了书）。 */
     private var lastBookId: String? = null
+    private var corruptMarksBookId: String? = null
 
     fun ensureLoaded(bookId: String) {
         if (_openBook.value?.entry?.id == bookId) {
@@ -913,6 +944,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             notesJob?.cancel()
             summaryJob?.cancel()
             translateJob?.cancel()
+            characterJob?.cancel()
         }
         lastBookId = bookId
         _openBook.value = null
@@ -920,11 +952,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         bookLoadJob = viewModelScope.launch {
             try {
                 val mode = _settings.value.chineseConvert
-                val (loaded, marks) = withContext(Dispatchers.IO) {
+                val (loaded, marks, corruptMarks) = withContext(Dispatchers.IO) {
                     val source = library.content(entry)
                     // AI 译文（开了对照显示时）接在段落后面，原文字位不变。
                     val content = AiTranslate.apply(converted(source, mode), AiTranslate.read(library.bookFile(entry.id, AiTranslate.FILE)), source)
-                    val stored = library.marks(entry.id)
+                    val (stored, corruptMarks) = try {
+                        library.marks(entry.id) to false
+                    } catch (_: Library.CorruptMarksException) {
+                        Marks() to true
+                    }
                     val direct = stored.resolve(source)
                     val directProgress = entry.progress?.let { TextAnchors.rebaseProgress(source, it) }
                     // 旧版可能把显示态的繁简文字写进锚点；等长转换视图只作定位，
@@ -938,11 +974,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val marks = if (direct.bookmarks.any { it.lost } || direct.notes.any { it.lost })
                         stored.resolve(source, alternates) else direct
                     val progress = directProgress ?: entry.progress?.let { TextAnchors.rebaseProgress(source, it, alternates) }
-                    OpenBook(if (progress != null) entry.copy(progress = progress) else entry, content, source) to marks
+                    Triple(OpenBook(if (progress != null) entry.copy(progress = progress) else entry, content, source), marks, corruptMarks)
                 }
                 if (generation != bookLoadGeneration) return@launch
+                corruptMarksBookId = if (corruptMarks) entry.id else null
                 _marks.value = marks
                 _openBook.value = loaded
+                if (corruptMarks) _messages.value = "《${entry.title}》的书签批注文件损坏，原文件已保留；已停止写入，可从备份恢复"
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -984,28 +1022,78 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 最近一次已经到达、存过进度的阅读页（按实例比较：同样的跳转再来一次是新的一页）。 */
     private var landed: Screen.Reader? = null
+    private val lastSavedReaderSeq = HashMap<String, Long>()
+
+    private data class ProgressWrite(val bookId: String, val progress: ReadingProgress, val revision: Long)
 
     fun landedOn(screen: Screen.Reader): Boolean = landed === screen
 
     fun saveProgress(chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int = 0) {
-        val book = _openBook.value ?: return
-        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return
+        val bookId = _openBook.value?.entry?.id ?: return
+        saveProgressFor(bookId, chapterIndex, itemIndex, itemOffset, charOffset)
+    }
+
+    /** 页面退出或进后台时立即保存，旧页面不能覆盖随后打开的另一本书。 */
+    fun saveProgressFor(bookId: String, chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int, screenSeq: Long? = null) {
+        val write = recordProgressFor(bookId, chapterIndex, itemIndex, itemOffset, charOffset, screenSeq, force = false) ?: return
+        writeLater("保存阅读进度") {
+            synchronized(library) {
+                if (progressRevisions[write.bookId]?.get() == write.revision) library.saveProgress(write.bookId, write.progress)
+            }
+        }
+    }
+
+    /** 生命周期退出时最多等待 300ms；磁盘被恢复事务占用时，应用级任务继续写盘。 */
+    fun flushProgressFor(bookId: String, chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int, screenSeq: Long) {
+        val write = recordProgressFor(bookId, chapterIndex, itemIndex, itemOffset, charOffset, screenSeq, force = true) ?: return
+        val job = progressScope.launch {
+            try {
+                synchronized(library) {
+                    if (progressRevisions[write.bookId]?.get() == write.revision) library.saveProgress(write.bookId, write.progress)
+                }
+                synchronized(reportedWriteFailures) { reportedWriteFailures.remove("保存阅读进度") }
+            } catch (error: Exception) {
+                val report = synchronized(reportedWriteFailures) { reportedWriteFailures.add("保存阅读进度") }
+                if (report) _messages.value = "保存阅读进度失败：${error.message ?: "写入出错"}"
+            }
+        }
+        runBlocking { withTimeoutOrNull(300L) { job.join() } }
+    }
+
+    private fun recordProgressFor(bookId: String, chapterIndex: Int, itemIndex: Int, itemOffset: Int, charOffset: Int, screenSeq: Long?, force: Boolean): ProgressWrite? {
+        val book = _openBook.value ?: return null
+        if (book.entry.id != bookId) return null
+        if (screenSeq != null) {
+            val currentReader = _stack.value.filterIsInstance<Screen.Reader>().lastOrNull { it.bookId == bookId }
+            if (currentReader != null && currentReader.seq != screenSeq) return null
+            if (currentReader == null && screenSeq < (lastSavedReaderSeq[bookId] ?: Long.MIN_VALUE)) return null
+            lastSavedReaderSeq[bookId] = screenSeq
+        }
+        val chapter = book.sourceContent.chapters.getOrNull(chapterIndex) ?: return null
         val anchor = TextAnchors.capture(chapter, itemIndex - 1, charOffset)
         val progress = ReadingProgress(chapterIndex, chapter.title, itemIndex, itemOffset, charOffset, anchor)
         // 跳转的目标已经到了、存过进度：之后重建阅读页就从进度读起（见 ReaderScreen 的 startOf）。
         (_stack.value.lastOrNull() as? Screen.Reader)?.takeIf { it.bookId == book.entry.id && it.chapterIndex == chapterIndex }?.let { landed = it }
-        if (book.entry.progress == progress) return
-        movesSinceJump++
-        _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
-        _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
-        writeLater("保存阅读进度") { library.saveProgress(book.entry.id, progress) }
+        if (book.entry.progress == progress && !force) return null
+        if (book.entry.progress != progress) {
+            movesSinceJump++
+            _openBook.value = book.copy(entry = book.entry.copy(progress = progress))
+            _shelf.update { list -> list.map { if (it.id == book.entry.id) it.copy(progress = progress, openedAt = System.currentTimeMillis()) else it } }
+        }
+        val revision = progressRevisions.getOrPut(bookId) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+        return ProgressWrite(bookId, progress, revision)
     }
 
-    private fun updateMarks(transform: (Marks) -> Marks) {
-        val book = _openBook.value ?: return
+    private fun updateMarks(transform: (Marks) -> Marks): Boolean {
+        val book = _openBook.value ?: return false
+        if (corruptMarksBookId == book.entry.id) {
+            _messages.value = "书签批注文件损坏，原文件已保留；请从备份恢复后再编辑"
+            return false
+        }
         _marks.update(transform)
         val snapshot = _marks.value
         writeLater("保存书签批注") { library.saveMarks(book.entry.id, snapshot) }
+        return true
     }
 
     /** 在某块的某个位置加或删书签（同一块已有书签时删除）。 */
@@ -1015,8 +1103,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val itemIndex = blockIndex + 1
         val existing = _marks.value.bookmarks.filter { it.chapterIndex == chapterIndex && it.itemIndex == itemIndex }
         if (existing.isNotEmpty()) {
-            updateMarks { m -> m.copy(bookmarks = m.bookmarks - existing.toSet()) }
-            _messages.value = "已删除书签"
+            if (updateMarks { m -> m.copy(bookmarks = m.bookmarks - existing.toSet()) }) _messages.value = "已删除书签"
             return
         }
         val excerpt = chapter.blocks.getOrNull(blockIndex)?.displayText?.trim()?.take(40) ?: chapter.title
@@ -1024,11 +1111,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             UUID.randomUUID().toString(), chapterIndex, chapter.title, itemIndex, charOffset, excerpt, System.currentTimeMillis(),
             anchor = TextAnchors.capture(chapter, blockIndex, charOffset),
         )
-        updateMarks { m -> m.copy(bookmarks = m.bookmarks + bookmark) }
-        _messages.value = "已加书签"
+        if (updateMarks { m -> m.copy(bookmarks = m.bookmarks + bookmark) }) _messages.value = "已加书签"
     }
 
-    fun deleteBookmark(id: String) = updateMarks { m -> m.copy(bookmarks = m.bookmarks.filterNot { it.id == id }) }
+    fun deleteBookmark(id: String) { updateMarks { m -> m.copy(bookmarks = m.bookmarks.filterNot { it.id == id }) } }
 
     fun addNote(chapterIndex: Int, blockIndex: Int, start: Int, end: Int, text: String, color: MarkColor) {
         val book = _openBook.value ?: return
@@ -1041,7 +1127,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         updateMarks { m -> m.copy(notes = m.notes + note) }
     }
 
-    fun deleteNote(id: String) = updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) }
+    fun deleteNote(id: String) { updateMarks { m -> m.copy(notes = m.notes.filterNot { it.id == id }) } }
 
     fun bookFile(id: String, name: String): java.io.File = library.bookFile(id, name)
 
@@ -1113,11 +1199,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         covers.get(url)?.let { return it }
         val bytes = runCatching { remote.image(url) }.getOrNull() ?: return null
         val bitmap = withContext(Dispatchers.Default) {
-            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            var sample = 1
-            while (bounds.outHeight / (sample * 2) >= 240) sample *= 2
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+            runCatching {
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                val width = bounds.outWidth
+                val height = bounds.outHeight
+                if (width <= 0 || height <= 0 || width > 32_768 || height > 32_768 || width.toLong() * height > 128_000_000L) return@runCatching null
+                var sample = 1
+                while (width / sample > 512 || height / sample > 512) sample *= 2
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+            }.getOrNull()
         } ?: return null
         return bitmap.asImageBitmap().also { covers.put(url, it) }
     }
@@ -1429,8 +1520,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _messages.value = "已存为批注"
     }
 
-    fun startRecap(chapterIndex: Int, block: Int) {
-        aiBook()?.let { assistant.startRecap(it, ReadPos(chapterIndex, block)) }
+    fun startRecap(chapterIndex: Int, block: Int, char: Int = Int.MAX_VALUE) {
+        aiBook()?.let { assistant.startRecap(it, ReadPos(chapterIndex, block, char)) }
     }
 
     // ---------- 读书笔记 ----------
@@ -1581,11 +1672,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var talkJob: Job? = null
 
     /** 打开讲书稿：存过的直接用，没有（或要重新生成）就让 AI 写。 */
-    fun openTalk(chapterIndex: Int, block: Int, scope: TalkScope, style: TalkStyle, regenerate: Boolean = false) {
+    fun openTalk(chapterIndex: Int, block: Int, scope: TalkScope, style: TalkStyle, regenerate: Boolean = false, char: Int = Int.MAX_VALUE) {
         val book = _openBook.value ?: return
         val chapter = book.content.chapters.getOrNull(chapterIndex) ?: return
         val aiBook = aiBook() ?: return
-        val key = AiTalk.key(scope, style, chapterIndex, chapter.title)
+        // A saved “read so far” script must never be replayed at an earlier position.
+        val key = AiTalk.key(scope, style, chapterIndex, chapter.title) +
+            if (scope == TalkScope.READ) "-$block-$char" else ""
         if (!regenerate && _talk.value.key == key && _talk.value.bookId == book.entry.id && (_talk.value.talk != null || _talk.value.loading)) return
         talkJob?.cancel()
         stopTalk()
@@ -1597,7 +1690,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val talk = cached ?: run {
                     val text = withContext(Dispatchers.IO) {
                         if (scope == TalkScope.CHAPTER) chapterExcerpt(chapter, AiTalk.LIMIT)
-                        else AiPrompts.recentText(book.content, ReadPos(chapterIndex, block), AiTalk.LIMIT)
+                        else AiPrompts.recentText(book.content, ReadPos(chapterIndex, block, char), AiTalk.LIMIT)
                     }
                     if (text.isBlank()) throw AiException("还没读到正文")
                     val answer = assistant.complete(aiBook, AiTalk.prompt(style, scope, chapter.title, text), AnswerLength.LONG)
@@ -1692,12 +1785,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 和 AI 讨论一道思考题：用“问这本书”，只看读到本章末尾为止的内容。 */
-    fun discuss(question: String) {
-        val c = _companion.value
-        val book = _openBook.value ?: return
-        val last = book.content.chapters.getOrNull(c.chapter)?.blocks?.lastIndex ?: return
-        startAskBook(c.chapter, last.coerceAtLeast(0))
+    /** 和 AI 讨论一道思考题：只把当前阅读位置之前的正文发给它。 */
+    fun discuss(question: String, chapterIndex: Int, block: Int, char: Int) {
+        startAskBook(chapterIndex, block, char)
         askAi(question)
     }
 
@@ -1873,45 +1963,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var characterJob: Job? = null
 
     /** 读这本书的人物表（打开书、打开人物表时调用）；[chapterIndex]、[block] 给出时顺便算还有多少没整理。 */
-    fun loadCharacters(chapterIndex: Int? = null, block: Int? = null) {
+    fun loadCharacters(chapterIndex: Int? = null, block: Int? = null, char: Int = Int.MAX_VALUE) {
         val book = _openBook.value ?: return
         viewModelScope.launch {
-            val (table, pending) = withContext(Dispatchers.IO) {
-                val table = AiCharacters.read(library.bookFile(book.entry.id, AiCharacters.FILE))
-                val pending = if (chapterIndex != null && block != null) {
-                    AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
-                } else null
-                table to pending
-            }
-            _characters.update {
-                val base = if (it.bookId == book.entry.id) it else CharacterState(bookId = book.entry.id)
-                base.copy(
-                    table = if (base.running) base.table else table,
-                    pendingChars = pending?.sumOf { c -> c.text.length } ?: base.pendingChars,
-                    pendingChunks = pending?.size ?: base.pendingChunks,
-                )
+            try {
+                val (table, pending) = withContext(Dispatchers.IO) {
+                    val table = AiCharacters.read(library.bookFile(book.entry.id, AiCharacters.FILE))
+                    val pending = if (chapterIndex != null && block != null) {
+                        AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block, it.char) }, ReadPos(chapterIndex, block, char))
+                    } else null
+                    table to pending
+                }
+                if (_openBook.value?.entry?.id != book.entry.id) return@launch
+                _characters.update {
+                    val base = if (it.bookId == book.entry.id) it else CharacterState(bookId = book.entry.id)
+                    base.copy(
+                        table = if (base.running) base.table else table,
+                        pendingChars = pending?.sumOf { c -> c.text.length } ?: base.pendingChars,
+                        pendingChunks = pending?.size ?: base.pendingChunks,
+                        error = null,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (_openBook.value?.entry?.id == book.entry.id) {
+                    _characters.value = CharacterState(book.entry.id, error = "人物表读取失败，原文件已保留：${error.message ?: "请检查文件"}")
+                }
             }
         }
     }
 
     /** 整理人物表：从上次整理到的地方到读者读到的地方，分段发，每段整理完就存盘。 */
-    fun buildCharacters(chapterIndex: Int, block: Int) {
+    fun buildCharacters(chapterIndex: Int, block: Int, char: Int = Int.MAX_VALUE) {
         val book = _openBook.value ?: return
         if (characterJob?.isActive == true) return
         val aiBook = aiBook() ?: return
         characterJob = viewModelScope.launch {
             val file = library.bookFile(book.entry.id, AiCharacters.FILE)
-            var table = withContext(Dispatchers.IO) { AiCharacters.read(file) }
-            val chunks = withContext(Dispatchers.IO) {
-                AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block) }, ReadPos(chapterIndex, block))
-            }
-            _characters.value = CharacterState(book.entry.id, table, running = true, pendingChars = chunks.sumOf { it.text.length }, pendingChunks = chunks.size)
             try {
+                val initial = withContext(Dispatchers.IO) { AiCharacters.read(file) }
+                var table = initial
+                val chunks = withContext(Dispatchers.IO) {
+                    AiCharacters.chunks(book.content, table?.let { ReadPos(it.chapter, it.block, it.char) }, ReadPos(chapterIndex, block, char))
+                }
+                _characters.value = CharacterState(book.entry.id, table, running = true, pendingChars = chunks.sumOf { it.text.length }, pendingChunks = chunks.size)
                 chunks.forEachIndexed { i, chunk ->
                     _characters.update { it.copy(progress = "正在整理第 ${i + 1}/${chunks.size} 段") }
                     val answer = assistant.complete(aiBook, AiCharacters.prompt(table?.characters.orEmpty(), chunk.text), AnswerLength.LONG)
                     val list = AiCharacters.parse(answer)
-                    val next = CharacterTable(list, chunk.end.chapter, chunk.end.block, System.currentTimeMillis())
+                    val next = CharacterTable(list, chunk.end.chapter, chunk.end.block, System.currentTimeMillis(), chunk.end.char)
                     withContext(Dispatchers.IO) { AiCharacters.write(file, next) }
                     table = next
                     val rest = chunks.drop(i + 1)
@@ -1938,8 +2039,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return s.table?.find(word)
     }
 
-    fun startAskBook(chapterIndex: Int, block: Int) {
-        aiBook()?.let { assistant.startAskBook(it, ReadPos(chapterIndex, block)) }
+    fun startAskBook(chapterIndex: Int, block: Int, char: Int = Int.MAX_VALUE) {
+        aiBook()?.let { assistant.startAskBook(it, ReadPos(chapterIndex, block, char)) }
     }
 
     fun askAi(q: QuickAsk) = assistant.ask(q)
@@ -2128,7 +2229,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 生词本 ----------
 
     fun reloadVocabulary() {
-        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.list() } }
+        viewModelScope.launch {
+            try {
+                _vocab.value = withContext(Dispatchers.IO) { vocabulary.list() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "生词本读取失败，原文件已保留：${error.message ?: "请从备份恢复"}"
+            }
+        }
+    }
+
+    private fun changeVocabulary(success: String? = null, action: () -> Unit) {
+        viewModelScope.launch {
+            try {
+                _vocab.value = withContext(Dispatchers.IO) { action(); vocabulary.list() }
+                if (success != null) _messages.value = success
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messages.value = "生词本保存失败，原文件已保留：${error.message ?: "写入出错"}"
+            }
+        }
     }
 
     /** 把查词面板里的词收进生词本：释义摘要取内置词典或导入词典的第一条。 */
@@ -2155,22 +2277,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             bookTitle = book?.entry?.title ?: "",
             addedAt = System.currentTimeMillis(),
         )
-        viewModelScope.launch {
-            _vocab.value = withContext(Dispatchers.IO) { vocabulary.add(entry); vocabulary.list() }
-            _messages.value = "已收入生词本"
-        }
+        changeVocabulary("已收入生词本") { vocabulary.add(entry) }
     }
 
     fun removeFromVocabulary(word: String) {
-        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.remove(word); vocabulary.list() } }
+        changeVocabulary { vocabulary.remove(word) }
     }
 
     fun setMastered(word: String, mastered: Boolean) {
-        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.setMastered(word, mastered); vocabulary.list() } }
+        changeVocabulary { vocabulary.setMastered(word, mastered) }
     }
 
     fun reviewWord(word: String, known: Boolean) {
-        viewModelScope.launch { _vocab.value = withContext(Dispatchers.IO) { vocabulary.review(word, known); vocabulary.list() } }
+        changeVocabulary { vocabulary.review(word, known) }
     }
 
     fun vocabularyMarkdown(words: List<VocabWord>): String = vocabulary.toMarkdown(words)
@@ -2330,7 +2449,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val result = withContext(Dispatchers.IO) {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
                         ?: throw IllegalArgumentException("无法读取备份文件")
-                    input.use { library.restore(it) }
+                    input.use { stream ->
+                        library.restore(stream) { data ->
+                            data["vocabulary.json"]?.let { vocabulary.validateBackup(it) }
+                            data["stats.json"]?.let { stats.validateBackup(it) }
+                            data["writing.json"]?.let { writing.validateBackup(it) }
+                        }
+                    }
                 }
                 restoredBooks = result.books
                 result.data.let { data ->
@@ -2526,11 +2651,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return converter.convert(content)
     }
 
+    private var searchJob: Job? = null
+    private var searchGeneration = 0L
+
     fun search(query: String) {
         _searchQuery.value = query
-        val content = _openBook.value?.content ?: return
-        viewModelScope.launch {
-            _searchHits.value = withContext(Dispatchers.Default) { BookParser.search(content, query) }
+        searchGeneration++
+        searchJob?.cancel()
+        _searchHits.value = emptyList()
+        val book = _openBook.value ?: return
+        if (query.isBlank()) return
+        val generation = searchGeneration
+        searchJob = viewModelScope.launch {
+            val hits = withContext(Dispatchers.Default) {
+                val worker = currentCoroutineContext()[Job]
+                BookParser.search(book.content, query, shouldContinue = { worker?.isActive == true })
+            }
+            if (generation == searchGeneration && _searchQuery.value == query && _openBook.value?.content === book.content) {
+                _searchHits.value = hits
+            }
         }
     }
 
@@ -2640,6 +2779,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun open(screen: Screen) {
         if (screen is Screen.Reader && screen.bookId != _returnPoint.value?.bookId) _returnPoint.value = null
         if (screen is Screen.Search) {
+            searchGeneration++
+            searchJob?.cancel()
             _searchQuery.value = ""
             _searchHits.value = emptyList()
         }
@@ -2652,13 +2793,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 从搜索结果跳到正文：替换掉搜索页和原阅读页，返回时直接回书架。 */
-    fun jumpFromSearch(bookId: String, chapterIndex: Int, blockIndex: Int) {
+    fun jumpFromSearch(bookId: String, chapterIndex: Int, blockIndex: Int, charOffset: Int = 0) {
         // 搜索前读到的地方就是存下的进度。
         _openBook.value?.entry?.takeIf { it.id == bookId }?.progress?.let { p ->
             markJump(ReturnPoint(bookId, p.chapterIndex, p.itemIndex - com.xycs.lingyuereader.ui.HEADER_ITEMS, p.itemOffset, p.charOffset, p.chapterTitle))
         }
         _stack.update { stack ->
-            stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex, highlight = true)
+            stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex, char = charOffset, highlight = true)
         }
     }
 

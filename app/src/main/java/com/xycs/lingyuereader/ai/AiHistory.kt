@@ -65,7 +65,7 @@ class AiHistory(private val file: () -> File?) {
                     .put("chapterTitle", t.chapterTitle).put("chapter", t.chapter)
                     .put("pieces", JSONArray().apply { t.pieces.forEach { put(JSONArray().put(it.block).put(it.start).put(it.end)) } })
                 is AiTask.AskBook -> o.put("kind", "book").put("title", s.turns.firstOrNull()?.question.orEmpty().take(60))
-                    .put("chapter", t.pos.chapter).put("block", t.pos.block)
+                    .put("chapter", t.pos.chapter).put("block", t.pos.block).put("char", t.pos.char)
                 is AiTask.Recap -> o.put("kind", "recap")
             }
             o.put("turns", JSONArray().apply {
@@ -89,7 +89,8 @@ class AiHistory(private val file: () -> File?) {
                     o.getString("text"), o.optString("context"), o.optString("chapterTitle"), o.optInt("chapter", -1),
                     o.optJSONArray("pieces")?.let { a -> (0 until a.length()).map { a.getJSONArray(it).let { p -> NoteRange(p.getInt(0), p.getInt(1), p.getInt(2)) } } }.orEmpty(),
                 )
-                "book" -> AiTask.AskBook(ReadPos(o.getInt("chapter"), o.getInt("block")))
+                // 旧对话没有字符坐标，继续提问时保守地从当前块开头截断，避免发送未读的后半段。
+                "book" -> AiTask.AskBook(ReadPos(o.getInt("chapter"), o.getInt("block"), o.optInt("char", 0)))
                 else -> return@runCatching null
             }
             val turns = o.getJSONArray("turns")

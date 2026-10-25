@@ -90,6 +90,7 @@ object ReadAloud {
     private val main = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var ready = false
+    private var engineGeneration = 0L
     private var appContext: Context? = null
 
     private var content: BookContent? = null
@@ -165,8 +166,10 @@ object ReadAloud {
         voice: String? = null,
         ai: AiVoice? = null,
         saveProgress: ((chapterIndex: Int, block: Int, char: Int) -> ReadingProgress?)? = null,
+        startPaused: Boolean = false,
     ) {
         invalidateUtterances()
+        pendingStart = null
         haltEngine()
         // 换书前把上一本听到的地方存下。
         persistNow(force = true)
@@ -180,7 +183,7 @@ object ReadAloud {
         if (previousTimer !is SleepTimer.At) main.removeCallbacks(sleepRunnable)
         val engine = tts
         _state.value = ReadAloudState(
-            bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, true, rate, previousTimer,
+            bookId, bookTitle, chapterIndex, content.chapters[chapterIndex].title, null, !startPaused, rate, previousTimer,
             voices = when {
                 ai != null -> ai.voices
                 previous != null && previous.aiLabel == null && previous.voices.isNotEmpty() -> previous.voices
@@ -193,18 +196,21 @@ object ReadAloud {
             offline = ai?.offline == true,
         )
         loadChapter(chapterIndex, block, char)
-        requestFocus()
-        ensureEngine {
-            val current = _state.value ?: return@ensureEngine
-            tts?.setSpeechRate(current.rate)
-            applyVoice(current.voice)
-            speakFrom(index)
+        if (!startPaused) {
+            requestFocus()
+            ensureEngine {
+                val current = _state.value ?: return@ensureEngine
+                tts?.setSpeechRate(current.rate)
+                applyVoice(current.voice)
+                speakFrom(index)
+            }
         }
         ContextCompat.startForegroundService(context, Intent(context, ReadAloudService::class.java))
     }
 
     fun pause() {
         invalidateUtterances()
+        pendingStart = null
         _state.update { it?.copy(playing = false) }
         haltEngine()
         persistNow(force = true)
@@ -271,6 +277,7 @@ object ReadAloud {
         persist = null
         abandonFocus()
         invalidateUtterances()
+        pendingStart = null
         main.removeCallbacks(sleepRunnable)
         haltEngine()
         speaker?.release()
@@ -449,6 +456,7 @@ object ReadAloud {
         tts?.shutdown()
         tts = null
         ready = false
+        engineGeneration++
         pendingStart = null
         content = null
         queue = emptyList()
@@ -500,6 +508,7 @@ object ReadAloud {
     private fun ensureEngine(then: () -> Unit) {
         // AI 语音不用系统引擎，马上可以读。
         if (speaker != null) {
+            pendingStart = null
             then()
             return
         }
@@ -509,19 +518,24 @@ object ReadAloud {
         }
         pendingStart = then
         if (tts != null) return
+        val generation = ++engineGeneration
         tts = TextToSpeech(appContext) { status ->
             main.post {
+                if (generation != engineGeneration) return@post
                 if (status != TextToSpeech.SUCCESS) {
-                    _state.update { it?.copy(playing = false, error = "没有可用的语音引擎，请在系统设置里安装或启用“文字转语音”") }
+                    pendingStart = null
+                    if (speaker == null) _state.update { it?.copy(playing = false, error = "没有可用的语音引擎，请在系统设置里安装或启用“文字转语音”") }
                     tts = null
+                    ready = false
+                    engineGeneration++
                     return@post
                 }
                 val engine = tts ?: return@post
                 val lang = engine.setLanguage(Locale.SIMPLIFIED_CHINESE)
-                if (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED) {
+                if (speaker == null && (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED)) {
                     _state.update { it?.copy(error = "语音引擎缺少中文语音包，朗读可能不正常") }
                 }
-                _state.update { it?.copy(voices = chineseVoices(engine)) }
+                if (speaker == null) _state.update { it?.copy(voices = chineseVoices(engine)) }
                 engine.setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -547,8 +561,9 @@ object ReadAloud {
                     }
                 })
                 ready = true
-                pendingStart?.invoke()
+                val start = pendingStart
                 pendingStart = null
+                if (speaker == null && _state.value?.playing == true) start?.invoke()
             }
         }
     }

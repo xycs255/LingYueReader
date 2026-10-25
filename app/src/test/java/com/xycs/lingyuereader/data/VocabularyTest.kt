@@ -151,4 +151,93 @@ class VocabularyTest {
         assertFalse(original.contentEquals(file.readBytes()))
         assertEquals(listOf("门口", "银行"), Vocabulary(file).list().map { it.word })
     }
+
+    @Test
+    @Config(sdk = [26, 28, 29, 36])
+    fun readFailureBeforeUpdatePreservesVocabularyInsteadOfWritingEmptyList() {
+        val file = File(tmp.root, "v.json")
+        Vocabulary(file).add(word("银行"))
+        val original = file.readBytes()
+        val injected = object : AtomicFile(file) {
+            var failRead = true
+            var startedWrites = 0
+
+            override fun readFully(): ByteArray {
+                if (failRead) throw IOException("injected readFully before update")
+                return super.readFully()
+            }
+
+            override fun startWrite(): FileOutputStream {
+                startedWrites++
+                return super.startWrite()
+            }
+        }
+        val v = Vocabulary(file, injected)
+
+        assertTrue(runCatching { v.list() }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { v.add(word("门口")) }.exceptionOrNull() is IllegalStateException)
+        assertEquals(0, injected.startedWrites)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, File(tmp.root, "v.json.damaged").readBytes())
+
+        injected.failRead = false
+        v.add(word("门口"))
+        assertEquals(listOf("门口", "银行"), v.list().map { it.word })
+    }
+
+    @Test
+    fun malformedExistingRecordCannotBeSilentlyDroppedByNextUpdate() {
+        val file = File(tmp.root, "v.json")
+        file.writeText("""[{"word":"银行"},{}]""")
+        val original = file.readBytes()
+        val v = Vocabulary(file)
+
+        assertTrue(runCatching { v.add(word("门口")) }.exceptionOrNull() is IllegalStateException)
+        assertArrayEquals(original, file.readBytes())
+        assertArrayEquals(original, File(tmp.root, "v.json.damaged").readBytes())
+    }
+
+    @Test
+    fun backupValidationRejectsBadRecordsWithoutTouchingLocalVocabulary() {
+        val file = File(tmp.root, "v.json")
+        val v = Vocabulary(file)
+        v.add(word("银行"))
+        val original = file.readBytes()
+
+        assertTrue(runCatching { v.validateBackup("""[{"word":"门口"},{}]""") }.isFailure)
+        assertArrayEquals(original, file.readBytes())
+        v.validateBackup("""[{"word":"门口"}]""")
+        assertArrayEquals(original, file.readBytes())
+    }
+
+    @Test
+    fun malformedExistingFieldsCannotBeCoercedToDefaultsAndOverwritten() {
+        val badValues = listOf(
+            """{"word":"银行","addedAt":"bad"}""",
+            """{"word":"银行","reviewedAt":-1}""",
+            """{"word":"银行","lookups":0}""",
+            """{"word":"银行","interval":1.5}""",
+            """{"word":"银行","due":true}""",
+            """{"word":"银行","mastered":"true"}""",
+            """{"word":123}""",
+        )
+        badValues.forEachIndexed { i, item ->
+            val file = File(tmp.root, "bad-$i.json").apply { writeText("[$item]") }
+            val original = file.readBytes()
+
+            assertTrue(runCatching { Vocabulary(file).add(word("门口")) }.exceptionOrNull() is IllegalStateException)
+            assertArrayEquals(original, file.readBytes())
+            assertArrayEquals(original, File(tmp.root, "bad-$i.json.damaged").readBytes())
+        }
+    }
+
+    @Test
+    fun missingFieldsInOlderVocabularyStillUseDefaults() {
+        val file = File(tmp.root, "legacy.json").apply { writeText("""[{"word":"银行"}]""") }
+        val saved = Vocabulary(file).list().single()
+        assertEquals(1, saved.lookups)
+        assertEquals(0L, saved.addedAt)
+        assertEquals(0, saved.interval)
+        assertFalse(saved.mastered)
+    }
 }

@@ -2,10 +2,11 @@ package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.spokenText
 import kotlin.math.ln
 
-/** 读者在书里读到哪：第几章第几块（含这一块）。只发这之前的原文，免得剧透。 */
-data class ReadPos(val chapter: Int, val block: Int)
+/** 已读边界：[char] 是当前块可见原文（去掉格式标记）的 UTF-16 坐标。旧调用默认包含整块。 */
+data class ReadPos(val chapter: Int, val block: Int, val char: Int = Int.MAX_VALUE)
 
 /** 问这本书时引用的一段原文：在第几章第几块开始。 */
 data class AiSource(val index: Int, val chapter: Int, val chapterTitle: String, val block: Int, val text: String)
@@ -62,11 +63,11 @@ object AiPrompts {
     }
 
     /** 某块的正文；图片、分隔线没有字。 */
-    private fun textOf(b: Block): String = b.plainText
+    private fun textOf(b: Block): String = b.spokenText ?: b.plainText
 
     /**
      * 前情提要用的原文：从读者停下的地方往回取，最多 [limit] 字；跨章时插入【章名】。
-     * 只取 [pos] 之前（含当前块）的内容。
+     * 只取 [pos] 之前的内容；当前块只取 [ReadPos.char] 之前的原文。
      */
     fun recentText(content: BookContent, pos: ReadPos, limit: Int = RECAP_CHARS): String {
         val parts = ArrayDeque<String>()
@@ -81,7 +82,8 @@ object AiPrompts {
             var b = last
             val chapterParts = ArrayDeque<String>()
             while (b >= 0 && used < limit) {
-                val t = textOf(blocks[b]).trim()
+                val raw = textOf(blocks[b])
+                val t = (if (first && b == last) raw.take(pos.char.coerceIn(0, raw.length)) else raw).trim()
                 if (t.isNotEmpty()) {
                     val room = limit - used
                     val piece = if (t.length > room) "……" + t.takeLast(room) else t
@@ -192,7 +194,8 @@ class BookIndex private constructor(
                     start = -1
                 }
                 for (b in 0..end) {
-                    val t = blocks[b].plainText.trim()
+                    val raw = blocks[b].spokenText ?: blocks[b].plainText
+                    val t = (if (ch == last && b == end) raw.take(pos.char.coerceIn(0, raw.length)) else raw).trim()
                     if (t.isEmpty()) continue
                     if (start < 0) start = b
                     if (buf.isNotEmpty()) buf.append('\n')

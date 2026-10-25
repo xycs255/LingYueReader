@@ -455,7 +455,10 @@ internal fun BlockView(
             val gestures = Modifier.pointerInput(block) {
                 detectTapGestures(onTap = { p -> tap?.invoke(p.x / size.width) }, onLongPress = { zoom?.invoke(block.src) })
             }
-            BookImage(block.src, palette.bar, modifier.then(gestures).padding(bottom = gap))
+            BookImage(
+                block.src, palette.bar, modifier.then(gestures).padding(bottom = gap),
+                description = block.alt.ifBlank { "插图" },
+            )
         }
     }
 }

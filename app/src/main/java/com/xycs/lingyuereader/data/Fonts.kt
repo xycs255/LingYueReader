@@ -2,12 +2,22 @@ package com.xycs.lingyuereader.data
 
 import java.io.File
 import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * 用户导入的字体（TTF/OTF/TTC），存在 files/fonts/。设置里按文件名引用；
  * 文件不在了（比如从备份恢复到新手机，字体没打包）就退回内置的宋体。
  */
-class FontStore(private val dir: File) {
+class FontStore internal constructor(
+    private val dir: File,
+    private val replace: (File, File) -> Unit,
+) {
+    constructor(dir: File) : this(dir, { from, to ->
+        // 同目录的原子替换：覆盖失败时旧字体仍在，绝不先删掉它。
+        Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    })
+
     fun list(): List<String> =
         dir.listFiles()?.filter { it.isFile && it.extension.lowercase() in EXTENSIONS }?.map { it.name }?.sortedWith(BookParser.NaturalOrder).orEmpty()
 
@@ -15,18 +25,19 @@ class FontStore(private val dir: File) {
 
     /** 导入一个字体文件；不是字体时抛出异常。返回保存后的文件名。 */
     fun import(name: String, input: InputStream): String {
-        dir.mkdirs()
+        check(dir.isDirectory || dir.mkdirs()) { "无法准备字体目录" }
         val safe = name.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "font.ttf" }
         val target = File(dir, safe)
-        val tmp = File(dir, "$safe.tmp")
-        input.use { i -> tmp.outputStream().use { i.copyTo(it) } }
-        if (!isFont(tmp)) {
+        val tmp = File.createTempFile("font-", ".tmp", dir)
+        try {
+            input.use { i -> tmp.outputStream().use { i.copyTo(it) } }
+            require(isFont(tmp)) { "不是 TTF/OTF 字体文件" }
+            replace(tmp, target)
+            check(!tmp.exists() && target.isFile) { "无法安装字体文件" }
+            return target.name
+        } finally {
             tmp.delete()
-            throw IllegalArgumentException("不是 TTF/OTF 字体文件")
         }
-        target.delete()
-        tmp.renameTo(target)
-        return target.name
     }
 
     fun delete(name: String) {

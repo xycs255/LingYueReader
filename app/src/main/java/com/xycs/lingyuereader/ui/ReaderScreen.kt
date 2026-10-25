@@ -359,9 +359,14 @@ private fun Reader(
 
     SystemBars(darkBackground = palette.isDark, hidden = settings.fullscreen && !menuVisible)
     // 只计阅读页在前台的时间：切到后台或离开阅读页时把这段时长记下。
-    LifecycleResumeEffect(entry.id) {
+    val latestPosition by rememberUpdatedState(pos)
+    LifecycleResumeEffect(entry.id, screen.seq) {
         val start = System.currentTimeMillis()
-        onPauseOrDispose { vm.addReadingTime(entry.id, System.currentTimeMillis() - start) }
+        onPauseOrDispose {
+            val at = latestPosition
+            vm.flushProgressFor(entry.id, at.chapter, at.item, at.offset, at.char, screen.seq)
+            vm.addReadingTime(entry.id, System.currentTimeMillis() - start)
+        }
     }
 
     // 阅读统计：各章在全书中的起始字数，用来把位置换算成“读到第几个字”。
@@ -378,7 +383,7 @@ private fun Reader(
     // 停下 300 毫秒再存进度，免得滚动时频繁写文件。
     LaunchedEffect(pos) {
         delay(300)
-        vm.saveProgress(pos.chapter, pos.item, pos.offset, pos.char)
+        vm.saveProgressFor(entry.id, pos.chapter, pos.item, pos.offset, pos.char, screen.seq)
         // 顺着读下去的字数计入统计；跳章、拖进度条这类一下子跳很远的不算（每秒最多算 30 字，外加一页的余量）。
         val now = android.os.SystemClock.elapsedRealtime()
         val at = charIndexOf(pos)
@@ -913,8 +918,8 @@ private fun Reader(
                                             aiMenu = false
                                             menuVisible = false
                                             when (item) {
-                                                AiMenuItem.RECAP -> vm.startRecap(chapterIndex, block)
-                                                AiMenuItem.ASK_BOOK -> vm.startAskBook(chapterIndex, block)
+                                                AiMenuItem.RECAP -> vm.startRecap(chapterIndex, block, pos.char)
+                                                AiMenuItem.ASK_BOOK -> vm.startAskBook(chapterIndex, block, pos.char)
                                                 AiMenuItem.HISTORY -> aiTool = AiTool.HISTORY
                                                 AiMenuItem.CHARACTERS -> aiTool = AiTool.CHARACTERS
                                                 AiMenuItem.NOTES -> aiTool = AiTool.NOTES
@@ -1258,7 +1263,7 @@ private fun Reader(
             )
         }
     }
-    AiToolSheets(aiTool, vm, palette, appTint, chapterIndex, pos.block.coerceAtLeast(0), onClose = { aiTool = null })
+    AiToolSheets(aiTool, vm, palette, appTint, chapterIndex, pos.block.coerceAtLeast(0), pos.char, onClose = { aiTool = null })
     LookupOverlay(vm, palette, appTint) { l ->
         vm.closeLookup()
         if (l.chapterIndex == chapterIndex) sheet = ReaderSheet.Paragraph(l.block, l.range)

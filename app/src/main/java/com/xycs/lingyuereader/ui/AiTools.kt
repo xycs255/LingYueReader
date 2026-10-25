@@ -82,7 +82,7 @@ internal fun AiMenuItems(onPick: (AiMenuItem) -> Unit) {
 
 /** AI 工具的面板：随书页配色，收起动画期间还显示原来的内容。 */
 @Composable
-internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalette, tint: Color, chapter: Int, block: Int, onClose: () -> Unit) {
+internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalette, tint: Color, chapter: Int, block: Int, char: Int, onClose: () -> Unit) {
     var last by remember { mutableStateOf<AiTool?>(null) }
     tool?.let { last = it }
     // 讲书面板关了就停（收起动画期间面板内容可能还在）。
@@ -102,13 +102,13 @@ internal fun AiToolSheets(tool: AiTool?, vm: AppViewModel, palette: ReaderPalett
                         onClose()
                         vm.resumeAi(id)
                     })
-                    AiTool.CHARACTERS -> CharacterSheet(vm, chapter, block)
+                    AiTool.CHARACTERS -> CharacterSheet(vm, chapter, block, char)
                     AiTool.NOTES -> NotesSheet(vm)
                     AiTool.TRANSLATE -> TranslateSheet(vm, chapter, onClose)
-                    AiTool.TALK -> TalkSheet(vm, chapter, block)
+                    AiTool.TALK -> TalkSheet(vm, chapter, block, char)
                     AiTool.COMPANION -> CompanionSheet(vm, chapter, onDiscuss = { q ->
                         onClose()
-                        vm.discuss(q)
+                        vm.discuss(q, chapter, block, char)
                     })
                     null -> {}
                 }
@@ -170,17 +170,17 @@ private fun HistorySheet(vm: AppViewModel, onOpen: (String) -> Unit) {
  * 读到新内容时顶上“更新”。只看读过的部分。
  */
 @Composable
-private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int) {
+private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
     val c = LocalGroupedColors.current
     val state by vm.characters.collectAsStateWithLifecycle()
     val config by vm.aiConfig.collectAsStateWithLifecycle()
     val book by vm.openBook.collectAsStateWithLifecycle()
-    LaunchedEffect(chapter, block) { vm.loadCharacters(chapter, block) }
+    LaunchedEffect(chapter, block, char) { vm.loadCharacters(chapter, block, char) }
     val table = state.table
     SheetNavBar(
         "人物表",
         back = null,
-        action = if (table != null && state.pendingChars > 0 && !state.running) "更新" to { vm.buildCharacters(chapter, block) } else null,
+        action = if (table != null && state.pendingChars > 0 && !state.running) "更新" to { vm.buildCharacters(chapter, block, char) } else null,
     ) {}
     Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val wan = { n: Int -> if (n >= 10_000) "%.1f 万".format(n / 10_000f) else "$n" }
@@ -209,7 +209,7 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int) {
                             .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(c.tint)
-                            .clickable(role = Role.Button) { vm.buildCharacters(chapter, block) }
+                            .clickable(role = Role.Button) { vm.buildCharacters(chapter, block, char) }
                             .padding(vertical = 13.dp),
                         textAlign = TextAlign.Center,
                     )
@@ -516,7 +516,7 @@ private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -
  * 正在读的句子高亮，点哪句从哪句读。关掉面板就停。
  */
 @Composable
-private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int) {
+private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
     val c = LocalGroupedColors.current
     val state by vm.talk.collectAsStateWithLifecycle()
     val player by vm.talkPlayer.collectAsStateWithLifecycle()
@@ -526,10 +526,10 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int) {
     DisposableEffect(Unit) { onDispose { vm.stopTalk() } }
     LaunchedEffect(scope, style) {
         // 换了范围或形式：有存过的稿子就直接打开，没有就等读者点“生成”。
-        if (state.talk != null || state.key.isNotEmpty()) vm.openTalk(chapter, block, scope, style)
+        if (state.talk != null || state.key.isNotEmpty()) vm.openTalk(chapter, block, scope, style, char = char)
     }
     val talk = state.talk
-    SheetNavBar("AI 讲书", back = null, action = if (talk != null && !state.loading) "重新生成" to { vm.openTalk(chapter, block, scope, style, regenerate = true) } else null) {}
+    SheetNavBar("AI 讲书", back = null, action = if (talk != null && !state.loading) "重新生成" to { vm.openTalk(chapter, block, scope, style, regenerate = true, char = char) } else null) {}
     GroupedSection {
         row { SegmentedRow(TalkScope.entries.map { it to it.label }, scope) { scope = it } }
         row { SegmentedRow(TalkStyle.entries.map { it to it.label }, style) { style = it } }
@@ -543,7 +543,7 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int) {
             }
             talk == null -> {
                 Text("把${if (scope == TalkScope.CHAPTER) "这一章" else "读过的部分"}讲成一段${if (style == TalkStyle.DUO) "两人对谈的播客" else "讲书节目"}，约 1500 字，再用$voice 读出来。只讲读过的，不剧透。", color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp)
-                PrimaryButton("生成讲书稿") { vm.openTalk(chapter, block, scope, style) }
+                PrimaryButton("生成讲书稿") { vm.openTalk(chapter, block, scope, style, char = char) }
             }
         }
         state.error?.let { Text(it, color = c.destructive, fontSize = 14.sp) }

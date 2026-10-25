@@ -32,10 +32,18 @@ jobs:
       - name: Release signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.LINGYUE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.LINGYUE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.LINGYUE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.LINGYUE_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
+          if [ -n "$KEYSTORE_BASE64" ] || [ -n "$KEYSTORE_PASSWORD" ] || [ -n "$KEY_ALIAS" ] || [ -n "$KEY_PASSWORD" ]; then
+            if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+              echo "Release signing is only partially configured." >&2
+              exit 1
+            fi
             echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lingyue-release.p12"
             echo "LINGYUE_KEYSTORE_FILE=$RUNNER_TEMP/lingyue-release.p12" >> "$GITHUB_ENV"
+            echo "LINGYUE_RELEASE_SIGNING=1" >> "$GITHUB_ENV"
             echo "Signing with the release key."
           else
             echo "No release key configured; using the debug key."
@@ -46,6 +54,15 @@ jobs:
           LINGYUE_KEY_ALIAS: ${{ secrets.LINGYUE_KEY_ALIAS }}
           LINGYUE_KEY_PASSWORD: ${{ secrets.LINGYUE_KEY_PASSWORD }}
         run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lint :app:assembleRelease
+      - name: Verify release APK signature
+        run: |
+          apk=app/build/outputs/apk/release/app-release.apk
+          signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$signer" verify "$apk"
+          if [ "${LINGYUE_RELEASE_SIGNING:-0}" = 1 ] && "$signer" verify --print-certs "$apk" | grep -Fq 'CN=Android Debug'; then
+            echo "Release signing was configured, but the APK uses the debug certificate." >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-apk

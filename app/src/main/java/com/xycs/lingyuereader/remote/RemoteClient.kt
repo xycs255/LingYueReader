@@ -31,6 +31,13 @@ import kotlin.coroutines.resumeWithException
 /** 给读者看的出错说明（中文、不含密码）。 */
 class RemoteException(message: String) : IOException(message)
 
+/** OPDS 的封面可能指向任意第三方；只自动加载读者已配置书源的同源图片。 */
+fun sameCatalogOrigin(catalogUrl: String, imageUrl: String): Boolean {
+    val catalog = catalogUrl.trim().toHttpUrlOrNull() ?: return false
+    val image = imageUrl.trim().toHttpUrlOrNull() ?: return false
+    return catalog.scheme == image.scheme && catalog.host == image.host && catalog.port == image.port
+}
+
 /**
  * 连书源。密码只加在和书源同一主机、同一端口的请求上：网络拦截器逐跳检查，重定向到别的主机时不带。
  * 只在读者浏览、搜索、下载、刷新时调用。
@@ -45,6 +52,8 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
             chain.proceed(if (auth != null && req.header("Authorization") == null) req.newBuilder().header("Authorization", auth).build() else req)
         }
         .build()
+    /** 封面不跟随跳转，避免同源 URL 在后台把请求转给别的网站。 */
+    private val imageHttp = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
 
     /** 同一主机上有几个书源时，取地址最长、最贴近的那个的账号。 */
     private fun credentialsFor(url: HttpUrl): String? = catalogs()
@@ -76,7 +85,7 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
 
     /** 封面缩略图，最多 2 MB。 */
     suspend fun image(url: String): ByteArray = withContext(Dispatchers.IO) {
-        call(Request.Builder().url(url).build()).use { r ->
+        call(Request.Builder().url(url).build(), imageHttp).use { r ->
             check(r, url)
             val body = r.body ?: throw RemoteException("没有内容")
             if (body.contentLength() > MAX_IMAGE) throw RemoteException("图片太大")
@@ -148,9 +157,9 @@ class RemoteClient(private val catalogs: () -> List<Catalog>) {
         Request.Builder().url(url.toHttpUrlOrNull()?.toString() ?: throw RemoteException("地址不对：要以 http:// 或 https:// 开头"))
 
     /** 可取消的请求：协程取消时连接一起断。 */
-    private suspend fun call(req: Request): Response {
+    private suspend fun call(req: Request, client: OkHttpClient = http): Response {
         val validated = request(req.url.toString()).headers(req.headers).method(req.method, req.body).build()
-        val c = http.newCall(validated)
+        val c = client.newCall(validated)
         return suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { c.cancel() }
             c.enqueue(object : Callback {

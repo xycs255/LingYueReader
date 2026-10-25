@@ -421,8 +421,7 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
     if (current != null) {
         LaunchedEffect(current) {
             snapshotFlow { current.text.toString() }.drop(1).debounce(800).collect { text ->
-                vm.writing.saveDoc(workId, docId, text)
-                savedText = text
+                vm.writing.saveDoc(workId, docId, text, onSaved = { savedText = text })
             }
         }
     }

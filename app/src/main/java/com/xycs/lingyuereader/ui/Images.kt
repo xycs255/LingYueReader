@@ -139,10 +139,16 @@ val LocalImageZoom = staticCompositionLocalOf<((String) -> Unit)?> { null }
 val LocalImageMaxHeight = compositionLocalOf { Dp.Infinity }
 
 @Composable
-internal fun BookImage(src: String, placeholder: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+internal fun BookImage(
+    src: String,
+    placeholder: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+    description: String? = null,
+) {
     val images = LocalBookImages.current ?: return
     val maxHeight = LocalImageMaxHeight.current
-    BoxWithConstraints(modifier.fillMaxWidth()) {
+    val accessible = if (description != null) Modifier.semantics { contentDescription = description } else Modifier
+    BoxWithConstraints(modifier.fillMaxWidth().then(accessible)) {
         // 高宽比要打开压缩包读图片头：量过的直接用，没量过的到后台去量（量好前按 3:4 占位）。
         val measured by produceState(images.knownAspect(src), src) {
             if (value == null) value = withContext(Dispatchers.IO) { images.aspect(src) }

@@ -102,7 +102,7 @@ class DeviceModelFiles(
     /** 装好的模型：目录里的预设模型和导入的 .task。 */
     fun installedIds(): List<String> {
         val presets = DeviceModels.ALL.filter { installed(it.id) }.map { it.id }
-        val imported = root.listFiles()?.filter { f -> f.isFile && f.name.endsWith(".task") && DeviceModels.ALL.none { it.fileName == f.name } }
+        val imported = root.listFiles()?.filter { f -> f.isFile && f.name.endsWith(".task", ignoreCase = true) && DeviceModels.ALL.none { it.fileName.equals(f.name, ignoreCase = true) } }
             ?.map { DeviceModels.FILE + it.name }.orEmpty()
         return presets + imported.sorted()
     }

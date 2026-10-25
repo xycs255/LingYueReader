@@ -148,11 +148,11 @@ class WritingModel(
     }
 
     /** 自动保存。每写 [SNAPSHOT_EVERY] 存一个历史版本；[closing] 为真（离开这一章）时也存一版。 */
-    fun save(workId: String, chapterId: String, text: String, closing: Boolean = false) {
+    fun save(workId: String, chapterId: String, text: String, closing: Boolean = false, onSaved: () -> Unit = {}) {
         scope.launch {
             try {
                 val work = withContext(disk) {
-                    val saved = store.saveText(workId, chapterId, text)
+                    val saved = requireNotNull(store.saveText(workId, chapterId, text)) { "章节不在了" }
                     val now = System.currentTimeMillis()
                     if (text.isNotBlank() && (closing || now - (lastSnapshot[chapterId] ?: 0) >= SNAPSHOT_EVERY)) {
                         store.snapshot(workId, chapterId, text)
@@ -162,6 +162,7 @@ class WritingModel(
                 }
                 publish(work.first)
                 _stats.value = work.second
+                onSaved()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -194,9 +195,15 @@ class WritingModel(
 
     fun setGoal(goal: Int) {
         scope.launch {
-            _stats.value = withContext(disk) {
-                store.setGoal(goal)
-                store.stats()
+            try {
+                _stats.value = withContext(disk) {
+                    store.setGoal(goal)
+                    store.stats()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存目标失败：${e.message ?: "写入出错"}")
             }
         }
     }
@@ -330,16 +337,16 @@ class WritingModel(
     }
 
     /** 自动保存文档（不算码字数）。每写 [SNAPSHOT_EVERY] 和离开时存一版。 */
-    fun saveDoc(workId: String, docId: String, text: String, closing: Boolean = false) {
+    fun saveDoc(workId: String, docId: String, text: String, closing: Boolean = false, onSaved: () -> Unit = {}) {
         val key = store.docKey(docId)
         changePack(workId, "保存失败", {
-            store.savePackText(workId, docId, text)
+            requireNotNull(store.savePackText(workId, docId, text)) { "设定文档不在了" }
             val now = System.currentTimeMillis()
             if (text.isNotBlank() && (closing || now - (lastSnapshot[key] ?: 0) >= SNAPSHOT_EVERY)) {
                 store.snapshot(workId, key, text)
                 lastSnapshot[key] = now
             }
-        })
+        }, onSaved)
     }
 
     fun docKey(docId: String) = store.docKey(docId)
@@ -480,6 +487,8 @@ class WritingModel(
     }
 
     internal fun backup(): ByteArray? = store.backup()
+
+    internal fun validateBackup(json: String) = store.validateBackup(json)
 
     internal fun restoreBackup(json: String): Int = store.restoreBackup(json).also {
         _packs.value = emptyMap()

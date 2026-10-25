@@ -44,6 +44,8 @@ data class ChapterCard(
     val plan: String = "",
     /** 从卷纲细纲自动提取时，前六项的指纹；作者改过前六项就对不上了，以后不再跟着细纲变。0 表示不是提取的。 */
     val auto: Int = 0,
+    /** 独立于正文的修改时间；恢复旧备份时不能用正文时间覆盖后来写的细纲。 */
+    val updatedAt: Long = 0,
 ) {
     /** 细纲（写之前的六项）是不是空的；摘要不算。 */
     val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
@@ -167,12 +169,62 @@ object WordCount {
  * - stats.json：每天码字数和目标。
  * 写盘都先写临时文件再改名（[DurableFiles]），写到一半断电也不会坏稿。
  */
-class WorkStore(private val root: File) {
+class WorkStore(private val root: File, private val restoreSwapHook: ((String) -> Unit)? = null) {
 
     private val works = File(root, "works")
     private val history = File(root, "history")
     private val statsFile = File(root, "stats.json")
     private val clock: () -> Long = System::currentTimeMillis
+
+    init { recoverInterruptedRestore() }
+
+    /** A restore is swapped one work at a time; this journal restores the old set after a crash. */
+    private fun recoverInterruptedRestore() {
+        root.listFiles().orEmpty().filter { it.isDirectory && it.name.startsWith(RESTORE_PREFIX) }.forEach { stage ->
+            val journal = File(stage, "journal.json")
+            if (!journal.isFile) {
+                check(stage.deleteRecursively()) { "无法清理未完成的写作恢复暂存区" }
+                return@forEach
+            }
+            if (!File(stage, "committed").isFile) rollbackRestore(stage)
+            // Removing the journal first makes cleanup safe even if the process dies
+            // while deleting stage files (including the committed marker).
+            if (journal.delete()) check(stage.deleteRecursively()) { "无法清理写作恢复暂存区" }
+        }
+    }
+
+    private fun rollbackRestore(stage: File) {
+        val journal = JSONObject(File(stage, "journal.json").readText())
+        val ids = journal.getJSONArray("ids")
+        val existing = journal.optJSONArray("existing")?.let { list ->
+            (0 until list.length()).map { list.getString(it) }.toSet()
+        }.orEmpty()
+        val prepared = File(stage, "prepared")
+        val previous = File(stage, "previous")
+        for (i in 0 until ids.length()) {
+            val id = ids.getString(i)
+            check(ID.matches(id)) { "恢复日志中的作品 id 无效" }
+            val old = File(previous, id)
+            val target = dir(id)
+            if (old.exists()) {
+                check(!target.exists() || target.deleteRecursively()) { "无法回滚写作作品" }
+                check(old.renameTo(target)) { "无法找回恢复前的作品" }
+            } else if (id !in existing && !File(prepared, id).exists() && target.exists()) {
+                // This work did not exist before the restore, and was already installed.
+                check(target.deleteRecursively()) { "无法回滚新恢复的作品" }
+            }
+        }
+        if (journal.optBoolean("stats")) {
+            val old = File(stage, "stats.previous")
+            val preparedStats = File(stage, "stats.prepared")
+            if (old.exists()) {
+                check(!statsFile.exists() || statsFile.delete()) { "无法回滚码字统计" }
+                check(old.renameTo(statsFile)) { "无法找回恢复前的码字统计" }
+            } else if (!journal.optBoolean("statsExisted") && !preparedStats.exists() && statsFile.exists()) {
+                check(statsFile.delete()) { "无法回滚码字统计" }
+            }
+        }
+    }
 
     private fun dir(workId: String): File {
         require(ID.matches(workId)) { "作品 id 无效" }
@@ -240,7 +292,9 @@ class WorkStore(private val root: File) {
     @Synchronized
     fun update(workId: String, touch: Boolean = true, transform: (Work) -> Work): Work? {
         val old = get(workId) ?: return null
-        val next = transform(old).let { if (touch) it.copy(updatedAt = clock()) else it }
+        // Consecutive edits can happen within one millisecond. The restore conflict check
+        // needs a strictly newer revision even when the wall clock has not advanced.
+        val next = transform(old).let { if (touch) it.copy(updatedAt = maxOf(clock(), old.updatedAt + 1)) else it }
         if (next != old) write(next)
         return next
     }
@@ -330,6 +384,7 @@ class WorkStore(private val root: File) {
 
     private fun writeChanges(workId: String, list: List<ChangeEntry>) {
         check(DurableFiles.write(File(dir(workId), changesFile), JSONArray().apply { list.forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存变更登记" }
+        update(workId) { it }
     }
 
     /** 记一条登记（也用于和章节无关的设定变更）。 */
@@ -430,7 +485,10 @@ class WorkStore(private val root: File) {
     @Synchronized
     fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
-        check(DurableFiles.write(cardFile(workId, chapterId), card.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+        val old = card(workId, chapterId)
+        val next = card.copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
+        check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+        update(workId) { it }
     }
 
     /** 删一卷，连同卷里的章。至少留一卷。 */
@@ -484,9 +542,12 @@ class WorkStore(private val root: File) {
         val file = chapterFile(workId, chapterId)
         if (file.isFile && file.readText() == text) return work
         check(!old.locked) { "这一章已定稿，先解锁再改" }
-        check(DurableFiles.write(file, text.toByteArray())) { "无法保存正文" }
         val words = WordCount.of(text)
-        if (count && words != old.words) addWords(today, words - old.words)
+        // A damaged stats.json must stop the edit before replacing chapter text;
+        // otherwise the later stats write would silently replace the only copy.
+        val previousStats = if (count && words != old.words) strictStats() else null
+        check(DurableFiles.write(file, text.toByteArray())) { "无法保存正文" }
+        previousStats?.let { s -> saveStats(s.copy(days = s.days + (today to s.on(today) + words - old.words))) }
         return update(workId) { w ->
             w.copy(volumes = w.volumes.map { v ->
                 v.copy(chapters = v.chapters.map {
@@ -551,6 +612,7 @@ class WorkStore(private val root: File) {
         require(File(d, WORK).isFile) { "作品不在了" }
         val next = transform(assist(workId))
         check(DurableFiles.write(File(d, ASSIST), next.toJson().toString().toByteArray())) { "无法保存设定" }
+        update(workId) { it }
         return next
     }
 
@@ -581,6 +643,7 @@ class WorkStore(private val root: File) {
     private fun writePack(workId: String, docs: List<PackDoc>) {
         val d = packDir(workId).apply { mkdirs() }
         check(DurableFiles.write(File(d, PACK_INDEX), JSONArray().apply { docs.forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存设定包" }
+        update(workId) { it }
     }
 
     /**
@@ -634,8 +697,10 @@ class WorkStore(private val root: File) {
         val docs = pack(workId)
         val old = docs.firstOrNull { it.id == docId } ?: return null
         val next = transform(old).let { it.copy(id = old.id, priority = it.priority.coerceIn(1, 9), title = it.title.trim().ifEmpty { old.title }) }
-        if (next != old) writePack(workId, docs.map { if (it.id == docId) next else it })
-        return next
+        if (next == old) return old
+        val stamped = next.copy(updatedAt = maxOf(clock(), old.updatedAt + 1, next.updatedAt))
+        writePack(workId, docs.map { if (it.id == docId) stamped else it })
+        return stamped
     }
 
     /** 存文档正文。没变就不写。 */
@@ -645,7 +710,7 @@ class WorkStore(private val root: File) {
         if (file.isFile && file.readText() == text) return pack(workId).firstOrNull { it.id == docId }
         if (pack(workId).none { it.id == docId }) return null
         check(DurableFiles.write(file, text.toByteArray())) { "无法保存设定" }
-        return updatePackDoc(workId, docId) { it.copy(updatedAt = clock(), words = WordCount.of(text)) }
+        return updatePackDoc(workId, docId) { it.copy(words = WordCount.of(text), updatedAt = maxOf(clock(), it.updatedAt + 1)) }
     }
 
     /** 删一份文档：正文先存进历史版本。 */
@@ -742,100 +807,338 @@ class WorkStore(private val root: File) {
         check(DurableFiles.write(statsFile, JSONObject().put("goal", stats.goal).put("days", days).toString().toByteArray())) { "无法保存码字统计" }
     }
 
+    private fun strictStats(): WritingStats {
+        if (!statsFile.isFile) return WritingStats()
+        val raw = JSONObject(statsFile.readText())
+        val rawDays = if (raw.has("days")) raw.getJSONObject("days") else JSONObject()
+        val days = rawDays.keys().asSequence().associate { key ->
+            val value = rawDays.checkedInteger(key, Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "码字统计损坏")
+            LocalDate.parse(key) to value!!.toInt()
+        }
+        val goal = raw.checkedInteger("goal", 0, Int.MAX_VALUE.toLong(), "码字目标损坏") ?: 0
+        return WritingStats(days, goal.toInt())
+    }
+
+    /** Check actual JSON number types and ranges; optInt/optLong silently default or truncate. */
+    private fun JSONObject.checkedInteger(key: String, min: Long, max: Long, error: String): Long? {
+        if (!has(key)) return null
+        val value = (opt(key) as? Number)?.toString()?.toLongOrNull()
+        require(value != null && value in min..max) { error }
+        return value
+    }
+
     @Synchronized
     fun addWords(day: LocalDate, delta: Int) {
         if (delta == 0) return
-        val s = stats()
+        val s = strictStats()
         saveStats(s.copy(days = s.days + (day to s.on(day) + delta)))
     }
 
     @Synchronized
-    fun setGoal(goal: Int) = saveStats(stats().copy(goal = goal.coerceAtLeast(0)))
+    fun setGoal(goal: Int) = saveStats(strictStats().copy(goal = goal.coerceAtLeast(0)))
 
     // ---------- 备份 ----------
 
     /** 所有作品（含正文，不含历史版本）和码字统计打成一个 JSON，放进灵阅的备份。没有作品时为空。 */
     @Synchronized
     fun backup(): ByteArray? {
-        val all = list()
+        // list() is deliberately tolerant for the shelf UI. A backup must not silently
+        // omit a work whose metadata failed to parse: that archive might be the only copy.
+        val all = works.listFiles().orEmpty()
+            .filter { it.isDirectory && ID.matches(it.name) }
+            .map { read(it.name) }
         if (all.isEmpty() && !statsFile.isFile) return null
         val array = JSONArray()
         all.forEach { w ->
+            val index = File(packDir(w.id), PACK_INDEX)
+            if (index.isFile) {
+                val docs = JSONArray(index.readText())
+                (0 until docs.length()).forEach { i ->
+                    requireNotNull(docs.getJSONObject(i).toPackDoc()) { "设定包索引损坏" }
+                }
+            }
             val texts = JSONObject()
-            w.chapters.forEach { c -> texts.put(c.id, text(w.id, c.id)) }
-            val pack = JSONArray().apply { pack(w.id).forEach { d -> put(d.toJson().put("text", packText(w.id, d.id))) } }
-            val cards = JSONObject().apply { w.chapters.forEach { c -> card(w.id, c.id).takeIf { !it.isEmpty }?.let { put(c.id, it.toJson()) } } }
-            val changes = JSONArray().apply { changes(w.id).forEach { put(it.toJson()) } }
-            array.put(w.toJson().put("texts", texts).put("assist", assist(w.id).toJson()).put("pack", pack).put("cards", cards).put("changes", changes))
+            w.chapters.forEach { c ->
+                val source = chapterFile(w.id, c.id)
+                check(source.isFile || c.words == 0) { "作品《${w.title}》的章节正文缺失：${c.title}" }
+                texts.put(c.id, text(w.id, c.id))
+            }
+            val pack = JSONArray().apply { pack(w.id).forEach { d ->
+                val source = packFile(w.id, d.id)
+                check(source.isFile || d.words == 0) { "作品《${w.title}》的设定文档缺失：${d.title}" }
+                put(d.toJson().put("text", packText(w.id, d.id)))
+            } }
+            val cards = JSONObject().apply { w.chapters.forEach { c ->
+                val source = cardFile(w.id, c.id)
+                val card = if (source.isFile) JSONObject(source.readText()).toCard() else ChapterCard()
+                card.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 }
+                    ?.let { put(c.id, it.toJson()) }
+            } }
+            val changesSource = File(dir(w.id), changesFile)
+            val changes = if (changesSource.isFile) JSONArray(changesSource.readText()).also { raw ->
+                (0 until raw.length()).forEach { i -> requireNotNull(raw.getJSONObject(i).toChange()) { "变更登记损坏" } }
+            } else JSONArray()
+            val assistSource = File(dir(w.id), ASSIST)
+            val assist = if (assistSource.isFile) JSONObject(assistSource.readText()).toAssist() else WorkAssist()
+            // pack() may migrate an old settings bundle and touch the work timestamp.
+            array.put(read(w.id).toJson().put("texts", texts).put("assist", assist.toJson()).put("pack", pack).put("cards", cards).put("changes", changes))
         }
-        val stats = stats()
+        val stats = strictStats()
         val days = JSONObject()
         stats.days.forEach { (d, n) -> days.put(d.toString(), n) }
         return JSONObject().put("format", 1).put("works", array).put("goal", stats.goal).put("days", days).toString().toByteArray()
     }
 
+    private data class RestoreWork(
+        val incoming: Work,
+        val local: Work?,
+        val texts: Map<String, String>,
+        val cards: Map<String, ChapterCard>?,
+        val changes: List<ChangeEntry>?,
+        val pack: List<Pair<PackDoc, String>>?,
+        val localPack: List<PackDoc>,
+        val assist: WorkAssist?,
+    )
+
+    /** Reject malformed archive components before changing any live work. */
+    private fun parseRestoreWork(o: JSONObject): RestoreWork? {
+        val incoming = o.toWork()
+        require(ID.matches(incoming.id)) { "备份作品 id 无效" }
+        val volumeIds = incoming.volumes.map { it.id }
+        val chapterIds = incoming.chapters.map { it.id }
+        require(volumeIds.all(ID::matches) && volumeIds.size == volumeIds.toSet().size) { "备份卷 id 无效或重复" }
+        require(chapterIds.all(ID::matches) && chapterIds.size == chapterIds.toSet().size) { "备份章节 id 无效或重复" }
+        require(incoming.chapters.all { it.words >= 0 }) { "备份章节字数无效" }
+        val textObject = o.getJSONObject("texts")
+        val texts = chapterIds.associateWith { id ->
+            require(textObject.has(id) && textObject.opt(id) is String) { "备份章节正文缺失或损坏" }
+            textObject.getString(id)
+        }
+        val localDir = dir(incoming.id)
+        val local = if (localDir.exists()) {
+            require(localDir.isDirectory) { "本机作品路径无效" }
+            // Do not use get(): a damaged local work must never be mistaken for an absent one.
+            JSONObject(File(localDir, WORK).readText()).toWork()
+        } else null
+        val cards = if (o.has("cards")) {
+            val raw = o.getJSONObject("cards")
+            raw.keys().asSequence().associateWith { id ->
+                require(id in chapterIds) { "备份细纲卡引用未知章节" }
+                val cardJson = raw.getJSONObject(id)
+                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan").forEach { key ->
+                    require(!cardJson.has(key) || cardJson.opt(key) is String) { "备份细纲卡结构损坏" }
+                }
+                cardJson.checkedInteger("auto", Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份细纲卡指纹损坏")
+                cardJson.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份细纲卡时间损坏")
+                cardJson.toCard()
+            }
+        } else null
+
+        val pack = if (o.has("pack")) {
+            val raw = o.getJSONArray("pack")
+            val docs = (0 until raw.length()).map { index ->
+                val item = raw.getJSONObject(index)
+                item.checkedInteger("priority", 0, 9, "备份设定优先级损坏")
+                require(!item.has("always") || item.opt("always") is Boolean) { "备份设定常用标记损坏" }
+                item.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份设定时间损坏")
+                item.checkedInteger("words", 0, Int.MAX_VALUE.toLong(), "备份设定字数损坏")
+                val doc = requireNotNull(item.toPackDoc()) { "备份设定文档无效" }
+                require(ID.matches(doc.id) && doc.words >= 0 && item.opt("text") is String) { "备份设定正文缺失或损坏" }
+                require(runCatching { PackKind.valueOf(item.getString("kind")) }.isSuccess) { "备份设定类型无效" }
+                doc to item.getString("text")
+            }
+            require(docs.map { it.first.id }.distinct().size == docs.size) { "备份设定文档 id 重复" }
+            docs
+        } else null
+
+        val changes = if (o.has("changes")) {
+            val raw = o.getJSONArray("changes")
+            (0 until raw.length()).map { index ->
+                requireNotNull(raw.getJSONObject(index).toChange()) { "备份变更记录无效" }
+            }
+        } else null
+        val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
+
+        val localPack = if (local != null) {
+            val index = File(File(localDir, PACK), PACK_INDEX)
+            if (!index.isFile) emptyList() else {
+                val raw = JSONArray(index.readText())
+                (0 until raw.length()).map { indexAt ->
+                    requireNotNull(raw.getJSONObject(indexAt).toPackDoc()) { "本机设定索引损坏" }
+                }
+            }
+        } else emptyList()
+
+        // Old app versions did not touch Work.updatedAt for pack/card edits. A backup
+        // cannot replace a component whose own timestamp does not prove it newer.
+        if (local != null && local.updatedAt >= incoming.updatedAt) return null
+        if (local != null) {
+            val incomingDocs = pack?.associate { it.first.id to it.first }
+            if (incomingDocs != null) {
+                val hasUnresolvedDoc = localPack.any { current ->
+                    val replacement = incomingDocs[current.id]
+                    if (replacement == null) current.updatedAt == 0L || current.updatedAt >= incoming.updatedAt
+                    else {
+                        val currentText = File(File(localDir, PACK), current.id + ".md").takeIf { it.isFile }?.readText().orEmpty()
+                        val incomingText = pack.first { it.first.id == current.id }.second
+                        (current != replacement || currentText != incomingText) && replacement.updatedAt <= current.updatedAt
+                    }
+                }
+                if (hasUnresolvedDoc) return null
+            }
+            if (cards != null) {
+                val hasUnresolvedCard = cards.any { (chapterId, replacement) ->
+                    val source = File(localDir, chapterId + ".card.json")
+                    if (!source.isFile) false else {
+                        val current = JSONObject(source.readText()).toCard()
+                        current != replacement && replacement.updatedAt <= current.updatedAt
+                    }
+                }
+                if (hasUnresolvedCard) return null
+            }
+        }
+        return RestoreWork(incoming, local, texts, cards, changes, pack, localPack, assist)
+    }
+
+    /** Validate writing data before the outer app restore replaces any books. */
+    @Synchronized
+    fun validateBackup(json: String) {
+        preflightRestoreBackup(JSONObject(json))
+    }
+
+    private fun preflightRestoreBackup(backup: JSONObject): Pair<List<RestoreWork>, Map<LocalDate, Int>?> {
+        val array = if (backup.has("works")) backup.getJSONArray("works") else JSONArray()
+        val seen = mutableSetOf<String>()
+        val plans = (0 until array.length()).mapNotNull { index ->
+            val entry = array.getJSONObject(index)
+            val id = entry.getString("id")
+            require(seen.add(id)) { "备份作品 id 重复" }
+            parseRestoreWork(entry)
+        }
+        val days = if (backup.has("days")) {
+            val raw = backup.getJSONObject("days")
+            raw.keys().asSequence().associate { key ->
+                val day = LocalDate.parse(key)
+                val value = raw.checkedInteger(key, Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份码字统计损坏")!!
+                day to value.toInt()
+            }
+        } else null
+        backup.checkedInteger("goal", 0, Int.MAX_VALUE.toLong(), "备份码字目标损坏")
+        return plans to days
+    }
+
+    private fun stageRestoreWork(plan: RestoreWork, destination: File) {
+        if (plan.local != null) {
+            check(dir(plan.incoming.id).copyRecursively(destination, overwrite = true)) { "无法暂存本机作品" }
+        } else check(destination.mkdirs()) { "无法创建作品暂存区" }
+        val incoming = plan.incoming
+        plan.local?.chapters?.filter { incoming.chapter(it.id) == null }?.forEach { old ->
+            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt")
+                .forEach { name -> check(!File(destination, name).exists() || File(destination, name).delete()) { "无法暂存章节删除" } }
+        }
+        plan.texts.forEach { (id, body) ->
+            check(DurableFiles.write(File(destination, id + ".txt"), body.toByteArray())) { "无法暂存章节正文" }
+        }
+        plan.cards?.forEach { (id, card) ->
+            check(DurableFiles.write(File(destination, id + ".card.json"), card.toJson().toString().toByteArray())) { "无法暂存细纲卡" }
+        }
+        plan.changes?.let { entries ->
+            val value = JSONArray().apply { entries.forEach { put(it.toJson()) } }
+            check(DurableFiles.write(File(destination, changesFile), value.toString().toByteArray())) { "无法暂存变更登记" }
+        }
+        plan.pack?.let { docs ->
+            val folder = File(destination, PACK)
+            check(!folder.exists() || folder.deleteRecursively()) { "无法暂存设定包" }
+            check(folder.mkdirs()) { "无法创建设定包暂存区" }
+            docs.forEach { (doc, body) ->
+                check(DurableFiles.write(File(folder, doc.id + ".md"), body.toByteArray())) { "无法暂存设定正文" }
+            }
+            val index = JSONArray().apply { docs.forEach { put(it.first.toJson()) } }
+            check(DurableFiles.write(File(folder, PACK_INDEX), index.toString().toByteArray())) { "无法暂存设定索引" }
+        }
+        plan.assist?.let {
+            check(DurableFiles.write(File(destination, ASSIST), it.toJson().toString().toByteArray())) { "无法暂存设定" }
+        }
+        val metadata = incoming.copy(previewBookId = plan.local?.previewBookId ?: incoming.previewBookId)
+        check(DurableFiles.write(File(destination, WORK), metadata.toJson().toString().toByteArray())) { "无法暂存作品信息" }
+    }
+
+    private fun snapshotBeforeRestore(plan: RestoreWork) {
+        plan.local?.chapters?.forEach { chapter ->
+            val source = chapterFile(plan.incoming.id, chapter.id)
+            source.takeIf { it.isFile }?.readText()?.takeIf { it.isNotBlank() }
+                ?.let { snapshot(plan.incoming.id, chapter.id, it) }
+        }
+        plan.localPack.forEach { doc ->
+            val source = packFile(plan.incoming.id, doc.id)
+            source.takeIf { it.isFile }?.readText()?.takeIf { it.isNotBlank() }
+                ?.let { snapshot(plan.incoming.id, docKey(doc.id), it) }
+        }
+    }
+
     /**
-     * 从备份恢复：本机没有的作品加上；本机也有的，备份里的更新就整部换成备份的（换之前本机每章正文都存一个历史版本），
-     * 本机的更新就留着本机的。码字统计按天取大的。返回恢复了几部作品。
+     * Validate the whole archive, stage every selected work, then swap with a rollback
+     * journal. On process death the next WorkStore initialization restores all old works.
      */
     @Synchronized
     fun restoreBackup(json: String): Int {
         val backup = JSONObject(json)
-        var restored = 0
-        val array = backup.optJSONArray("works") ?: JSONArray()
-        for (i in 0 until array.length()) {
-            val o = array.optJSONObject(i) ?: continue
-            val incoming = runCatching { o.toWork() }.getOrNull() ?: continue
-            if (!ID.matches(incoming.id) || incoming.chapters.any { !ID.matches(it.id) }) continue
-            val local = get(incoming.id)
-            if (local != null && local.updatedAt > incoming.updatedAt) continue
-            local?.chapters?.forEach { c -> text(local.id, c.id).takeIf { it.isNotBlank() }?.let { snapshot(local.id, c.id, it) } }
-            val texts = o.optJSONObject("texts") ?: JSONObject()
-            dir(incoming.id).mkdirs()
-            incoming.chapters.forEach { c ->
-                check(DurableFiles.write(chapterFile(incoming.id, c.id), texts.optString(c.id).toByteArray())) { "无法写入正文" }
-            }
-            local?.chapters?.filter { c -> incoming.chapter(c.id) == null }?.forEach {
-                chapterFile(local.id, it.id).delete()
-                cardFile(local.id, it.id).delete()
-                reviewFile(local.id, it.id).delete()
-                draftFile(local.id, it.id).delete()
-            }
-            val cards = o.optJSONObject("cards") ?: JSONObject()
-            incoming.chapters.forEach { c ->
-                val card = cards.optJSONObject(c.id)
-                if (card != null) check(DurableFiles.write(cardFile(incoming.id, c.id), card.toString().toByteArray())) { "无法写入细纲卡" }
-                else cardFile(incoming.id, c.id).delete()
-            }
-            o.optJSONArray("changes")?.let { a -> writeChanges(incoming.id, (0 until a.length()).mapNotNull { a.optJSONObject(it)?.toChange() }) }
-            // 设定包整份换成备份里的（本机的文档正文先存历史版本）；备份里没有设定包（旧版备份）就按设定集重新迁移。
-            local?.let { l -> pack(l.id).forEach { d -> packText(l.id, d.id).takeIf { it.isNotBlank() }?.let { snapshot(l.id, docKey(d.id), it) } } }
-            packDir(incoming.id).deleteRecursively()
-            o.optJSONArray("pack")?.let { a ->
-                val docs = (0 until a.length()).mapNotNull { i ->
-                    val d = a.optJSONObject(i) ?: return@mapNotNull null
-                    val doc = runCatching { d.toPackDoc() }.getOrNull()?.takeIf { ID.matches(it.id) } ?: return@mapNotNull null
-                    check(DurableFiles.write(packFile(incoming.id, doc.id).also { it.parentFile?.mkdirs() }, d.optString("text").toByteArray())) { "无法写入设定" }
-                    doc
-                }
-                writePack(incoming.id, docs)
-            }
-            o.optJSONObject("assist")?.let { a ->
-                runCatching { a.toAssist() }.getOrNull()?.let { assist ->
-                    check(DurableFiles.write(File(dir(incoming.id), ASSIST), assist.toJson().toString().toByteArray())) { "无法写入设定" }
-                }
-            }
-            write(incoming.copy(previewBookId = local?.previewBookId ?: incoming.previewBookId))
-            restored++
+        val (plans, days) = preflightRestoreBackup(backup)
+        if (plans.isEmpty() && days == null) return 0
+        val mergedStats = days?.let { incoming ->
+            val current = strictStats()
+            val combined = current.days.toMutableMap()
+            incoming.forEach { (day, count) -> combined[day] = maxOf(combined[day] ?: 0, count) }
+            current.copy(days = combined, goal = if (current.goal == 0) backup.optInt("goal", 0) else current.goal)
         }
-        val days = backup.optJSONObject("days")
-        if (days != null) {
-            val s = stats()
-            val merged = s.days.toMutableMap()
-            days.keys().forEach { k -> runCatching { LocalDate.parse(k) }.getOrNull()?.let { d -> merged[d] = maxOf(merged[d] ?: 0, days.optInt(k)) } }
-            saveStats(s.copy(days = merged, goal = if (s.goal == 0) backup.optInt("goal", 0) else s.goal))
+
+        val stage = File(root, RESTORE_PREFIX + newId())
+        val prepared = File(stage, "prepared")
+        val previous = File(stage, "previous")
+        check(prepared.mkdirs() && previous.mkdirs()) { "无法创建写作恢复暂存区" }
+        var journaled = false
+        try {
+            plans.forEach { plan -> stageRestoreWork(plan, File(prepared, plan.incoming.id)) }
+            plans.forEach(::snapshotBeforeRestore)
+            mergedStats?.let { value ->
+                if (statsFile.exists()) statsFile.copyTo(File(stage, "stats.previous"))
+                val rawDays = JSONObject().apply { value.days.forEach { (day, count) -> put(day.toString(), count) } }
+                val raw = JSONObject().put("goal", value.goal).put("days", rawDays)
+                check(DurableFiles.write(File(stage, "stats.prepared"), raw.toString().toByteArray())) { "无法暂存码字统计" }
+            }
+            // A durable journal is written only after all staging is complete.
+            val ids = JSONArray().apply { plans.forEach { put(it.incoming.id) } }
+            val existing = JSONArray().apply { plans.filter { it.local != null }.forEach { put(it.incoming.id) } }
+            val record = JSONObject().put("ids", ids).put("existing", existing)
+                .put("stats", mergedStats != null).put("statsExisted", statsFile.exists())
+            check(DurableFiles.write(File(stage, "journal.json"), record.toString().toByteArray())) { "无法建立恢复日志" }
+            journaled = true
+            works.mkdirs()
+            plans.forEach { plan ->
+                plan.local?.let {
+                    check(dir(it.id).renameTo(File(previous, it.id))) { "无法暂存恢复前的作品" }
+                }
+                check(File(prepared, plan.incoming.id).renameTo(dir(plan.incoming.id))) { "无法安装恢复的作品" }
+                restoreSwapHook?.invoke(plan.incoming.id)
+            }
+            if (mergedStats != null) {
+                if (statsFile.exists()) check(statsFile.delete()) { "无法替换码字统计" }
+                check(File(stage, "stats.prepared").renameTo(statsFile)) { "无法安装码字统计" }
+                restoreSwapHook?.invoke("stats")
+            }
+            check(DurableFiles.write(File(stage, "committed"), byteArrayOf(1))) { "无法完成恢复提交" }
+        } catch (failure: Throwable) {
+            if (journaled) {
+                try { rollbackRestore(stage) } catch (rollback: Throwable) {
+                    failure.addSuppressed(rollback)
+                    throw failure
+                }
+            }
+            if (!journaled || File(stage, "journal.json").delete()) stage.deleteRecursively()
+            throw failure
         }
-        return restored
+        if (File(stage, "journal.json").delete()) stage.deleteRecursively()
+        return plans.size
     }
 
     companion object {
@@ -845,6 +1148,7 @@ class WorkStore(private val root: File) {
         private const val ASSIST = "assist.json"
         private const val PACK = "pack"
         private const val PACK_INDEX = "index.json"
+        private const val RESTORE_PREFIX = ".restore-writing-"
         private val ID = Regex("""[A-Za-z0-9-]{1,64}""")
 
         internal fun newId() = UUID.randomUUID().toString()
@@ -863,10 +1167,10 @@ class WorkStore(private val root: File) {
 
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
-            .put("summary", summary).put("plan", plan).put("auto", auto)
+            .put("summary", summary).put("plan", plan).put("auto", auto).put("updatedAt", updatedAt)
 
         private fun JSONObject.toCard() =
-            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"))
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
@@ -885,7 +1189,7 @@ class WorkStore(private val root: File) {
         private fun JSONObject.toPackDoc(): PackDoc? {
             val kind = runCatching { PackKind.valueOf(optString("kind")) }.getOrDefault(PackKind.REFERENCE)
             val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
-            return PackDoc(id, kind, optString("title"), optInt("priority", kind.priority).coerceIn(1, 9), optBoolean("always", kind.always), optLong("updatedAt"), optInt("words"))
+            return PackDoc(id, kind, optString("title"), optInt("priority", kind.priority).coerceIn(0, 9), optBoolean("always", kind.always), optLong("updatedAt"), optInt("words"))
         }
 
         private fun WorkAssist.toJson(): JSONObject = JSONObject()

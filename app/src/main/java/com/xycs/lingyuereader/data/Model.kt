@@ -148,6 +148,8 @@ data class BookEntry(
 data class SearchHit(
     val chapterIndex: Int,
     val blockIndex: Int,
+    /** 命中在阅读正文中的 UTF-16 字符位置；表格等不可按字定位的块退回块首。 */
+    val charOffset: Int,
     val chapterTitle: String,
     val before: String,
     val match: String,

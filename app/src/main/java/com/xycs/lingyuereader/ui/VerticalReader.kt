@@ -59,6 +59,19 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
 
     data class VPage(val columns: List<List<Cell>>, val image: String? = null, val imageBlock: Int = -1) {
         private val cells get() = columns.flatten().filter { it.char >= 0 }
+        /** Canvas 字形本身没有 Compose 文字语义；按右到左、上到下的阅读顺序交给屏幕阅读器。 */
+        fun spokenText(imageAlt: String? = null): String = if (image != null) {
+            imageAlt?.takeIf { it.isNotBlank() }?.let { "插图：$it" } ?: "插图"
+        } else {
+            columns.map { column ->
+                buildString {
+                    column.forEach { cell -> cell.text.forEach { append(SPOKEN_FORMS[it] ?: it) } }
+                }.trim()
+            }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+                .ifEmpty { "空白页" }
+        }
         // 整页都是表格时没有带字位的格子：取第一个属于正文块的格子，不然进度会记成第 0 段。
         val firstBlock: Int get() = if (image != null) imageBlock else cells.firstOrNull()?.block
             ?: columns.flatten().firstOrNull { it.block >= 0 }?.block ?: 0
@@ -184,6 +197,7 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
             '《' to '︽', '》' to '︾', '〈' to '︿', '〉' to '﹀', '「' to '﹁', '」' to '﹂', '『' to '﹃', '』' to '﹄',
             '“' to '﹁', '”' to '﹂', '‘' to '﹃', '’' to '﹄', '…' to '︙', '—' to '︱', '–' to '︲', '_' to '︳',
         )
+        private val SPOKEN_FORMS: Map<Char, Char> = VERTICAL_FORMS.entries.associate { it.value to it.key }
 
         /** 半角英文字母和数字。 */
         fun isLatin(c: Char): Boolean = c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9'
@@ -324,7 +338,12 @@ internal fun VerticalReader(
                     .fillMaxSize()
                     .bookPage(inset)
                     .background(styles.palette.background)
-                    .semantics { contentDescription = "竖排正文" }
+                    .semantics {
+                        val alt = if (page.image != null) {
+                            (content.chapters[pageChapter].blocks.getOrNull(page.imageBlock) as? Block.Image)?.alt
+                        } else null
+                        contentDescription = page.spokenText(alt)
+                    }
                     .pointerInput(page) {
                         detectTapGestures(
                             // 竖排时左边是下一页：把横向位置反过来交给翻页逻辑。
