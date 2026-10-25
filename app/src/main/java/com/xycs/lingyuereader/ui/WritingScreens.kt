@@ -630,7 +630,7 @@ private fun ChapterDialog(
     GlassDialog(
         show = true,
         title = if (confirmDelete) "删除“${ch.title}”" else ch.title,
-        summary = if (confirmDelete) (if (ch.locked) "这一章已定稿。" else "") + "这一章（${words(ch.words)}）会从作品里删除。删除前的正文会留一份在历史版本文件里。" else null,
+        summary = if (confirmDelete) (if (ch.locked) "这一章已定稿。" else "") + "这一章（${words(ch.words)}）会从作品里删除。有正文时仅留在本机历史文件中，应用内暂不能直接找回。" else null,
         onDismissRequest = onDismiss,
     ) {
         if (confirmDelete) {
@@ -756,8 +756,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     if (current != null) {
         LaunchedEffect(current) {
             snapshotFlow { current.text.toString() }.drop(1).debounce(800).collect { text ->
-                vm.writing.save(workId, chapterId, text)
-                savedText = text
+                vm.writing.save(workId, chapterId, text, onSaved = { savedText = text })
             }
         }
     }
@@ -1036,7 +1035,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     replace(0, length, done.first)
                                     selection = TextRange(done.second)
                                 }
-                                savedText = done.first
                             }
                         },
                         onRetry = { vm.writingAi.retryInline() },

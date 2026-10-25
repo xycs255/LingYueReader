@@ -384,6 +384,35 @@ class ParserTest {
         val hits = BookParser.search(book, "路断了")
         assertEquals(1, hits.size)
         assertEquals(1, hits[0].blockIndex)
+        assertEquals(book.chapters[hits[0].chapterIndex].blocks[hits[0].blockIndex].spokenText!!.indexOf("路断了"), hits[0].charOffset)
+    }
+
+    @Test
+    fun searchKeepsDistinctCharacterOffsetsWithinOneParagraph() {
+        val book = BookContent(null, null, listOf(Chapter("第一章", listOf(Block.Para("前文。目标。后文目标。")))))
+        assertEquals(listOf(3, 8), BookParser.search(book, "目标").map { it.charOffset })
+    }
+
+    @Test
+    fun searchOffsetAfterBoldMarkupUsesDisplayedTextCoordinates() {
+        val block = Block.Para("开头**加粗**之后找到目标。")
+        val book = BookContent(null, null, listOf(Chapter("第一章", listOf(block))))
+        val hit = BookParser.search(book, "目标").single()
+        assertEquals(block.displayText!!.indexOf("目标"), hit.charOffset)
+        assertEquals(0, BookParser.search(BookContent(null, null, listOf(Chapter("表格", listOf(Block.Table(listOf(listOf("目标"))))))), "目标").single().charOffset)
+    }
+
+    @Test
+    fun largeTextSourceFailsBeforeWholeFileAllocation() {
+        val file = java.io.File.createTempFile("oversized-book", ".txt")
+        try {
+            java.io.RandomAccessFile(file, "rw").use { it.setLength(129L * 1024 * 1024) }
+            val error = runCatching { BookParser.SourceBytes(file.name, file).bytes }.exceptionOrNull()
+            assertTrue(error is IllegalArgumentException)
+            assertTrue(error?.message.orEmpty().contains("文件过大"))
+        } finally {
+            file.delete()
+        }
     }
 
     @Test
@@ -405,6 +434,15 @@ class ParserTest {
             }
         }
         return out.toByteArray()
+    }
+
+    @Test
+    fun epubRejectsHighlyCompressedOversizedXhtmlBeforeRetainingIt() {
+        // A tiny archive can expand to a chapter large enough to exhaust a phone's heap.
+        val epub = zip("OPS/large.xhtml" to "甲".repeat(6_000_000))
+        val error = runCatching { EpubParser.parse(epub, "过大的书") }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message.orEmpty().contains("正文过大"))
     }
 
     @Test

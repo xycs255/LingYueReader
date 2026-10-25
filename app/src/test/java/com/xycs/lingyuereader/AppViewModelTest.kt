@@ -7,6 +7,7 @@ import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.data.Library
+import com.xycs.lingyuereader.data.SharedLibrary
 import com.xycs.lingyuereader.data.ChineseConvert
 import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.Prefs
@@ -24,6 +25,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
@@ -242,5 +244,131 @@ class AppViewModelTest {
         val again = Screen.Reader(entry.id, 1, null)
         assertFalse(again == jump)
         assertFalse(vm.landedOn(again))
+    }
+
+    @Test
+    fun bookSearchJumpsToTheExactOccurrenceAndClearsCancelledResults() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = Library(app)
+        val source = File(app.cacheDir, "search-offset.txt").apply { writeText("第一章 起\n　　前文目标。后文目标。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+        vm.open(Screen.Reader(entry.id))
+        vm.open(Screen.Search(entry.id))
+        vm.search("目标")
+        waitUntilReady { vm.searchHits.value.size == 2 }
+        val second = vm.searchHits.value[1]
+        val paragraph = vm.openBook.value!!.content.chapters[second.chapterIndex].blocks[second.blockIndex].displayText!!
+        assertEquals(paragraph.indexOf("目标", paragraph.indexOf("目标") + 1), second.charOffset)
+        vm.jumpFromSearch(entry.id, second.chapterIndex, second.blockIndex, second.charOffset)
+        assertEquals(second.charOffset, (vm.stack.value.last() as Screen.Reader).char)
+
+        vm.search("目标")
+        vm.search("")
+        Thread.sleep(100)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(vm.searchHits.value.isEmpty())
+    }
+
+    @Test
+    fun corruptMarksLeaveTextReadableAndBlockEdits() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = Library(app)
+        val source = File(app.cacheDir, "corrupt-marks.txt").apply { writeText("第一章 起\n　　正文。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val marks = library.bookFile(entry.id, "marks.json")
+        marks.writeText("{broken")
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+        assertTrue(vm.messages.value.orEmpty().contains("书签批注文件损坏"))
+        assertTrue(File(marks.path + ".damaged").isFile)
+        val block = vm.openBook.value!!.sourceContent.chapters[0].blocks.indexOfFirst { it.displayText != null }
+        vm.toggleBookmark(0, block, 0)
+        assertEquals("{broken", marks.readText())
+        assertTrue(vm.marks.value.bookmarks.isEmpty())
+        assertTrue(vm.messages.value.orEmpty().contains("请从备份恢复"))
+    }
+
+    @Test
+    fun exitFlushIsOnDiskBeforeReturnAndOldReaderCannotOverwriteNewPage() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = Library(app)
+        val source = File(app.cacheDir, "immediate-exit.txt").apply { writeText("第一章 起\n　　甲乙丙丁戊己。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+        val oldPage = Screen.Reader(entry.id, 0, 0)
+        vm.open(oldPage)
+        vm.saveProgressFor(entry.id, 0, 1, 0, 1, oldPage.seq)
+        val newPage = Screen.Reader(entry.id, 0, 0)
+        vm.replaceTop(newPage)
+        vm.flushProgressFor(entry.id, 0, 1, 0, 4, newPage.seq)
+        assertEquals(4, library.list().single { it.id == entry.id }.progress!!.charOffset)
+        vm.flushProgressFor(entry.id, 0, 1, 0, 1, oldPage.seq)
+        Thread.sleep(100)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(4, library.list().single { it.id == entry.id }.progress!!.charOffset)
+    }
+
+    @Test
+    fun exitFlushWaitIsBoundedWhenLibraryIsBusyAndEventuallyPersists() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = SharedLibrary.get(app)
+        val source = File(app.cacheDir, "busy-flush.txt").apply { writeText("第一章 起\n　　甲乙丙丁戊己。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+        val page = Screen.Reader(entry.id, 0, 0)
+        vm.open(page)
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val holder = Thread {
+            synchronized(library) {
+                held.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }.apply { start() }
+        try {
+            assertTrue(held.await(2, TimeUnit.SECONDS))
+            val started = System.nanoTime()
+            vm.flushProgressFor(entry.id, 0, 1, 0, 3, page.seq)
+            val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertTrue("主线程等待应受限，实际 ${elapsed}ms", elapsed < 1_000)
+        } finally {
+            release.countDown()
+            holder.join(2_000)
+        }
+        waitUntilReady { library.list().single { it.id == entry.id }.progress?.charOffset == 3 }
+    }
+
+    @Test
+    fun damagedCharacterTableShowsErrorWithoutDiscardingTheFile() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        File(app.filesDir, "books").deleteRecursively()
+        val library = Library(app)
+        val source = File(app.cacheDir, "character-read.txt").apply { writeText("第一章 起\n　　甲乙丙丁。\n") }
+        val entry = library.add(library.describe(listOf(Uri.fromFile(source))), null)
+        val table = library.bookFile(entry.id, "ai-characters.json").apply { writeText("{broken") }
+        val vm = AppViewModel(app)
+        waitUntilReady { vm.shelf.value.any { it.id == entry.id } }
+        vm.ensureLoaded(entry.id)
+        waitUntilReady { vm.openBook.value?.entry?.id == entry.id }
+        vm.loadCharacters(0, 0, 2)
+        waitUntilReady { vm.characters.value.error != null }
+        assertTrue(vm.characters.value.error.orEmpty().contains("读取失败"))
+        assertEquals("{broken", table.readText())
     }
 }

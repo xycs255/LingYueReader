@@ -20,6 +20,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowTextToSpeech
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36])
@@ -129,6 +130,68 @@ class ReadAloudTest {
         idle()
         assertEquals(0, ReadAloud.state.value!!.chapterIndex)
         assertEquals("甲一。", ReadAloud.state.value!!.current!!.text)
+    }
+
+    @Test
+    fun oldSystemEngineInitCannotStartOrChangePausedAiSession() {
+        start() // 系统引擎仍在初始化，留有待启动回调。
+        val oldEngine = engine()
+        val requests = AtomicInteger()
+        val voice = AiVoice("测试 AI", listOf(VoiceOption("v", "测试")), "v", fingerprint = { it }, fetch = { _, _ ->
+            requests.incrementAndGet()
+            byteArrayOf()
+        })
+        ReadAloud.start(context, "b", "书", book, 0, 0, 0, 1f, ai = voice, startPaused = true)
+        oldEngine.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertEquals(false, ReadAloud.state.value!!.playing)
+        assertEquals("测试 AI", ReadAloud.state.value!!.aiLabel)
+        assertEquals(listOf("v"), ReadAloud.state.value!!.voices.map { it.name })
+        assertEquals(0, requests.get())
+        assertTrue(oldEngine.spokenTextList.isEmpty())
+    }
+
+    @Test
+    fun oldSystemEngineFailureCannotStopAiSession() {
+        start()
+        val oldEngine = engine()
+        val voice = AiVoice("测试 AI", emptyList(), "v", fingerprint = { it }, fetch = { _, _ -> byteArrayOf() })
+        ReadAloud.start(context, "b", "书", book, 0, 0, 0, 1f, ai = voice, startPaused = true)
+        oldEngine.onInitListener.onInit(TextToSpeech.ERROR)
+        idle()
+        assertEquals(false, ReadAloud.state.value!!.playing)
+        assertNull(ReadAloud.state.value!!.error)
+        assertEquals("测试 AI", ReadAloud.state.value!!.aiLabel)
+    }
+
+    @Test
+    fun callbackFromReleasedEngineCannotStartNewEngineSession() {
+        start()
+        val oldEngine = engine()
+        ReadAloud.resetForTest() // 模拟旧引擎已释放后建立新引擎。
+        start()
+        val newEngine = engine()
+        assertTrue(oldEngine !== newEngine)
+        oldEngine.onInitListener.onInit(TextToSpeech.SUCCESS)
+        idle()
+        assertTrue(newEngine.spokenTextList.isEmpty())
+        assertTrue(ReadAloud.state.value!!.playing)
+        engineReady()
+        assertEquals(listOf("甲一。", "甲二。", "甲三。"), newEngine.spokenTextList)
+    }
+
+    @Test
+    fun failureFromReleasedEngineCannotClearNewPendingStart() {
+        start()
+        val oldEngine = engine()
+        ReadAloud.resetForTest()
+        start()
+        val newEngine = engine()
+        oldEngine.onInitListener.onInit(TextToSpeech.ERROR)
+        idle()
+        assertNull(ReadAloud.state.value!!.error)
+        engineReady()
+        assertEquals(listOf("甲一。", "甲二。", "甲三。"), newEngine.spokenTextList)
     }
 
     @Test

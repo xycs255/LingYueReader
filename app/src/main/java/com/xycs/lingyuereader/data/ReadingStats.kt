@@ -4,6 +4,7 @@ import android.util.AtomicFile
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.math.BigDecimal
 import java.time.LocalDate
 
 /** 某一天的阅读：时长（毫秒）、读过的字数，以及各本书的时长。 */
@@ -18,11 +19,13 @@ class ReadingStats internal constructor(private val file: File, private val atom
 
     @Synchronized
     fun days(): Map<LocalDate, DayStats> {
-        val bytes = runCatching { atomicFile.readFully() }.getOrNull() ?: return emptyMap()
-        // 读不出（文件坏了）时先另存一份，免得接下来的保存把它覆盖掉。
-        return runCatching { parse(bytes.toString(Charsets.UTF_8)) }.getOrElse {
+        if (!file.exists() && !File(file.path + ".bak").exists()) return emptyMap()
+        // 文件存在时，读盘失败不能当作空统计：下一次更新会覆盖原有记录。
+        return try {
+            parse(atomicFile.readFully().toString(Charsets.UTF_8))
+        } catch (error: Exception) {
             DurableFiles.keepDamaged(file)
-            emptyMap()
+            throw IllegalStateException("阅读统计读取失败，原文件已保留，未写入新数据", error)
         }
     }
 
@@ -41,7 +44,7 @@ class ReadingStats internal constructor(private val file: File, private val atom
     /** 恢复备份：按天合并，同一天取较大的数（同一份数据恢复两次不会翻倍）。 */
     @Synchronized
     fun merge(json: String) {
-        val incoming = runCatching { parse(json) }.getOrDefault(emptyMap())
+        val incoming = parse(json)
         val all = days().toMutableMap()
         incoming.forEach { (day, d) ->
             val old = all[day]
@@ -52,6 +55,11 @@ class ReadingStats internal constructor(private val file: File, private val atom
             )
         }
         write(all)
+    }
+
+    /** 在替换任何本机书籍前先验证备份结构；不读取或修改本机统计。 */
+    fun validateBackup(json: String) {
+        parse(json)
     }
 
     @Synchronized
@@ -86,17 +94,36 @@ class ReadingStats internal constructor(private val file: File, private val atom
     }
 
     private fun parse(json: String): Map<LocalDate, DayStats> {
-        val days = JSONObject(json).optJSONObject("days") ?: return emptyMap()
-        return days.keys().asSequence().mapNotNull { key ->
-            val day = runCatching { LocalDate.parse(key) }.getOrNull() ?: return@mapNotNull null
-            val o = days.optJSONObject(key) ?: return@mapNotNull null
-            val books = o.optJSONObject("books")
+        val days = JSONObject(json).getJSONObject("days")
+        return days.keys().asSequence().associate { key ->
+            val day = LocalDate.parse(key)
+            val o = days.getJSONObject(key)
+            val books = if (o.has("books")) o.getJSONObject("books") else null
             day to DayStats(
-                o.optLong("ms"),
-                o.optLong("chars"),
-                books?.keys()?.asSequence()?.associateWith { books.optLong(it) } ?: emptyMap(),
+                nonNegativeLong(o, "ms"),
+                nonNegativeLong(o, "chars"),
+                books?.keys()?.asSequence()?.associateWith { nonNegativeLong(books, it) } ?: emptyMap(),
             )
-        }.toMap()
+        }
+    }
+
+    /** 旧版可缺字段；已写出的字段若坏了，不能当 0 后继续覆盖整份统计。 */
+    private fun nonNegativeLong(json: JSONObject, key: String): Long {
+        if (!json.has(key)) return 0L
+        val value = json.get(key)
+        require(value is Number) { "阅读统计中的 $key 不是数字" }
+        val number = try {
+            BigDecimal(value.toString()).toBigIntegerExact().let { whole ->
+                require(whole.bitLength() <= 63) { "阅读统计中的 $key 超出整数范围" }
+                whole.toLong()
+            }
+        } catch (error: ArithmeticException) {
+            throw IllegalArgumentException("阅读统计中的 $key 不是有效整数", error)
+        } catch (error: NumberFormatException) {
+            throw IllegalArgumentException("阅读统计中的 $key 不是有效整数", error)
+        }
+        require(number >= 0) { "阅读统计中的 $key 不能为负数" }
+        return number
     }
 
     companion object {

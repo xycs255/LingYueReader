@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.math.BigDecimal
 
 /** 生词本里的一个词：查词时收进来，带上释义摘要和它在书里的原句。 */
 data class VocabWord(
@@ -39,11 +40,13 @@ class Vocabulary internal constructor(private val file: File, private val atomic
 
     @Synchronized
     fun list(): List<VocabWord> {
-        val bytes = runCatching { atomicFile.readFully() }.getOrNull() ?: return emptyList()
-        // 读不出（文件坏了）时先另存一份，免得接下来的保存把它覆盖掉。
-        return runCatching { parse(bytes.toString(Charsets.UTF_8)) }.getOrElse {
+        if (!file.exists() && !File(file.path + ".bak").exists()) return emptyList()
+        // 文件存在时，读盘失败不能当作空生词本：下一次更新会覆盖原有记录。
+        return try {
+            parse(atomicFile.readFully().toString(Charsets.UTF_8))
+        } catch (error: Exception) {
             DurableFiles.keepDamaged(file)
-            emptyList()
+            throw IllegalStateException("生词本读取失败，原文件已保留，未写入新数据", error)
         }
     }
 
@@ -94,13 +97,18 @@ class Vocabulary internal constructor(private val file: File, private val atomic
 
     /** 恢复备份：按词合并，两边都有时取较新的。 */
     fun merge(json: String) = update { list ->
-        val incoming = runCatching { parse(json) }.getOrDefault(emptyList())
+        val incoming = parse(json)
         val byWord = LinkedHashMap<String, VocabWord>()
         (list + incoming).forEach { w ->
             val old = byWord[w.word]
             if (old == null || maxOf(w.addedAt, w.reviewedAt) > maxOf(old.addedAt, old.reviewedAt)) byWord[w.word] = w
         }
         byWord.values.sortedByDescending { it.addedAt }
+    }
+
+    /** 在替换任何本机书籍前先验证备份结构；不读取或修改本机生词本。 */
+    fun validateBackup(json: String) {
+        parse(json)
     }
 
     @Synchronized
@@ -144,25 +152,58 @@ class Vocabulary internal constructor(private val file: File, private val atomic
 
     private fun parse(json: String): List<VocabWord> {
         val a = JSONArray(json)
-        return (0 until a.length()).mapNotNull { i ->
-            val o = a.optJSONObject(i) ?: return@mapNotNull null
-            val word = o.optString("word").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            val word = textField(o, "word").takeIf { it.isNotBlank() }
+                ?: throw IllegalArgumentException("第 ${i + 1} 条生词记录缺少词语")
             VocabWord(
                 word = word,
-                reading = o.optString("reading"),
-                gloss = o.optString("gloss"),
-                context = o.optString("context"),
-                bookId = o.optString("bookId"),
-                bookTitle = o.optString("bookTitle"),
-                addedAt = o.optLong("addedAt"),
-                lookups = o.optInt("lookups", 1),
-                mastered = o.optBoolean("mastered"),
-                reviewedAt = o.optLong("reviewedAt"),
-                interval = o.optInt("interval"),
-                due = o.optLong("due"),
-                example = o.optString("example"),
+                reading = textField(o, "reading"),
+                gloss = textField(o, "gloss"),
+                context = textField(o, "context"),
+                bookId = textField(o, "bookId"),
+                bookTitle = textField(o, "bookTitle"),
+                addedAt = nonNegativeLong(o, "addedAt"),
+                lookups = nonNegativeLong(o, "lookups", 1).also { require(it >= 1 && it <= Int.MAX_VALUE) { "生词记录的 lookups 无效" } }.toInt(),
+                mastered = booleanField(o, "mastered"),
+                reviewedAt = nonNegativeLong(o, "reviewedAt"),
+                interval = nonNegativeLong(o, "interval").also { require(it <= Int.MAX_VALUE) { "生词记录的 interval 太大" } }.toInt(),
+                due = nonNegativeLong(o, "due"),
+                example = textField(o, "example"),
             )
         }
+    }
+
+    private fun textField(json: JSONObject, key: String): String {
+        if (!json.has(key)) return "" // 兼容旧版本没有新增字段的记录。
+        val value = json.get(key)
+        require(value is String) { "生词记录的 $key 不是文字" }
+        return value
+    }
+
+    private fun booleanField(json: JSONObject, key: String): Boolean {
+        if (!json.has(key)) return false
+        val value = json.get(key)
+        require(value is Boolean) { "生词记录的 $key 不是布尔值" }
+        return value
+    }
+
+    private fun nonNegativeLong(json: JSONObject, key: String, default: Long = 0): Long {
+        if (!json.has(key)) return default
+        val value = json.get(key)
+        require(value is Number) { "生词记录的 $key 不是数字" }
+        val number = try {
+            BigDecimal(value.toString()).toBigIntegerExact().let { whole ->
+                require(whole.bitLength() <= 63) { "生词记录的 $key 超出整数范围" }
+                whole.toLong()
+            }
+        } catch (error: ArithmeticException) {
+            throw IllegalArgumentException("生词记录的 $key 不是有效整数", error)
+        } catch (error: NumberFormatException) {
+            throw IllegalArgumentException("生词记录的 $key 不是有效整数", error)
+        }
+        require(number >= 0) { "生词记录的 $key 不能为负数" }
+        return number
     }
 
     companion object {

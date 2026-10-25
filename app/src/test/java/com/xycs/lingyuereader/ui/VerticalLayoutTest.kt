@@ -26,6 +26,7 @@ class VerticalLayoutTest {
         // 记下每个字在块里的位置（缩进不算）。
         assertEquals(0 to 0, columns[2][2].block to columns[2][2].char)
         assertEquals(-1, columns[2][0].char)
+        assertTrue(pages.single().spokenText().contains("天下，"))
     }
 
     @Test
@@ -42,12 +43,14 @@ class VerticalLayoutTest {
 
     @Test
     fun imagesGetAPageOfTheirOwn() {
-        val chapter = Chapter("图", listOf(Block.Para("前"), Block.Image("img/1.png"), Block.Para("后")))
+        val chapter = Chapter("图", listOf(Block.Para("前"), Block.Image("img/1.png", "山间小路"), Block.Para("后")))
         val pages = VerticalLayout(rows = 4, columns = 6, indent = false).layout(chapter)
         assertEquals(3, pages.size)
         assertEquals("img/1.png", pages[1].image)
         assertEquals(1, pages[1].firstBlock)
+        assertEquals("插图：山间小路", pages[1].spokenText((chapter.blocks[1] as Block.Image).alt))
         assertEquals("后", texts(pages[2].columns[0]))
+        assertTrue(pages[2].spokenText().contains("后"))
     }
 
     @Test

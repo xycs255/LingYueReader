@@ -60,6 +60,7 @@ import com.xycs.lingyuereader.remote.CatalogPresets
 import com.xycs.lingyuereader.remote.RemoteFile
 import com.xycs.lingyuereader.remote.RemoteItem
 import com.xycs.lingyuereader.remote.RemotePage
+import com.xycs.lingyuereader.remote.sameCatalogOrigin
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.GlassSheet
@@ -465,6 +466,7 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                                     BookRow(
                                         item,
                                         vm,
+                                        catalog.url,
                                         inShelf = item.files.any { f -> shelf.any { e -> e.sources.any { it.uri == f.url } } },
                                         downloading = item.files.any { it.url == downloading },
                                         onOpen = { detail = item },
@@ -489,6 +491,7 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                     BookDetail(
                         book,
                         vm,
+                        catalog?.url.orEmpty(),
                         shelfUrls = shelf.flatMap { e -> e.sources.mapNotNull { it.uri } }.toSet(),
                         downloading = downloading,
                         onDownload = { f -> vm.downloadRemote(f, book.title.takeIf { catalog?.kind == CatalogKind.OPDS }) },
@@ -548,7 +551,7 @@ private fun FolderRow(item: RemoteItem.Folder, dav: Boolean, onClick: () -> Unit
 
 /** 一本书：封面、书名、作者、简介或大小；右边下载钮。 */
 @Composable
-private fun BookRow(item: RemoteItem.Book, vm: AppViewModel, inShelf: Boolean, downloading: Boolean, onOpen: () -> Unit, onDownload: () -> Unit) {
+private fun BookRow(item: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, inShelf: Boolean, downloading: Boolean, onOpen: () -> Unit, onDownload: () -> Unit) {
     val c = LocalGroupedColors.current
     Row(
         Modifier
@@ -560,7 +563,7 @@ private fun BookRow(item: RemoteItem.Book, vm: AppViewModel, inShelf: Boolean, d
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(item, vm, Modifier.width(48.dp))
+        Cover(item, vm, catalogUrl, Modifier.width(48.dp))
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             item.author?.let { Text(it, color = c.secondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -610,9 +613,9 @@ private fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String =
 
 /** 封面：有缩略图地址就取，没有或取不到用生成的书皮。 */
 @Composable
-private fun Cover(item: RemoteItem.Book, vm: AppViewModel, modifier: Modifier) {
-    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, item.cover) {
-        value = item.cover?.let { vm.remoteCover(it) }
+private fun Cover(item: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, modifier: Modifier) {
+    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, item.cover, catalogUrl) {
+        value = item.cover?.takeIf { sameCatalogOrigin(catalogUrl, it) }?.let { vm.remoteCover(it) }
     }
     Box(modifier) {
         val bitmap = image
@@ -631,17 +634,20 @@ private fun Cover(item: RemoteItem.Book, vm: AppViewModel, modifier: Modifier) {
 
 /** 书的详情面板：封面、书名、作者、简介，每个格式一个下载按钮。 */
 @Composable
-private fun BookDetail(book: RemoteItem.Book, vm: AppViewModel, shelfUrls: Set<String>, downloading: String?, onDownload: (RemoteFile) -> Unit) {
+private fun BookDetail(book: RemoteItem.Book, vm: AppViewModel, catalogUrl: String, shelfUrls: Set<String>, downloading: String?, onDownload: (RemoteFile) -> Unit) {
     val c = LocalGroupedColors.current
     Column(Modifier.verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment = Alignment.Top) {
-            Cover(book, vm, Modifier.width(76.dp))
+            Cover(book, vm, catalogUrl, Modifier.width(76.dp))
             Column(Modifier.padding(start = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(book.title, color = c.label, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp)
                 book.author?.let { Text(it, color = c.secondary, fontSize = 14.sp) }
                 val meta = details(book)
                 if (meta.isNotEmpty()) Text(meta, color = c.tertiary, fontSize = 12.sp)
             }
+        }
+        if (book.cover != null && !sameCatalogOrigin(catalogUrl, book.cover)) {
+            Text("这本书的封面来自其他网站，已默认隐藏。", color = c.secondary, fontSize = 12.sp)
         }
         book.summary?.let { Text(it, color = c.label, fontSize = 15.sp, lineHeight = 23.sp) }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

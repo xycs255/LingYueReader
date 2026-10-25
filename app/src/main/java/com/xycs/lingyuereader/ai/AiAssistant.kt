@@ -13,6 +13,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /** AI 面板里的一问一答。 */
 data class AiTurn(
@@ -152,7 +157,15 @@ class AiAssistant(
 
     fun startRecap(book: AiBook, pos: ReadPos) {
         val title = book.content.chapters.getOrNull(pos.chapter)?.title.orEmpty()
-        val cached = readRecap(book.id)?.takeIf { it.chapter == pos.chapter && it.block <= pos.block }
+        val read = runCatching { readRecap(book.id) }
+        if (read.isFailure) {
+            open(book, AiSession(AiTask.Recap(pos, title), listOf(AiTurn(RECAP, loading = false,
+                error = "本机提要缓存读取失败；请检查存储后手动重新生成"))))
+            return
+        }
+        val cached = read.getOrNull()?.takeIf {
+            it.chapter == pos.chapter && (it.block < pos.block || (it.block == pos.block && it.char <= pos.char))
+        }
         if (cached != null) {
             open(book, AiSession(AiTask.Recap(pos, title), listOf(AiTurn(RECAP, cached.text, loading = false)), cachedAt = cached.at))
         } else {
@@ -232,7 +245,7 @@ class AiAssistant(
         _session.value = null
     }
 
-    private fun send(question: String, onDone: (String) -> Unit = {}, build: suspend () -> Prepared) {
+    private fun send(question: String, onDone: suspend (String) -> Unit = {}, build: suspend () -> Prepared) {
         val s = _session.value ?: return
         val b = book ?: return
         val config = _config.value
@@ -289,8 +302,9 @@ class AiAssistant(
         }
         val byWords = index.ranked("$question $keywords", 30)
         val byVector = if (config.embeddingModel.isNotBlank() && config.protocol == AiProtocol.OPENAI) {
-            runCatching { vectorRanked(b, index, config, "$question $keywords", 30) }.getOrElse { e ->
+            runCatching { vectorRanked(b, index, config, "$question $keywords", byWords, 30) }.getOrElse { e ->
                 if (e is CancellationException) throw e
+                if (e is VectorCacheException) throw AiException("本机向量缓存读写失败，已停止检索，避免重复发送可能收费的向量请求：${e.message}")
                 emptyList()
             }
         } else emptyList()
@@ -298,24 +312,32 @@ class AiAssistant(
         return index.sources(VectorCache.fuse(byWords, byVector).take(8))
     }
 
-    /** 按向量相似度排：缺向量的段落先补（分批发，每批存盘，取消了下次接着补）。 */
-    private suspend fun vectorRanked(b: AiBook, index: BookIndex, config: AiConfig, query: String, limit: Int): List<Int> {
-        val cache = VectorCache(bookFile(b.id, VectorCache.FILE))
+    /** 只索引关键词前 30 段和最近 10 段，避免第一次提问把整部长篇发给可能计费的服务。 */
+    private suspend fun vectorRanked(b: AiBook, index: BookIndex, config: AiConfig, query: String, byWords: List<Int>, limit: Int): List<Int> {
+        val path = bookFile(b.id, VectorCache.FILE) ?: throw VectorCacheException("找不到书的缓存目录")
+        val cache = VectorCache(path)
         val model = config.embeddingModel.trim()
         val have = cache.load(model).toMutableMap()
         val texts = index.texts
-        val keys = texts.map(VectorCache::key)
-        val missing = texts.indices.filter { keys[it] !in have }
+        val candidates = vectorCandidates(byWords, texts.size)
+        val keys = candidates.associateWith { VectorCache.key(texts[it]) }
+        val missing = candidates.filter { keys.getValue(it) !in have }
+        val batches = (missing.size + AiClient.EMBED_BATCH - 1) / AiClient.EMBED_BATCH
+        status("向量检索 ${candidates.size}/${texts.size} 段；本次最多 ${batches + 1} 次向量请求${if (texts.size > candidates.size) "，其余段落未发送" else ""}")
         missing.chunked(AiClient.EMBED_BATCH).forEachIndexed { n, batch ->
-            status("正在给读过的部分建立索引 ${n * AiClient.EMBED_BATCH}/${missing.size}（只需一次）")
+            status("正在建立向量索引 ${n + 1}/$batches 批（最多检索 ${candidates.size}/${texts.size} 段）")
             val vectors = client.embed(config, model, batch.map { texts[it] })
-            val added = batch.indices.associate { keys[batch[it]] to vectors[it] }
-            have.putAll(added)
+            val added = batch.indices.associate { keys.getValue(batch[it]) to vectors[it] }
             cache.put(added)
+            have.putAll(added)
         }
         val q = client.embed(config, model, listOf(query)).single()
-        return texts.indices.sortedByDescending { have[keys[it]]?.let { v -> VectorCache.cosine(q, v) } ?: -1f }.take(limit)
+        return candidates.sortedByDescending { have[keys.getValue(it)]?.let { v -> VectorCache.cosine(q, v) } ?: -1f }.take(limit)
     }
+
+    internal fun vectorCandidates(byWords: List<Int>, textCount: Int): List<Int> =
+        (byWords.take(30) + (textCount - 1 downTo (textCount - 10).coerceAtLeast(0)).toList())
+            .filter { it in 0 until textCount }.distinct().take(40)
 
     private fun status(text: String?) = updateLast { it.copy(status = text) }
 
@@ -368,21 +390,38 @@ class AiAssistant(
 
     // ---------- 前情提要缓存 ----------
 
-    private class CachedRecap(val chapter: Int, val block: Int, val text: String, val at: Long)
+    private class CachedRecap(val chapter: Int, val block: Int, val char: Int, val text: String, val at: Long)
 
-    private fun readRecap(bookId: String): CachedRecap? = runCatching {
-        val o = JSONObject(recapFile(bookId)!!.readText())
-        CachedRecap(o.getInt("chapter"), o.getInt("block"), o.getString("text"), o.getLong("at"))
-    }.getOrNull()
+    private fun readRecap(bookId: String): CachedRecap? {
+        val file = recapFile(bookId) ?: return null
+        if (!file.exists()) return null
+        val o = JSONObject(file.readText())
+        // 旧缓存含整块正文：同一块内只有读到块末才能安全复用。
+        return CachedRecap(o.getInt("chapter"), o.getInt("block"), o.optInt("char", Int.MAX_VALUE), o.getString("text"), o.getLong("at"))
+    }
 
-    private fun saveRecap(bookId: String, pos: ReadPos, text: String) {
-        val file = recapFile(bookId) ?: return
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                file.parentFile?.mkdirs()
-                file.writeText(JSONObject().put("chapter", pos.chapter).put("block", pos.block).put("text", text).put("at", System.currentTimeMillis()).toString())
+    private suspend fun saveRecap(bookId: String, pos: ReadPos, text: String): Unit = withContext(Dispatchers.IO) {
+        val file = recapFile(bookId) ?: throw AiException("提要已生成，但找不到本机保存位置；请勿重复生成")
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        val bytes = JSONObject().put("chapter", pos.chapter).put("block", pos.block).put("char", pos.char)
+            .put("text", text).put("at", System.currentTimeMillis()).toString().toByteArray(Charsets.UTF_8)
+        try {
+            if (file.parentFile?.isDirectory == false && file.parentFile?.mkdirs() != true) throw IOException("无法创建提要目录")
+            FileOutputStream(tmp).use { output ->
+                output.write(bytes)
+                output.fd.sync()
             }
+            try {
+                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (e: IOException) {
+            throw AiException("提要已生成，但本机保存失败；请检查存储后重试：${e.message ?: e.javaClass.simpleName}")
+        } finally {
+            tmp.delete()
         }
+        Unit
     }
 
     companion object {

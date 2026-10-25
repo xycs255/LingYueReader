@@ -1,13 +1,20 @@
 package com.xycs.lingyuereader.data
 
 object BookParser {
+    private const val MAX_TEXT_SOURCE = 128L * 1024 * 1024
+    private const val MAX_EPUB_SOURCE = 256L * 1024 * 1024
 
     /** 一份来源文件。给了 [file] 时内容按需读取：漫画、PDF 不必整个读进内存。 */
     class SourceBytes private constructor(val name: String, val file: java.io.File?, private val data: ByteArray?) {
         constructor(name: String, bytes: ByteArray) : this(name, null, bytes)
         constructor(name: String, file: java.io.File) : this(name, file, null)
 
-        val bytes: ByteArray by lazy { data ?: file!!.readBytes() }
+        val bytes: ByteArray by lazy {
+            val limit = if (formatOf(name) == BookFormat.EPUB) MAX_EPUB_SOURCE else MAX_TEXT_SOURCE
+            val length = data?.size?.toLong() ?: file!!.length()
+            require(length <= limit) { "${name} 文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）" }
+            data ?: file!!.readBytes()
+        }
     }
 
     fun formatOf(name: String): BookFormat {
@@ -40,7 +47,19 @@ object BookParser {
         java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
             while (true) {
                 val e = zip.nextEntry ?: break
-                if (e.name.endsWith(".fb2", ignoreCase = true)) return zip.readBytes()
+                if (e.name.endsWith(".fb2", ignoreCase = true)) {
+                    val output = java.io.ByteArrayOutputStream()
+                    val chunk = ByteArray(8192)
+                    var total = 0L
+                    while (true) {
+                        val count = zip.read(chunk)
+                        if (count < 0) break
+                        total += count
+                        require(total <= MAX_TEXT_SOURCE) { "FB2 解压后过大，无法安全导入" }
+                        output.write(chunk, 0, count)
+                    }
+                    return output.toByteArray()
+                }
             }
         }
         error("压缩包里没有 .fb2 文件")
@@ -159,20 +178,25 @@ object BookParser {
         return content.copy(chapters = chapters, cover = content.cover?.let { "$index|$it" })
     }
 
-    fun search(content: BookContent, query: String, limit: Int = 300): List<SearchHit> {
+    fun search(content: BookContent, query: String, limit: Int = 300, shouldContinue: () -> Boolean = { true }): List<SearchHit> {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         val hits = mutableListOf<SearchHit>()
         content.chapters.forEachIndexed { ci, chapter ->
             chapter.blocks.forEachIndexed { bi, block ->
-                val text = block.plainText
+                if (!shouldContinue()) return hits
+                // 搜索结果的字位须与阅读页去掉加粗标记后的坐标一致。表格不可按字定位，退回块首。
+                val locatable = block.spokenText
+                val text = locatable ?: block.plainText
                 var from = 0
                 while (true) {
+                    if (!shouldContinue()) return hits
                     val at = text.indexOf(q, from, ignoreCase = true)
                     if (at < 0) break
                     hits += SearchHit(
                         chapterIndex = ci,
                         blockIndex = bi,
+                        charOffset = if (locatable != null) at else 0,
                         chapterTitle = chapter.title,
                         before = text.substring(maxOf(0, at - 18), at),
                         match = text.substring(at, at + q.length),

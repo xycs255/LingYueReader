@@ -194,4 +194,32 @@ class AiClientTest {
         scope.cancel()
         dir.deleteRecursively()
     }
+
+    @Test
+    fun recapSaveFailureIsShownAndCorruptExistingCacheDoesNotTriggerAPaidRetry() = runBlocking<Unit> {
+        reply = Triple(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"提要\"}}]}\n\ndata: [DONE]\n\n")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val dir = Files.createTempDirectory("recap-save").toFile()
+        try {
+            val book = AiBook("b", "书", null, BookContent("书", null, listOf(Chapter("第一章", listOf(Block.Para("开头。"))))))
+            val cache = File(dir, "b-ai-recap.json")
+            val blocked = File(dir, "b-ai-recap.json.tmp").apply { mkdir() }
+            val assistant = AiAssistant(scope, null, bookFile = { id, name -> File(dir, "$id-$name") })
+            assistant.saveConfig(openAi())
+            assistant.startRecap(book, ReadPos(0, 0, 3))
+            withTimeout(5_000) { while (assistant.session.value?.turns?.lastOrNull()?.error == null) delay(10) }
+            assertTrue(assistant.session.value!!.turns.last().error.orEmpty().contains("本机保存失败"))
+            assertFalse(cache.exists())
+            blocked.delete()
+            requests.clear()
+            cache.writeText("{}")
+            assistant.close()
+            assistant.startRecap(book, ReadPos(0, 0, 3))
+            assertTrue(assistant.session.value!!.turns.last().error.orEmpty().contains("缓存读取失败"))
+            assertTrue("旧缓存损坏时不能自动重复计费", requests.isEmpty())
+        } finally {
+            scope.cancel()
+            dir.deleteRecursively()
+        }
+    }
 }

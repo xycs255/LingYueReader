@@ -1,9 +1,15 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.spokenText
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /** 人物表里的一个人：名字、别称、身份、截至读者读到处的经历、和别人的关系。 */
 data class BookCharacter(
@@ -20,8 +26,8 @@ data class BookCharacter(
     }
 }
 
-/** 一本书的人物表：整理到第几章第几块（含）为止。 */
-data class CharacterTable(val characters: List<BookCharacter>, val chapter: Int, val block: Int, val updatedAt: Long) {
+/** 一本书的人物表：整理到当前块的原文 UTF-16 字符坐标为止。旧记录的整块边界仍可读取。 */
+data class CharacterTable(val characters: List<BookCharacter>, val chapter: Int, val block: Int, val updatedAt: Long, val char: Int = Int.MAX_VALUE) {
     fun find(word: String): BookCharacter? = characters.firstOrNull { it.matches(word) }
 }
 
@@ -36,40 +42,62 @@ object AiCharacters {
     /** 人物表最多留多少人：太长了每次都要连表一起发，费钱。 */
     const val MAX = 60
 
-    /** 一段要发的原文，以及它到第几章第几块为止（含）：每段整理完就存盘，中途取消下次接着来。 */
+    /** 一段要发的原文及其末尾坐标：每段整理完就存盘，中途取消下次接着来。 */
     class Chunk(val text: String, val end: ReadPos)
 
-    /** 还没整理的原文，按 [CHUNK] 切好；[from] 是上次整理到的位置（含，不再发），为空时从头开始。 */
+    /** 还没整理的原文，按 [CHUNK] 切好；[from] 之前的文字不再发，当前块最多到 [to.char]。 */
     fun chunks(content: BookContent, from: ReadPos?, to: ReadPos): List<Chunk> {
         val out = ArrayList<Chunk>()
         val buf = StringBuilder()
         var lastPos: ReadPos? = null
+        fun flush() {
+            if (buf.isNotBlank()) out += Chunk(buf.toString(), lastPos!!)
+            buf.setLength(0)
+        }
         val startChapter = from?.chapter ?: 0
         for (ch in startChapter..to.chapter.coerceAtMost(content.chapters.lastIndex)) {
             val chapter = content.chapters[ch]
             val blocks = chapter.blocks
-            val first = if (from != null && ch == from.chapter) from.block + 1 else 0
+            val first = if (from != null && ch == from.chapter) from.block + if (from.char == Int.MAX_VALUE) 1 else 0 else 0
             val last = if (ch == to.chapter) to.block.coerceAtMost(blocks.lastIndex) else blocks.lastIndex
             if (first > last) continue
             var header = "【${chapter.title}】"
             for (b in first..last) {
-                val t = blocks[b].plainText.trim()
-                if (t.isEmpty()) continue
-                if (buf.length + t.length > CHUNK && buf.isNotEmpty()) {
-                    out += Chunk(buf.toString(), lastPos!!)
-                    buf.setLength(0)
+                val raw = blocks[b].spokenText ?: blocks[b].plainText
+                var cursor = if (from != null && ch == from.chapter && b == from.block) from.char.coerceIn(0, raw.length) else 0
+                val end = if (ch == to.chapter && b == to.block) to.char.coerceIn(0, raw.length) else raw.length
+                if (cursor >= end || raw.substring(cursor, end).isBlank()) continue
+                if (buf.isNotEmpty() && end - cursor + header.length + 2 <= CHUNK && buf.length + end - cursor + header.length + 2 > CHUNK) {
+                    flush()
                     header = "【${chapter.title}（续）】"
                 }
-                if (header.isNotEmpty()) {
-                    if (buf.isNotEmpty()) buf.append('\n')
-                    buf.append(header)
-                    header = ""
+                while (cursor < end) {
+                    if (buf.isNotEmpty() && buf.length + header.length + 2 >= CHUNK) {
+                        flush()
+                        header = "【${chapter.title}（续）】"
+                    }
+                    if (header.isNotEmpty()) {
+                        if (buf.isNotEmpty()) buf.append('\n')
+                        buf.append(header)
+                        header = ""
+                    }
+                    val count = minOf(end - cursor, CHUNK - buf.length - 1)
+                    if (count <= 0) {
+                        flush()
+                        header = "【${chapter.title}（续）】"
+                        continue
+                    }
+                    buf.append('\n').append(raw, cursor, cursor + count)
+                    cursor += count
+                    lastPos = if (cursor == raw.length) ReadPos(ch, b) else ReadPos(ch, b, cursor)
+                    if (cursor < end && buf.length >= CHUNK) {
+                        flush()
+                        header = "【${chapter.title}（续）】"
+                    }
                 }
-                buf.append('\n').append(if (t.length > CHUNK) t.take(CHUNK) else t)
-                lastPos = ReadPos(ch, b)
             }
         }
-        if (buf.isNotBlank()) out += Chunk(buf.toString(), lastPos!!)
+        flush()
         return out
     }
 
@@ -118,17 +146,32 @@ object AiCharacters {
         }
     }
 
-    fun read(file: File?): CharacterTable? = runCatching {
-        val o = JSONObject(file!!.readText())
+    fun read(file: File?): CharacterTable? {
+        val f = file ?: return null
+        if (!f.exists()) return null
+        val o = JSONObject(f.readText())
         val a = o.getJSONArray("characters")
-        CharacterTable((0 until a.length()).mapNotNull { decodeOne(a.getJSONObject(it)) }, o.getInt("chapter"), o.getInt("block"), o.getLong("at"))
-    }.getOrNull()
+        return CharacterTable((0 until a.length()).mapNotNull { decodeOne(a.getJSONObject(it)) }, o.getInt("chapter"), o.getInt("block"), o.getLong("at"), o.optInt("char", Int.MAX_VALUE))
+    }
 
     fun write(file: File?, table: CharacterTable) {
-        val f = file ?: return
-        runCatching {
-            f.parentFile?.mkdirs()
-            f.writeText(JSONObject().put("characters", encode(table.characters)).put("chapter", table.chapter).put("block", table.block).put("at", table.updatedAt).toString())
+        val f = file ?: throw IOException("找不到人物表保存位置")
+        if (f.parentFile?.isDirectory == false && f.parentFile?.mkdirs() != true) throw IOException("无法创建人物表目录")
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        val bytes = JSONObject().put("characters", encode(table.characters)).put("chapter", table.chapter).put("block", table.block)
+            .put("char", table.char).put("at", table.updatedAt).toString().toByteArray(Charsets.UTF_8)
+        try {
+            FileOutputStream(tmp).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            try {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            tmp.delete()
         }
     }
 }

@@ -208,6 +208,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     companion object {
         /** 一次向量请求最多几段（通义千问的向量接口一次最多 10 段）。 */
         const val EMBED_BATCH = 10
+        /** 一段语音返回的压缩音频上限，避免异常服务端耗尽内存。 */
+        const val MAX_SPEECH_BYTES = 20 * 1024 * 1024
     }
 
     /**
@@ -480,7 +482,18 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 val o = runCatching { JSONObject(conn.inputStream.bufferedReader().use { it.readText() }) }.getOrNull()
                 throw AiException("语音合成：" + (o?.optJSONObject("error")?.optString("message") ?: o?.optString("message") ?: "服务商没有返回音频").take(160))
             }
-            val bytes = conn.inputStream.use { it.readBytes() }
+            if (conn.contentLengthLong > MAX_SPEECH_BYTES) throw AiException("语音合成：音频超过 20 MB，请缩短文字后重试")
+            val bytes = conn.inputStream.use { input ->
+                val out = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    if (n > MAX_SPEECH_BYTES - out.size()) throw AiException("语音合成：音频超过 20 MB，请缩短文字后重试")
+                    out.write(buffer, 0, n)
+                }
+                out.toByteArray()
+            }
             if (bytes.size < 64) throw AiException("语音合成：服务商没有返回音频")
             bytes
         } catch (e: AiException) {

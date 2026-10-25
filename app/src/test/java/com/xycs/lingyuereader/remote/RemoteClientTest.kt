@@ -55,6 +55,7 @@ class RemoteClientTest {
                     path == "/dav/" -> ex.reply(405, "text/plain", "")
                     path == "/book.epub" -> ex.reply(200, "application/epub+zip", "EPUBDATA")
                     path == "/away" -> { ex.responseHeaders.add("Location", "http://127.0.0.1:${other.address.port}/book.epub"); ex.reply(302, "text/plain", "") }
+                    path == "/cover-away" -> { ex.responseHeaders.add("Location", "http://127.0.0.1:${other.address.port}/cover.jpg"); ex.reply(302, "text/plain", "") }
                     else -> ex.reply(404, "text/plain", "")
                 }
             }
@@ -122,6 +123,17 @@ class RemoteClientTest {
     fun noPasswordForHostsWithoutACatalog() {
         RemoteClient { emptyList() }.open("http://127.0.0.1:${other.address.port}/x.epub").close()
         assertNull(otherAuth)
+    }
+
+    @Test
+    fun automaticCoversStayOnTheConfiguredOriginAndDoNotFollowRedirects() = runBlocking<Unit> {
+        assertTrue(sameCatalogOrigin(opds().url, "$base/cover.jpg"))
+        assertTrue(!sameCatalogOrigin(opds().url, "http://127.0.0.1:${other.address.port}/cover.jpg"))
+        assertTrue(!sameCatalogOrigin(opds().url, "https://127.0.0.1:${lib.address.port}/cover.jpg"))
+        assertTrue(!sameCatalogOrigin(opds().url, "javascript:alert(1)"))
+        val error = runCatching { RemoteClient { listOf(opds()) }.image("$base/cover-away") }.exceptionOrNull()
+        assertTrue(error is RemoteException && error.message.orEmpty().contains("302"))
+        assertEquals("unset", otherAuth)
     }
 
     private companion object {

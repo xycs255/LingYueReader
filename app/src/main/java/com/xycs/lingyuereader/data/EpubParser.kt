@@ -1,12 +1,20 @@
 package com.xycs.lingyuereader.data
 
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.net.URLDecoder
 import java.util.zip.ZipInputStream
 
 object EpubParser {
 
     private val textTypes = setOf("application/xhtml+xml", "text/html", "application/x-dtbncx+xml")
+    // EPUBs can contain highly compressed XHTML. Keep the import bounded before retaining
+    // decoded entries in memory; a normal long novel is well below these limits.
+    private const val MAX_COMPRESSED_BYTES = 256L * 1024 * 1024
+    private const val MAX_ENTRY_BYTES = 16L * 1024 * 1024
+    private const val MAX_TEXT_BYTES = 96L * 1024 * 1024
+    private const val MAX_UNCOMPRESSED_BYTES = 512L * 1024 * 1024
+    private const val MAX_ENTRIES = 20_000
 
     fun parse(bytes: ByteArray, fallbackTitle: String): BookContent {
         val files = unzip(bytes)
@@ -121,16 +129,42 @@ object EpubParser {
     }
 
     private fun unzip(bytes: ByteArray): Map<String, ByteArray> {
+        require(bytes.size.toLong() <= MAX_COMPRESSED_BYTES) { "EPUB 文件过大，无法安全导入" }
         val files = mutableMapOf<String, ByteArray>()
+        val buffer = ByteArray(16 * 1024)
+        var entries = 0
+        var total = 0L
+        var retained = 0L
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
+                require(++entries <= MAX_ENTRIES) { "EPUB 内文件过多，无法安全导入" }
                 val name = entry.name
                 val wanted = name.endsWith(".xml", ignoreCase = true) || name.endsWith(".opf", ignoreCase = true) ||
                     name.endsWith(".ncx", ignoreCase = true) || name.endsWith(".xht", ignoreCase = true) ||
                     name.endsWith(".xhtml", ignoreCase = true) || name.endsWith(".html", ignoreCase = true) ||
                     name.endsWith(".htm", ignoreCase = true)
-                if (!entry.isDirectory && wanted) files[name] = zip.readBytes()
+                // A directory entry can still carry compressed bytes. Drain it through the
+                // same bounded loop so nextEntry() cannot skip decompression outside our limit.
+                val output = if (wanted && !entry.isDirectory) ByteArrayOutputStream() else null
+                var size = 0L
+                while (true) {
+                    val count = zip.read(buffer)
+                    if (count < 0) break
+                    size += count
+                    total += count
+                    require(total <= MAX_UNCOMPRESSED_BYTES) { "EPUB 解压内容过大，无法安全导入" }
+                    if (output != null) {
+                        require(size <= MAX_ENTRY_BYTES && retained + size <= MAX_TEXT_BYTES) {
+                            "EPUB 正文过大，无法安全导入"
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                }
+                if (output != null) {
+                    retained += size
+                    files[name] = output.toByteArray()
+                }
             }
         }
         return files

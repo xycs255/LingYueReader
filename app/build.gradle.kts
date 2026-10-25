@@ -20,12 +20,17 @@ val releaseKey: Map<String, String>? = run {
         "keyAlias" to System.getenv("LINGYUE_KEY_ALIAS"),
         "keyPassword" to System.getenv("LINGYUE_KEY_PASSWORD"),
     )
-    if (env.values.all { !it.isNullOrBlank() }) return@run env.mapValues { it.value!! }
+    if (env.values.any { !it.isNullOrBlank() }) {
+        val missing = env.filterValues { it.isNullOrBlank() }.keys
+        require(missing.isEmpty()) { "正式签名环境变量不完整：${missing.joinToString()}" }
+        return@run env.mapValues { it.value!! }
+    }
     val file = rootProject.file("keystore.properties")
     if (!file.isFile) return@run null
     val props = Properties().apply { file.inputStream().use { load(it) } }
     val keys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
-    if (keys.any { props.getProperty(it).isNullOrBlank() }) return@run null
+    val missing = keys.filter { props.getProperty(it).isNullOrBlank() }
+    require(missing.isEmpty()) { "keystore.properties 的正式签名配置不完整：${missing.joinToString()}" }
     keys.associateWith { props.getProperty(it) }
 }
 

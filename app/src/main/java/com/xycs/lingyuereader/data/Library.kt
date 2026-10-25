@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import androidx.core.net.toUri
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 
@@ -36,11 +37,17 @@ class Library(private val context: Context) {
     internal val rootPath: String get() = root.path
     internal val appContext: Context get() = context
     private val indexFile = File(root, "index.json")
+    /** 可注入目录改名失败，验证已提交但未清理时不会允许后续索引写入。 */
+    internal var retireSwapRename: (File, File) -> Boolean = { from, to -> from.renameTo(to) }
 
     init {
         BookParser.pdfAspects = PdfPages::aspects
         recoverInterruptedRules()
         recoverInterruptedSwaps()
+        // 第一次启动时就建立空索引。之后索引若失踪，不能把仍在磁盘上的书当作空书架改写。
+        if (!indexFile.exists() && !hasBookDirectories()) {
+            check(DurableFiles.write(indexFile, "[]".toByteArray())) { "无法建立书架索引" }
+        }
     }
 
     private companion object {
@@ -48,9 +55,20 @@ class Library(private val context: Context) {
         const val RULES = "rules.json"
         const val RULES_INDEX_BEFORE = "index-before.json"
         const val RULES_COMMITTED = "committed"
+        const val SWAP_INDEX_BEFORE = "index-before.json"
+        const val SWAP_INDEX_AFTER = "index-after.json"
+        const val SWAP_IDS = "ids.json"
+        const val SWAP_PREPARED = "prepared-swap"
+        const val SWAP_COMMITTED = "committed-swap"
+        const val SWAP_ROLLED_BACK = "rolled-back-swap"
+        const val SWAP_CLEANUP = ".swap-cleanup-"
         val RULES_STAGE = Regex("""\.rules-([A-Za-z0-9-]{1,64})-([0-9a-fA-F-]{36})""")
         val REFRESH_STAGE = Regex("""\.refresh-([A-Za-z0-9-]{1,64})-[0-9a-fA-F-]{36}""")
         const val BACKUP_MANIFEST = "lingyue-backup.json"
+        const val MAX_BACKUP_ENTRIES = 50_000
+        const val MAX_BACKUP_UNPACKED_BYTES = 8L * 1024 * 1024 * 1024
+        const val MAX_BACKUP_MANIFEST_BYTES = 1024 * 1024L
+        const val MAX_BACKUP_JSON_BYTES = 64L * 1024 * 1024
         val BACKUP_ID = Regex("""[A-Za-z0-9-]{1,64}""")
         val BACKUP_SOURCE_FILE = Regex("""s\d{1,4}\.[A-Za-z0-9]{1,10}""")
         /** 书以外的应用数据（生词本、阅读统计、写作的作品），按文件名放在 data/ 下。 */
@@ -73,9 +91,17 @@ class Library(private val context: Context) {
     fun damagedEntries(): Int = readIndex().second
 
     private fun readIndex(): Pair<List<BookEntry>, Int> {
-        if (!indexFile.isFile) return emptyList<BookEntry>() to 0
+        if (!indexFile.isFile) {
+            check(!indexFile.exists() && !hasBookDirectories()) {
+                "书架索引缺失；原书籍文件已保留，已停止写入，请先恢复索引"
+            }
+            return emptyList<BookEntry>() to 0
+        }
         return parseIndex(indexFile.readText())
     }
+
+    private fun hasBookDirectories(): Boolean = root.listFiles().orEmpty()
+        .any { it.isDirectory && BACKUP_ID.matches(it.name) }
 
     private fun parseIndex(json: String): Pair<List<BookEntry>, Int> {
         val array = try {
@@ -97,6 +123,34 @@ class Library(private val context: Context) {
     private fun openSource(uri: Uri): java.io.InputStream? =
         if (uri.scheme == "http" || uri.scheme == "https") requireNotNull(remote) { "书源不可用" }(uri.toString())
         else context.contentResolver.openInputStream(uri)
+
+    private class SourceTooLargeException(message: String) : IllegalArgumentException(message)
+
+    private fun sourceLimit(name: String): Long = when (BookParser.formatOf(name)) {
+            BookFormat.EPUB -> 256L * 1024 * 1024
+            BookFormat.PDF, BookFormat.CBZ -> 2L * 1024 * 1024 * 1024
+            else -> 128L * 1024 * 1024
+        }
+
+    private fun copySource(uri: Uri, name: String, target: File, checkCancelled: () -> Unit = {}): File {
+        val limit = sourceLimit(name)
+        check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs()) { "无法准备书籍文件目录" }
+        requireNotNull(openSource(uri)) { "无法打开文件：$name" }.use { input ->
+            target.outputStream().use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var total = 0L
+                while (true) {
+                    checkCancelled()
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > limit) throw SourceTooLargeException("$name 文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）")
+                    output.write(buffer, 0, count)
+                }
+            }
+        }
+        return target
+    }
 
     fun describe(uris: List<Uri>): List<Picked> =
         uris.map { Picked(it, displayName(it) ?: it.lastPathSegment?.substringAfterLast('/') ?: "未命名.txt") }
@@ -121,17 +175,7 @@ class Library(private val context: Context) {
                 val ext = picked.name.substringAfterLast('.', "txt").lowercase()
                 require(ext.matches(Regex("[a-z0-9]{1,10}"))) { "文件扩展名无效：${picked.name}" }
                 val file = "s$i.$ext"
-                requireNotNull(openSource(picked.uri)) { "无法打开文件：${picked.name}" }.use { input ->
-                    File(dir, file).outputStream().use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                        while (true) {
-                            checkCancelled()
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                        }
-                    }
-                }
+                copySource(picked.uri, picked.name, File(dir, file), checkCancelled)
                 require(File(dir, file).length() > 0L) { "文件为空：${picked.name}" }
                 SourceRef(picked.name, picked.uri.toString(), file)
             }
@@ -246,7 +290,11 @@ class Library(private val context: Context) {
     /** 来源文件解码后的全文（规则页预览用）。 */
     fun sourceTexts(entry: BookEntry): List<String> {
         val dir = File(root, entry.id)
-        return entry.sources.map { TextDecoder.decode(File(dir, it.file).readBytes()) }
+        return entry.sources.map {
+            val file = File(dir, it.file)
+            require(file.length() <= 128L * 1024 * 1024) { "${it.name} 文件过大，无法预览文本规则" }
+            TextDecoder.decode(file.readBytes())
+        }
     }
 
     /** 按 [rules] 试解析，不写缓存（规则页预览分章用）。 */
@@ -312,16 +360,121 @@ class Library(private val context: Context) {
         }
     }
 
+    /** 目录交换之前先保存原索引和全部目标 ID；提交标记必须在索引写好以后落盘。 */
+    private fun prepareSwap(staging: File, ids: List<String>) {
+        clearPendingCommittedSwaps()
+        require(ids.isNotEmpty() && ids.size == ids.distinct().size && ids.all(BACKUP_ID::matches)) { "书籍事务 ID 无效" }
+        check(staging.isDirectory || staging.mkdirs()) { "无法准备书籍事务目录" }
+        val (entries, damaged) = readIndex()
+        check(damaged == 0) { "书架索引里有损坏记录，未替换书籍" }
+        val indexedIds = entries.map { it.id }.toSet()
+        check(ids.none { id -> File(root, id).exists() && id !in indexedIds }) {
+            "书架上存在未索引的同 ID 书籍文件，未替换原文件"
+        }
+        val before = indexFile.readBytes()
+        check(entries.size == JSONArray(before.toString(Charsets.UTF_8)).length()) { "书架索引不完整，未替换书籍" }
+        check(DurableFiles.write(File(staging, SWAP_INDEX_BEFORE), before)) { "无法保存原书架索引" }
+        check(DurableFiles.write(File(staging, SWAP_IDS), JSONArray(ids).toString().toByteArray())) { "无法记录书籍事务" }
+        check(DurableFiles.write(File(staging, SWAP_PREPARED), byteArrayOf(1))) { "无法开始书籍事务" }
+    }
+
+    private fun swapIds(staging: File): List<String> {
+        val array = JSONArray(File(staging, SWAP_IDS).readText())
+        val ids = (0 until array.length()).map { array.getString(it) }
+        require(ids.isNotEmpty() && ids.size == ids.distinct().size && ids.all(BACKUP_ID::matches)) { "书籍事务记录损坏" }
+        return ids
+    }
+
     /**
-     * 刷新、恢复备份做到一半进程被杀：书的旧目录可能还在临时目录的 previous 里，而书架上那本书的目录已经没了。
-     * 启动时把这样的旧目录放回原处，其余的临时文件清掉。
+     * 未提交时把所有目标目录与索引一起退回原版。previous 始终保留到整个回滚完成，
+     * 所以即使回滚自己再次被杀，下次启动也能从同一份旧目录重试。
      */
+    private fun rollbackSwap(staging: File) {
+        val ids = swapIds(staging)
+        val before = File(staging, SWAP_INDEX_BEFORE).readBytes()
+        val (oldEntries, damaged) = parseIndex(before.toString(Charsets.UTF_8))
+        check(damaged == 0 && oldEntries.size == JSONArray(before.toString(Charsets.UTF_8)).length()) { "原书架索引快照损坏" }
+        val oldIds = oldEntries.map { it.id }.toSet()
+        val previous = File(staging, "previous")
+        val discard = File(staging, "discard")
+        ids.forEach { id ->
+            val dir = File(root, id)
+            val old = File(previous, id)
+            if (old.exists()) {
+                check(old.isDirectory) { "原书籍副本损坏：$id" }
+                if (dir.exists()) {
+                    check(discard.isDirectory || discard.mkdirs()) { "无法准备事务回滚目录" }
+                    check(dir.renameTo(File(discard, "$id-${UUID.randomUUID()}"))) { "无法暂存未提交的书籍：$id" }
+                }
+                check(old.copyRecursively(dir)) { "无法还原原书籍：$id" }
+            } else if (id !in oldIds && dir.exists()) {
+                // 备份新加的书也须撤销；原索引并不认识它。
+                check(discard.isDirectory || discard.mkdirs()) { "无法准备事务回滚目录" }
+                check(dir.renameTo(File(discard, "$id-${UUID.randomUUID()}"))) { "无法撤销未提交的新书：$id" }
+            } else if (id in oldIds) {
+                check(dir.isDirectory) { "原书籍目录失踪：$id" }
+            }
+        }
+        if (!indexFile.isFile || !indexFile.readBytes().contentEquals(before)) {
+            check(DurableFiles.write(indexFile, before)) { "无法还原原书架索引" }
+            check(indexFile.readBytes().contentEquals(before)) { "原书架索引回读不一致" }
+        }
+        check(DurableFiles.write(File(staging, SWAP_ROLLED_BACK), byteArrayOf(1))) { "无法完成书籍事务回滚" }
+        retireSwap(staging)
+    }
+
+    /** 先改掉目录名再删，避免清理时被杀且删掉提交标记后误判为未提交。 */
+    private fun retireSwap(staging: File): Boolean {
+        if (!staging.exists()) return true
+        val retired = File(root, "$SWAP_CLEANUP${UUID.randomUUID()}")
+        if (!retireSwapRename(staging, retired)) return false
+        retired.deleteRecursively()
+        return true
+    }
+
+    /** 若提交后旧副本尚未安全退役，先完成清理；不能让后续合法进度改写 index-after。 */
+    private fun clearPendingCommittedSwaps() {
+        root.listFiles().orEmpty().filter { staging ->
+            staging.isDirectory && (REFRESH_STAGE.matches(staging.name) || staging.name.startsWith(".restore-")) &&
+                File(staging, SWAP_COMMITTED).isFile
+        }.forEach { staging ->
+            val after = File(staging, SWAP_INDEX_AFTER)
+            check(after.isFile && indexFile.isFile && indexFile.readBytes().contentEquals(after.readBytes()) &&
+                swapIds(staging).all { File(root, it).isDirectory }) { "上次书籍事务尚未确认，已停止后续写入" }
+            check(retireSwap(staging)) { "上次书籍事务已提交，但旧副本清理失败，已停止后续写入" }
+        }
+    }
+
+    private fun commitSwap(staging: File) {
+        check(DurableFiles.write(File(staging, SWAP_INDEX_AFTER), indexFile.readBytes())) { "无法确认新书架索引" }
+        check(DurableFiles.write(File(staging, SWAP_COMMITTED), byteArrayOf(1))) { "无法完成书籍事务" }
+        retireSwap(staging)
+    }
+
+    /** 进程死亡后，按事务标记选择整组提交或整组回滚；旧版无日志的临时目录仍做保守找回。 */
     private fun recoverInterruptedSwaps() {
+        root.listFiles().orEmpty().filter { it.isDirectory && it.name.startsWith(SWAP_CLEANUP) }.forEach { it.deleteRecursively() }
         root.listFiles().orEmpty().forEach { staging ->
             if (!staging.isDirectory) return@forEach
             val refreshId = REFRESH_STAGE.matchEntire(staging.name)?.groupValues?.get(1)
             val restoring = staging.name.startsWith(".restore-")
             if (refreshId == null && !restoring) return@forEach
+            if (File(staging, SWAP_ROLLED_BACK).isFile) {
+                retireSwap(staging)
+                return@forEach
+            }
+            if (File(staging, SWAP_PREPARED).isFile) {
+                val after = File(staging, SWAP_INDEX_AFTER)
+                if (File(staging, SWAP_COMMITTED).isFile && after.isFile && indexFile.isFile &&
+                    indexFile.readBytes().contentEquals(after.readBytes()) && swapIds(staging).all { File(root, it).isDirectory }
+                ) {
+                    check(retireSwap(staging)) { "已提交书籍事务的旧副本清理失败，已停止后续写入" }
+                } else {
+                    rollbackSwap(staging)
+                }
+                return@forEach
+            }
+            // 旧版事务没有索引快照：仅在正式目录失踪时找回 previous，不猜测目录内容。
             val previous = File(staging, "previous")
             if (refreshId != null) {
                 val dir = File(root, refreshId)
@@ -466,13 +619,19 @@ class Library(private val context: Context) {
         val downloaded = File(staging, "downloaded")
         try {
             val read = entry.sources.associate { s ->
-                val bytes = s.uri?.let { runCatching { readUri(it.toUri()) }.getOrNull() }
-                s.file to bytes?.let { b -> File(downloaded, s.file).also { it.parentFile?.mkdirs(); it.writeBytes(b) } }
+                val file = s.uri?.let { uri ->
+                    runCatching { copySource(uri.toUri(), s.name, File(downloaded, s.file)) }.getOrElse { error ->
+                        if (error is SourceTooLargeException) throw error
+                        null
+                    }
+                }
+                s.file to file
             }
             return synchronized(this) { refreshLocked(entry, staging, read) }
         } finally {
             downloaded.deleteRecursively()
-            if (staging.list().isNullOrEmpty()) staging.delete()
+            // 有事务日志的目录要留给下次启动恢复；未开始交换的临时副本可以清理。
+            if (!File(staging, SWAP_PREPARED).isFile && !File(staging, "previous").exists()) staging.deleteRecursively()
         }
     }
 
@@ -481,22 +640,21 @@ class Library(private val context: Context) {
         require(dir.isDirectory) { "书籍文件不存在" }
         val incoming = File(staging, "incoming")
         val next = File(staging, "next")
-        val previous = File(staging, "previous")
+        val previous = File(staging, "previous/${entry.id}")
         var changed = 0
         var failed = 0
-        var committed = false
         try {
             for (s in entry.sources) {
-                val bytes = read[s.file]?.readBytes()
-                if (bytes == null) {
+                val replacement = read[s.file]
+                if (replacement == null) {
                     failed++
                     continue
                 }
                 val target = File(dir, s.file)
-                if (!target.isFile || !target.readBytes().contentEquals(bytes)) {
-                    require(bytes.isNotEmpty()) { "来源文件为空：${s.name}" }
+                if (!sameFile(target, replacement, {})) {
+                    require(replacement.length() > 0L) { "来源文件为空：${s.name}" }
                     check(incoming.isDirectory || incoming.mkdirs()) { "无法准备书籍刷新目录" }
-                    File(incoming, s.file).writeBytes(bytes)
+                    replacement.copyTo(File(incoming, s.file))
                     changed++
                 }
             }
@@ -513,6 +671,8 @@ class Library(private val context: Context) {
 
             // 两次改名均在 books/ 所在文件系统内。索引写入失败时也恢复旧目录。
             try {
+                prepareSwap(staging, listOf(entry.id))
+                check(previous.parentFile!!.isDirectory || previous.parentFile!!.mkdirs()) { "无法准备原书籍目录" }
                 check(dir.renameTo(previous)) { "无法保存旧书籍文件" }
                 check(next.renameTo(dir)) { "无法替换书籍文件" }
                 update { list ->
@@ -522,49 +682,68 @@ class Library(private val context: Context) {
                         } else it
                     }
                 }
-                committed = true
+                commitSwap(staging)
             } catch (error: Throwable) {
-                if (previous.isDirectory) {
-                    if (dir.exists() && !dir.renameTo(next) && !dir.deleteRecursively()) {
-                        error.addSuppressed(IllegalStateException("无法移走刷新后的书籍文件"))
-                    }
-                    if (!previous.renameTo(dir)) {
-                        error.addSuppressed(IllegalStateException("无法恢复旧书籍文件：${previous.absolutePath}"))
+                if (File(staging, SWAP_PREPARED).isFile && !File(staging, SWAP_COMMITTED).isFile) {
+                    try {
+                        rollbackSwap(staging)
+                    } catch (rollbackError: Throwable) {
+                        error.addSuppressed(rollbackError)
                     }
                 }
                 throw error
             }
             return RefreshResult(changed, failed)
         } finally {
-            // 回滚失败时留下 previous，避免把唯一的旧副本也删掉（下次启动时 recoverInterrupted 会找回）。
-            if (committed || !previous.exists()) {
-                incoming.deleteRecursively()
-                next.deleteRecursively()
-                previous.deleteRecursively()
-            }
+            if (!File(staging, SWAP_PREPARED).isFile && !File(staging, "previous").exists()) staging.deleteRecursively()
         }
     }
 
     data class RefreshResult(val changed: Int, val failed: Int)
 
-    fun marks(id: String): Marks {
-        val file = File(File(root, id), "marks.json")
-        if (!file.isFile) return Marks()
-        return runCatching { Marks.fromJson(JSONObject(file.readText())) }.getOrElse {
-            DurableFiles.keepDamaged(file)
-            Marks()
-        }
+    class CorruptMarksException(cause: Throwable) : IllegalStateException("书签批注文件损坏；原文件已保留，请从备份恢复", cause)
+
+    private fun readMarksFile(file: File): Marks = try {
+        require(file.isFile) { "书签路径不是文件" }
+        parseMarks(JSONObject(file.readText()), requireArrays = false)
+    } catch (error: Exception) {
+        DurableFiles.keepDamaged(file)
+        throw CorruptMarksException(error)
     }
 
-    /** 本机旧版允许缺少书签文件；备份里一旦声明有书签文件，就必须能完整读回。 */
-    private fun validateBackupMarks(dir: File) {
-        val file = File(dir, "marks.json")
-        if (!file.exists()) return
-        require(file.isFile) { "书签文件无效" }
-        val json = JSONObject(file.readText())
-        // fromJson 为日常读取兼容旧数据，会把缺失/错误类型的数组当空列表；恢复时不能这样静默丢掉书签。
-        require(json.optJSONArray("bookmarks") != null && json.optJSONArray("notes") != null) {
-            "书签文件结构损坏"
+    fun marks(id: String): Marks {
+        val file = File(File(root, id), "marks.json")
+        if (!file.exists()) return Marks()
+        return readMarksFile(file)
+    }
+
+    /** 本机旧版可能缺少顶层数组；一旦字段存在，不能让 fromJson 的 opt* 静默替换错误值。 */
+    private fun parseMarks(json: JSONObject, requireArrays: Boolean): Marks {
+        require((!requireArrays && !json.has("bookmarks") || json.optJSONArray("bookmarks") != null) &&
+            (!requireArrays && !json.has("notes") || json.optJSONArray("notes") != null)) { "书签文件结构损坏" }
+        fun longInteger(value: Any?): Boolean = value is Byte || value is Short || value is Int || value is Long
+        fun intInteger(value: Any?): Boolean = longInteger(value) && (value as Number).toLong() in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+        fun checkFields(item: JSONObject, requiredText: List<String>, requiredInt: List<String>,
+                        optionalText: List<String>, optionalInt: List<String>, optionalLong: List<String>, optionalBool: List<String>) {
+            requiredText.forEach { key -> require(item.opt(key) is String) { "书签字段 $key 类型错误" } }
+            requiredInt.forEach { key -> require(intInteger(item.opt(key))) { "书签字段 $key 类型错误" } }
+            optionalText.forEach { key -> require(!item.has(key) || item.opt(key) is String) { "书签字段 $key 类型错误" } }
+            optionalInt.forEach { key -> require(!item.has(key) || intInteger(item.opt(key))) { "书签字段 $key 类型错误" } }
+            optionalLong.forEach { key -> require(!item.has(key) || longInteger(item.opt(key))) { "书签字段 $key 类型错误" } }
+            optionalBool.forEach { key -> require(!item.has(key) || item.opt(key) is Boolean) { "书签字段 $key 类型错误" } }
+        }
+        val bookmarks = json.optJSONArray("bookmarks") ?: JSONArray()
+        for (i in 0 until bookmarks.length()) {
+            val item = bookmarks.getJSONObject(i)
+            checkFields(item, listOf("id", "title"), listOf("chapter", "item"),
+                listOf("excerpt", "anchorText"), listOf("char", "anchorOffset"), listOf("at"), listOf("lost"))
+        }
+        val notes = json.optJSONArray("notes") ?: JSONArray()
+        for (i in 0 until notes.length()) {
+            val item = notes.getJSONObject(i)
+            checkFields(item, listOf("id", "title", "quote"), listOf("chapter", "block", "start", "end"),
+                listOf("text", "color"), emptyList(), listOf("at"), listOf("lost"))
+            if (item.has("color")) require(MarkColor.values().any { it.name == item.getString("color") }) { "批注颜色无效" }
         }
         val marks = Marks.fromJson(json)
         // 只查位置是否自洽。章名、引文可以为空：EPUB 目录里的空标题会原样成为章名，
@@ -577,22 +756,38 @@ class Library(private val context: Context) {
             note.id.isNotBlank() && note.chapterIndex >= 0 &&
                 note.blockIndex >= 0 && note.start >= 0 && note.end > note.start
         }) { "批注范围损坏" }
+        return marks
+    }
+
+    /** 备份里一旦声明有书签文件，就必须能完整读回；坏书签不能替换本机的。 */
+    private fun validateBackupMarks(dir: File) {
+        val file = File(dir, "marks.json")
+        if (!file.exists()) return
+        require(file.isFile) { "书签文件无效" }
+        parseMarks(JSONObject(file.readText()), requireArrays = true)
     }
 
     @Synchronized
     fun saveMarks(id: String, marks: Marks) {
         val dir = File(root, id).takeIf { it.isDirectory } ?: return
-        check(DurableFiles.write(File(dir, "marks.json"), marks.toJson().toString().toByteArray())) { "无法保存书签与批注" }
+        val file = File(dir, "marks.json")
+        // 即使调用方把读坏的书签当成空列表，也不能用它覆盖仍可人工恢复的原文件。
+        if (file.exists()) readMarksFile(file)
+        check(DurableFiles.write(file, marks.toJson().toString().toByteArray())) { "无法保存书签与批注" }
     }
 
     /** 从别的应用打开同一个文件时，找回书架上已有的那本，而不是再导入一份。 */
     fun findSame(picked: Picked): BookEntry? {
         val candidates = list().filter { e -> e.sources.size == 1 && e.sources[0].name == picked.name }
         if (candidates.isEmpty()) return null
-        val bytes = runCatching { readUri(picked.uri) }.getOrNull() ?: return null
-        return candidates.firstOrNull { e ->
-            val f = File(File(root, e.id), e.sources[0].file)
-            f.isFile && f.length() == bytes.size.toLong() && f.readBytes().contentEquals(bytes)
+        val incoming = File(context.cacheDir, "compare-${UUID.randomUUID()}")
+        return try {
+            if (runCatching { copySource(picked.uri, picked.name, incoming) }.isFailure) return null
+            candidates.firstOrNull { e ->
+                sameFile(File(File(root, e.id), e.sources[0].file), incoming, {})
+            }
+        } finally {
+            incoming.delete()
         }
     }
 
@@ -680,30 +875,58 @@ class Library(private val context: Context) {
      * 只接受固定格式的条目路径，防止压缩包里的“../”之类路径写到书架目录之外。
      */
     @Synchronized
-    fun restore(input: java.io.InputStream): RestoreResult {
+    fun restore(input: java.io.InputStream, validateData: (Map<String, String>) -> Unit = {}): RestoreResult {
         val staging = File(context.cacheDir, "restore-${UUID.randomUUID()}").apply { mkdirs() }
         try {
             var manifest: JSONObject? = null
             var index: JSONArray? = null
             val data = HashMap<String, String>()
             java.util.zip.ZipInputStream(input).use { zip ->
+                var entryCount = 0
+                var unpackedBytes = 0L
+                val names = HashSet<String>()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                fun consume(output: java.io.OutputStream? = null, entryLimit: Long = MAX_BACKUP_UNPACKED_BYTES) {
+                    var entryBytes = 0L
+                    while (true) {
+                        val read = zip.read(buffer)
+                        if (read < 0) break
+                        entryBytes += read
+                        unpackedBytes += read
+                        require(entryBytes <= entryLimit && unpackedBytes <= MAX_BACKUP_UNPACKED_BYTES) {
+                            "备份解压内容过大，未修改现有数据"
+                        }
+                        output?.write(buffer, 0, read)
+                    }
+                }
+                fun readSmall(limit: Long): ByteArray = ByteArrayOutputStream().also { consume(it, limit) }.toByteArray()
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     val name = entry.name
+                    require(++entryCount <= MAX_BACKUP_ENTRIES) { "备份条目过多，未修改现有数据" }
+                    require(names.add(name)) { "备份包含重复文件，未修改现有数据" }
                     when {
-                        entry.isDirectory -> Unit
-                        name == BACKUP_MANIFEST -> manifest = JSONObject(zip.readBytes().toString(Charsets.UTF_8))
-                        name == "books/index.json" -> index = JSONArray(zip.readBytes().toString(Charsets.UTF_8))
-                        BACKUP_DATA_FILE.matches(name) -> data[name.removePrefix("data/")] = zip.readBytes().toString(Charsets.UTF_8)
+                        entry.isDirectory -> consume()
+                        name == BACKUP_MANIFEST -> manifest = JSONObject(readSmall(MAX_BACKUP_MANIFEST_BYTES).toString(Charsets.UTF_8))
+                        name == "books/index.json" -> index = JSONArray(readSmall(MAX_BACKUP_JSON_BYTES).toString(Charsets.UTF_8))
+                        BACKUP_DATA_FILE.matches(name) -> data[name.removePrefix("data/")] = readSmall(MAX_BACKUP_JSON_BYTES).toString(Charsets.UTF_8)
                         BACKUP_BOOK_FILE.matches(name) -> {
                             val target = File(staging, name)
                             target.parentFile!!.mkdirs()
-                            target.outputStream().use { zip.copyTo(it) }
+                            val fileName = name.substringAfterLast('/')
+                            val limit = when {
+                                BACKUP_SOURCE_FILE.matches(fileName) -> sourceLimit(fileName)
+                                fileName.endsWith(".json") -> MAX_BACKUP_JSON_BYTES
+                                else -> MAX_BACKUP_UNPACKED_BYTES
+                            }
+                            target.outputStream().use { consume(it, limit) }
                         }
-                        else -> Unit // 不认识的条目一律忽略
+                        else -> consume() // 不认识的条目也要计入解压上限
                     }
                 }
             }
+            // 调用方可在任何目录交换前验证书外数据；验证失败时本次恢复不修改旧书。
+            validateData(data)
             val books = index ?: throw IllegalArgumentException("不是灵阅的备份文件")
             requireNotNull(manifest) { "不是灵阅的备份文件" }
             // 同一目录不能安装两次：重复 ID 会让回滚把刚还原的旧书再次移走。
@@ -727,9 +950,6 @@ class Library(private val context: Context) {
             val prepared = File(transaction, "prepared")
             val previous = File(transaction, "previous")
             val restored = mutableListOf<BookEntry>()
-            val installed = mutableListOf<String>()
-            val movedOld = mutableListOf<String>()
-            var committed = false
             try {
                 // 先把所有书完整复制到 books/ 所在文件系统，复制失败不影响现有书籍。
                 for (e in candidates) {
@@ -746,6 +966,12 @@ class Library(private val context: Context) {
                             }) { "来源文件为空" }
                         }
                         validateBackupMarks(next)
+                        // 旧版备份可能没有 marks.json；缺席不代表同意清空本机已有书签。
+                        val oldMarks = File(existing, "marks.json")
+                        if (!File(next, "marks.json").exists() && oldMarks.exists()) {
+                            require(oldMarks.isFile) { "本机书签文件无效" }
+                            oldMarks.copyTo(File(next, "marks.json"))
+                        }
                         // 备份里没有的 AI 数据（旧版备份不含这些，或备份之后才生成的）沿用本机的，不随整个目录一起被换掉。
                         existing.listFiles { f -> f.isFile && AI_BOOK_FILE.matches(f.name) }?.forEach { f ->
                             val target = File(next, f.name)
@@ -764,41 +990,33 @@ class Library(private val context: Context) {
                 }
                 require(restored.isNotEmpty()) { "备份中的书籍均无法读取（正文或书签损坏），未修改现有数据" }
                 try {
+                    prepareSwap(transaction, restored.map { it.id })
                     for (e in restored) {
                         val current = File(root, e.id)
                         val next = File(prepared, e.id)
                         if (current.exists()) {
                             check(previous.isDirectory || previous.mkdirs()) { "无法准备书籍恢复目录" }
                             check(current.renameTo(File(previous, e.id))) { "无法保存旧书籍文件：${e.title}" }
-                            movedOld += e.id
                         }
                         check(next.renameTo(current)) { "无法恢复书籍文件：${e.title}" }
-                        installed += e.id
                     }
                     val ids = restored.map { it.id }.toSet()
                     update { current -> current.filterNot { it.id in ids } + restored }
-                    committed = true
+                    commitSwap(transaction)
                 } catch (error: Throwable) {
-                    // 倒序撤销所有已安装的书，最后还原原目录及原索引。
-                    for (e in restored.asReversed()) {
-                        val current = File(root, e.id)
-                        if (e.id in installed && current.exists()) {
-                            val discard = File(transaction, "discard/${e.id}")
-                            discard.parentFile?.mkdirs()
-                            if (!current.renameTo(discard) && !current.deleteRecursively()) {
-                                error.addSuppressed(IllegalStateException("无法移走恢复后的书籍文件：${e.title}"))
-                            }
-                        }
-                        if (e.id in movedOld && !File(previous, e.id).renameTo(current)) {
-                            error.addSuppressed(IllegalStateException("无法还原旧书籍文件：${e.title}"))
+                    if (File(transaction, SWAP_PREPARED).isFile && !File(transaction, SWAP_COMMITTED).isFile) {
+                        try {
+                            rollbackSwap(transaction)
+                        } catch (rollbackError: Throwable) {
+                            error.addSuppressed(rollbackError)
                         }
                     }
                     throw error
                 }
                 return RestoreResult(restored.size, manifest?.optJSONObject("settings"), data, books.length() - restored.size)
             } finally {
-                // 如果回滚也失败，保留 previous 中的原书副本供恢复。
-                if (committed || previous.listFiles().isNullOrEmpty()) transaction.deleteRecursively()
+                // 有日志的事务留给下次启动；未开始目录交换的临时副本可以删除。
+                if (!File(transaction, SWAP_PREPARED).isFile && !previous.exists()) transaction.deleteRecursively()
             }
         } finally {
             staging.deleteRecursively()
@@ -839,6 +1057,7 @@ class Library(private val context: Context) {
 
     @Synchronized
     private fun update(transform: (List<BookEntry>) -> List<BookEntry>) {
+        clearPendingCommittedSwaps()
         val (entries, damaged) = readIndex()
         check(damaged == 0) { "书架索引里有 $damaged 条记录读不出，已停止写入并保留原文件" }
         val array = JSONArray()
@@ -848,9 +1067,6 @@ class Library(private val context: Context) {
 
     private fun load(dir: File, sources: List<SourceRef>) =
         sources.map { BookParser.SourceBytes(it.name, File(dir, it.file)) }
-
-    private fun readUri(uri: Uri): ByteArray =
-        requireNotNull(openSource(uri)) { "无法打开文件" }.use { it.readBytes() }
 
     private fun displayName(uri: Uri): String? = runCatching {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->

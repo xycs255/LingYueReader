@@ -74,6 +74,32 @@ class AiVoiceTest {
     }
 
     @Test
+    fun speechRejectsOversizedChunkedAudioWithoutKeepingItAllInMemory() = runBlocking<Unit> {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/v1/audio/speech") { ex ->
+                ex.requestBody.use { it.readBytes() }
+                ex.responseHeaders.add("Content-Type", "audio/mpeg")
+                ex.sendResponseHeaders(200, 0) // 不提供 Content-Length，必须边读边检查
+                runCatching {
+                    ex.responseBody.use { out ->
+                        val chunk = ByteArray(16 * 1024)
+                        repeat(AiClient.MAX_SPEECH_BYTES / chunk.size + 1) { out.write(chunk) }
+                    }
+                }
+            }
+            start()
+        }
+        try {
+            val config = SpeechConfig(preset = SpeechPresets.LOCAL,
+                baseUrl = "http://127.0.0.1:${server.address.port}/v1", model = "fake", voice = "voice")
+            val error = runCatching { AiClient().speech(config, "测试") }.exceptionOrNull()
+            assertTrue(error is AiException && error.message.orEmpty().contains("20 MB"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun talkScriptsParseAndSplitLongLines() {
         val long = "第一句话说得很长很长很长很长很长很长很长很长。" + "第二句话也说得很长很长很长很长很长很长很长很长。".repeat(3)
         val answer = """好的：{"title":"桃花源里的人","lines":[{"s":0,"t":"大家好。"},{"s":1,"t":"$long"},{"s":5,"t":" "}]}"""

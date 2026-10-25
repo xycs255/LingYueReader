@@ -231,8 +231,8 @@ fun AiScreen(vm: AppViewModel) {
                     }
                     GroupedSection(
                         header = "问这本书",
-                        footer = "填了向量模型，问这本书时会先用它给读过的部分建索引（按书存在本机，读到新内容再补），找原文更准；" +
-                            "要服务商有 embeddings 接口，例如通义千问 text-embedding-v4、智谱 embedding-3、Ollama 的 nomic-embed-text。留空只按关键词找。",
+                        footer = "填写后，每次提问最多为关键词前 30 段和最近 10 段生成向量；首次最多发送 40 段（分 4 批）和 1 次问题向量请求，超出的段落不参与本次向量检索。" +
+                            "服务商可能按请求或文字量收费；新段落按书缓存，后续只补缺失的向量。需要 embeddings 接口，例如通义千问 text-embedding-v4、智谱 embedding-3、Ollama 的 nomic-embed-text。留空仅按关键词找。",
                     ) {
                         row {
                             TextField(

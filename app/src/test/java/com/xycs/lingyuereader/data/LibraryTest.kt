@@ -424,6 +424,18 @@ class LibraryTest {
     }
 
     @Test
+    fun restoreWithoutMarksFileKeepsLocalBookmarks() {
+        val entry = import("旧备份无书签.txt", "第一章 起\n　　旧文。\n".toByteArray())
+        val marks = Marks(bookmarks = listOf(Bookmark("local", 0, "第一章 起", 1, 0, "旧文", 1)))
+        library.saveMarks(entry.id, marks)
+        val archive = replacementBackup(mapOf(entry.id to "第一章 起\n　　新文。\n".toByteArray()))
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+        assertEquals(marks, library.marks(entry.id))
+        assertEquals(listOf(Block.Para("新文。")), library.content(library.list().single()).chapters.single().blocks)
+    }
+
+    @Test
     fun restoreRejectsDuplicateBookIdsBeforeReplacingTheLocalBook() {
         val entry = import("重复索引.txt", "第一章 起\n　　旧正文。\n".toByteArray())
         val marks = Marks(bookmarks = listOf(Bookmark("keep", 0, "第一章 起", 1, 0, "旧正文", 1)))
@@ -560,6 +572,11 @@ class LibraryTest {
             """{"bookmarks":[],"notes":"已损坏"}""".toByteArray(),
             """{"bookmarks":[{"id":"缺少位置"}],"notes":[]}""".toByteArray(),
             """{"bookmarks":[{"id":"b","chapter":-1,"title":"第一章 起","item":1,"char":0}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[{"id":"b","chapter":0,"title":"第一章 起","item":1,"char":0,"anchorOffset":"错"}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[{"id":"b","chapter":4294967297,"title":"第一章 起","item":1}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[{"id":"b","chapter":0,"title":"第一章 起","item":1,"at":9223372036854775808}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[{"id":"b","chapter":0,"title":"第一章 起","item":1,"lost":"错"}],"notes":[]}""".toByteArray(),
+            """{"bookmarks":[],"notes":[{"id":"n","chapter":0,"title":"第一章 起","block":0,"start":0,"end":2,"quote":"正文","color":"UNKNOWN"}]}""".toByteArray(),
             """{"bookmarks":[],"notes":[{"id":"n","chapter":0,"title":"第一章 起","block":0,"start":5,"end":2,"quote":"正文","color":"YELLOW"}]}""".toByteArray(),
             """{"bookmarks":[],"notes":[{"id":"n","chapter":0,"title":"第一章 起","block":0,"start":0,"end":0,"quote":"","color":"YELLOW"}]}""".toByteArray(),
         )) {
@@ -773,9 +790,203 @@ class LibraryTest {
         val a = import("坏书签.txt", "第一章 起\n　　正文。\n".toByteArray())
         val file = library.bookFile(a.id, "marks.json")
         file.writeText("{\"bookmarks\": [")
-        assertTrue(library.marks(a.id).bookmarks.isEmpty())
-        library.saveMarks(a.id, Marks())
+        assertTrue(runCatching { library.marks(a.id) }.exceptionOrNull() is Library.CorruptMarksException)
+        assertTrue(runCatching { library.saveMarks(a.id, Marks()) }.exceptionOrNull() is Library.CorruptMarksException)
+        assertEquals("{\"bookmarks\": [", file.readText())
         assertEquals("{\"bookmarks\": [", library.bookFile(a.id, "marks.json.damaged").readText())
+    }
+
+    @Test
+    fun malformedOptionalMarksFieldsCannotBeSilentlyRewritten() {
+        val entry = import("错误字段书签.txt", "第一章 起\n　　正文。\n".toByteArray())
+        val file = library.bookFile(entry.id, "marks.json")
+        val broken = """{"bookmarks":[{"id":"b","chapter":0,"title":"第一章 起","item":1,"char":"bad"}],"notes":[]}"""
+        file.writeText(broken)
+
+        assertTrue(runCatching { library.marks(entry.id) }.exceptionOrNull() is Library.CorruptMarksException)
+        assertTrue(runCatching { library.saveMarks(entry.id, Marks()) }.exceptionOrNull() is Library.CorruptMarksException)
+        assertEquals(broken, file.readText())
+        assertEquals(broken, library.bookFile(entry.id, "marks.json.damaged").readText())
+    }
+
+    @Test
+    fun missingIndexWithBookDirectoriesBlocksWritesAndPreservesTheBook() {
+        val entry = import("索引丢失.txt", "第一章 起\n　　原文。\n".toByteArray())
+        val index = File(context.filesDir, "books/index.json")
+        val before = index.readBytes()
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val original = source.readBytes()
+        val archive = replacementBackup(mapOf(entry.id to "第一章 起\n　　备份的新文。\n".toByteArray()))
+        assertTrue(index.delete())
+
+        val reopened = Library(context)
+        assertTrue(runCatching { reopened.list() }.exceptionOrNull()?.message?.contains("索引缺失") == true)
+        assertTrue(runCatching { reopened.rename(entry.id, "改名") }.isFailure)
+        assertTrue(runCatching { reopened.restore(archive.inputStream()) }.isFailure)
+        assertFalse(index.exists())
+        assertArrayEquals(original, source.readBytes())
+
+        index.writeBytes(before)
+        assertEquals(entry.id, Library(context).list().single().id)
+    }
+
+    private fun writeSwapJournal(stage: File, ids: List<String>, before: ByteArray) {
+        assertTrue(stage.mkdirs())
+        File(stage, "index-before.json").writeBytes(before)
+        File(stage, "ids.json").writeText(org.json.JSONArray(ids).toString())
+        File(stage, "prepared-swap").writeText("1")
+    }
+
+    @Test
+    fun interruptedRefreshWithNewDirectoryInstalledRestoresOriginalDirectoryAndIndex() {
+        val entry = import("刷新中断后.txt", "第一章 起\n　　原文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val before = index.readBytes()
+        val oldSource = library.bookFile(entry.id, entry.sources.single().file).readBytes()
+        val stage = File(root, ".refresh-${entry.id}-123e4567-e89b-12d3-a456-426614174001")
+        writeSwapJournal(stage, listOf(entry.id), before)
+        val previous = File(stage, "previous/${entry.id}")
+        previous.parentFile!!.mkdirs()
+        assertTrue(File(root, entry.id).renameTo(previous))
+        val replacement = File(root, entry.id).apply { mkdirs() }
+        File(replacement, entry.sources.single().file).writeText("第一章 起\n　　新文。\n")
+
+        val reopened = Library(context)
+        assertArrayEquals(before, index.readBytes())
+        assertArrayEquals(oldSource, reopened.bookFile(entry.id, entry.sources.single().file).readBytes())
+        assertFalse(stage.exists())
+        assertEquals(listOf(Block.Para("原文。")), reopened.content(reopened.list().single()).chapters.single().blocks)
+    }
+
+    @Test
+    fun interruptedRestoreRollsBackAllReplacementsAndAnAddedBook() {
+        val a = import("旧甲.txt", "第一章 起\n　　旧甲。\n".toByteArray())
+        val b = import("旧乙.txt", "第一章 起\n　　旧乙。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val before = index.readBytes()
+        val aSource = library.bookFile(a.id, a.sources.single().file).readBytes()
+        val bSource = library.bookFile(b.id, b.sources.single().file).readBytes()
+        val newId = "123e4567-e89b-12d3-a456-426614174002"
+        val stage = File(root, ".restore-123e4567-e89b-12d3-a456-426614174003")
+        writeSwapJournal(stage, listOf(a.id, b.id, newId), before)
+        listOf(a, b).forEach { entry ->
+            val previous = File(stage, "previous/${entry.id}")
+            previous.parentFile!!.mkdirs()
+            assertTrue(File(root, entry.id).renameTo(previous))
+            File(root, entry.id).apply { mkdirs() }
+            File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　新文。\n")
+        }
+        File(root, newId).apply { mkdirs() }
+        File(root, "$newId/s0.txt").writeText("第一章 起\n　　新书。\n")
+
+        val reopened = Library(context)
+        assertArrayEquals(before, index.readBytes())
+        assertArrayEquals(aSource, reopened.bookFile(a.id, a.sources.single().file).readBytes())
+        assertArrayEquals(bSource, reopened.bookFile(b.id, b.sources.single().file).readBytes())
+        assertFalse(File(root, newId).exists())
+        assertFalse(stage.exists())
+    }
+
+    @Test
+    fun missingCommitMarkerRollsBackEvenAfterNewIndexWasWritten() {
+        val entry = import("索引已换.txt", "第一章 起\n　　原文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val before = index.readBytes()
+        val stage = File(root, ".refresh-${entry.id}-123e4567-e89b-12d3-a456-426614174004")
+        writeSwapJournal(stage, listOf(entry.id), before)
+        val previous = File(stage, "previous/${entry.id}")
+        previous.parentFile!!.mkdirs()
+        assertTrue(File(root, entry.id).renameTo(previous))
+        File(root, entry.id).apply { mkdirs() }
+        File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　新文。\n")
+        library.rename(entry.id, "未提交的新标题")
+        assertFalse(index.readBytes().contentEquals(before))
+
+        val reopened = Library(context)
+        assertArrayEquals(before, index.readBytes())
+        assertEquals(entry.title, reopened.list().single().title)
+        assertEquals(listOf(Block.Para("原文。")), reopened.content(reopened.list().single()).chapters.single().blocks)
+    }
+
+    @Test
+    fun committedSwapKeepsNewDirectoryAndIndexDuringStartupCleanup() {
+        val entry = import("已提交.txt", "第一章 起\n　　原文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val before = index.readBytes()
+        val stage = File(root, ".refresh-${entry.id}-123e4567-e89b-12d3-a456-426614174005")
+        writeSwapJournal(stage, listOf(entry.id), before)
+        val previous = File(stage, "previous/${entry.id}")
+        previous.parentFile!!.mkdirs()
+        assertTrue(File(root, entry.id).renameTo(previous))
+        File(root, entry.id).apply { mkdirs() }
+        File(root, "${entry.id}/${entry.sources.single().file}").writeText("第一章 起\n　　新文。\n")
+        library.rename(entry.id, "已提交的新标题")
+        val installedIndex = index.readBytes()
+        File(stage, "index-after.json").writeBytes(installedIndex)
+        File(stage, "committed-swap").writeText("1")
+
+        val reopened = Library(context)
+        assertArrayEquals(installedIndex, index.readBytes())
+        assertEquals("已提交的新标题", reopened.list().single().title)
+        assertEquals(listOf(Block.Para("新文。")), reopened.content(reopened.list().single()).chapters.single().blocks)
+        assertFalse(stage.exists())
+    }
+
+    @Test
+    fun committedSwapThatCannotRetireBlocksLaterIndexWritesUntilCleanup() {
+        val entry = import("提交后清理失败.txt", "第一章 起\n　　旧文。\n".toByteArray())
+        val root = File(context.filesDir, "books")
+        val index = File(root, "index.json")
+        val archive = replacementBackup(mapOf(entry.id to "第一章 起\n　　新文。\n".toByteArray()))
+        library.retireSwapRename = { _, _ -> false }
+
+        assertEquals(1, library.restore(archive.inputStream()).books)
+        val installedIndex = index.readBytes()
+        val pending = root.listFiles().orEmpty().single { it.name.startsWith(".restore-") && File(it, "committed-swap").isFile }
+        assertTrue(File(pending, "committed-swap").isFile)
+        assertTrue(runCatching { library.rename(entry.id, "之后的新标题") }.exceptionOrNull()?.message?.contains("停止后续写入") == true)
+        assertArrayEquals(installedIndex, index.readBytes())
+
+        library.retireSwapRename = { from, to -> from.renameTo(to) }
+        library.rename(entry.id, "之后的新标题")
+        assertFalse(pending.exists())
+        val reopened = Library(context)
+        assertEquals("之后的新标题", reopened.list().single().title)
+        assertEquals(listOf(Block.Para("新文。")), reopened.content(reopened.list().single()).chapters.single().blocks)
+    }
+
+    @Test
+    fun restoreValidatorRejectsDataBeforeAnyBookIsReplaced() {
+        val entry = import("外部数据异常.txt", "第一章 起\n　　旧文。\n".toByteArray())
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val before = source.readBytes()
+        val index = File(context.filesDir, "books/index.json")
+        val oldIndex = index.readBytes()
+        val archive = replacementBackup(mapOf(entry.id to "第一章 起\n　　新文。\n".toByteArray()))
+        val error = runCatching { library.restore(archive.inputStream()) { throw IllegalArgumentException("扩展数据损坏") } }.exceptionOrNull()
+        assertTrue(error?.message?.contains("扩展数据损坏") == true)
+        assertArrayEquals(before, source.readBytes())
+        assertArrayEquals(oldIndex, index.readBytes())
+    }
+
+    @Test
+    fun oversizedBackupManifestIsRejectedBeforeReplacingExistingBooks() {
+        val entry = import("过大备份.txt", "第一章 起\n　　旧文。\n".toByteArray())
+        val source = library.bookFile(entry.id, entry.sources.single().file)
+        val before = source.readBytes()
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            zip.putNextEntry(ZipEntry("lingyue-backup.json"))
+            zip.write(ByteArray(1024 * 1024 + 1) { 'x'.code.toByte() })
+            zip.closeEntry()
+        }
+        val error = runCatching { library.restore(out.toByteArray().inputStream()) }.exceptionOrNull()
+        assertTrue(error?.message?.contains("解压内容过大") == true)
+        assertArrayEquals(before, source.readBytes())
     }
 
     @Test

@@ -7,7 +7,6 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
@@ -53,9 +52,10 @@ class VerticalUiTest {
     fun longPressInAColumnLooksUpTheWord() {
         compose.waitUntil(10_000) { compose.onAllNodesWithText("测试书").fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodesWithText("测试书")[0].performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasContentDescription("竖排正文")).fetchSemanticsNodes().isNotEmpty() }
+        val page = hasContentDescription("我冒了严寒", substring = true)
+        compose.waitUntil(10_000) { compose.onAllNodes(page).fetchSemanticsNodes().isNotEmpty() }
         // 右起第三列是正文第一列：□□我冒了严寒……；按在“严寒”上。
-        compose.onNodeWithContentDescription("竖排正文").performTouchInput {
+        compose.onNode(page).performTouchInput {
             longClick(Offset(width - 24.dp.toPx() - 2.5f * 19f * 1.8f * density, 150.dp.toPx()))
         }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("严寒", substring = true)).fetchSemanticsNodes().isNotEmpty() }

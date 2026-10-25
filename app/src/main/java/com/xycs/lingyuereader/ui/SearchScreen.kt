@@ -109,7 +109,7 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
                 GlassCard(
                     modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 10.dp),
                     pressFeedbackType = PressFeedbackType.Sink,
-                    onClick = { vm.jumpFromSearch(bookId, hit.chapterIndex, hit.blockIndex) },
+                    onClick = { vm.jumpFromSearch(bookId, hit.chapterIndex, hit.blockIndex, hit.charOffset) },
                 ) {
                     Column {
                         Text(hit.chapterTitle, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
@@ -206,7 +206,7 @@ fun LibrarySearchScreen(vm: AppViewModel) {
                     GlassCard(
                         modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 10.dp),
                         pressFeedbackType = PressFeedbackType.Sink,
-                        onClick = { vm.open(com.xycs.lingyuereader.Screen.Reader(book.entry.id, hit.chapterIndex, hit.blockIndex, highlight = true)) },
+                        onClick = { vm.open(com.xycs.lingyuereader.Screen.Reader(book.entry.id, hit.chapterIndex, hit.blockIndex, char = hit.charOffset, highlight = true)) },
                     ) {
                         Column {
                             Text(hit.chapterTitle, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
