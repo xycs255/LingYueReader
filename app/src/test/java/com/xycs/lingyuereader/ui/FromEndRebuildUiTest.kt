@@ -22,6 +22,7 @@ import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowLooper
 import java.io.File
 
 /**
@@ -90,16 +91,27 @@ abstract class FromEndRebuildUiBase(private val mode: String, private val prevTa
         waitForPage { it.first == total - 1 }
         turnBack()
         val at = waitForPage { it.first == total - 2 }
-        // 停下 300 毫秒才存进度：先让时间走过去，免得机器忙时读到的是上一页存的进度。
-        compose.mainClock.advanceTimeBy(1_000)
-        compose.waitForIdle()
-        var saved = JSONObject()
-        compose.waitUntil(10_000) {
-            saved = savedProgress()
-            saved.getInt("chapter") == 0 && saved.getInt("item") > 1
+        return at to settledProgress()
+    }
+
+    /**
+     * 等存下的进度落定：停下 300 毫秒才存，存盘又在后台排队写，机器忙时前一页的进度可能还没被这一页盖掉。
+     * 一秒内没再变过，才算是这一页的。
+     */
+    private fun settledProgress(): JSONObject {
+        var last = ""
+        var since = System.nanoTime()
+        compose.waitUntil(20_000) {
+            ShadowLooper.idleMainLooper()
+            val now = savedProgress()
+            val key = now.toString()
+            if (key != last) {
+                last = key
+                since = System.nanoTime()
+            }
+            now.getInt("chapter") == 0 && now.getInt("item") > 1 && System.nanoTime() - since > 1_000_000_000L
         }
-        compose.waitForIdle()
-        return at to savedProgress()
+        return savedProgress()
     }
 
     private fun assertStaysAt(at: Pair<Int, Int>, saved: JSONObject) {
@@ -109,7 +121,7 @@ abstract class FromEndRebuildUiBase(private val mode: String, private val prevTa
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()
         assertEquals(at, page())
-        val after = savedProgress()
+        val after = settledProgress()
         assertEquals(0, after.getInt("chapter"))
         assertEquals(saved.getInt("item"), after.getInt("item"))
         assertEquals(saved.getInt("char"), after.getInt("char"))
