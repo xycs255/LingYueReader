@@ -2,8 +2,11 @@ package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterTitles
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.StyleExample
+import com.xycs.lingyuereader.data.SyncGroup
+import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.WorkAssist
 import org.json.JSONArray
 import org.json.JSONObject
@@ -409,6 +412,122 @@ object WritePrompts {
             return lines.toMutableList().apply { this[i] = indent + bullet + name + "：" + newBody.joinToString(" ") + mark }.joinToString("\n")
         }
         return null
+    }
+
+    /** 整理本章时，提议能写进的几类文档（AI 在 kind 里写其中一个）。 */
+    private val SYNC_KINDS = listOf(PackKind.CHARACTER, PackKind.CANON, PackKind.VOICE, PackKind.INVARIANT, PackKind.FORESHADOW, PackKind.AWARENESS, PackKind.REFERENCE)
+
+    /**
+     * 写完一章，整理进设定包：设定包整份在系统提示里（可以查），这里给这一章的正文。
+     * 只要正文里明写了的：新出现的设定、和设定包对不上的、谁知道了什么。每条带正文原句，解析时核对。
+     */
+    fun sync(title: String, number: Int, text: String): String = buildString {
+        append("下面是这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）的正文：\n\n")
+        append(text.take(CHAPTER_CHARS)).append("\n\n")
+        append("作者写完了这一章，请把它整理进设定包（设定包在上面）。只找三类：\n")
+        append("1. new（新设定）：正文里新出现、设定包里还没有的人物（称呼、身份、和谁什么关系、本章做了什么）、地名、物件、组织、规矩或设定。\n")
+        append("2. conflicts（冲突）：正文和设定包写法对不上的（人数、生死、身份、称呼、年代、地点、物件下落、谁什么时候知道了什么）。")
+        append("pack 摘设定包里的原话（一字不差，便于找到它），doc、section 写它在哪份文档哪一节，chapter 写正文怎么写的；")
+        append("判断该改设定包（fix 写 pack，text 写改成什么）还是正文写错了（fix 写 text）。\n")
+        append("3. awareness（察觉）：这一章里谁知道了什么、从第几章起、消息从哪来；谁对谁隐瞒、误会了什么（type 写 隐瞒 或 误会，what 写清楚瞒着谁、误会成什么）。")
+        append("察觉表里已有的不要再提；和察觉表对不上的（比如表上写第 30 章才知道，这一章就说破了）放进 conflicts。\n")
+        append("规矩：\n")
+        append("- 只提正文里明确写到的，不推测、不补全、不替作者发明设定；拿不准就不提。\n")
+        append("- 设定包里已经有的不要重复提。\n")
+        append("- 人名、称呼和设定包统一，照《称谓与语气》《人物档案》的写法；正文里用了别的称呼的写进 alias。\n")
+        append("- 防剧透：只按这一章和之前的正文判断，不要用后面章节的内容。要查前文可以用工具，但最多查一两次，查不到就按已有的资料答。\n")
+        append("- 每条都要带 quote：正文里一字不差的原句（一句话以内，不超过 60 字）；找不到原句的不要提。\n")
+        append("- kind 从这几类里选：").append(SYNC_KINDS.joinToString("、") { it.label }).append("；人物写人物档案，地名、物件、组织、规矩写硬性设定，称呼写称谓与语气。")
+        append("doc 写要写进的文档标题（设定包里有的照抄标题，没有就空着），section 写追加到哪一节（照文档里已有的小标题，没有就空着）。\n")
+        append("- text 写要写进设定包的文字：一两句，只写事实，照设定包的口吻。\n")
+        append("只输出 JSON，没有的类给空列表：\n")
+        append("{\"new\":[{\"type\":\"人物\",\"name\":\"\",\"kind\":\"人物档案\",\"doc\":\"\",\"section\":\"\",\"alias\":\"\",\"identity\":\"\",\"relation\":\"\",\"did\":\"\",\"text\":\"\",\"quote\":\"\"}],")
+        append("\"conflicts\":[{\"title\":\"\",\"kind\":\"\",\"doc\":\"\",\"section\":\"\",\"pack\":\"\",\"chapter\":\"\",\"fix\":\"pack\",\"text\":\"\",\"quote\":\"\"}],")
+        append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}]}")
+    }
+
+    /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */
+    data class SyncParse(val items: List<SyncItem>, val dropped: Int)
+
+    /** 正文里找原句：去掉两头的引号、书名号；末尾“……”省略的，按前面那截找。找不到返回空。 */
+    fun findQuote(text: String, quote: String): String? {
+        var q = quote.trim().trim('“', '”', '「', '」', '『', '』', '"', '\'').trim()
+        if (q.length < 2) return null
+        if (q in text) return q
+        q = q.removeSuffix("……").removeSuffix("...").removeSuffix("…").trim()
+        return q.takeIf { it.length >= 4 && it in text }
+    }
+
+    /**
+     * 整理本章的回答：容忍 ``` 包裹、前后多余的话、字段缺失；三类一个都没有时当作没按格式回（报错，不当成“没什么要整理”）。
+     * 依据（quote）在正文 [text] 里找不到的丢掉，防止模型编造。
+     */
+    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int): SyncParse {
+        val o = json(answer)
+        fun arr(vararg keys: String): JSONArray? = keys.firstNotNullOfOrNull { o.optJSONArray(it) }
+        val news = arr("new", "news", "新设定")
+        val conflicts = arr("conflicts", "conflict", "冲突")
+        val aware = arr("awareness", "aware", "察觉")
+        if (news == null && conflicts == null && aware == null) throw AiException("模型没有按格式回答")
+        fun objects(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { a!!.optJSONObject(it) }
+        fun JSONObject.s(vararg keys: String) = keys.firstNotNullOfOrNull { k -> optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
+        fun kindOf(raw: String, fallback: PackKind): PackKind {
+            val k = raw.trim().trim('《', '》')
+            return PackKind.entries.firstOrNull { it.name.equals(k, ignoreCase = true) || it.label == k }
+                ?: PackKind.entries.firstOrNull { k.isNotEmpty() && (it.label in k || k in it.label) } ?: fallback
+        }
+        var dropped = 0
+        val out = mutableListOf<SyncItem>()
+        fun add(o: JSONObject, make: (String) -> SyncItem?) {
+            val q = findQuote(text, o.s("quote", "依据", "原句"))
+            if (q == null) {
+                dropped++
+                return
+            }
+            make(q)?.let { out += it }
+        }
+        objects(news).forEach { n ->
+            add(n) { q ->
+                val type = n.s("type", "类型")
+                val name = n.s("name", "名字", "名称")
+                val person = type.contains("人") || kindOf(n.s("kind"), PackKind.CANON) == PackKind.CHARACTER
+                val kind = if (person) PackKind.CHARACTER else kindOf(n.s("kind"), if ("称" in type) PackKind.VOICE else PackKind.CANON)
+                val fields = if (person) listOf("称呼" to n.s("alias", "称呼"), "身份" to n.s("identity", "身份"), "关系" to n.s("relation", "关系"), "本章" to n.s("did", "本章", "text"))
+                else emptyList()
+                val body = n.s("text", "说明", "did")
+                if (name.isEmpty() && body.isEmpty()) return@add null
+                val label = if (person) "新人物" else type.ifEmpty { kind.label }.let { if (it.startsWith("新")) it else "新$it" }
+                SyncItem(SyncGroup.NEW, "$label：${name.ifEmpty { body.take(12) }}", q, kind, n.s("doc"), n.s("section"), name, fields, body, chapterId = chapterId, chapter = chapter)
+            }
+        }
+        objects(conflicts).forEach { c ->
+            add(c) { q ->
+                val fix = c.s("fix", "建议").lowercase()
+                val fixText = fix == "text" || "正文" in fix
+                val title = c.s("title", "标题").ifEmpty { c.s("chapter").take(20) }.ifEmpty { return@add null }
+                SyncItem(
+                    SyncGroup.CONFLICT, title, q, kindOf(c.s("kind"), PackKind.CANON), c.s("doc"), c.s("section"),
+                    text = if (fixText) "" else c.s("text", "改成"), packSays = c.s("pack", "设定包"), textSays = c.s("chapter", "正文"),
+                    fixText = fixText, chapterId = chapterId, chapter = chapter,
+                )
+            }
+        }
+        objects(aware).forEach { a ->
+            add(a) { q ->
+                val who = a.s("who", "人物", "谁")
+                val what = a.s("what", "知道什么", "内容")
+                if (who.isEmpty() || what.isEmpty()) return@add null
+                val type = a.s("type", "类型")
+                val since = a.s("since", "从第几章起").let { s -> s.toIntOrNull()?.let { "第${it}章" } ?: s }.ifEmpty { "第${chapter}章" }
+                val shown = if (type.contains("瞒") || type.contains("误会")) "（$type）$what" else what
+                SyncItem(
+                    SyncGroup.AWARENESS, "$who：$shown", q, PackKind.AWARENESS, name = who,
+                    fields = listOf("人物" to who, "知道什么" to shown, "从第几章起" to since, "消息从哪来" to a.s("source", "消息从哪来", "来源")),
+                    chapterId = chapterId, chapter = chapter,
+                )
+            }
+        }
+        return SyncParse(out.distinctBy { it.key }, dropped)
     }
 
     /** 从模型回答里取出 JSON 对象：容忍前后多余的话和 ```json 包裹。 */

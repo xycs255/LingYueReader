@@ -85,7 +85,12 @@ import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.FormatKind
+import com.xycs.lingyuereader.data.FormatResult
+import com.xycs.lingyuereader.data.FormatSettings
+import com.xycs.lingyuereader.data.TextFormat
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.RuleReport
 import com.xycs.lingyuereader.data.RuleSet
@@ -383,6 +388,15 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var ruleCount by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
     val summaryProgress by vm.writingAi.summaries.collectAsStateWithLifecycle()
+    // 整理进设定包：批量整理的进度、哪些章还没整理（正文改过的也算），标为定稿后的提示。
+    val syncAll by vm.writingAi.sync.collectAsStateWithLifecycle()
+    val syncing = syncAll?.takeIf { it.workId == workId && it.batch }
+    val lastSyncing = remember { arrayOfNulls<com.xycs.lingyuereader.SyncSession>(1) }
+    if (syncing != null) lastSyncing[0] = syncing
+    var unsynced by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(workId, work, assist?.synced) { assist?.let { unsynced = vm.writing.unsynced(workId, it.synced) } }
+    var syncConfirm by remember { mutableStateOf(false) }
+    var syncTipFor by remember { mutableStateOf<WorkChapter?>(null) }
     var foreshadowNote by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(workId, pack) {
         val (list, latest) = vm.writing.foreshadows(workId)
@@ -424,6 +438,16 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 "新建一卷" to { addingVolume = true },
                                 "作品信息" to { editingInfo = true },
                                 "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
+                                "全书排版" to { vm.open(Screen.WorkFormat(workId)) },
+                                "排版设置" to { vm.open(Screen.WorkFormatSettings(workId)) },
+                                "整理没整理的章节" to {
+                                    val blocked = vm.writingAi.syncBlocked
+                                    when {
+                                        blocked != null -> vm.showMessage(blocked)
+                                        unsynced.isEmpty() -> vm.showMessage("有正文的章都整理过了")
+                                        else -> syncConfirm = true
+                                    }
+                                },
                             ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
                                 ("删除作品" to { deleting = true })
                             items.forEach { (label, action) ->
@@ -458,6 +482,25 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             GroupedSection(footer = "写好的摘要存在各章细纲卡里，可以改。写后面的章时，AI 会把前面几章的摘要当前情。") {
                                 row { TwoLine("正在写章节摘要 ${p.done + 1}/${p.total}", p.title, trailing = { Spinner() }) }
                                 row { ActionRow("停止", destructive = true) { vm.writingAi.stopSummaries() } }
+                            }
+                        }
+                    }
+                    // 正在批量整理进设定包：那一组从上面长出来；整理完（或停下）换成“看整理结果”。
+                    AnimatedVisibility(
+                        visible = syncing != null,
+                        enter = Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM), expandFrom = Alignment.Top) + fadeIn(Motion.standard(Motion.SHORT))),
+                        exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
+                    ) {
+                        val p = syncing ?: lastSyncing[0]
+                        if (p != null) {
+                            GroupedSection(footer = "每章一次请求，带着设定包；整理完统一勾选，勾上的才写进设定包。") {
+                                if (p.running != null) {
+                                    row { TwoLine("正在整理进设定包 ${p.done + 1}/${p.total}", p.running, trailing = { Spinner() }) }
+                                    row { ActionRow("停止", destructive = true) { vm.writingAi.stopSync() } }
+                                } else {
+                                    row { NavRow("看整理结果", value = "${p.results.size} 章 · ${p.items.size} 条") { vm.open(Screen.ChapterSync(workId)) } }
+                                    row { ActionRow("不要这次的结果", destructive = true) { vm.writingAi.clearSync() } }
+                                }
                             }
                         }
                     }
@@ -545,6 +588,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         GroupedListCell(first = false, last = false, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
                             ChapterRow(
                                 ch,
+                                unsynced = pack?.isNotEmpty() == true && ch.id in unsynced,
                                 showMenu = chapterMenu == ch.id,
                                 onClick = { vm.open(Screen.Editor(workId, ch.id)) },
                                 onLongClick = { chapterMenu = ch.id },
@@ -640,6 +684,39 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             StatusDialog(ch, ruleHits = statusHits, onDismiss = { statusFor = null }) { st, reason, canon ->
                 statusFor = null
                 vm.writing.setStatus(workId, ch.id, st, reason, canon)
+                if (st == ChapterStatus.FINAL && assist?.syncTip != false && vm.writingAi.syncBlocked == null && ch.id in unsynced) syncTipFor = ch
+            }
+        }
+        syncTipFor?.let { ch ->
+            SyncTipDialog(
+                onDismiss = { never ->
+                    syncTipFor = null
+                    if (never) vm.writingAi.updateAssist(workId) { it.copy(syncTip = false) }
+                },
+                onSync = { never ->
+                    syncTipFor = null
+                    if (never) vm.writingAi.updateAssist(workId) { it.copy(syncTip = false) }
+                    vm.writingAi.syncChapter(workId, ch.id)
+                    vm.open(Screen.ChapterSync(workId))
+                },
+            )
+        }
+        if (syncConfirm) {
+            GlassDialog(
+                show = true,
+                title = "整理没整理的章节",
+                summary = "有 ${unsynced.size} 章还没整理（整理后正文改过的也算）。按目录顺序每章发一次请求，带着设定包；" +
+                    "整理完统一勾选再写进设定包，中途可以停。",
+                onDismissRequest = { syncConfirm = false },
+            ) {
+                DialogButtons(
+                    onDismiss = { syncConfirm = false },
+                    onConfirm = {
+                        syncConfirm = false
+                        vm.writingAi.syncAll(workId)
+                    },
+                    confirmText = "开始",
+                )
             }
         }
         renamingVolume?.let { v ->
@@ -724,6 +801,7 @@ private fun VolumeRow(
 @Composable
 private fun ChapterRow(
     ch: WorkChapter,
+    unsynced: Boolean,
     showMenu: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -738,7 +816,8 @@ private fun ChapterRow(
     Box {
         NavRow(
             ch.title,
-            value = if (ch.words == 0) "空" else words(ch.words),
+            // 有正文、还没整理进设定包的（整理后又改过的也算）：字数后面写“未整理”。
+            value = if (ch.words == 0) "空" else words(ch.words) + if (unsynced) " · 未整理" else "",
             trailing = { StatusLabel(ch.status) },
             onLongClick = onLongClick,
             onClick = onClick,
@@ -804,6 +883,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     // 定稿锁定、AI 在写（或写完等采纳）时正文只读：快捷标点、撤销重做也不能改。
     val readOnly = locked || inline != null
     var statusDialog by remember { mutableStateOf(false) }
+    // 标为定稿以后问一句“要不要顺手整理进设定包”。
+    var syncTip by remember { mutableStateOf(false) }
     // 规则检查：规则从设定包读（文档改过就重读），正文停笔 0.4 秒重新检查，都在本机算。
     var rulesOpen by remember(workId, chapterId) { mutableStateOf(check) }
     val packs by vm.writing.packs.collectAsStateWithLifecycle()
@@ -816,6 +897,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     // 定稿的章不给写作建议（反正不能改）。
     val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    // 自动排版：先在键盘上方给预览（按类勾掉的不排），排好作为一步编辑写进正文。
+    val formatSettings = assists[workId]?.format ?: FormatSettings()
+    var formatOpen by remember(workId, chapterId) { mutableStateOf(false) }
+    var formatSkip by remember(workId, chapterId) { mutableStateOf(emptySet<FormatKind>()) }
+    // 定稿了、AI 开始写了：收起排版预览（这时不能排）。
+    LaunchedEffect(locked, inline != null) { if (locked || inline != null) formatOpen = false }
 
     LaunchedEffect(workId, chapterId) {
         val text = vm.writing.open(workId, chapterId)
@@ -900,6 +987,33 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction)
     }
 
+    /** 整理本章进设定包：用编辑框里现在的正文；同一份正文刚整理好、还没写进去的，直接看结果。 */
+    fun startSync() {
+        val text = current?.text?.toString() ?: return
+        if (text.isBlank()) {
+            vm.showMessage("这一章还没有内容")
+            return
+        }
+        vm.writingAi.syncBlocked?.let {
+            vm.showMessage(it)
+            return
+        }
+        if (!locked) vm.writing.save(workId, chapterId, text)
+        val s = vm.writingAi.sync.value
+        val done = s != null && s.workId == workId && !s.batch && s.running == null &&
+            s.results.singleOrNull()?.let { it.chapterId == chapterId && it.hash == text.hashCode() && it.error == null } == true
+        if (!done) vm.writingAi.syncChapter(workId, chapterId, text)
+        vm.open(Screen.ChapterSync(workId))
+    }
+
+    /** 标为定稿时要不要问：作品里没关提示、AI 能整理、这一章有正文且还没整理过。 */
+    fun wantsSyncTip(): Boolean {
+        val text = current?.text?.toString().orEmpty()
+        val assist = assists[workId]
+        return assist?.syncTip != false && vm.writingAi.syncBlocked == null && text.isNotBlank() &&
+            !ChapterSyncs.isSynced(assist?.synced?.get(chapterId), text)
+    }
+
     fun onAiItem(item: AiBarItem) {
         val st = current ?: return
         when (item) {
@@ -973,8 +1087,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("AI 写本章" to { startInline(InlineMode.TO_END, atEnd = true) })
                                         add("AI 写一版草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
+                                        add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
+                                        add("自动排版" to {
+                                            when {
+                                                locked -> vm.showMessage("这一章已定稿：要排版先解锁")
+                                                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
+                                                else -> formatOpen = true
+                                            }
+                                        })
                                         // 先把现在的正文存成一版，历史列表里就有“刚才”这一版。
                                         add("历史版本" to {
                                             current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
@@ -1048,6 +1170,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 val markFades = remember(current) { MarkFades(effects) }
                 SideEffect { markFades.update(marks) }
+                // 排版预览：正文一改就重算（在后台算，长章也不卡）。
+                val formatResult by androidx.compose.runtime.produceState<FormatResult?>(null, formatOpen, textNow, formatSettings) {
+                    if (formatOpen) value = withContext(Dispatchers.Default) { TextFormat.format(textNow, formatSettings) }
+                }
+                // 输入时自动排版：定稿、只读时不换。
+                val formatNow by rememberUpdatedState(formatSettings.takeIf { !readOnly })
+                val typing = remember(current) { current?.let { st -> TypingFormatInput(st, effects) { formatNow } } }
                 // AI 写的字：新来的一截淡入；采纳后那一段从浅色过渡到正文色。
                 val inlineFade = remember(current) { InlineFade(effects) }
                 val inlineLength = inline?.text?.length ?: 0
@@ -1104,6 +1233,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             state = current,
                             // 定稿的正文锁定：只能看、能选中复制，不能改。AI 在写（或写完等采纳）时也先不能改。
                             readOnly = readOnly,
+                            inputTransformation = typing,
                             outputTransformation = output,
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1141,6 +1271,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
                     inline != null -> EditorPanel.Inline(inline)
+                    formatOpen -> EditorPanel.Format
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
                     shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
@@ -1187,6 +1318,43 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             },
                             onRetry = { vm.writingAi.retryInline() },
                             onDiscard = { vm.writingAi.discardInline() },
+                        )
+                        EditorPanel.Format -> FormatPanel(
+                            formatResult,
+                            skip = formatSkip,
+                            onToggle = { k -> formatSkip = if (k in formatSkip) formatSkip - k else formatSkip + k },
+                            onApply = apply@{
+                                when {
+                                    locked -> vm.showMessage("这一章已定稿：要排版先解锁")
+                                    inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
+                                    else -> {
+                                        val before = st.text.toString()
+                                        val kinds = formatSettings.kinds - formatSkip
+                                        val r = TextFormat.format(before, formatSettings, kinds)
+                                        formatOpen = false
+                                        if (!r.changed) return@apply
+                                        // 一次编辑换掉改了的那一截（撤销一下整步回去），光标跟着挪到排好的位置。
+                                        val sel = st.selection
+                                        var head = 0
+                                        val after = r.text
+                                        while (head < before.length && head < after.length && before[head] == after[head]) head++
+                                        var tail = 0
+                                        while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] == after[after.length - 1 - tail]) tail++
+                                        // 写作建议、规则的标记按位置画：先收掉旧的，等按新正文重算，不错位。
+                                        markFades.reset()
+                                        report = null
+                                        st.edit {
+                                            replace(head, before.length - tail, after.substring(head, after.length - tail))
+                                            selection = TextRange(r.map(sel.start), r.map(sel.end))
+                                        }
+                                        vm.writing.applyFormat(workId, chapterId, before, after)
+                                        vm.writingAi.afterFormat(workId, chapterId) { p -> TextFormat.formatParagraph(p, formatSettings, kinds) }
+                                        vm.showMessage("排好了 ${r.changes.size} 处；撤销一下能回到排版前")
+                                    }
+                                }
+                            },
+                            onSettings = { vm.open(Screen.WorkFormatSettings(workId)) },
+                            onClose = { formatOpen = false },
                         )
                         is EditorPanel.Ai -> WriteAiPanel(
                             p.state,
@@ -1331,7 +1499,21 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
                     vm.writing.setStatus(workId, chapterId, st, reason, canon)
+                    if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
                 }
+            }
+            if (syncTip) {
+                SyncTipDialog(
+                    onDismiss = { never ->
+                        syncTip = false
+                        if (never) vm.writingAi.updateAssist(workId) { it.copy(syncTip = false) }
+                    },
+                    onSync = { never ->
+                        syncTip = false
+                        if (never) vm.writingAi.updateAssist(workId) { it.copy(syncTip = false) }
+                        startSync()
+                    },
+                )
             }
             if (inlineDialog) {
                 InlineModeDialog(onDismiss = { inlineDialog = false }) { mode ->
@@ -1370,6 +1552,7 @@ private sealed interface EditorPanel {
     data class Suggestion(val issue: WriteIssue) : EditorPanel
     data class Rule(val hit: RuleHit) : EditorPanel
     data object Issues : EditorPanel
+    data object Format : EditorPanel
     data object Rules : EditorPanel
     data object Realtime : EditorPanel
     data object None : EditorPanel
@@ -1466,6 +1649,14 @@ private class MarkFades(private val scope: CoroutineScope) {
             a.animateTo(to, Motion.standard(Motion.SHORT))
             then()
         }
+    }
+
+    /** 正文整个换了样子（排版）：旧标记的位置都不算数了，直接收掉，不在原处淡出；新的按新正文淡入。 */
+    fun reset() {
+        alpha.clear()
+        leaving.clear()
+        marks = emptyList()
+        shown = emptyMap()
     }
 
     /** 每处标记和它现在的透明度：还在的用现在的位置，去掉的用最后的位置。 */

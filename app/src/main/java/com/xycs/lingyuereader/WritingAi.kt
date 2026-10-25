@@ -32,6 +32,13 @@ import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WriteRecord
 import com.xycs.lingyuereader.data.brief
+import com.xycs.lingyuereader.data.ChapterSyncs
+import com.xycs.lingyuereader.data.PackSync
+import com.xycs.lingyuereader.data.SyncItem
+import com.xycs.lingyuereader.data.SyncMark
+import com.xycs.lingyuereader.data.applySync
+import com.xycs.lingyuereader.data.chapterNo
+import com.xycs.lingyuereader.data.unsynced
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -376,6 +383,30 @@ class WritingAi(
         }
     }
 
+    /**
+     * 正文排过版：写作建议是按段落原文认的，段落文字变了就对不上。查过的段换成排好的样子也算查过（不为排版多花一次请求）；
+     * 找出的问题在排好的段里还找得到的留着（错的字也排过的按排好的认），找不到的去掉，那段重查。[reformat] 把一段排成排好的样子。
+     */
+    fun afterFormat(workId: String, chapterId: String, reformat: (String) -> String) {
+        val seen = checked.getOrPut(workId to chapterId) { HashSet() }
+        seen += seen.map(reformat)
+        dismissed += dismissed.map { (p, w) -> reformat(p) to w }
+        _realtime.update { r ->
+            if (r.chapterId != chapterId) return@update r
+            r.copy(issues = r.issues.mapNotNull { i ->
+                val p = reformat(i.paragraph)
+                when {
+                    i.wrong in p -> i.copy(paragraph = p)
+                    reformat(i.wrong).let { it.isNotEmpty() && it in p } -> i.copy(paragraph = p, wrong = reformat(i.wrong), right = reformat(i.right))
+                    else -> {
+                        seen -= p
+                        null
+                    }
+                }
+            })
+        }
+    }
+
     /** 这一类建议以后不提（作品的 AI 设置里能再打开）。 */
     fun muteKind(workId: String, kind: String) {
         updateAssist(workId) { a -> a.copy(suggestKinds = a.suggestKinds - kind) }
@@ -634,12 +665,14 @@ class WritingAi(
         whole: Boolean = false,
         maxTokens: Int? = null,
         useTools: Boolean = true,
+        maxRounds: Int = 6,
+        toolsUpTo: String? = null,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
         if (!canUsePack) return ask(label, rest, prompt, whole, onText)
         val budget = knowledgeBudget(workId)
-        val (pack, tools) = withContext(Dispatchers.IO) { store.aiPack(workId, budget) to store.packTools(workId) }
+        val (pack, tools) = withContext(Dispatchers.IO) { store.aiPack(workId, budget) to store.packTools(workId, toolsUpTo) }
         val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + if (useTools) "\n\n" + WritePrompts.TOOL_GUIDE else ""
         _lastRequest.value = SentRequest(label, system, prompt, System.currentTimeMillis())
         try {
@@ -654,6 +687,7 @@ class WritingAi(
                 cachePrefix = pack.prefix.length,
                 whole = whole,
                 maxTokens = maxTokens,
+                maxRounds = maxRounds,
                 onLookup = { onReset() },
                 onText = onText,
             )
@@ -1104,6 +1138,160 @@ class WritingAi(
         }
     }
 
+    // ---------- 整理进设定包 ----------
+
+    private val _sync = MutableStateFlow<SyncSession?>(null)
+    /** 整理进设定包的结果（一章，或批量整理的几章），作者勾选、改过再写进设定包；写完清空。 */
+    val sync: StateFlow<SyncSession?> = _sync.asStateFlow()
+    private var syncJob: Job? = null
+
+    /** 整理一章：读这一章（[text] 是编辑框里现在的正文），带上设定包，一次请求，最多查两轮。 */
+    private suspend fun syncOne(workId: String, chapterId: String, text: String): ChapterSyncResult {
+        if (!canUsePack) throw IllegalStateException("本机模型上下文太小、不能查设定包，整理本章要用联网的 AI 服务商")
+        val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+        val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+        val number = withContext(Dispatchers.IO) { store.chapterNo(work, chapterId) } ?: (work.chapters.indexOfFirst { it.id == chapterId } + 1)
+        val base = ChapterSyncResult(chapterId, chapter.title, number, text.hashCode())
+        if (text.isBlank()) return base.copy(error = "这一章还没有正文")
+        val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
+        val answer = askWithPack(
+            "整理本章", workId, WritePrompts.system(work.title, assistOf(workId), hints), WritePrompts.sync(chapter.title, number, text),
+            whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
+        )
+        val parsed = WritePrompts.parseSync(answer, text, chapterId, number)
+        val docs = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } }
+        val planned = PackSync.plan(parsed.items, docs)
+        return base.copy(items = planned, dropped = parsed.dropped, known = parsed.items.size - planned.size)
+    }
+
+    /** 现在不能整理的原因（没设 AI、用的是本机模型）；能整理时为空。 */
+    val syncBlocked: String?
+        get() = when {
+            !ready -> "先在“我的 → AI 助手”里开启并填好服务商和密钥"
+            !canUsePack -> "本机模型上下文太小、不能查设定包，整理进设定包要用联网的 AI 服务商"
+            else -> null
+        }
+
+    /** 整理这一章（编辑器“更多”里、定稿时的提示）。[text] 为空时用存盘的正文。 */
+    fun syncChapter(workId: String, chapterId: String, text: String? = null) {
+        syncBlocked?.let {
+            message(it)
+            return
+        }
+        if (syncJob?.isActive == true && _sync.value?.batch == true) {
+            message("正在批量整理章节，等它整理完或停下再来")
+            return
+        }
+        syncJob?.cancel()
+        _sync.value = SyncSession(workId, running = "", total = 1)
+        syncJob = scope.launch {
+            val (title, body) = withContext(Dispatchers.IO) { store.get(workId)?.chapter(chapterId)?.title.orEmpty() to (text ?: store.text(workId, chapterId)) }
+            _sync.update { s -> s?.copy(running = title) }
+            val result = try {
+                syncOne(workId, chapterId, body)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ChapterSyncResult(chapterId, title, 0, body.hashCode(), error = e.message ?: "请求失败")
+            }
+            _sync.update { s -> s?.takeIf { it.workId == workId }?.with(result)?.copy(running = null, done = 1) ?: s }
+        }
+    }
+
+    /**
+     * 整理没整理的章（作品页）：按目录顺序一章一次请求，整理一章攒一章的提议，最后统一勾选。
+     * 连着 3 章没整理成就停下；这期间作者自己整理了的章跳过。
+     */
+    fun syncAll(workId: String) {
+        syncBlocked?.let {
+            message(it)
+            return
+        }
+        if (syncJob?.isActive == true) return
+        syncJob = scope.launch {
+            val todo = withContext(Dispatchers.IO) { store.unsynced(workId, assistOf(workId).synced) }
+            if (todo.isEmpty()) {
+                message("有正文的章都整理过了")
+                return@launch
+            }
+            _sync.value = SyncSession(workId, batch = true, total = todo.size)
+            var failed = 0
+            try {
+                todo.forEachIndexed { i, c ->
+                    _sync.update { it?.copy(running = c.title, done = i) }
+                    val text = withContext(Dispatchers.IO) { store.text(workId, c.id) }
+                    if (ChapterSyncs.isSynced(assistOf(workId).synced[c.id], text)) return@forEachIndexed
+                    val result = try {
+                        syncOne(workId, c.id, text).also { failed = 0 }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failed++
+                        ChapterSyncResult(c.id, c.title, 0, text.hashCode(), error = e.message ?: "请求失败")
+                    }
+                    _sync.update { it?.with(result) }
+                    if (failed >= 3) throw IllegalStateException(result.error)
+                }
+                val s = _sync.value
+                message("整理完 ${s?.results?.size ?: 0} 章，有 ${s?.items?.size ?: 0} 条提议，勾选后写进设定包")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("整理停下了：${e.message ?: "请求失败"}")
+            } finally {
+                _sync.update { s -> s?.copy(running = null, done = s.results.size) }
+            }
+        }
+    }
+
+    /** 停下：已经整理完的章留着，可以勾选写进去。 */
+    fun stopSync() {
+        syncJob?.cancel()
+        _sync.update { s -> s?.copy(running = null) }
+    }
+
+    /** 不要这次的结果了。 */
+    fun clearSync() {
+        syncJob?.cancel()
+        _sync.value = null
+    }
+
+    /** 勾上、取消一条。 */
+    fun toggleSync(key: String, on: Boolean) {
+        _sync.update { s -> s?.copy(picked = if (on) s.picked + key else s.picked - key) }
+    }
+
+    /** 改一条要写进去的文字。 */
+    fun editSync(key: String, text: String) {
+        _sync.update { s -> s?.copy(edits = s.edits + (key to text)) }
+    }
+
+    /**
+     * 把勾选的写进设定包（改过的按改过的写），写之前存历史版本、每条记一笔变更登记；
+     * 这次整理的各章（没出错的）记成已整理。[then] 拿到一句“写了几条进哪几份文档”。
+     */
+    fun applySync(workId: String, then: (String) -> Unit = {}) {
+        val session = _sync.value?.takeIf { it.workId == workId && it.running == null } ?: return
+        val picked = session.items.filter { it.writable && it.key in session.picked }.map { i -> session.edits[i.key]?.let { i.copy(text = it) } ?: i }
+        scope.launch {
+            try {
+                val counts = withContext(Dispatchers.IO) { store.applySync(workId, picked) }
+                val now = System.currentTimeMillis()
+                val marks = session.results.filter { it.error == null }.associate { it.chapterId to SyncMark(it.hash, now) }
+                updateAssist(workId) { it.copy(synced = it.synced + marks) }
+                _sync.value = null
+                then(
+                    if (counts.isEmpty()) "没有写进设定包，${marks.size} 章记为已整理"
+                    else "写进了 ${counts.values.sum()} 条：" + counts.entries.joinToString("、") { "《${it.key}》${it.value} 条" },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("写进设定包失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
     companion object {
         /** 写作建议一次最多发几段。 */
         const val REALTIME_BATCH = 6
@@ -1117,6 +1305,10 @@ class WritingAi(
         /** 本机模型上下文短：写作规范、本章资料各只带这么多字（放不下的再由 [com.xycs.lingyuereader.ai.DevicePrompt] 截短）。 */
         const val LOCAL_STYLE_LIMIT = 1_200
         const val LOCAL_BRIEF_LIMIT = 1_500
+
+        /** 整理本章：回答最长多少 token、最多查几轮设定包。 */
+        const val SYNC_TOKENS = 4_096
+        const val SYNC_ROUNDS = 2
 
         /** AI 在编辑器里写时，流式的字最多隔这么久刷新一次显示（每次都要整章重排）。 */
         const val INLINE_REFRESH_MS = 150L
@@ -1157,3 +1349,37 @@ data class SentRequest(
 ) {
     val size: Int get() = system.length + prompt.length
 }
+
+/** 一章的整理结果：[hash] 是整理时正文的哈希；[dropped] 是正文里找不到原句丢掉的，[known] 是设定包里已有、没再列的。 */
+data class ChapterSyncResult(
+    val chapterId: String,
+    val title: String,
+    val number: Int,
+    val hash: Int,
+    val items: List<SyncItem> = emptyList(),
+    val dropped: Int = 0,
+    val known: Int = 0,
+    val error: String? = null,
+)
+
+/**
+ * 一次整理（一章，或批量的几章）：[running] 是正在整理的章名（整理完是 null）；
+ * [picked] 是勾上的提议（按 [SyncItem.key]），[edits] 是作者改过的文字。
+ */
+data class SyncSession(
+    val workId: String,
+    val results: List<ChapterSyncResult> = emptyList(),
+    val running: String? = null,
+    val done: Int = 0,
+    val total: Int = 0,
+    val batch: Boolean = false,
+    val picked: Set<String> = emptySet(),
+    val edits: Map<String, String> = emptyMap(),
+) {
+    val items: List<SyncItem> get() = results.flatMap { it.items }
+
+    /** 加上一章的结果：默认勾上新设定和察觉。 */
+    fun with(r: ChapterSyncResult): SyncSession =
+        copy(results = results.filterNot { it.chapterId == r.chapterId } + r, picked = picked + r.items.filter { it.defaultOn }.map { it.key })
+}
+

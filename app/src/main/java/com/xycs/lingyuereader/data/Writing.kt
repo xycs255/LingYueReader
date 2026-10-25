@@ -123,6 +123,12 @@ data class WorkAssist(
     val suggestGap: Int = 20,
     /** 写作建议一天最多发多少次（0 不限）。 */
     val suggestCap: Int = 50,
+    /** 整理进设定包过的章（章id → 整理时正文的哈希）：正文改过就对不上，又算没整理。 */
+    val synced: Map<String, SyncMark> = emptyMap(),
+    /** 把一章标为定稿时，问一句“要不要顺手整理进设定包”。 */
+    val syncTip: Boolean = true,
+    /** 自动排版的规则和“输入时自动排版”（作品级，随备份走）。 */
+    val format: FormatSettings = FormatSettings(),
 ) {
     companion object {
         /** 采纳的修改最多记这么多条。 */
@@ -1343,6 +1349,9 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             .put("suggestKinds", JSONArray(suggestKinds))
             .put("suggestGap", suggestGap)
             .put("suggestCap", suggestCap)
+            .put("synced", JSONObject().apply { synced.forEach { (id, m) -> put(id, JSONObject().put("hash", m.hash).put("at", m.at)) } })
+            .put("syncTip", syncTip)
+            .put("format", format.toJson())
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -1371,6 +1380,11 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 suggestKinds = optJSONArray("suggestKinds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: WorkAssist.SUGGEST_KINDS,
                 suggestGap = optInt("suggestGap", 20),
                 suggestCap = optInt("suggestCap", 50),
+                synced = optJSONObject("synced")?.let { o ->
+                    o.keys().asSequence().mapNotNull { id -> o.optJSONObject(id)?.let { m -> id to SyncMark(m.optInt("hash"), m.optLong("at")) } }.toMap()
+                }.orEmpty(),
+                syncTip = optBoolean("syncTip", true),
+                format = FormatSettings.fromJson(optJSONObject("format")),
             )
         }
 
