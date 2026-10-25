@@ -91,7 +91,9 @@ abstract class FromEndRebuildUiBase(private val mode: String, private val prevTa
         waitForPage { it.first == total - 1 }
         turnBack()
         val at = waitForPage { it.first == total - 2 }
-        // 停下 300 毫秒才存进度：等存到第一章这一页。
+        // 停下 300 毫秒才存进度：先让时间走过去，免得机器忙时读到的是上一页存的进度。
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
         var saved = JSONObject()
         compose.waitUntil(10_000) {
             saved = savedProgress()
