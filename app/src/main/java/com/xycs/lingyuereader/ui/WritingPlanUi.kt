@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChangeEntry
@@ -172,6 +173,25 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
 }
 
 /**
+ * 存细纲卡时按项合并：这一页上改过的项（[edited] 和打开、上次存时的 [base] 不一样的）用这一页的，
+ * 没改过的用盘上最新的 [latest]（这期间“补写章节摘要”写进去的摘要之类，不能被这一页的旧卡片清掉）。
+ */
+internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCard): ChapterCard {
+    fun pick(get: (ChapterCard) -> String) = if (get(edited) != get(base)) get(edited) else get(latest)
+    return latest.copy(
+        facts = pick { it.facts },
+        boundary = pick { it.boundary },
+        pov = pick { it.pov },
+        countdown = pick { it.countdown },
+        hook = pick { it.hook },
+        threads = pick { it.threads },
+        summary = pick { it.summary },
+        plan = pick { it.plan },
+        auto = if (edited.auto != base.auto) edited.auto else latest.auto,
+    )
+}
+
+/**
  * 一章的细纲卡：只划事实边界（发生了什么、后文不能冲突的点、视角、倒计时、钩子、推进哪几条线），不管怎么写。
  * 上面列出上一章留下的钩子和承接边界。写作 AI 改这一章时会带上它。边打边存。
  */
@@ -198,18 +218,28 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
         info = mine
         previous = prev
     }
-    // 停一下再存；离开时存。
+    // 停一下再存；离开时存。存的时候以盘上最新的卡片为底，只换这一页改过的项。
     LaunchedEffect(card) {
         val now = card ?: return@LaunchedEffect
-        if (now == saved) return@LaunchedEffect
+        val base = saved ?: return@LaunchedEffect
+        if (now == base) return@LaunchedEffect
         delay(600)
-        vm.writing.saveCard(workId, chapterId, now)
-        saved = now
+        val merged = mergeCard(base, now, vm.writing.cards(workId, chapterId).first.card)
+        vm.writing.saveCard(workId, chapterId, merged)
+        saved = merged
+        // 别处写进来的（比如 AI 补的摘要）也显示出来。
+        if (merged != now) card = merged
     }
     val latest by rememberUpdatedState(card)
     val latestSaved by rememberUpdatedState(saved)
     DisposableEffect(workId, chapterId) {
-        onDispose { latest?.takeIf { it != latestSaved }?.let { vm.writing.saveCard(workId, chapterId, it) } }
+        onDispose {
+            val now = latest
+            val base = latestSaved
+            if (now != null && base != null && now != base) {
+                vm.viewModelScope.launch { vm.writing.saveCard(workId, chapterId, mergeCard(base, now, vm.writing.cards(workId, chapterId).first.card)) }
+            }
+        }
     }
 
     ProvideGroupedColors {

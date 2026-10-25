@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -22,6 +23,7 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,6 +43,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLooper
 import java.io.File
 import java.net.InetSocketAddress
+import java.time.LocalDate
 import java.util.Collections
 
 @RunWith(AndroidJUnit4::class)
@@ -54,6 +57,10 @@ class WritingAiUiTest {
     private lateinit var server: HttpServer
     /** 发给假服务商的每个请求里用户那条消息。 */
     private val prompts: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    /** 每个请求的系统提示和整个请求体。 */
+    private val systems: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    private val bodies: MutableList<JSONObject> = Collections.synchronizedList(mutableListOf())
+    private val draft = "他推门进来。\n风很大。\n他再门口等着，天色以晚。"
 
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -63,12 +70,22 @@ class WritingAiUiTest {
                     val msgs = body.getJSONArray("messages")
                     val user = msgs.getJSONObject(msgs.length() - 1).getString("content")
                     prompts += user
+                    bodies += body
+                    systems += (0 until msgs.length()).map { msgs.getJSONObject(it) }.firstOrNull { it.getString("role") == "system" }?.getString("content").orEmpty()
                     val answer = when {
                         "只找明显的错误" in user || "只找下面这几类问题" in user -> """{"issues":[{"p":1,"wrong":"再门口","right":"在门口","reason":"错别字"}]}"""
                         "润色这段文字" in user -> "修改后：风刮得很猛。"
+                        "扩写这段" in user -> "风刮得很猛，吹得门窗"
+                        "精简这段" in user -> "风"
                         else -> "1. 让他听见门外的脚步声。"
                     }
-                    val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
+                    // 扩写：写到长度上限被截断；缩写：模型中途停了。
+                    val finish = when {
+                        "扩写这段" in user -> "length"
+                        "精简这段" in user -> "content_filter"
+                        else -> "stop"
+                    }
+                    val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", answer)).put("finish_reason", finish)))
                         .toString().toByteArray()
                     ex.responseHeaders.add("Content-Type", "application/json")
                     ex.sendResponseHeaders(200, bytes.size.toLong())
@@ -87,8 +104,19 @@ class WritingAiUiTest {
                 .putString("baseUrl", "http://127.0.0.1:${server.address.port}/v1").putString("model", "test-model").commit()
             val store = WorkStore(writingDir)
             val w = store.create("长夜")
-            store.saveText(w.id, w.chapters[0].id, "他推门进来。\n风很大。\n他再门口等着，天色以晚。")
-            if (name.methodName.startsWith("realtime")) store.updateAssist(w.id) { it.copy(realtime = true) }
+            val realtime = name.methodName.startsWith("realtime")
+            // 写作建议的几个测试：最后一个句号留给测试里打（打开时已有的段落不查，改过的才查）。
+            store.saveText(w.id, w.chapters[0].id, if (realtime) draft.removeSuffix("。") else draft)
+            if (realtime) store.updateAssist(w.id) { it.copy(realtime = true) }
+            if (name.methodName == "realtimeTypoOnlyIsAPlainProofread") {
+                store.updateAssist(w.id) { it.copy(suggestKinds = listOf("TYPO")) }
+                store.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "## 林月\n药铺掌柜的女儿")
+            }
+            if (name.methodName == "realtimeStopsAtTheDailyCapEvenAfterARestart") {
+                // 进程重启前今天已经发了 50 次（默认一天最多 50 次）。
+                context.getSharedPreferences("writing_ai", Context.MODE_PRIVATE).edit()
+                    .putString("suggest_count.${w.id}", "${LocalDate.now()}|50").commit()
+            }
             workId = w.id
             chapterId = w.chapters[0].id
         }
@@ -155,20 +183,93 @@ class WritingAiUiTest {
         assertEquals("他推门进来。\n风很大。\n他再门口等着，天色以晚。", WorkStore(writingDir).text(workId, chapterId))
     }
 
+    /** 在正文末尾打字。 */
+    private fun typeAtEnd(s: String) {
+        val node = compose.onNodeWithContentDescription("正文")
+        node.performTextInputSelection(TextRange(WorkStore(writingDir).text(workId, chapterId).length))
+        node.performTextInput(s)
+    }
+
     @Test
     fun realtimeCheckFindsATypoAndFixesIt() {
         openEditor()
-        // 作品开了写作建议：停笔几秒，自动把够长的段落发去挑错（短段不发）。
+        waitForText("写作建议已开")
+        // 打开时已经写好的段落算查过：光打开、不打字，什么都不发。
+        Thread.sleep(4_000)
+        ShadowLooper.idleMainLooper()
+        assertTrue(prompts.isEmpty())
+        // 改了最后一段：停笔几秒，只发改过的这一段（短段不发）。
+        typeAtEnd("。")
         waitForText("1 条写作建议")
         val prompt = prompts.single()
         assertTrue("1. 他再门口等着，天色以晚。" in prompt)
-        assertFalse("风很大。" in prompt)
-        waitForText("写作建议已开")
+        assertFalse("风很大。" in prompt || "他推门进来。" in prompt)
+        // 带设定包，但不给工具：一次请求就答。今天发了几次按作品记在盘上（进程重启也接着算）。
+        assertFalse(bodies.single().has("tools"))
+        assertEquals("${LocalDate.now()}|1", context.getSharedPreferences("writing_ai", Context.MODE_PRIVATE).getString("suggest_count.$workId", null))
         compose.onNodeWithText("1 条写作建议", substring = true).performClick()
         waitForText("错别字")
         compose.onNodeWithText("改").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.text(workId, chapterId) == "他推门进来。\n风很大。\n他在门口等着，天色以晚。" }
+    }
+
+    @Test
+    fun realtimeTypoOnlyIsAPlainProofread() {
+        openEditor()
+        waitForText("写作建议已开")
+        typeAtEnd("。")
+        waitForText("1 条写作建议")
+        // 只查错字：普通的挑错，不带设定包。
+        assertTrue("只找明显的错误" in prompts.single())
+        assertFalse("药铺掌柜的女儿" in systems.single())
+        assertFalse(bodies.single().has("tools"))
+    }
+
+    @Test
+    fun realtimeStopsAtTheDailyCapEvenAfterARestart() {
+        openEditor()
+        waitForText("写作建议已开")
+        typeAtEnd("。")
+        waitForText("今天的 50 次用完了")
+        assertTrue(prompts.isEmpty())
+    }
+
+    @Test
+    fun aCutOffOrStoppedEditCannotBeAccepted() {
+        openEditor()
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        // 扩写被长度上限截断：报错，不能采纳。
+        compose.onNodeWithText("扩写").performScrollTo().performClick()
+        waitForText("回答太长")
+        compose.onNodeWithText("采纳").assertIsNotEnabled()
+        // 缩写时模型中途停了：写出的半截显示出来，但不能采纳，那行说明也不出现。
+        compose.onNodeWithText("缩写").performScrollTo().performClick()
+        waitForText("模型中途停了，结果不完整")
+        compose.onNodeWithText("采纳").assertIsNotEnabled()
+        assertTrue(compose.onAllNodesWithText("模型中途停止了回答", substring = true).fetchSemanticsNodes().isEmpty())
+        Thread.sleep(1200)
+        ShadowLooper.idleMainLooper()
+        assertEquals(draft, WorkStore(writingDir).text(workId, chapterId))
+    }
+
+    @Test
+    fun leavingTheEditorDoesNotCountAsNotAccepted() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        openEditor()
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("润色").performClick()
+        waitForText("风刮得很大猛。")
+        // 没看完就离开编辑器：面板收起，但不记成“作者不要这种改法”。
+        compose.runOnUiThread { vm.back() }
+        waitFor { vm.writingAi.state.value == null }
+        Thread.sleep(1200)
+        ShadowLooper.idleMainLooper()
+        val assist = WorkStore(writingDir).assist(workId)
+        assertEquals(0, assist.rejected)
+        assertTrue(assist.declined.isEmpty())
     }
 
     @Test

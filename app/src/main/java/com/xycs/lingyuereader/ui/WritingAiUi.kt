@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -69,8 +70,10 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
@@ -151,11 +154,18 @@ internal fun editTarget(text: String, selection: TextRange, action: WriteAction,
     return WriteAiTask.Edit(action, line, lineStart, lineEnd, instruction)
 }
 
+/** 采纳改稿的结果：换好了、原文找不到了、原位置附近有不止一处一样的文字（不猜，不换）。 */
+internal enum class EditApply { DONE, MISSING, AMBIGUOUS }
+
+/** 原文不在原来的位置上时，只在原位置前后这么多字里找。 */
+private const val EDIT_NEAR = 1_000
+
 /**
- * 采纳：把 [result] 换进正文。位置上的文字还是原文就按位置换；正文改过了就按原文找。
- * 续写插在光标处，光标在一段中间或段末时另起一段。返回是否换成了。
+ * 采纳：把 [result] 换进正文。位置上的文字还是原文就按位置换；正文改过了（等结果时作者在前面加了字），
+ * 只在原位置附近找原文：找到一处才换，几处一样的不换（可能在几页之前，换错了不容易发现）。
+ * 续写插在光标处，光标在一段中间或段末时另起一段。
  */
-internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: String): Boolean {
+internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: String): EditApply {
     val text = state.text.toString()
     if (task.action == WriteAction.CONTINUE) {
         val at = task.start.coerceIn(0, text.length)
@@ -166,15 +176,26 @@ internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: St
             replace(at, at, insert)
             selection = TextRange(at + insert.length - if (needAfter) 1 else 0)
         }
-        return true
+        return EditApply.DONE
     }
-    val range = if (task.end <= text.length && text.substring(task.start, task.end) == task.original) task.start until task.end
-    else text.indexOf(task.original).takeIf { it >= 0 }?.let { it until it + task.original.length } ?: return false
+    val start = if (task.end <= text.length && text.substring(task.start, task.end) == task.original) {
+        task.start
+    } else {
+        val from = (task.start - EDIT_NEAR).coerceAtLeast(0)
+        val to = (task.end + EDIT_NEAR).coerceAtMost(text.length)
+        val hits = generateSequence(text.indexOf(task.original, from)) { text.indexOf(task.original, it + 1) }
+            .takeWhile { it >= 0 && it + task.original.length <= to }.take(2).toList()
+        when (hits.size) {
+            0 -> return EditApply.MISSING
+            1 -> hits[0]
+            else -> return EditApply.AMBIGUOUS
+        }
+    }
     state.edit {
-        replace(range.first, range.last + 1, result)
-        selection = TextRange(range.first + result.length)
+        replace(start, start + task.original.length, result)
+        selection = TextRange(start + result.length)
     }
-    return true
+    return EditApply.DONE
 }
 
 /** 采纳一条写作建议：在那段里把错的换成对的。段落已经改掉时返回假。 */
@@ -266,12 +287,16 @@ internal fun WriteAiPanel(
                 SegmentedControl(listOf(true to "对比", false to "改后"), showDiff) { showDiff = it }
             }
         }
+        // 对比在后台算，同样的原文和结果只算一次（长段落比一次要一会儿，不能卡住界面）；算好之前先显示改后的全文。
+        val original = edit?.original.orEmpty()
+        val compared by produceState<AnnotatedString?>(null, canDiff, original, state.text) {
+            value = null
+            if (!canDiff) return@produceState
+            val pieces = withContext(Dispatchers.Default) { TextDiff.diff(original, state.text) }
+            value = pieces?.let { diffText(it, Color(0xFFE5484D), Color(0xFF2F9E44)) }
+        }
         Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(vertical = 6.dp)) {
-            val body: AnnotatedString = when {
-                canDiff && showDiff -> TextDiff.diff(edit!!.original, state.text)?.let { diffText(it, Color(0xFFE5484D), Color(0xFF2F9E44)) }
-                    ?: AnnotatedString(state.text)
-                else -> AnnotatedString(state.text)
-            }
+            val body: AnnotatedString = compared?.takeIf { canDiff && showDiff } ?: AnnotatedString(state.text)
             if (state.text.isNotEmpty()) Text(body, color = c.label, fontSize = 16.sp, lineHeight = 26.sp)
             else if (state.loading) Text("正在想……", color = c.secondary, fontSize = 15.sp)
             state.error?.let { Text("出错了：$it", color = c.destructive, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(top = 6.dp)) }
@@ -601,9 +626,9 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "写作建议",
-                        footer = "开启后，你停笔几秒，灵阅会把刚写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
+                        footer = "开启后，你停笔几秒，灵阅会把打开这一章以后新写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
                             "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。设定、规范、口吻要设定包里有依据，拿不准的不提；" +
-                            "本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次可以在下面设。" +
+                            "只查错字时不带设定包；本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次可以在下面设。" +
                             "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
                     ) {
                         row {
@@ -673,7 +698,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
 internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, onAdd: (List<BibleProposal>) -> Unit) {
     var chosen by remember { mutableStateOf(list.map { it.name }.toSet()) }
     val c = LocalGroupedColors.current
-    GlassDialog(show = true, title = "整理出 ${list.size} 个人物", summary = "勾选要加进设定集的；已有的人物会用新的说明替换。", onDismissRequest = onDismiss) {
+    GlassDialog(show = true, title = "整理出 ${list.size} 个人物", summary = "勾选要加进设定集的；已有的人物，人物档案里他那一节会换成新的说明（原来的文字先存一个历史版本）。", onDismissRequest = onDismiss) {
         Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
             list.forEach { p ->
                 val toggle = { chosen = if (p.name in chosen) chosen - p.name else chosen + p.name }

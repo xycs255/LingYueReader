@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader
 
+import android.content.SharedPreferences
 import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.BibleProposal
 import com.xycs.lingyuereader.ai.IdeaKind
@@ -35,6 +36,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -116,6 +118,8 @@ class WritingAi(
     private val store: WorkStore,
     private val ai: AiAssistant,
     private val scope: CoroutineScope,
+    /** 记写作建议每天发了几次（按作品、按日期，进程重启也接着算）；为空时只记在内存里。 */
+    private val prefs: SharedPreferences? = null,
     private val message: (String) -> Unit,
 ) {
     val ready: Boolean get() = ai.currentConfig.ready
@@ -219,8 +223,20 @@ class WritingAi(
                     WriteAiTask.Consistency -> "矛盾检查"
                 }
                 val onPiece: (String) -> Unit = { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
+                // 改稿类的结果要换进正文：被截断（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
                 val answer = if (task == WriteAiTask.Review) ask(label, system, prompt, onText = onPiece)
-                else askWithPack(label, workId, system, prompt, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
+                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
+                if (task is WriteAiTask.Edit && answer.endsWith(STOPPED_NOTE)) {
+                    // 模型中途停了：写出来的只是一半，显示出来但不能采纳，那行说明也不能进正文。
+                    _state.update { s ->
+                        s?.takeIf { it.task === task }?.copy(
+                            text = WritePrompts.clean(answer.removeSuffix(STOPPED_NOTE), task.original),
+                            loading = false,
+                            error = "模型中途停了，结果不完整，不能采纳；可以再来一次",
+                        ) ?: s
+                    }
+                    return@launch
+                }
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false) ?: s }
                 // 灵感、点评、矛盾检查记下来，关了面板还能回头翻。
@@ -255,6 +271,12 @@ class WritingAi(
         }
     }
 
+    /** 离开编辑器、旋转屏幕：只停下、收起面板，不算作者“不采纳”（作者没看完，不能当成不要这种改法）。 */
+    fun dismiss() {
+        job?.cancel()
+        _state.value = null
+    }
+
     /** 采纳了改稿：记下这次改法，以后润色时照这个分寸。 */
     fun accepted(workId: String, action: WriteAction, before: String, after: String) {
         job?.cancel()
@@ -264,23 +286,44 @@ class WritingAi(
 
     // ---------- 写作建议 ----------
 
+    private var lastSuggest = 0L
+    /** 作者标了“不改”的（段落、那几个字）：同一处不再提。 */
+    private val dismissed = HashSet<Pair<String, String>>()
+    /** 写作建议各作品今天发了几次（日期 → 次数），[prefs] 里也存一份。 */
+    private val suggestCounts = HashMap<String, Pair<String, Int>>()
+
+    /** [workId] 在 [day]（yyyy-MM-dd）发了几次写作建议。 */
+    private fun suggestCount(workId: String, day: String): Int {
+        val saved = suggestCounts[workId]
+            ?: prefs?.getString(SUGGEST_COUNT_KEY + workId, null)?.split('|')?.takeIf { it.size == 2 }?.let { it[0] to (it[1].toIntOrNull() ?: 0) }
+        return saved?.takeIf { it.first == day }?.second ?: 0
+    }
+
+    /** 记一次，返回今天发到第几次。 */
+    private fun countSuggest(workId: String, day: String): Int {
+        val n = suggestCount(workId, day) + 1
+        suggestCounts[workId] = day to n
+        prefs?.edit()?.putString(SUGGEST_COUNT_KEY + workId, "$day|$n")?.apply()
+        return n
+    }
+
+    private fun paragraphsOf(text: String) = text.lines().map { it.trim() }.filter { it.length >= MIN_PARAGRAPH }
+
+    /** 打开一章：已经写好的段落算查过，写作建议只查打开以后改过、新写的段。 */
+    fun baseline(workId: String, chapterId: String, text: String) {
+        checked.getOrPut(workId to chapterId) { HashSet() } += paragraphsOf(text)
+    }
+
     /**
      * 查这一章里改过、还没查过的段落（最多 [REALTIME_BATCH] 段，从后往前，刚写的多在后面）。
      * 只在作品开了写作建议、AI 可用时调用；上一次还没查完就不发新的。
      */
-    /** 写作建议今天发了几次（按天记，换天清零）。 */
-    private var suggestDay = java.time.LocalDate.now()
-    private var suggestCount = 0
-    private var lastSuggest = 0L
-    /** 作者标了“不改”的（段落、那几个字）：同一处不再提。 */
-    private val dismissed = HashSet<Pair<String, String>>()
-
     fun checkRealtime(workId: String, chapterId: String, text: String) {
         if (!ready || realtimeJob?.isActive == true) return
-        val paragraphs = text.lines().map { it.trim() }.filter { it.length >= MIN_PARAGRAPH }
+        val paragraphs = paragraphsOf(text)
         // 换了一章：问题清空。还在的问题里，段落已经改掉、错的字不在了的去掉。
         _realtime.update { r ->
-            if (r.chapterId != chapterId) RealtimeState(chapterId, today = suggestCount)
+            if (r.chapterId != chapterId) RealtimeState(chapterId, today = suggestCount(workId, java.time.LocalDate.now().toString()))
             else r.copy(issues = r.issues.filter { i -> i.paragraph in paragraphs && i.wrong in i.paragraph })
         }
         val seen = checked.getOrPut(workId to chapterId) { HashSet() }
@@ -291,13 +334,9 @@ class WritingAi(
             if (!assist.realtime) return@launch
             val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k } }.toSet()
             if (kinds.isEmpty()) return@launch
-            // 省钱：两次至少隔几秒，一天最多几次。
-            val today = java.time.LocalDate.now()
-            if (today != suggestDay) {
-                suggestDay = today
-                suggestCount = 0
-            }
-            if (assist.suggestCap > 0 && suggestCount >= assist.suggestCap) {
+            // 省钱：两次至少隔几秒，一天最多几次（按作品、按日期记在盘上）。
+            val today = java.time.LocalDate.now().toString()
+            if (assist.suggestCap > 0 && suggestCount(workId, today) >= assist.suggestCap) {
                 _realtime.update { it.copy(waiting = "今天的 ${assist.suggestCap} 次用完了，明天再查（作品的 AI 设置里能改）") }
                 return@launch
             }
@@ -306,21 +345,24 @@ class WritingAi(
                 _realtime.update { it.copy(waiting = null) }
                 delay(wait)
             }
-            suggestCount++
+            val count = countSuggest(workId, today)
             lastSuggest = System.currentTimeMillis()
-            _realtime.update { it.copy(checking = true, waiting = null, today = suggestCount) }
+            _realtime.update { it.copy(checking = true, waiting = null, today = count) }
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) }
-                // 能查设定包的模型：带上设定包和本章提示，设定、规范、口吻都能查；本机模型只查错字。
-                val answer = if (canUsePack) {
+                // 只查错字（或本机模型）：不带设定包，一问一答。要查设定、规范、口吻：带上设定包和本章提示，
+                // 但不给工具，一次请求就答（写作建议发得勤，不能每次查好几轮）。
+                val typoOnly = !canUsePack || kinds == setOf(SuggestKind.TYPO)
+                val answer = if (!typoOnly) {
                     val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
-                    askWithPack("写作建议", workId, WritePrompts.system(work?.title.orEmpty(), assist, hints), WritePrompts.suggest(todo, kinds), whole = true)
+                    askWithPack("写作建议", workId, WritePrompts.system(work?.title.orEmpty(), assist, hints), WritePrompts.suggest(todo, kinds), whole = true, useTools = false)
                 } else {
                     ask("写作建议", WritePrompts.system(work?.title.orEmpty(), assist), WritePrompts.proofread(todo), whole = true)
                 }
-                val found = WritePrompts.parseIssues(answer, todo)
-                    .filter { (it.paragraph to it.wrong) !in dismissed && SuggestKind.of(it.kind) in (if (canUsePack) kinds else setOf(SuggestKind.TYPO)) }
+                // 回答到了就算查过：格式不对也不再每次停笔都重发这几段（改过以后再查）。
                 seen += todo
+                val found = WritePrompts.parseIssues(answer, todo)
+                    .filter { (it.paragraph to it.wrong) !in dismissed && SuggestKind.of(it.kind) in (if (typoOnly) setOf(SuggestKind.TYPO) else kinds) }
                 _realtime.update { r ->
                     if (r.chapterId != chapterId) r else r.copy(issues = (r.issues + found).distinctBy { it.paragraph to it.wrong }, error = null)
                 }
@@ -362,6 +404,8 @@ class WritingAi(
     /** 在编辑器里正在写（或写完等作者采纳）的那一段。 */
     val inline: StateFlow<InlineWrite?> = _inline.asStateFlow()
     private var inlineJob: Job? = null
+    /** 第几次让 AI 在编辑器里写：每次写只认自己这一次。 */
+    private var inlineRun = 0
 
     /**
      * 从光标 [at] 处接着写：[text] 是编辑框里现在的全文。带设定包、细纲卡、写作规范和检查规则；
@@ -373,9 +417,15 @@ class WritingAi(
             return
         }
         inlineJob?.cancel()
+        // 这一次的编号：旧的那次被取消（停下的说明）、出错时，不能去改新的这一次。
+        val run = ++inlineRun
+        fun update(transform: (InlineWrite) -> InlineWrite) {
+            if (run == inlineRun) _inline.update { d -> d?.let(transform) }
+        }
         val cursor = at.coerceIn(0, text.length)
-        val start = InlineWrite(workId, chapterId, cursor, text, mode, instruction)
-        _inline.value = start
+        _inline.value = InlineWrite(workId, chapterId, cursor, text, mode, instruction)
+        val head = text.substring(0, cursor)
+        var written = ""
         inlineJob = scope.launch {
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
@@ -390,36 +440,43 @@ class WritingAi(
                         work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
                     )
                 }
-                val head = text.substring(0, cursor)
                 // 光标前不够长：前面接上一章的结尾。
                 val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
                 val after = text.substring(cursor).take(800)
                 val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
                 val prompt = WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules)
-                var written = ""
+                // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
+                var shown = 0L
                 val answer = askWithPack(
                     "在编辑器里写", workId, system, prompt, maxTokens = draftTokens,
                     onReset = {
                         written = ""
-                        _inline.update { d -> d?.takeIf { it === start || it.chapterId == chapterId }?.copy(text = "") ?: d }
+                        shown = 0L
+                        update { it.copy(text = "") }
                     },
                 ) { piece ->
                     written += piece
-                    _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(text = joinAt(head, written)) ?: d }
+                    val now = System.currentTimeMillis()
+                    if (now - shown >= INLINE_REFRESH_MS) {
+                        shown = now
+                        update { it.copy(text = joinAt(head, written)) }
+                    }
                 }
                 val note = when {
-                    answer.endsWith("（回答太长，后面被截断了。）") -> "写到长度上限停了，可以采纳后再接着写"
-                    answer.endsWith("（模型中途停止了回答。）") -> "模型中途停了"
+                    answer.endsWith(TRUNCATED_NOTE) -> "写到长度上限停了，可以采纳后再接着写"
+                    answer.endsWith(STOPPED_NOTE) -> "模型中途停了"
                     else -> null
                 }
-                val clean = WritePrompts.cleanDraft(answer.removeSuffix("\n\n（回答太长，后面被截断了。）").removeSuffix("\n\n（模型中途停止了回答。）"))
-                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(text = joinAt(head, clean), loading = false, note = note) ?: d }
+                val clean = WritePrompts.cleanDraft(answer.removeSuffix(TRUNCATED_NOTE).removeSuffix(STOPPED_NOTE))
+                update { it.copy(text = joinAt(head, clean), loading = false, note = note) }
                 log(workId, chapterId, "在编辑器里写", mode.label + instruction.let { if (it.isBlank()) "" else "：$it" }, clean)
             } catch (e: CancellationException) {
-                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(loading = false, note = if (d.text.isEmpty()) null else "停下了") ?: d }
+                // 停下：已经写出来的（可能还没显示出来）留着。
+                val shownText = joinAt(head, written)
+                update { it.copy(text = shownText, loading = false, note = if (shownText.isEmpty()) null else "停下了") }
                 throw e
             } catch (e: Exception) {
-                _inline.update { d -> d?.takeIf { it.chapterId == chapterId && it.at == cursor }?.copy(loading = false, error = e.message ?: "请求失败") ?: d }
+                update { it.copy(loading = false, error = e.message ?: "请求失败") }
             }
         }
     }
@@ -567,7 +624,7 @@ class WritingAi(
     /**
      * 带设定包的请求：作者的工作说明和知识库放在系统提示最前面（文档不改就每次一样，服务商能按相同开头缓存），
      * 后面是这次的规矩 [rest]（作品、文风、本章提示、细纲卡）；AI 可以用工具读按需的文档、搜关键词、读某一章正文。
-     * AI 决定去查时调 [onReset]：之前流出来的话不是回答，清掉。
+     * AI 决定去查时调 [onReset]：之前流出来的话不是回答，清掉。[useTools] 为假时不给工具，一次请求就答。
      */
     private suspend fun askWithPack(
         label: String,
@@ -576,17 +633,18 @@ class WritingAi(
         prompt: String,
         whole: Boolean = false,
         maxTokens: Int? = null,
+        useTools: Boolean = true,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
         if (!canUsePack) return ask(label, rest, prompt, whole, onText)
         val budget = knowledgeBudget(workId)
         val (pack, tools) = withContext(Dispatchers.IO) { store.aiPack(workId, budget) to store.packTools(workId) }
-        val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + "\n\n" + WritePrompts.TOOL_GUIDE
+        val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + if (useTools) "\n\n" + WritePrompts.TOOL_GUIDE else ""
         _lastRequest.value = SentRequest(label, system, prompt, System.currentTimeMillis())
         try {
             return ai.converse(
-                system, prompt, PackTools.TOOLS,
+                system, prompt, if (useTools) PackTools.TOOLS else emptyList(),
                 run = { call ->
                     val out = withContext(Dispatchers.IO) { tools.run(call) }
                     _lookup.value = tools.lookups.lastOrNull()
@@ -647,20 +705,20 @@ class WritingAi(
         }
     }
 
-    private val _review = MutableStateFlow<ReviewRun?>(null)
-    /** 正在看或正在审的那一章的审稿。 */
-    val review: StateFlow<ReviewRun?> = _review.asStateFlow()
-    private var reviewJob: Job? = null
-    /** 正在审的这一轮里作者标过的问题（哪一道、原文 → 已改或不改）。 */
-    private val runMarks = HashMap<Pair<ReviewGate, String>, String>()
+    private val _reviews = MutableStateFlow<Map<Pair<String, String>, ReviewRun>>(emptyMap())
+    /** 各章的审稿（看过或正在审的），按（作品id、章id）分开：别的章在审时打开这一章，不会弄乱那边。 */
+    val reviews: StateFlow<Map<Pair<String, String>, ReviewRun>> = _reviews.asStateFlow()
+    private val reviewJobs = HashMap<Pair<String, String>, Job>()
+    /** 正在审的那一轮里作者标过的问题（哪一章 → 哪一道、原文 → 已改或不改）。 */
+    private val runMarks = HashMap<Pair<String, String>, HashMap<Pair<ReviewGate, String>, String>>()
 
-    /** 读这一章上次的审稿结果（审稿进行中就不动）。 */
+    /** 读这一章上次的审稿结果（这一章正在审就不动）。 */
     fun loadReview(workId: String, chapterId: String) {
-        val r = _review.value
-        if (r != null && r.workId == workId && r.chapterId == chapterId && r.running != null) return
+        val key = workId to chapterId
+        if (_reviews.value[key]?.running != null) return
         scope.launch {
             val saved = withContext(Dispatchers.IO) { runCatching { store.review(workId, chapterId) }.getOrNull() }
-            _review.value = ReviewRun(workId, chapterId, null, saved)
+            _reviews.update { m -> if (m[key]?.running != null) m else m + (key to ReviewRun(workId, chapterId, null, saved)) }
         }
     }
 
@@ -669,19 +727,22 @@ class WritingAi(
      * 每道审完就显示出来；全部审完存下，下次打开还在。
      */
     fun startReview(workId: String, chapterId: String, text: String) {
-        reviewJob?.cancel()
+        val key = workId to chapterId
+        reviewJobs[key]?.cancel()
         // 上次标了“不改”的，这次再挑出来还是“不改”。
-        val ignored = _review.value?.takeIf { it.workId == workId && it.chapterId == chapterId }?.review?.gates.orEmpty()
+        val ignored = _reviews.value[key]?.review?.gates.orEmpty()
             .flatMap { g -> g.issues.filter { it.state == ReviewIssue.IGNORED }.map { g.gate to it.quote } }.toSet()
         val results = mutableListOf<GateResult>()
-        runMarks.clear()
+        val marks = HashMap<Pair<ReviewGate, String>, String>()
+        runMarks[key] = marks
         fun publish(running: ReviewGate?) {
             // 审稿途中作者标的（已改、不改）每次都带上，后面几道审完、最后存盘时不会丢。
-            val marked = results.map { g -> g.copy(issues = g.issues.map { i -> runMarks[g.gate to i.quote]?.let { i.copy(state = it) } ?: i }) }
-            _review.value = ReviewRun(workId, chapterId, running, ChapterReview(text.hashCode(), System.currentTimeMillis(), marked))
+            val marked = results.map { g -> g.copy(issues = g.issues.map { i -> marks[g.gate to i.quote]?.let { i.copy(state = it) } ?: i }) }
+            val run = ReviewRun(workId, chapterId, running, ChapterReview(text.hashCode(), System.currentTimeMillis(), marked))
+            _reviews.update { it + (key to run) }
         }
         publish(ReviewGate.FACT)
-        reviewJob = scope.launch {
+        reviewJobs[key] = scope.launch {
             val work = withContext(Dispatchers.IO) { store.get(workId) } ?: return@launch
             val title = work.chapter(chapterId)?.title.orEmpty()
             val assist = assistOf(workId)
@@ -731,7 +792,7 @@ class WritingAi(
                 publish(gate)
             }
             publish(null)
-            val done = _review.value?.review ?: return@launch
+            val done = _reviews.value[key]?.review ?: return@launch
             withContext(Dispatchers.IO) { runCatching { store.saveReview(workId, chapterId, done) } }
         }
     }
@@ -801,12 +862,28 @@ class WritingAi(
                 return@launch
             }
             var failed = 0
+            // 批量写要很久：这期间作者自己在细纲卡里写了摘要的章，跳过，不覆盖。
+            var skipped = 0
             try {
                 todo.forEachIndexed { i, c ->
                     _summaries.value = SummaryProgress(workId, i, todo.size, c.title)
                     try {
+                        if (withContext(Dispatchers.IO) { store.card(workId, c.id).summary.isNotBlank() }) {
+                            skipped++
+                            return@forEachIndexed
+                        }
                         val text = summarize(workId, c.id)
-                        withContext(Dispatchers.IO) { store.saveCard(workId, c.id, store.card(workId, c.id).copy(summary = text)) }
+                        // 写入前重新读一次卡片：只填摘要，别的项用最新的；摘要已经有了就不动。
+                        val wrote = withContext(Dispatchers.IO) {
+                            val latest = store.card(workId, c.id)
+                            if (latest.summary.isNotBlank()) {
+                                false
+                            } else {
+                                store.saveCard(workId, c.id, latest.copy(summary = text))
+                                true
+                            }
+                        }
+                        if (!wrote) skipped++
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -814,7 +891,9 @@ class WritingAi(
                         if (failed >= 3) throw e
                     }
                 }
-                message(if (failed == 0) "写好了 ${todo.size} 章的摘要，可以在各章细纲卡里改" else "写好了 ${todo.size - failed} 章的摘要，$failed 章没写成")
+                val done = todo.size - failed - skipped
+                val kept = if (skipped > 0) "；$skipped 章你已经写了摘要，没动" else ""
+                message((if (failed == 0) "写好了 $done 章的摘要，可以在各章细纲卡里改" else "写好了 $done 章的摘要，$failed 章没写成") + kept)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -832,18 +911,30 @@ class WritingAi(
 
     // ---------- AI 写本章 ----------
 
-    private val _draft = MutableStateFlow<DraftState?>(null)
-    /** AI 写的本章草稿（正在写或写好了的）。 */
-    val draft: StateFlow<DraftState?> = _draft.asStateFlow()
-    private var draftJob: Job? = null
+    private val _drafts = MutableStateFlow<Map<Pair<String, String>, DraftState>>(emptyMap())
+    /**
+     * AI 写的各章草稿（正在写或写好了的），按（作品id、章id）分开：
+     * A 章在写时打开 B 章的草稿页，不会把 A 的状态换掉，回到 A 也不会把没写完的当成写好了。
+     */
+    val drafts: StateFlow<Map<Pair<String, String>, DraftState>> = _drafts.asStateFlow()
+    private val draftJobs = HashMap<Pair<String, String>, Job>()
+    /** 各章当前这一次写的编号：被新的一次或“不要这版”顶掉的旧任务，不能再改状态、存草稿。 */
+    private val draftRuns = HashMap<Pair<String, String>, Int>()
+    private var draftSeq = 0
 
-    /** 打开草稿页：读上次没放进正文的草稿。 */
+    /** 改这一章的草稿状态（[run] 不是这一章当前的那一次就不改）。 */
+    private fun updateDraft(key: Pair<String, String>, run: Int, transform: (DraftState) -> DraftState) {
+        if (draftRuns[key] != run) return
+        _drafts.update { m -> m[key]?.let { m + (key to transform(it)) } ?: m }
+    }
+
+    /** 打开草稿页：读上次没放进正文的草稿（这一章已经有状态，比如正在写，就不动）。 */
     fun loadDraft(workId: String, chapterId: String) {
-        val d = _draft.value
-        if (d != null && d.workId == workId && d.chapterId == chapterId) return
+        val key = workId to chapterId
+        if (key in _drafts.value) return
         scope.launch {
             val text = withContext(Dispatchers.IO) { runCatching { store.draft(workId, chapterId) }.getOrDefault("") }
-            _draft.value = DraftState(workId, chapterId, text)
+            _drafts.update { m -> if (key in m) m else m + (key to DraftState(workId, chapterId, text)) }
         }
     }
 
@@ -886,11 +977,15 @@ class WritingAi(
             message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
             return
         }
-        draftJob?.cancel()
-        val start = _draft.value?.takeIf { more && it.workId == workId && it.chapterId == chapterId }?.text.orEmpty()
+        val key = workId to chapterId
+        draftJobs[key]?.cancel()
+        val run = ++draftSeq
+        draftRuns[key] = run
+        val start = _drafts.value[key]?.takeIf { more }?.text.orEmpty()
         val prefix = if (start.isEmpty()) "" else start.trimEnd() + "\n"
-        _draft.value = DraftState(workId, chapterId, prefix, loading = true, instruction = instruction)
-        draftJob = scope.launch {
+        _drafts.update { it + (key to DraftState(workId, chapterId, prefix, loading = true, instruction = instruction)) }
+        var written = ""
+        draftJobs[key] = scope.launch {
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
                 val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
@@ -908,62 +1003,76 @@ class WritingAi(
                 val prompt = if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction)
                 else WritePrompts.draftMore(chapter.title, prefix, rules, length)
                 val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
-                var written = ""
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens,
                     onReset = {
                         written = ""
-                        _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = prefix) ?: d }
+                        updateDraft(key, run) { it.copy(text = prefix) }
                     },
                 ) { piece ->
                     written += piece
-                    _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = prefix + written) ?: d }
+                    updateDraft(key, run) { it.copy(text = prefix + written) }
                 }
                 val text = prefix + WritePrompts.cleanDraft(answer)
-                _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = text, loading = false) ?: d }
+                updateDraft(key, run) { it.copy(text = text, loading = false) }
                 withContext(Dispatchers.IO) { store.saveDraft(workId, chapterId, text) }
                 log(workId, chapterId, if (prefix.isEmpty()) "写本章" else "接着写", instruction, text.removePrefix(prefix))
             } catch (e: CancellationException) {
+                // 被取消（应用退出之类）：已经写出来的留着，存成草稿，可以接着写。
+                // 被顶掉的（新的一次、“不要这版”，或者点了停止、[stopDraft] 已经存过）不管。
+                if (draftRuns[key] == run) {
+                    val partial = prefix + WritePrompts.cleanDraft(written)
+                    updateDraft(key, run) { it.copy(text = partial, loading = false) }
+                    if (partial.isNotBlank()) withContext(NonCancellable + Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, partial) } }
+                }
                 throw e
             } catch (e: Exception) {
-                _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(loading = false, error = e.message ?: "请求失败") ?: d }
+                updateDraft(key, run) { it.copy(loading = false, error = e.message ?: "请求失败") }
                 // 写了一半也存下来，可以接着写。
-                _draft.value?.takeIf { it.chapterId == chapterId && it.text.isNotBlank() }?.let { d ->
+                _drafts.value[key]?.takeIf { draftRuns[key] == run && it.text.isNotBlank() }?.let { d ->
                     withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, d.text) } }
                 }
             }
         }
     }
 
-    /** 停下正在写的（写了的留着，存成草稿）。 */
-    fun stopDraft() {
-        draftJob?.cancel()
-        val d = _draft.value ?: return
-        _draft.value = d.copy(loading = false)
-        if (d.text.isNotBlank()) scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(d.workId, d.chapterId, d.text) } } }
+    /** 停下这一章正在写的：停在作者看到的这一刻，写了的留着，存成草稿。 */
+    fun stopDraft(workId: String, chapterId: String) {
+        val key = workId to chapterId
+        // 换个编号：取消以后还在路上的字、取消时的处理都不再改它。
+        draftRuns[key] = ++draftSeq
+        draftJobs.remove(key)?.cancel()
+        val d = _drafts.value[key] ?: return
+        _drafts.update { it + (key to d.copy(loading = false)) }
+        if (d.text.isNotBlank()) scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, d.text) } } }
     }
 
     /** 草稿放进正文以后（或作者不要了）：清掉。 */
     fun clearDraft(workId: String, chapterId: String) {
-        draftJob?.cancel()
-        _draft.value = DraftState(workId, chapterId, "")
+        val key = workId to chapterId
+        // 换个编号：正在写的那次被取消时不再存草稿。
+        draftRuns[key] = ++draftSeq
+        draftJobs.remove(key)?.cancel()
+        _drafts.update { it + (key to DraftState(workId, chapterId, "")) }
         scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveDraft(workId, chapterId, "") } } }
     }
 
     /** 作者把一处问题标为已改、不改（[state] 为空是改回没处理）。 */
     fun markIssue(workId: String, chapterId: String, gate: ReviewGate, issue: ReviewIssue, state: String) {
-        val run = _review.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
+        val key = workId to chapterId
+        val run = _reviews.value[key] ?: return
         val review = run.review ?: return
-        if (run.running != null) runMarks[gate to issue.quote] = state
+        if (run.running != null) runMarks[key]?.set(gate to issue.quote, state)
         val next = review.copy(gates = review.gates.map { g -> if (g.gate != gate) g else g.copy(issues = g.issues.map { if (it == issue) it.copy(state = state) else it }) })
-        _review.value = run.copy(review = next)
+        _reviews.update { it + (key to run.copy(review = next)) }
         if (run.running == null) scope.launch { withContext(Dispatchers.IO) { runCatching { store.saveReview(workId, chapterId, next) } } }
     }
 
-    /** 停下正在审的（已经审完的几道留着，不存）。 */
-    fun stopReview() {
-        reviewJob?.cancel()
-        _review.update { it?.copy(running = null) }
+    /** 停下这一章正在审的（已经审完的几道留着，不存）。 */
+    fun stopReview(workId: String, chapterId: String) {
+        val key = workId to chapterId
+        reviewJobs.remove(key)?.cancel()
+        _reviews.update { m -> m[key]?.let { m + (key to it.copy(running = null)) } ?: m }
     }
 
     /** 把勾选的建议写进设定包的人物档案（没有就新建一份）。旧的文字先存一个历史版本。 */
@@ -973,10 +1082,23 @@ class WritingAi(
             try {
                 withContext(Dispatchers.IO) {
                     val date = java.time.LocalDate.now().toString()
-                    val doc = characterDocs(workId).firstOrNull() ?: store.addPackDoc(workId, PackKind.CHARACTER, PackKind.CHARACTER.label)
-                    val old = store.packText(workId, doc.id)
-                    if (old.isNotBlank()) store.snapshot(workId, store.docKey(doc.id), old)
-                    store.savePackText(workId, doc.id, WritePrompts.appendCharacters(old, picked, date))
+                    val docs = characterDocs(workId)
+                    // 改好的文字（文档id → 全文）：已有的人物在所有人物档案里找他那一节换掉，找不到的和新人物一起追加到第一份。
+                    val changed = LinkedHashMap<String, String>()
+                    val rest = picked.filterNot { p ->
+                        p.existing && docs.any { d ->
+                            WritePrompts.replaceCharacter(changed[d.id] ?: store.packText(workId, d.id), p.name, p.text, date)?.also { changed[d.id] = it } != null
+                        }
+                    }
+                    if (rest.isNotEmpty()) {
+                        val doc = docs.firstOrNull() ?: store.addPackDoc(workId, PackKind.CHARACTER, PackKind.CHARACTER.label)
+                        changed[doc.id] = WritePrompts.appendCharacters(changed[doc.id] ?: store.packText(workId, doc.id), rest, date)
+                    }
+                    changed.forEach { (id, text) ->
+                        val old = store.packText(workId, id)
+                        if (old.isNotBlank()) store.snapshot(workId, store.docKey(id), old)
+                        store.savePackText(workId, id, text)
+                    }
                 }
                 then()
             } catch (e: CancellationException) {
@@ -1000,6 +1122,16 @@ class WritingAi(
         /** 本机模型上下文短：写作规范、本章资料各只带这么多字（放不下的再由 [com.xycs.lingyuereader.ai.DevicePrompt] 截短）。 */
         const val LOCAL_STYLE_LIMIT = 1_200
         const val LOCAL_BRIEF_LIMIT = 1_500
+
+        /** AI 在编辑器里写时，流式的字最多隔这么久刷新一次显示（每次都要整章重排）。 */
+        const val INLINE_REFRESH_MS = 150L
+
+        /** [com.xycs.lingyuereader.ai.AiClient] 在回答后面加的说明：被截断了、模型中途停了。 */
+        private const val TRUNCATED_NOTE = "\n\n（回答太长，后面被截断了。）"
+        private const val STOPPED_NOTE = "\n\n（模型中途停止了回答。）"
+
+        /** 写作建议今天发了几次存在偏好里的键（后面接作品id）。 */
+        private const val SUGGEST_COUNT_KEY = "suggest_count."
     }
 }
 

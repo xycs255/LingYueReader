@@ -193,7 +193,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
  */
 @Composable
 fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
-    val run by vm.writingAi.review.collectAsStateWithLifecycle()
+    val runs by vm.writingAi.reviews.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
@@ -203,7 +203,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
         vm.writingAi.loadReview(workId, chapterId)
         savedHash = vm.writing.savedText(workId, chapterId).hashCode()
     }
-    val mine = run?.takeIf { it.workId == workId && it.chapterId == chapterId }
+    val mine = runs[workId to chapterId]
     val review = mine?.review
     val running = mine?.running
     val c = LocalGroupedColors.current
@@ -253,7 +253,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
                 row {
-                    if (running != null) ActionRow("停止", destructive = true) { vm.writingAi.stopReview() }
+                    if (running != null) ActionRow("停止", destructive = true) { vm.writingAi.stopReview(workId, chapterId) }
                     else ActionRow(if (review == null) "开始审稿" else "重新审稿") { start() }
                 }
                 if (sent != null && sent?.label in setOf("事实关", "写法关")) {

@@ -8,9 +8,13 @@ import com.xycs.lingyuereader.data.BibleKind
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.ui.EditApply
 import com.xycs.lingyuereader.ui.applyEdit
 import com.xycs.lingyuereader.ui.applyIssue
+import com.xycs.lingyuereader.ui.clampRange
 import com.xycs.lingyuereader.ui.editTarget
+import com.xycs.lingyuereader.ui.mergeCard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -80,24 +84,119 @@ class WritePromptsTest {
     fun acceptingReplacesByPositionOrFindsTheOriginalAgain() {
         val state = TextFieldState("他推门进来。\n风很大。")
         val task = WriteAiTask.Edit(WriteAction.POLISH, "风很大。", 7, 11)
-        assertTrue(applyEdit(state, task, "风刮得很猛。"))
+        assertEquals(EditApply.DONE, applyEdit(state, task, "风刮得很猛。"))
         assertEquals("他推门进来。\n风刮得很猛。", state.text.toString())
 
-        // 采纳前作者又在前面加了字：位置对不上，按原文找。
+        // 采纳前作者又在前面加了字：位置对不上，在原位置附近按原文找。
         val moved = TextFieldState("开头加了一句。\n他推门进来。\n风很大。")
-        assertTrue(applyEdit(moved, task, "风刮得很猛。"))
+        assertEquals(EditApply.DONE, applyEdit(moved, task, "风刮得很猛。"))
         assertEquals("开头加了一句。\n他推门进来。\n风刮得很猛。", moved.text.toString())
 
         // 原文已经被改掉：不换。
         val gone = TextFieldState("全改了。")
-        assertFalse(applyEdit(gone, task, "x"))
+        assertEquals(EditApply.MISSING, applyEdit(gone, task, "x"))
         assertEquals("全改了。", gone.text.toString())
 
         // 续写接在段末，另起一段。
         val cont = TextFieldState("他推门进来。")
-        assertTrue(applyEdit(cont, WriteAiTask.Edit(WriteAction.CONTINUE, "", 6, 6), "屋里没人。"))
+        assertEquals(EditApply.DONE, applyEdit(cont, WriteAiTask.Edit(WriteAction.CONTINUE, "", 6, 6), "屋里没人。"))
         assertEquals("他推门进来。\n屋里没人。", cont.text.toString())
         assertEquals(TextRange(cont.text.length), cont.selection)
+    }
+
+    @Test
+    fun acceptingOnlyLooksNearTheOriginalPlace() {
+        // 选中第 30 段的“他点了点头。”去润色；等结果时作者在前面加了几个字。
+        val filler = (1..60).joinToString("\n") { "第${it}段，顾长风在雪里走了很久很久。" }
+        val text = filler.replace("第30段，", "他点了点头。\n第30段，")
+        val at = text.indexOf("他点了点头。")
+        val task = WriteAiTask.Edit(WriteAction.POLISH, "他点了点头。", at, at + 6)
+        // 原处那句已经改掉了，几页之后还有一句一模一样的：不能换到那里去。
+        val farText = text.replace("他点了点头。", "他摇了摇头。") + "\n" + "沈默没说话。".repeat(400) + "\n他点了点头。"
+        val far = TextFieldState(farText)
+        assertEquals(EditApply.MISSING, applyEdit(far, task, "他轻轻点头。"))
+        assertEquals(farText, far.text.toString())
+
+        // 前面只加了几个字：就在附近，换掉。
+        val near = TextFieldState("加了几个字" + text)
+        assertEquals(EditApply.DONE, applyEdit(near, task, "他轻轻点头。"))
+        assertEquals("加了几个字" + text.replace("他点了点头。", "他轻轻点头。"), near.text.toString())
+
+        // 附近有两处一样的：不知道是哪一处，不换。
+        val twice = TextFieldState("加了几个字" + text.replace("第31段，", "他点了点头。\n第31段，"))
+        assertEquals(EditApply.AMBIGUOUS, applyEdit(twice, task, "他轻轻点头。"))
+        assertEquals(2, Regex("他点了点头。").findAll(twice.text).count())
+    }
+
+    @Test
+    fun aRuleHitPastTheEndOfTheTextIsClamped() {
+        // 刚删掉一大段，检查结果还是删之前的：选区夹在正文里，不越界。
+        assertEquals(TextRange(3, 5), clampRange(3..9, 5))
+        assertEquals(TextRange(5, 5), clampRange(40..45, 5))
+        assertEquals(TextRange(1, 3), clampRange(1..2, 5))
+    }
+
+    @Test
+    fun cardIsMergedFieldByFieldOnSave() {
+        // 页面打开时的卡片；这期间“补写章节摘要”写进了摘要；作者在页面上改了事实。
+        val base = ChapterCard(facts = "林月进城", hook = "门外有人")
+        val latest = base.copy(summary = "林月进城，住进杜娘的茶馆。")
+        val edited = base.copy(facts = "林月进城，带着半块玉佩")
+        val merged = mergeCard(base, edited, latest)
+        assertEquals("林月进城，带着半块玉佩", merged.facts)
+        assertEquals("林月进城，住进杜娘的茶馆。", merged.summary)
+        assertEquals("门外有人", merged.hook)
+        // 页面上把摘要清空了：按页面的来。
+        assertEquals("", mergeCard(latest, latest.copy(summary = ""), latest.copy(hook = "老周来了")).summary)
+        assertEquals("老周来了", mergeCard(latest, latest.copy(summary = ""), latest.copy(hook = "老周来了")).hook)
+    }
+
+    @Test
+    fun aCharacterIsReplacedInHisOwnSection() {
+        val doc = "# 人物档案\n\n## 沈默\n游侠\n腰间半块玉佩\n\n## 林月\n药铺掌柜的女儿\n- 老周：药铺伙计"
+        // 标题下的一节：整节换掉，后面的人不动。
+        assertEquals(
+            "# 人物档案\n\n## 沈默\n左手使刀的游侠\n（AI 整理，2026-10-24）\n\n## 林月\n药铺掌柜的女儿\n- 老周：药铺伙计",
+            WritePrompts.replaceCharacter(doc, "沈默", "左手使刀的游侠", "2026-10-24"),
+        )
+        // 列表里的一条：换那一行。
+        assertEquals(
+            "# 人物档案\n\n## 沈默\n游侠\n腰间半块玉佩\n\n## 林月\n药铺掌柜的女儿\n- 老周：药铺的老伙计（AI 整理，2026-10-24）",
+            WritePrompts.replaceCharacter(doc, "老周", "药铺的老伙计", "2026-10-24"),
+        )
+        // 最后一节换到文末；没有这个人返回空。
+        assertTrue(WritePrompts.replaceCharacter("## 林月\n旧说明", "林月", "新说明", "d")!!.endsWith("## 林月\n新说明\n（AI 整理，d）"))
+        assertNull(WritePrompts.replaceCharacter(doc, "杜娘", "茶馆老板娘", "d"))
+        assertNull(WritePrompts.replaceCharacter("| 人物 | 想要 |\n|---|---|\n| 杜娘 | 安稳 |", "杜娘", "茶馆老板娘", "d"))
+    }
+
+    @Test
+    fun diffIsMinimalAndCheapOnLongText() {
+        // 和逐字的动态规划比：删加的字数一样少。
+        val r = Random(11)
+        val alphabet = "林月沈默老周杜娘，。"
+        repeat(200) {
+            val a = String(CharArray(r.nextInt(0, 60)) { alphabet[r.nextInt(alphabet.length)] })
+            val b = String(CharArray(r.nextInt(0, 60)) { alphabet[r.nextInt(alphabet.length)] })
+            val pieces = TextDiff.diff(a, b)!!
+            assertEquals(a to b, rebuild(pieces))
+            val edits = pieces.filter { it.kind != TextDiff.Kind.SAME }.sumOf { it.text.length }
+            val lcs = Array(a.length + 1) { IntArray(b.length + 1) }
+            for (i in a.indices.reversed()) for (j in b.indices.reversed()) {
+                lcs[i][j] = if (a[i] == b[j]) lcs[i + 1][j + 1] + 1 else maxOf(lcs[i + 1][j], lcs[i][j + 1])
+            }
+            assertEquals(a.length + b.length - 2 * lcs[0][0], edits)
+        }
+        // 整章润色：几万字里改了几十处，照样比得出来。
+        val chapter = (1..800).joinToString("\n") { "第${it}段，顾长风在雪里走了很久。" }
+        val polished = chapter.replace("走了很久", "走了很久很久").replaceFirst("第400段", "第四百段")
+        val pieces = TextDiff.diff(chapter, polished)!!
+        assertEquals(chapter to polished, rebuild(pieces))
+        // 改动太多：很快放弃，不先把内存占满。
+        val other = String(CharArray(20_000) { "林月沈默"[it % 4] })
+        val started = System.nanoTime()
+        assertNull(TextDiff.diff(String(CharArray(20_000) { "杜娘老周"[it % 4] }), other))
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000)
     }
 
     @Test

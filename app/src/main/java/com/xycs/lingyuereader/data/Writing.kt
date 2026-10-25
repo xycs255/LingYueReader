@@ -122,7 +122,7 @@ data class WorkAssist(
     /** 写作建议两次请求至少隔多少秒。 */
     val suggestGap: Int = 20,
     /** 写作建议一天最多发多少次（0 不限）。 */
-    val suggestCap: Int = 200,
+    val suggestCap: Int = 50,
 ) {
     companion object {
         /** 采纳的修改最多记这么多条。 */
