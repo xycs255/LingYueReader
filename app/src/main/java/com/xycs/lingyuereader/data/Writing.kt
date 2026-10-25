@@ -129,7 +129,18 @@ data class WorkAssist(
     val syncTip: Boolean = true,
     /** 自动排版的规则和“输入时自动排版”（作品级，随备份走）。 */
     val format: FormatSettings = FormatSettings(),
+    /** 文风范例（从定稿章里挑几段给 AI 学写法）一共带多少字；0 是不带。见 [StyleSamples]。 */
+    val sampleLimit: Int = StyleSamples.DEFAULT_LIMIT,
+    /** 没有定稿章时，退回用字数最多的几章。 */
+    val sampleFallback: Boolean = true,
+    /** 作者点了“不用这段”的范例（[StyleSample.key]）。 */
+    val sampleSkip: List<String> = emptyList(),
+    /** 各类范例点了几次“换一段”（[SampleKind] 的名字 → 次数）。 */
+    val sampleShift: Map<String, Int> = emptyMap(),
 ) {
+    /** 挑文风范例用的设置。 */
+    val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
+
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
@@ -651,6 +662,19 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         check(DurableFiles.write(File(d, ASSIST), next.toJson().toString().toByteArray())) { "无法保存设定" }
         update(workId) { it }
         return next
+    }
+
+    // ---------- 文风范例的挑选缓存 ----------
+
+    /** 挑好的文风范例（[StyleSamples.encodeCache] 的格式）；没有或读不出为空。不进备份：丢了就重挑。 */
+    @Synchronized
+    fun sampleCache(workId: String): String? = File(dir(workId), SAMPLES).takeIf { it.isFile }?.let { runCatching { it.readText() }.getOrNull() }
+
+    @Synchronized
+    fun saveSampleCache(workId: String, raw: String) {
+        val d = dir(workId)
+        if (!File(d, WORK).isFile) return
+        DurableFiles.write(File(d, SAMPLES), raw.toByteArray())
     }
 
     // ---------- 设定包 ----------
@@ -1291,6 +1315,8 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         const val KEEP_SNAPSHOTS = 40
         private const val WORK = "work.json"
         private const val ASSIST = "assist.json"
+        /** 文风范例的挑选缓存。 */
+        private const val SAMPLES = "style-samples.json"
         private const val PACK = "pack"
         private const val PACK_INDEX = "index.json"
         private const val RESTORE_PREFIX = ".restore-writing-"
@@ -1352,6 +1378,10 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             .put("synced", JSONObject().apply { synced.forEach { (id, m) -> put(id, JSONObject().put("hash", m.hash).put("at", m.at)) } })
             .put("syncTip", syncTip)
             .put("format", format.toJson())
+            .put("sampleLimit", sampleLimit)
+            .put("sampleFallback", sampleFallback)
+            .put("sampleSkip", JSONArray(sampleSkip))
+            .put("sampleShift", JSONObject().apply { sampleShift.forEach { (k, v) -> put(k, v) } })
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -1385,6 +1415,10 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }.orEmpty(),
                 syncTip = optBoolean("syncTip", true),
                 format = FormatSettings.fromJson(optJSONObject("format")),
+                sampleLimit = optInt("sampleLimit", StyleSamples.DEFAULT_LIMIT),
+                sampleFallback = optBoolean("sampleFallback", true),
+                sampleSkip = optJSONArray("sampleSkip")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() } }.orEmpty(),
+                sampleShift = optJSONObject("sampleShift")?.let { o -> o.keys().asSequence().associateWith { o.optInt(it) } }.orEmpty(),
             )
         }
 

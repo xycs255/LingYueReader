@@ -89,11 +89,23 @@ class AiAssistant(
      * 一次性的整理（速读、翻译、人物表、讲书稿等）。[whole] 为真时回答被长度上限截断就报错，
      * 不把半截的 JSON、半句译文当成完整结果存下来。
      */
-    suspend fun complete(book: AiBook?, prompt: String, length: AnswerLength? = null, whole: Boolean = true, onText: (String) -> Unit = {}): String {
+    suspend fun complete(
+        book: AiBook?,
+        prompt: String,
+        length: AnswerLength? = null,
+        whole: Boolean = true,
+        feature: AiFeature = AiFeature.READING,
+        onText: (String) -> Unit = {},
+    ): String {
         val c = _config.value
         val system = AiPrompts.system(book?.title.orEmpty(), book?.author, length ?: c.length)
-        return client.stream(c, system, listOf(AiMessage("user", prompt)), whole, onText)
+        // 用量记在哪个功能上（翻译、阅读的其他 AI）；外面已经套了计量器的（写作）不再套。
+        return metered(feature) { client.stream(c, system, listOf(AiMessage("user", prompt)), whole, onText) }
     }
+
+    /** 外面没有计量器时套一个（记账按 [feature] 分）；有就用外面的。 */
+    private suspend fun <T> metered(feature: AiFeature, block: suspend () -> T): T =
+        if (kotlin.coroutines.coroutineContext[AiMeter] != null) block() else withContext(AiMeter(feature)) { block() }
 
     val currentConfig: AiConfig get() = _config.value
 
@@ -111,9 +123,10 @@ class AiAssistant(
         whole: Boolean = false,
         maxTokens: Int? = null,
         maxRounds: Int = 6,
+        cacheExtra: Int = 0,
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
-    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, onLookup = onLookup, onText = onText)
+    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, onLookup = onLookup, onText = onText)
 
     /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
     /** 合成一句。[sp] 给定时按它合成（听书开始时的设置，和缓存键一致），否则按当前设置。 */
@@ -255,7 +268,7 @@ class AiAssistant(
         val done = s.turns.filter { it.error == null && !it.loading }
         val history = done.flatMap { listOf(AiMessage("user", it.replay), AiMessage("assistant", it.answer)) }
         _session.value = s.copy(turns = done + AiTurn(question))
-        job = scope.launch {
+        job = scope.launch(AiMeter(AiFeature.ASK)) {
             try {
                 val p = withContext(Dispatchers.IO) { build() }
                 updateLast { it.copy(sources = p.sources, replay = p.replay ?: p.prompt) }
@@ -358,7 +371,7 @@ class AiAssistant(
         glossJob?.cancel()
         _gloss.value = AiGloss(word, AiTurn(word))
         val config = _config.value
-        glossJob = scope.launch {
+        glossJob = scope.launch(AiMeter(AiFeature.ASK)) {
             val system = if (book != null) AiPrompts.system(book.title, book.author, AnswerLength.SHORT) else AiPrompts.system("", null, AnswerLength.SHORT)
             try {
                 val answer = client.stream(config, system, listOf(AiMessage("user", AiPrompts.gloss(word, sentence)))) { piece ->
@@ -384,7 +397,7 @@ class AiAssistant(
     /** 设置页的“测试连接”：发一句最短的话，回来了就说明地址、模型、密钥都对。 */
     suspend fun test(c: AiConfig): String {
         val start = System.currentTimeMillis()
-        val answer = client.stream(c, "", listOf(AiMessage("user", "请只回复“好”。")))
+        val answer = withContext(AiMeter(AiFeature.TEST)) { client.stream(c, "", listOf(AiMessage("user", "请只回复“好”。"))) }
         val ms = System.currentTimeMillis() - start
         return "连接正常，用时 ${"%.1f".format(ms / 1000f)} 秒，回复：${answer.trim().take(20)}"
     }
