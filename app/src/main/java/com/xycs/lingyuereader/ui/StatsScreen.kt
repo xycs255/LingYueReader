@@ -9,6 +9,9 @@ import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -114,8 +117,10 @@ fun StatsScreen(vm: AppViewModel) {
                             }
                         }
                     }
-                    val books = shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis }
+                    val books = remember(shelf) { shelf.filter { it.readMillis >= 60_000 }.sortedByDescending { it.readMillis } }
                     val longest = books.firstOrNull()?.readMillis ?: 1
+                    // 书多时先列读得最久的几本（每本都带动画，一次全排出来会卡一下），点“查看全部”再展开。
+                    var showAll by rememberSaveable { mutableStateOf(false) }
                     GroupedSection(header = "各本书") {
                         if (books.isEmpty()) {
                             row {
@@ -127,7 +132,7 @@ fun StatsScreen(vm: AppViewModel) {
                                 )
                             }
                         }
-                        books.forEach { b ->
+                        (if (showAll) books else books.take(TOP_BOOKS)).forEach { b ->
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
                                     Row {
@@ -140,6 +145,9 @@ fun StatsScreen(vm: AppViewModel) {
                                     }
                                 }
                             }
+                        }
+                        if (books.size > TOP_BOOKS) {
+                            row { ActionRow(if (showAll) "收起" else "查看全部 ${books.size} 本") { showAll = !showAll } }
                         }
                     }
                 }
@@ -158,6 +166,9 @@ private fun Figure(label: String, millis: Long, modifier: Modifier = Modifier) {
         Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
+
+/** “各本书”先列几本。 */
+private const val TOP_BOOKS = 10
 
 private fun minutes(millis: Long): String {
     val m = millis / 60_000

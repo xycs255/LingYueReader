@@ -13,10 +13,16 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.lifecycle.ViewModelProvider
+import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.TextRules
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -75,6 +81,98 @@ class BookRulesUiTest {
             JSONArray(File(context.filesDir, "books/index.json").readText()).getJSONObject(0).getInt("chapterCount") == 3
         }
         val rules = JSONObject(File(context.filesDir, "books/b1/rules.json").readText())
+        assertEquals("本章未完", rules.getJSONArray("replace").getJSONObject(0).getString("pattern"))
+    }
+
+    private val vm get() = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+
+    /** 直接打开规则页（详情页的入口上面的用例已经走过）。 */
+    private fun openRules() {
+        waitForText("测试书")
+        compose.runOnUiThread { vm.open(Screen.BookRules("b1")) }
+        waitForText("按这个规则只分出 1 章")
+    }
+
+    @Test
+    fun slowRegexCannotBeAddedOrSavedAndSavingItAnywayEndsBusy() {
+        // 一行几十个英文字母：带反向引用的嵌套重复会在这一行上回溯几小时。
+        File(context.filesDir, "books/b1/s0.txt").appendText("shenmolaozhouduniangguchangfenglinyuexyz!\n")
+        val slow = """^((\w)+\2?)+$"""
+        val saved = TextRules.timeoutMillis
+        TextRules.timeoutMillis = 500
+        try {
+            openRules()
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("按正则匹配"))
+            compose.onNodeWithText("按正则匹配").performClick()
+            compose.onNodeWithText("查找").performTextInput(slow)
+            waitForText("正则太慢，在这本书上跑不完")
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("添加"))
+            compose.onNodeWithText("添加").assertIsNotEnabled()
+
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("分章正则"))
+            compose.onNodeWithText("分章正则").performTextInput(slow)
+            waitForText("正则太慢，在这本书上跑不完，请改写分章或净化规则")
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存并重新分章"))
+            compose.onNodeWithText("保存并重新分章").assertIsNotEnabled()
+
+            // 绕过界面硬存：保存失败，“忙”照样结束，书的规则没变。
+            val entry = vm.shelf.value.single()
+            compose.runOnUiThread { vm.saveRules(entry, TextRules(toc = slow)) }
+            compose.waitUntil(15_000) { !vm.busy.value && !File(context.filesDir, "books").listFiles().orEmpty().any { it.name.startsWith(".rules-") } }
+            compose.waitForIdle()
+            assertFalse(vm.busy.value)
+            assertFalse(File(context.filesDir, "books/b1/rules.json").exists())
+        } finally {
+            TextRules.timeoutMillis = saved
+        }
+    }
+
+    @Test
+    fun savingRulesDoesNotPopAScreenOpenedMeanwhile() {
+        waitForText("测试书")
+        val entry = vm.shelf.value.single()
+        // 规则页之上又打开了详情页：整理完不能把详情页弹掉。
+        compose.runOnUiThread {
+            vm.open(Screen.BookRules("b1"))
+            vm.open(Screen.Detail("b1"))
+            vm.saveRules(entry, TextRules(toc = TextRules.TOC_PRESETS.first { it.label == "【章名】" }.pattern))
+        }
+        compose.waitUntil(15_000) {
+            JSONArray(File(context.filesDir, "books/index.json").readText()).getJSONObject(0).getInt("chapterCount") == 3 && !vm.busy.value
+        }
+        compose.waitForIdle()
+        assertEquals(Screen.Detail("b1"), vm.stack.value.last())
+        assertEquals(Screen.BookRules("b1"), vm.stack.value[vm.stack.value.size - 2])
+    }
+
+    @Test
+    fun unsavedRulesSurviveRotation() {
+        openRules()
+        compose.onNodeWithText("【章名】").performClick()
+        waitForText("将分为 3 章")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("查找"))
+        compose.onNodeWithText("查找").performTextInput("本章未完")
+        waitForText("将匹配 2 处")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("添加"))
+        compose.onNodeWithText("添加").performClick()
+        waitForText("匹配 2 处")
+        // 还没点“添加”的那条也要留着。
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("查找"))
+        compose.onNodeWithText("查找").performTextInput("他下了山")
+
+        compose.activityRule.scenario.recreate()
+
+        waitForText("将分为 3 章")
+        waitForText("→ 删除 · 匹配 2 处")
+        waitForText("将匹配 1 处")
+        waitForText("他下了山")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("保存并重新分章"))
+        compose.onNodeWithText("保存并重新分章").performClick()
+        compose.waitUntil(15_000) {
+            JSONArray(File(context.filesDir, "books/index.json").readText()).getJSONObject(0).getInt("chapterCount") == 3
+        }
+        val rules = JSONObject(File(context.filesDir, "books/b1/rules.json").readText())
+        assertEquals(TextRules.TOC_PRESETS.first { it.label == "【章名】" }.pattern, rules.getString("toc"))
         assertEquals("本章未完", rules.getJSONArray("replace").getJSONObject(0).getString("pattern"))
     }
 }

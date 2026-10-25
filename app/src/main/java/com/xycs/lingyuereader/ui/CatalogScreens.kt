@@ -42,6 +42,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -217,18 +218,19 @@ private fun CatalogRow(cat: Catalog, onEdit: () -> Unit, onOpen: () -> Unit) {
 fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
     val catalogs by vm.catalogs.collectAsStateWithLifecycle()
     val existing = remember(catalogId) { catalogs.firstOrNull { it.id == catalogId } }
-    var kind by remember { mutableStateOf(existing?.kind ?: CatalogKind.OPDS) }
-    var name by remember { mutableStateOf(existing?.name.orEmpty()) }
-    var url by remember { mutableStateOf(existing?.url.orEmpty()) }
-    var username by remember { mutableStateOf(existing?.username.orEmpty()) }
-    var password by remember { mutableStateOf(existing?.password.orEmpty()) }
+    // 没保存的输入旋转屏幕后还在。
+    var kind by rememberSaveable { mutableStateOf(existing?.kind ?: CatalogKind.OPDS) }
+    var name by rememberSaveable { mutableStateOf(existing?.name.orEmpty()) }
+    var url by rememberSaveable { mutableStateOf(existing?.url.orEmpty()) }
+    var username by rememberSaveable { mutableStateOf(existing?.username.orEmpty()) }
+    var password by rememberSaveable { mutableStateOf(existing?.password.orEmpty()) }
     var showPassword by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf<Job?>(null) }
     var result by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val draft = Catalog(
-        id = existing?.id ?: remember { java.util.UUID.randomUUID().toString() },
+        id = existing?.id ?: rememberSaveable { java.util.UUID.randomUUID().toString() },
         kind = kind,
         name = name.trim().ifEmpty { url.trim().removePrefix("https://").removePrefix("http://").substringBefore('/') },
         url = url.trim(),
@@ -359,19 +361,32 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<RemotePage?>(null) }
     var searching by remember { mutableStateOf(false) }
-    var loadingMore by remember { mutableStateOf(false) }
+    // 翻页失败的原因：底部不再转圈，改成“点此重试”。
+    var moreError by remember { mutableStateOf<String?>(null) }
+    var moreRetry by remember { mutableIntStateOf(0) }
+    var refreshing by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<RemoteItem.Book?>(null) }
     val scope = rememberCoroutineScope()
 
+    // 进页面时先用缓存；点“刷新”（reload 加一）时不用缓存，重新从书源取。
     LaunchedEffect(url, reload) {
         if (catalog == null || (page != null && reload == 0)) return@LaunchedEffect
         error = null
-        try {
+        refreshing = true
+        val failed = try {
             page = vm.remotePage(catalog, url, fresh = reload > 0)
+            moreError = null
+            null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            error = e.message ?: "打不开"
+            e.message ?: "打不开"
+        } finally {
+            refreshing = false
+        }
+        // 已经显示着内容时刷新失败：留着原来的内容，提示一下。
+        if (failed != null) {
+            if (page != null) snackbar.showSnackbar("刷新失败：$failed") else error = failed
         }
     }
     LaunchedEffect(message) {
@@ -385,7 +400,14 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
         val c = LocalGroupedColors.current
         GlassScaffold(
             containerColor = c.background,
-            topBar = { PageBar(screen.title.ifEmpty { page?.title ?: catalog?.name ?: "书源" }, onBack = { vm.back() }) },
+            topBar = {
+                PageBar(
+                    screen.title.ifEmpty { page?.title ?: catalog?.name ?: "书源" },
+                    onBack = { vm.back() },
+                    action = ("刷新" to { reload += 1 }).takeIf { catalog != null },
+                    actionEnabled = !refreshing,
+                )
+            },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
             val current = page
@@ -409,11 +431,19 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                     val listState = rememberLazyListState()
                     // 滚到底加载 OPDS 的下一页。
                     val atEnd by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= listState.layoutInfo.totalItemsCount - 3 } == true } }
-                    LaunchedEffect(atEnd, shown.next) {
-                        if (!atEnd || shown.next == null || loadingMore || results != null) return@LaunchedEffect
-                        loadingMore = true
-                        runCatching { vm.remoteMore(catalog, url, current) }.onSuccess { page = it }
-                        loadingMore = false
+                    // 同一组参数只取一次。不另记“正在取”：这一段离开组合再回来时（比如换页动画），
+                    // 旧的那次被取消，“正在取”却留着，新的一次就不再取，底部一直转圈。
+                    LaunchedEffect(atEnd, shown.next, moreRetry) {
+                        if (!atEnd || shown.next == null || moreError != null || results != null) return@LaunchedEffect
+                        try {
+                            val more = vm.remoteMore(catalog, url, current)
+                            // 这期间点了刷新：不拿旧的一页接在新内容上。
+                            if (page === current) page = more
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            moreError = e.message ?: "打不开"
+                        }
                     }
                     LazyColumn(
                         Modifier.fillMaxSize().overScrollVertical(),
@@ -486,7 +516,22 @@ fun CatalogBrowseScreen(vm: AppViewModel, screen: Screen.CatalogBrowse) {
                         }
                         if (shown.next != null && results == null) {
                             item {
-                                Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator(color = c.tint) }
+                                if (moreError != null) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable(role = Role.Button) {
+                                                moreError = null
+                                                moreRetry++
+                                            }
+                                            .padding(20.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text("加载失败，点此重试", color = c.tint, fontSize = 15.sp)
+                                    }
+                                } else {
+                                    Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { InfiniteProgressIndicator(color = c.tint) }
+                                }
                             }
                         }
                     }

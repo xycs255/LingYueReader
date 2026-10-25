@@ -121,7 +121,7 @@ object BookParser {
             BookFormat.CBZ -> PageBooks.comic(source)
             BookFormat.PDF -> PageBooks.pdf(source, pdfAspects(requireNotNull(source.file) { "PDF 需要先存成文件" }))
             BookFormat.MARKDOWN -> BookContent(null, null, MarkdownParser.parse(rules.clean(TextDecoder.decode(source.bytes)), fallback))
-            else -> BookContent(null, null, TxtParser.parse(rules.clean(TextDecoder.decode(source.bytes)), rules.titleMatcher()))
+            else -> rules.clean(TextDecoder.decode(source.bytes)).let { text -> BookContent(null, null, TxtParser.parse(text, rules.titleMatcher(text))) }
         }
     }
 

@@ -78,6 +78,11 @@ class Vocabulary internal constructor(private val file: File, private val atomic
 
     fun remove(word: String) = update { list -> list.filterNot { it.word == word } }
 
+    /** 撤销删除：把删掉的词原样放回第 [index] 个位置；这期间又收进了同一个词，就以新收的为准。 */
+    fun restore(w: VocabWord, index: Int) = update { list ->
+        if (list.any { it.word == w.word }) list else list.toMutableList().apply { add(index.coerceIn(0, size), w) }
+    }
+
     fun setMastered(word: String, mastered: Boolean, now: Long = System.currentTimeMillis()) = update { list ->
         list.map { if (it.word == word) it.copy(mastered = mastered, reviewedAt = now, interval = if (mastered) it.interval else 0, due = if (mastered) it.due else 0) else it }
     }
