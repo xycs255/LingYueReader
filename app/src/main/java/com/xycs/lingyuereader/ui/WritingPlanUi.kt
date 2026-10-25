@@ -40,6 +40,9 @@ import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.PlannedCard
+import com.xycs.lingyuereader.data.outlineHash
+import com.xycs.lingyuereader.data.withOutline
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
@@ -179,6 +182,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     var saved by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     var previous by remember(chapterId) { mutableStateOf<Pair<WorkChapter, ChapterCard>?>(null) }
+    var info by remember(chapterId) { mutableStateOf<PlannedCard?>(null) }
+    var replacing by remember { mutableStateOf(false) }
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -186,8 +191,9 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val snackbar = rememberWritingMessages(vm)
     LaunchedEffect(workId, chapterId) {
         val (mine, prev) = vm.writing.cards(workId, chapterId)
-        card = mine
-        saved = mine
+        card = mine.card
+        saved = mine.card
+        info = mine
         previous = prev
     }
     // 停一下再存；离开时存。
@@ -247,10 +253,21 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     val now = card
                     if (now != null) {
+                        val planned = info
+                        val fromOutline = planned?.source != null && now.auto != 0 && now.auto == now.outlineHash()
+                        val outline = planned?.outline?.takeIf { it.outlineHash() != now.outlineHash() }
                         GroupedSection(
                             header = "本章",
                             footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、查矛盾时都会带上它，以及上一章的钩子和承接边界。",
                         ) {
+                            val note = when {
+                                fromOutline -> "从${planned?.source}自动提取。细纲文档改了，这里跟着变；在这里改过以后就按你改的来。"
+                                outline != null -> "改过了，不再跟着细纲变。细纲里这一章（${planned.outlineSource}）和这里不一样，可以换回去。"
+                                planned?.missing != null -> "设定包的卷纲细纲里没找到这一章（${planned.missing}）。章号对不上时填下面的“细纲章号”。"
+                                else -> null
+                            }
+                            if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            if (outline != null) row { ActionRow("用细纲里的替换") { replacing = true } }
                             CARD_FIELDS.forEach { (label, hint, get) ->
                                 row {
                                     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -297,6 +314,30 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            val outline = info?.outline
+            if (replacing && outline != null) {
+                GlassDialog(show = true, title = "用细纲里的替换", summary = info?.outlineSource, onDismissRequest = { replacing = false }) {
+                    Text(
+                        "前六项换成细纲文档里这一章现在写的，你在这里改的会被覆盖。以后细纲再改，这里跟着变。摘要和细纲章号不动。",
+                        color = LocalGroupedColors.current.secondary,
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                    )
+                    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        TextButton(text = "取消", onClick = { replacing = false }, modifier = Modifier.weight(1f))
+                        TextButton(
+                            text = "替换",
+                            onClick = {
+                                replacing = false
+                                card = card?.withOutline(outline)
+                                info = info?.copy(source = info?.outlineSource)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.textButtonColorsPrimary(),
+                        )
                     }
                 }
             }

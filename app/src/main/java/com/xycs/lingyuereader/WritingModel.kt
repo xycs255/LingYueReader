@@ -10,6 +10,8 @@ import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
+import com.xycs.lingyuereader.data.PlannedCard
+import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.PackImportItem
 import com.xycs.lingyuereader.data.PackImportResult
 import com.xycs.lingyuereader.data.PackKind
@@ -259,11 +261,11 @@ class WritingModel(
         }
     }
 
-    /** 这一章和上一章的细纲卡（上一章的钩子和承接边界写这一章时要接上）。 */
-    suspend fun cards(workId: String, chapterId: String): Pair<ChapterCard, Pair<WorkChapter, ChapterCard>?> = withContext(disk) {
+    /** 这一章和上一章的细纲卡（上一章的钩子和承接边界写这一章时要接上）。没写过的按设定包里的细纲提取。 */
+    suspend fun cards(workId: String, chapterId: String): Pair<PlannedCard, Pair<WorkChapter, ChapterCard>?> = withContext(disk) {
         val chapters = store.get(workId)?.chapters.orEmpty()
         val i = chapters.indexOfFirst { it.id == chapterId }
-        store.card(workId, chapterId) to chapters.getOrNull(i - 1)?.let { it to store.card(workId, it.id) }
+        store.plannedCard(workId, chapterId) to chapters.getOrNull(i - 1)?.let { it to store.plannedCard(workId, it.id).card }
     }
 
     fun saveCard(workId: String, chapterId: String, card: ChapterCard) {

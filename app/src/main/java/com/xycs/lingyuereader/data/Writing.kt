@@ -42,6 +42,8 @@ data class ChapterCard(
     val summary: String = "",
     /** 细纲章号：发布章号顺延（比如大场面拆成上下章）以后，设定里的“第几章”按它算。空着按章名、目录顺序。 */
     val plan: String = "",
+    /** 从卷纲细纲自动提取时，前六项的指纹；作者改过前六项就对不上了，以后不再跟着细纲变。0 表示不是提取的。 */
+    val auto: Int = 0,
 ) {
     /** 细纲（写之前的六项）是不是空的；摘要不算。 */
     val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
@@ -833,10 +835,10 @@ class WorkStore(private val root: File) {
 
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
-            .put("summary", summary).put("plan", plan)
+            .put("summary", summary).put("plan", plan).put("auto", auto)
 
         private fun JSONObject.toCard() =
-            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"))
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)

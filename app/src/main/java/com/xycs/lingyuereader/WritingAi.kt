@@ -8,6 +8,7 @@ import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.GateResult
@@ -330,7 +331,7 @@ class WritingAi(
         val chapters = work.chapters
         val i = chapters.indexOfFirst { it.id == chapterId }
         val prev = chapters.getOrNull(i - 1)
-        val card = WritePrompts.card(store.card(workId, chapterId), prev?.title, prev?.let { store.card(workId, it.id) })
+        val card = WritePrompts.card(store.plannedCard(workId, chapterId).card, prev?.title, prev?.let { store.plannedCard(workId, it.id).card })
         return listOfNotNull(store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render(), card).joinToString("\n\n").ifEmpty { null }
     }
 

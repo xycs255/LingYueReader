@@ -92,7 +92,7 @@ object ChapterBriefs {
     private val nameChars = Regex("^[\\p{IsHan}·]{1,6}$")
     private val aliasPattern = Regex("(?:^|[，、（(\\s；;])(?:字|小名|乳名|又名|别名|外号|人称|绰号)[：:]?[“「]?(\\p{IsHan}{2,3})")
 
-    /** 写明的称呼：“称呼：韩、韩兄、老韩”（一个字的也算：作者写明了）。 */
+    /** 写明的称呼：“称呼：顾、顾兄、老顾”（一个字的也算：作者写明了）。 */
     private val calledPattern = Regex("(?:称呼|别称|又称|简称|旁人叫|大家叫)[：:]\\s*([^。\\n|]+)")
 
     /** 表格里写称呼、别名的列。 */
@@ -519,7 +519,7 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     val work = get(workId) ?: return null
     val number = chapterNo(work, chapterId) ?: return null
     val docs = pack(workId).map { it to packText(workId, it.id) }
-    val card = card(workId, chapterId).let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
+    val card = plannedCard(workId, chapterId).card.let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
     // 目录里排在这一章前面的章的摘要。
     val index = work.chapters.indexOfFirst { it.id == chapterId }
     val summaries = work.chapters.take(index).mapNotNull { c ->

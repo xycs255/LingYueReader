@@ -4,12 +4,14 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -174,6 +176,27 @@ class WritingRound2UiTest {
         compose.onNodeWithText("有用").performClick()
         waitFor { store.aiLog(workId).first().rating == 1 }
         waitForText("有用 1 条")
+    }
+
+    @Test
+    fun theCardIsTakenFromTheOutlineAndCanBeReplacedAfterEditing() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        store.renameChapter(workId, chapterId, "第1章 渡口")
+        store.addPackDoc(workId, PackKind.VOLUME, "第一卷细纲", "## 细纲\n\n- **第1章 渡口**：林月等船；钩子：船没来。\n- **第2章 对岸**：沈默过河。\n")
+        compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
+        waitForText("自动提取")
+        waitForText("《第一卷细纲》 第 1 章「渡口」")
+        assertEquals(1, compose.onAllNodes(hasSetTextAction() and hasText("船没来。")).fetchSemanticsNodes().size)
+        assertEquals(0, compose.onAllNodesWithText("用细纲里的替换").fetchSemanticsNodes().size)
+
+        // 自己改了钩子：不再跟着细纲，可以换回细纲里的。
+        compose.onNode(hasSetTextAction() and hasText("船没来。")).performTextReplacement("门外有脚步声。")
+        waitFor { store.card(workId, chapterId).hook == "门外有脚步声。" }
+        compose.onNodeWithText("用细纲里的替换").performScrollTo().performClick()
+        compose.onNodeWithText("替换").performClick()
+        waitFor { store.card(workId, chapterId).let { it.hook == "船没来。" && it.auto != 0 } }
+        waitForText("自动提取")
     }
 
     @Test

@@ -18,25 +18,25 @@ class ParserTest {
 
         > 承《已定正文\_第11-15章》。以下章节已定稿，是后续章节必须接上的前文。
 
-        ## 第十六章 车轮之外
+        ## 第十六章 风起
 
-        　　老周是天亮前回来的，裤腿湿到膝盖。
+        　　老周天亮前才回来，鞋上全是泥。
 
-        　　“往西北走了十来里，过了一道干渠。”他蹲下来，拿草棍在地上划了几道。
+        　　“北边的路断了。”他把灯放在门边，搓了搓手。
 
         ---
 
-        　　晌午前后，车队走到一片开阔地上。
+        　　晌午过后，雪停了。
 
-        ## 第十八章（上） 石梁
+        ## 第十八章（上） 夜渡
 
         　　上半章。
 
-        ## 第十八章（下） 石梁
+        ## 第十八章（下） 夜渡
 
         　　下半章，有 **加粗**。
 
-        ## 第十七章 清沟
+        ## 第十七章 灯市
 
         　　第十七章正文。
     """.trimIndent()
@@ -50,10 +50,10 @@ class ParserTest {
         assertEquals(listOf(0, 1, 3, 0), chapters.map { it.part })
         assertEquals(
             listOf(
-                Block.Para("老周是天亮前回来的，裤腿湿到膝盖。"),
-                Block.Para("“往西北走了十来里，过了一道干渠。”他蹲下来，拿草棍在地上划了几道。"),
+                Block.Para("老周天亮前才回来，鞋上全是泥。"),
+                Block.Para("“北边的路断了。”他把灯放在门边，搓了搓手。"),
                 Block.SceneBreak,
-                Block.Para("晌午前后，车队走到一片开阔地上。"),
+                Block.Para("晌午过后，雪停了。"),
             ),
             chapters[0].blocks,
         )
@@ -63,13 +63,13 @@ class ParserTest {
     fun mergedManuscriptsSortByChapterAndLaterFileWins() {
         val book = BookParser.parse(
             listOf(
-                md("已定正文_第17章修订.md", "## 第十七章 清沟（改）\n　　新稿。"),
+                md("已定正文_第17章修订.md", "## 第十七章 灯市（改）\n　　新稿。"),
                 md("已定正文_第16-18章.md", manuscript),
             ),
         )
         // 自然排序：“第16-18章”在“第17章修订”前，所以修订稿覆盖旧稿。
         assertEquals(
-            listOf("第十六章 车轮之外", "第十七章 清沟（改）", "第十八章（上） 石梁", "第十八章（下） 石梁"),
+            listOf("第十六章 风起", "第十七章 灯市（改）", "第十八章（上） 夜渡", "第十八章（下） 夜渡"),
             book.chapters.map { it.title },
         )
         assertEquals(listOf(Block.Para("新稿。")), book.chapters[1].blocks)
@@ -381,7 +381,7 @@ class ParserTest {
     @Test
     fun searchFindsEveryOccurrence() {
         val book = BookParser.parse(listOf(md("a.md", manuscript)))
-        val hits = BookParser.search(book, "干渠")
+        val hits = BookParser.search(book, "路断了")
         assertEquals(1, hits.size)
         assertEquals(1, hits[0].blockIndex)
     }

@@ -59,7 +59,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
     LaunchedEffect(workId, chapterId) {
         vm.writingAi.loadDraft(workId, chapterId)
-        card = vm.writing.cards(workId, chapterId).first
+        card = vm.writing.cards(workId, chapterId).first.card
     }
     val draft = state?.takeIf { it.workId == workId && it.chapterId == chapterId }
     val text = draft?.text.orEmpty()

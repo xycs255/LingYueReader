@@ -53,15 +53,15 @@ class WritingRound2Test {
         val people = """
             | 人物 | 称呼 | 想要 |
             |---|---|---|
-            | 韩临风 | 韩、老韩、韩兄 | 一个家 |
+            | 顾长风 | 顾、老顾、顾兄 | 一个家 |
             - **周伯（门房）：** 称呼：老周、周老头。话少。
         """.trimIndent()
         val found = ChapterBriefs.characters(listOf("人物" to people))
-        assertEquals(listOf("韩", "老韩", "韩兄"), found.first { it.name == "韩临风" }.aliases)
+        assertEquals(listOf("顾", "老顾", "顾兄"), found.first { it.name == "顾长风" }.aliases)
         assertEquals(listOf("老周", "周老头"), found.first { it.name == "周伯" }.aliases)
-        // 正文里只叫“老韩”“周老头”，也认得出是谁。
+        // 正文里只叫“老顾”“周老头”，也认得出是谁。
         val docs = listOf(PackDoc("c", PackKind.CHARACTER, "人物", 3, false) to people)
-        assertEquals(setOf("韩临风", "周伯"), ChapterBriefs.build(docs, "老韩看了周老头一眼。", "", 1, 1).present.toSet())
+        assertEquals(setOf("顾长风", "周伯"), ChapterBriefs.build(docs, "老顾看了周老头一眼。", "", 1, 1).present.toSet())
         // 称谓与语气文档里写到的人也并进来。
         val voice = listOf(PackDoc("v", PackKind.VOICE, "称谓", 5, false) to "- **杜娘（原创）：** 称呼：杜掌柜。说话快。")
         assertEquals(listOf("杜娘"), ChapterBriefs.build(voice, "杜掌柜来了。", "", 1, 1).present)
