@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -131,6 +132,9 @@ class WritingDraftUiTest {
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** 每道审稿的结果写在卡片第一行，读屏念成“事实关：1 处”（组名里不再写状态）。 */
+    private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
     @Test
     fun aiWritesTheChapterThenItGoesIntoTheText() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -184,10 +188,10 @@ class WritingDraftUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, c2)) }
         waitForText("还没有审过")
         compose.onNodeWithText("开始审稿").performClick()
-        waitForText("一、事实关 · 出错")
-        waitForText("二、写法关 · 出错")
+        waitForGate("事实关：出错")
+        waitForGate("写法关：出错")
         waitForText("AI 的回答不是要求的格式")
-        waitForText("三、规则关 · 1 处")
+        waitForGate("规则关：1 处")
     }
 
     @Test

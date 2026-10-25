@@ -1,5 +1,13 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.items
+import com.xycs.lingyuereader.SummaryProgress
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -186,7 +194,7 @@ fun WritingHomeScreen(vm: AppViewModel) {
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + LocalTabBarInset.current + 24.dp),
                 overscrollEffect = null,
             ) {
-                item {
+                item(key = "today") {
                     val written = stats.on(today).coerceAtLeast(0)
                     val streak = stats.streak(today)
                     GroupedSection(
@@ -209,7 +217,8 @@ fun WritingHomeScreen(vm: AppViewModel) {
                                     )
                                 }
                                 if (stats.goal > 0) {
-                                    val fraction = (written.toFloat() / stats.goal).coerceIn(0f, 1f)
+                                    // 进度条打开时从 0 长到今天写到的地方（和统计页一样）；减少动效时直接画好。
+                                    val fraction = animateFromZero((written.toFloat() / stats.goal).coerceIn(0f, 1f))
                                     Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
                                         Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(3.dp)).background(c.tint))
                                     }
@@ -226,23 +235,26 @@ fun WritingHomeScreen(vm: AppViewModel) {
                             PickerRow("每天写", GOALS.map { it to if (it == 0) "不设目标" else "$it 字" }, stats.goal) { vm.writing.setGoal(it) }
                         }
                     }
-                    if (loaded && works.isEmpty()) {
+                }
+                if (loaded && works.isEmpty()) {
+                    item(key = "empty") {
                         EmptyState(
                             LingYueIcons.Write,
                             "还没有作品",
                             "新建一部作品，按卷和章来写。写好的章节可以当书预览、听一遍，也能导出成 TXT 或 EPUB。",
+                            modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()),
                             action = "新建作品" to { creating = true },
                         )
-                    } else if (works.isNotEmpty()) {
-                        GroupedSection(header = "作品") {
-                            works.forEach { w ->
-                                row {
-                                    NavRow(
-                                        w.title,
-                                        subtitle = "${w.chapters.size} 章 · ${words(w.words)} · ${whenLabel(w.updatedAt)}编辑",
-                                    ) { vm.open(Screen.Work(w.id)) }
-                                }
-                            }
+                    }
+                } else if (works.isNotEmpty()) {
+                    // 作品一本一格，连成一张卡片：新建、删除时其余的平滑让位，新的淡入。
+                    item(key = "worksHeader") { GroupedListHeader("作品", Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) }
+                    items(works, key = { it.id }, contentType = { "work" }) { w ->
+                        GroupedListCell(w === works.first(), w === works.last(), Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                            NavRow(
+                                w.title,
+                                subtitle = "${w.chapters.size} 章 · ${words(w.words)} · ${whenLabel(w.updatedAt)}编辑",
+                            ) { vm.open(Screen.Work(w.id)) }
                         }
                     }
                 }
@@ -286,16 +298,7 @@ private fun WorkInfoDialog(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp).heightIn(min = 96.dp, max = 200.dp),
             )
         }
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = confirm,
-                enabled = name.isNotBlank(),
-                onClick = { onConfirm(name, author, synopsis) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(name, author, synopsis) }, confirmText = confirm, confirmEnabled = name.isNotBlank())
     }
 }
 
@@ -308,9 +311,11 @@ private fun BackButton(vm: AppViewModel) {
 }
 
 /**
- * 一部作品：字数、继续写，按卷列出各章（点开写，长按改名、挪位置、删除），右上角菜单里预览、听稿、导出、加卷、改信息、删除。
+ * 一部作品：字数、继续写，按卷列出各章（点开写，长按弹出菜单：改名、状态、细纲卡、挪位置、删除），
+ * 右上角菜单里预览、听稿、导出、加卷、改信息、删除。
+ *
+ * 章节一章一格懒加载（长篇几百章也不卡），同一卷的格子连成一张卡片；新建、删除、挪动时其余的平滑让位，新的淡入、删掉的淡出。
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WorkScreen(vm: AppViewModel, workId: String) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
@@ -331,8 +336,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var editingInfo by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var addingVolume by remember { mutableStateOf(false) }
-    var chapterMenu by remember { mutableStateOf<WorkChapter?>(null) }
-    var volumeMenu by remember { mutableStateOf<Volume?>(null) }
+    // 长按哪一章 / 点了哪一卷弹出菜单；菜单里选了改名、删除再弹对话框。
+    var chapterMenu by remember { mutableStateOf<String?>(null) }
+    var volumeMenu by remember { mutableStateOf<String?>(null) }
+    var renamingChapter by remember { mutableStateOf<WorkChapter?>(null) }
+    var deletingChapter by remember { mutableStateOf<WorkChapter?>(null) }
+    var renamingVolume by remember { mutableStateOf<Volume?>(null) }
+    var deletingVolume by remember { mutableStateOf<Volume?>(null) }
     var statusFor by remember { mutableStateOf<WorkChapter?>(null) }
     val allChanges by vm.writing.changes.collectAsStateWithLifecycle()
     val pendingChanges = allChanges[workId].orEmpty().count { it.pending }
@@ -353,6 +363,10 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     }
     var statusHits by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(statusFor) { statusHits = statusFor?.let { ch -> vm.writing.checkChapter(workId, ch.id)?.hits?.size } }
+    // 摘要写完时那一组要收起来：收起的那一下还显示最后一次的进度，不先变空。
+    val summary = summaryProgress?.takeIf { it.workId == workId }
+    val lastSummary = remember { arrayOfNulls<SummaryProgress>(1) }
+    if (summary != null) lastSummary[0] = summary
 
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
@@ -362,55 +376,56 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(f.mime)) { uri -> uri?.let { vm.exportWork(workId, f, it) } }
     }
 
-    ProvideGroupedColors {
-        val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = work.title,
-                    navigationIcon = { BackButton(vm) },
-                    actions = {
-                        Box(Modifier.padding(end = 12.dp)) {
-                            IconButton(onClick = { menu = true }, enabled = !busy) { Icon(LingYueIcons.More, contentDescription = "更多") }
-                            OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
-                                GlassMenu {
-                                    ListPopupColumn {
-                                        val items = listOf<Pair<String, () -> Unit>>(
-                                            "当书预览" to { vm.previewWork(workId, null) },
-                                            "新建一卷" to { addingVolume = true },
-                                            "作品信息" to { editingInfo = true },
-                                            "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
-                                        ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
-                                            ("删除作品" to { deleting = true })
-                                        items.forEach { (label, action) ->
-                                            LingYueMenuItem(label, selected = false) {
-                                                menu = false
-                                                action()
-                                            }
-                                        }
-                                    }
+    SubPageScaffold(
+        work.title,
+        onBack = { vm.back() },
+        snackbar = snackbar,
+        actions = {
+            Box(Modifier.padding(end = 12.dp)) {
+                IconButton(onClick = { menu = true }, enabled = !busy) { Icon(LingYueIcons.More, contentDescription = "更多") }
+                OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
+                    GlassMenu {
+                        ListPopupColumn {
+                            val items = listOf<Pair<String, () -> Unit>>(
+                                "当书预览" to { vm.previewWork(workId, null) },
+                                "新建一卷" to { addingVolume = true },
+                                "作品信息" to { editingInfo = true },
+                                "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
+                            ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
+                                ("删除作品" to { deleting = true })
+                            items.forEach { (label, action) ->
+                                LingYueMenuItem(label, selected = false) {
+                                    menu = false
+                                    action()
                                 }
                             }
                         }
-                    },
-                )
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-        ) { padding ->
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        // 配色在骨架提供的配色里面读。
+        val c = LocalGroupedColors.current
+        Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
                 overscrollEffect = null,
             ) {
-                item {
-                    if (busy) top.yukonga.miuix.kmp.basic.LinearProgressIndicator(Modifier.padding(horizontal = 32.dp, vertical = 4.dp))
-                    summaryProgress?.takeIf { it.workId == workId }?.let { p ->
-                        GroupedSection(footer = "写好的摘要存在各章细纲卡里，可以改。写后面的章时，AI 会把前面几章的摘要当前情。") {
-                            row { TwoLine("正在写章节摘要 ${p.done + 1}/${p.total}", p.title) }
-                            row { ActionRow("停止", destructive = true) { vm.writingAi.stopSummaries() } }
+                item(key = "head") {
+                    // 正在补写摘要：那一组从上面长出来，写完收起。
+                    AnimatedVisibility(
+                        visible = summary != null,
+                        enter = Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM), expandFrom = Alignment.Top) + fadeIn(Motion.standard(Motion.SHORT))),
+                        exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
+                    ) {
+                        val p = summary ?: lastSummary[0]
+                        if (p != null) {
+                            GroupedSection(footer = "写好的摘要存在各章细纲卡里，可以改。写后面的章时，AI 会把前面几章的摘要当前情。") {
+                                row { TwoLine("正在写章节摘要 ${p.done + 1}/${p.total}", p.title, trailing = { Spinner() }) }
+                                row { ActionRow("停止", destructive = true) { vm.writingAi.stopSummaries() } }
+                            }
                         }
                     }
                     val last = work.chapters.maxByOrNull { it.updatedAt }
@@ -477,126 +492,236 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             ) { vm.open(Screen.WorkRules(workId)) }
                         }
                     }
-                    work.volumes.forEach { v ->
-                        GroupedSection {
-                            row { VolumeRow(v) { volumeMenu = v } }
-                            v.chapters.forEach { ch ->
-                                row {
-                                    ChapterRow(
-                                        ch,
-                                        onClick = { vm.open(Screen.Editor(workId, ch.id)) },
-                                        onLongClick = { chapterMenu = ch },
-                                    )
-                                }
-                            }
-                            row {
-                                ActionRow("新的一章") { vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) } }
-                            }
+                }
+                // 每卷一张卡片：卷名一格、各章一格一格、最后“新的一章”。格子各自懒加载，键是卷 / 章的 id，增删挪动都有动画。
+                work.volumes.forEach { v ->
+                    item(key = "volume:${v.id}", contentType = "volume") {
+                        GroupedListCell(first = true, last = false, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                            VolumeRow(
+                                v,
+                                showMenu = volumeMenu == v.id,
+                                canDelete = work.volumes.size > 1,
+                                onClick = { volumeMenu = v.id },
+                                onDismissMenu = { volumeMenu = null },
+                                onRename = { renamingVolume = v },
+                                onDelete = { deletingVolume = v },
+                            )
                         }
                     }
+                    items(v.chapters, key = { it.id }, contentType = { "chapter" }) { ch ->
+                        GroupedListCell(first = false, last = false, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                            ChapterRow(
+                                ch,
+                                showMenu = chapterMenu == ch.id,
+                                onClick = { vm.open(Screen.Editor(workId, ch.id)) },
+                                onLongClick = { chapterMenu = ch.id },
+                                onDismissMenu = { chapterMenu = null },
+                                onRename = { renamingChapter = ch },
+                                onStatus = { statusFor = ch },
+                                onCard = { vm.open(Screen.ChapterCard(workId, ch.id)) },
+                                onMove = { vm.writing.moveChapter(workId, ch.id, it) },
+                                onDelete = { deletingChapter = ch },
+                            )
+                        }
+                    }
+                    item(key = "add:${v.id}", contentType = "add") {
+                        GroupedListCell(first = false, last = true, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                            ActionRow("新的一章") { vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) } }
+                        }
+                    }
+                }
+                item(key = "tip") {
                     Text(
                         "长按章节可以改名、改状态、写细纲卡、调整顺序或删除。定稿的章节正文锁定，要改先登记原因。",
                         color = c.secondary,
                         fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 28.dp),
+                        modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).padding(horizontal = 28.dp),
                     )
                 }
             }
-            if (editingInfo) {
-                WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
-                    editingInfo = false
-                    vm.writing.updateInfo(workId, t, a, s)
-                }
+            // 预览、导出时的忙碌条浮在标题栏下面，不占地方：出现、消失时页面不被往下顶。
+            AnimatedVisibility(
+                visible = busy,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = padding.calculateTopPadding()),
+                enter = Effects.enter(fadeIn(Motion.standard(Motion.SHORT))),
+                exit = Effects.exit(fadeOut(Motion.exit())),
+            ) {
+                top.yukonga.miuix.kmp.basic.LinearProgressIndicator(Modifier.padding(horizontal = 32.dp, vertical = 4.dp))
             }
-            if (addingVolume) {
-                NameDialog("新建一卷", "第${work.volumes.size + 1}卷", "新建", onDismiss = { addingVolume = false }) {
-                    addingVolume = false
-                    vm.writing.addVolume(workId, it)
-                }
+        }
+        if (editingInfo) {
+            WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
+                editingInfo = false
+                vm.writing.updateInfo(workId, t, a, s)
             }
-            if (deleting) {
-                GlassDialog(
-                    show = true,
-                    title = "删除《${work.title}》",
-                    summary = "作品的全部章节和历史版本都会删除，不能恢复。要留底的话先导出一份。",
-                    onDismissRequest = { deleting = false },
-                ) {
-                    DialogButtons(
-                        onDismiss = { deleting = false },
-                        onConfirm = {
-                            deleting = false
-                            vm.writing.delete(workId)
-                        },
-                        confirmText = "删除",
-                        destructive = true,
-                    )
-                }
+        }
+        if (addingVolume) {
+            NameDialog("新建一卷", "第${work.volumes.size + 1}卷", "新建", onDismiss = { addingVolume = false }) {
+                addingVolume = false
+                vm.writing.addVolume(workId, it)
             }
-            chapterMenu?.let { ch ->
-                ChapterDialog(
-                    ch,
-                    onDismiss = { chapterMenu = null },
-                    onRename = { vm.writing.renameChapter(workId, ch.id, it) },
-                    onMove = { vm.writing.moveChapter(workId, ch.id, it) },
-                    onDelete = { vm.writing.deleteChapter(workId, ch.id) },
-                    onStatus = {
-                        chapterMenu = null
-                        statusFor = ch
+        }
+        if (deleting) {
+            GlassDialog(
+                show = true,
+                title = "删除《${work.title}》",
+                summary = "作品的全部章节和历史版本都会删除，不能恢复。要留底的话先导出一份。",
+                onDismissRequest = { deleting = false },
+            ) {
+                DialogButtons(
+                    onDismiss = { deleting = false },
+                    onConfirm = {
+                        deleting = false
+                        vm.writing.delete(workId)
                     },
-                    onCard = {
-                        chapterMenu = null
-                        vm.open(Screen.ChapterCard(workId, ch.id))
-                    },
+                    confirmText = "删除",
+                    destructive = true,
                 )
             }
-            statusFor?.let { ch ->
-                StatusDialog(ch, ruleHits = statusHits, onDismiss = { statusFor = null }) { st, reason, canon ->
-                    statusFor = null
-                    vm.writing.setStatus(workId, ch.id, st, reason, canon)
-                }
+        }
+        renamingChapter?.let { ch ->
+            NameDialog("章名", ch.title, "好", onDismiss = { renamingChapter = null }) { name ->
+                renamingChapter = null
+                if (name.trim() != ch.title) vm.writing.renameChapter(workId, ch.id, name)
             }
-            volumeMenu?.let { v ->
-                VolumeDialog(
-                    v,
-                    canDelete = work.volumes.size > 1,
-                    onDismiss = { volumeMenu = null },
-                    onRename = { vm.writing.renameVolume(workId, v.id, it) },
-                    onDelete = { vm.writing.deleteVolume(workId, v.id) },
+        }
+        deletingChapter?.let { ch ->
+            GlassDialog(
+                show = true,
+                title = "删除“${ch.title}”",
+                summary = (if (ch.locked) "这一章已定稿。" else "") + "这一章（${words(ch.words)}）会从作品里删除。有正文时仅留在本机历史文件中，应用内暂不能直接找回。",
+                onDismissRequest = { deletingChapter = null },
+            ) {
+                DialogButtons(
+                    onDismiss = { deletingChapter = null },
+                    onConfirm = {
+                        deletingChapter = null
+                        vm.writing.deleteChapter(workId, ch.id)
+                    },
+                    confirmText = "删除",
+                    destructive = true,
+                )
+            }
+        }
+        statusFor?.let { ch ->
+            StatusDialog(ch, ruleHits = statusHits, onDismiss = { statusFor = null }) { st, reason, canon ->
+                statusFor = null
+                vm.writing.setStatus(workId, ch.id, st, reason, canon)
+            }
+        }
+        renamingVolume?.let { v ->
+            NameDialog("卷名", v.title, "好", onDismiss = { renamingVolume = null }) { name ->
+                renamingVolume = null
+                if (name.trim() != v.title) vm.writing.renameVolume(workId, v.id, name)
+            }
+        }
+        deletingVolume?.let { v ->
+            GlassDialog(
+                show = true,
+                title = "删除“${v.title}”",
+                summary = "这一卷和卷里的 ${v.chapters.size} 章都会删除。",
+                onDismissRequest = { deletingVolume = null },
+            ) {
+                DialogButtons(
+                    onDismiss = { deletingVolume = null },
+                    onConfirm = {
+                        deletingVolume = null
+                        vm.writing.deleteVolume(workId, v.id)
+                    },
+                    confirmText = "删除",
+                    destructive = true,
                 )
             }
         }
     }
 }
 
+/** 弹出菜单里的一项。[color] 在调用处读好传进来（菜单画在最外层的弹层宿主里，读不到设置页配色）；删除类传删除色。 */
 @Composable
-private fun VolumeRow(v: Volume, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    GroupedRow(onClick = onClick) {
-        Text(v.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = 13.sp)
-        Icon(LingYueIcons.More, contentDescription = "卷设置", tint = c.tertiary, modifier = Modifier.padding(start = 6.dp).size(18.dp))
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ChapterRow(ch: WorkChapter, onClick: () -> Unit, onLongClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
+private fun MenuAction(label: String, color: Color, onClick: () -> Unit) {
     Row(
         Modifier
-            .fillMaxWidth()
-            .heightIn(min = 52.dp)
-            .background(pressHighlight(pressed))
-            .combinedClickable(interactionSource = source, indication = null, onLongClick = onLongClick, onClick = onClick)
+            .widthIn(min = 200.dp)
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(ch.title, color = c.label, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        StatusLabel(ch.status)
-        Text(if (ch.words == 0) "空" else words(ch.words), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 8.dp))
-        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
+        Text(label, color = color, style = MiuixTheme.textStyles.body2, modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * 卷名一行：名字，右边章数和字数，最右“⋯”；点了弹出菜单（改名；不止一卷时还能删除，红色放最后）。
+ * 字号、行高照 [NavRow]。
+ */
+@Composable
+private fun VolumeRow(
+    v: Volume,
+    showMenu: Boolean,
+    canDelete: Boolean,
+    onClick: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    Box {
+        GroupedRow(onClick = onClick) {
+            Text(v.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+            Icon(LingYueIcons.More, contentDescription = "卷设置", tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
+        }
+        OverlayListPopup(show = showMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = onDismissMenu) {
+            GlassMenu {
+                ListPopupColumn {
+                    MenuAction("改名", c.label) { onDismissMenu(); onRename() }
+                    if (canDelete) MenuAction("删除本卷", c.destructive) { onDismissMenu(); onDelete() }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 一章一行：章名，右边字数和状态小标签、小箭头；点开写，长按弹出菜单：
+ * 改名、状态、细纲卡、上移、下移，删除单独放最后、红色（还要再确认）。
+ */
+@Composable
+private fun ChapterRow(
+    ch: WorkChapter,
+    showMenu: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onRename: () -> Unit,
+    onStatus: () -> Unit,
+    onCard: () -> Unit,
+    onMove: (Int) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    Box {
+        NavRow(
+            ch.title,
+            value = if (ch.words == 0) "空" else words(ch.words),
+            trailing = { StatusLabel(ch.status) },
+            onLongClick = onLongClick,
+            onClick = onClick,
+        )
+        OverlayListPopup(show = showMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = onDismissMenu) {
+            GlassMenu {
+                ListPopupColumn {
+                    MenuAction("改名", c.label) { onDismissMenu(); onRename() }
+                    MenuAction("状态：${ch.status.label}", c.label) { onDismissMenu(); onStatus() }
+                    MenuAction("细纲卡", c.label) { onDismissMenu(); onCard() }
+                    MenuAction("上移", c.label) { onDismissMenu(); onMove(-1) }
+                    MenuAction("下移", c.label) { onDismissMenu(); onMove(1) }
+                    MenuAction("删除", c.destructive) { onDismissMenu(); onDelete() }
+                }
+            }
+        }
     }
 }
 
@@ -606,111 +731,7 @@ private fun NameDialog(title: String, initial: String, confirm: String, onDismis
     var name by remember { mutableStateOf(initial) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
         TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = confirm,
-                enabled = name.isNotBlank(),
-                onClick = { onConfirm(name) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
-    }
-}
-
-/** 长按一章：改名、上移下移、删除（删除要再点一次确认）。 */
-@Composable
-private fun ChapterDialog(
-    ch: WorkChapter,
-    onDismiss: () -> Unit,
-    onRename: (String) -> Unit,
-    onMove: (Int) -> Unit,
-    onDelete: () -> Unit,
-    onStatus: () -> Unit,
-    onCard: () -> Unit,
-) {
-    var name by remember { mutableStateOf(ch.title) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    GlassDialog(
-        show = true,
-        title = if (confirmDelete) "删除“${ch.title}”" else ch.title,
-        summary = if (confirmDelete) (if (ch.locked) "这一章已定稿。" else "") + "这一章（${words(ch.words)}）会从作品里删除。有正文时仅留在本机历史文件中，应用内暂不能直接找回。" else null,
-        onDismissRequest = onDismiss,
-    ) {
-        if (confirmDelete) {
-            DialogButtons(
-                onDismiss = { confirmDelete = false },
-                onConfirm = {
-                    onDelete()
-                    onDismiss()
-                },
-                confirmText = "删除",
-                destructive = true,
-            )
-            return@GlassDialog
-        }
-        TextField(value = name, onValueChange = { name = it }, label = "章名", singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "状态：${ch.status.label}", onClick = onStatus, modifier = Modifier.weight(1f))
-            TextButton(text = "细纲卡", onClick = onCard, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "上移", onClick = { onMove(-1) }, modifier = Modifier.weight(1f))
-            TextButton(text = "下移", onClick = { onMove(1) }, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "删除", onClick = { confirmDelete = true }, modifier = Modifier.weight(1f))
-            TextButton(
-                text = "完成",
-                onClick = {
-                    if (name.isNotBlank() && name.trim() != ch.title) onRename(name)
-                    onDismiss()
-                },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
-    }
-}
-
-/** 点卷名：改名、删除这一卷（连同卷里的章，要再确认）。 */
-@Composable
-private fun VolumeDialog(v: Volume, canDelete: Boolean, onDismiss: () -> Unit, onRename: (String) -> Unit, onDelete: () -> Unit) {
-    var name by remember { mutableStateOf(v.title) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    GlassDialog(
-        show = true,
-        title = if (confirmDelete) "删除“${v.title}”" else "卷名",
-        summary = if (confirmDelete) "这一卷和卷里的 ${v.chapters.size} 章都会删除。" else null,
-        onDismissRequest = onDismiss,
-    ) {
-        if (confirmDelete) {
-            DialogButtons(
-                onDismiss = { confirmDelete = false },
-                onConfirm = {
-                    onDelete()
-                    onDismiss()
-                },
-                confirmText = "删除",
-                destructive = true,
-            )
-            return@GlassDialog
-        }
-        TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (canDelete) TextButton(text = "删除本卷", onClick = { confirmDelete = true }, modifier = Modifier.weight(1f))
-            else TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f))
-            TextButton(
-                text = "完成",
-                onClick = {
-                    if (name.isNotBlank() && name.trim() != v.title) onRename(name)
-                    onDismiss()
-                },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-            )
-        }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(name) }, confirmText = confirm, confirmEnabled = name.isNotBlank())
     }
 }
 
@@ -1290,56 +1311,47 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
         open = vm.writing.snapshotText(workId, key, s.at)?.let { s to it }
         loading = null
     }
+    val rule = (if (docId != null) "每次打开、离开这份文档，以及导入替换、修改中每隔十分钟，都会存一版。" else "每次打开、离开这一章，以及写作中每隔十分钟，都会存一版。") +
+        "最多留 ${com.xycs.lingyuereader.data.WorkStore.KEEP_SNAPSHOTS} 版。"
 
-    ProvideGroupedColors {
+    SubPageScaffold("历史版本", onBack = { vm.back() }) { padding ->
+        // 配色在骨架提供的配色里面读。
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "历史版本",
-                    navigationIcon = { BackButton(vm) },
-                )
-            },
-        ) { padding ->
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
-                overscrollEffect = null,
-            ) {
-                item {
-                    val items = list
-                    GroupedSection(
-                        header = title,
-                        footer = (if (docId != null) "每次打开、离开这份文档，以及导入替换、修改中每隔十分钟，都会存一版。" else "每次打开、离开这一章，以及写作中每隔十分钟，都会存一版。") +
-                            "最多留 ${com.xycs.lingyuereader.data.WorkStore.KEEP_SNAPSHOTS} 版。",
-                    ) {
-                        if (items != null && items.isEmpty()) {
-                            row { Text("还没有历史版本。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
-                        }
-                        items.orEmpty().forEach { s ->
-                            row { NavRow(whenLabel(s.at), value = words(s.words)) { loading = s } }
+        val snaps = list
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            when {
+                snaps == null -> item(key = "loading") { LoadingState("正在读历史版本……") }
+                snaps.isEmpty() -> item(key = "empty") { EmptyState(LingYueIcons.History, "还没有历史版本", rule) }
+                else -> {
+                    if (title != null) item(key = "header") { GroupedListHeader(title) }
+                    // 一版一格懒加载（一章最多留几十版），连成一张卡片。
+                    items(snaps, contentType = { "snapshot" }) { s ->
+                        GroupedListCell(s === snaps.first(), s === snaps.last(), gap = 8.dp) {
+                            NavRow(whenLabel(s.at), value = words(s.words)) { loading = s }
                         }
                     }
+                    item(key = "footer") { GroupedListFooter(rule) }
                 }
             }
-            open?.let { (s, text) ->
-                GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
-                    Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                        Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
-                    }
-                    DialogButtons(
-                        onDismiss = { open = null },
-                        onConfirm = {
-                            open = null
-                            if (docId != null) vm.writing.restoreDoc(workId, docId, s.at) { vm.back() }
-                            else vm.writing.restore(workId, chapterId, s.at) { vm.back() }
-                        },
-                        confirmText = "换回这一版",
-                    )
+        }
+        open?.let { (s, text) ->
+            GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
                 }
+                DialogButtons(
+                    onDismiss = { open = null },
+                    onConfirm = {
+                        open = null
+                        if (docId != null) vm.writing.restoreDoc(workId, docId, s.at) { vm.back() }
+                        else vm.writing.restore(workId, chapterId, s.at) { vm.back() }
+                    },
+                    confirmText = "换回这一版",
+                )
             }
         }
     }

@@ -3,9 +3,13 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -113,6 +117,9 @@ class WritingRound2UiTest {
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** 每道审稿的结果写在卡片第一行，读屏念成“事实关：1 处”（组名里不再写状态）。 */
+    private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
     @Test
     fun reviewIssuesCanBeFixedByAiOrSetAside() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -122,22 +129,24 @@ class WritingRound2UiTest {
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("三道审稿").performClick()
         compose.onNodeWithText("开始审稿").performClick()
-        waitForText("一、事实关 · 2 处")
+        waitForGate("事实关：2 处")
         // 看得到发给 AI 的内容。
         waitForText("看发给 AI 的内容")
 
         // 第二处：不改。
         compose.onNodeWithText("门是锁着的").performScrollTo().performClick()
         compose.onNodeWithText("不改").performClick()
-        waitForText("一、事实关 · 1 处没处理")
-        waitForText("二、写法关 · 没发现问题")
-        waitForText("一、事实关 · 1 处没处理")
+        waitForGate("事实关：1 处没处理")
+        waitForGate("写法关：没发现问题")
+        waitForGate("事实关：1 处没处理")
         waitFor { store.review(workId, chapterId)?.gate(ReviewGate.FACT)?.issues?.any { it.state == ReviewIssue.IGNORED } == true }
 
         // 重新审稿：标了不改的还是不改。
         compose.onNodeWithText("重新审稿").performClick()
-        waitForText("一、事实关 · 1 处没处理")
-        waitForText("二、写法关 · 没发现问题")
+        waitForGate("事实关：1 处没处理")
+        waitForGate("写法关：没发现问题")
+        // 等这一遍审完再点（审着时各道的结果行一行行出来，卡片在长高，点下去可能落在别的行上）。
+        waitFor { vm.writingAi.reviews.value[workId to chapterId]?.running == null }
 
         // 第一处：按这条让 AI 改。回到编辑器，选中原句，AI 按意见改，先看对比。
         compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
@@ -232,5 +241,33 @@ class WritingRound2UiTest {
         waitForText("导入的模型")
         assertTrue(vm.aiConfig.value.ready)
         assertEquals(listOf(DeviceModels.FILE + "我的小模型.task"), vm.deviceModels.value.installed)
+    }
+
+    @Test
+    fun markingAnIssueKeepsItInPlaceUntilTheNextVisit() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, chapterId)) }
+        waitForText("还没有审过")
+        compose.onNodeWithText("开始审稿").performClick()
+        waitForGate("事实关：2 处")
+        waitFor { store.review(workId, chapterId)?.gate(ReviewGate.RULES) != null }
+        fun top(text: String) = compose.onNodeWithText(text).fetchSemanticsNode().boundsInRoot.top
+        assertTrue(top("林月这时还不知道") < top("门是锁着的"))
+
+        // 第一处标“不改”：右边挂上“不改”，但还在原来的位置，手指下面没换成别的条目。
+        compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
+        compose.onNode(hasText("不改") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
+        waitForGate("事实关：1 处没处理")
+        waitFor { store.review(workId, chapterId)?.gate(ReviewGate.FACT)?.issues?.first()?.state == ReviewIssue.IGNORED }
+        waitForText("不改")
+        assertTrue(top("林月这时还不知道") < top("门是锁着的"))
+
+        // 下次进来再排：没处理的在前。
+        compose.runOnUiThread { vm.back() }
+        waitFor { compose.onAllNodesWithText("重新审稿").fetchSemanticsNodes().isEmpty() }
+        compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, chapterId)) }
+        waitForGate("事实关：1 处没处理")
+        waitFor { top("门是锁着的") < top("林月这时还不知道") }
     }
 }

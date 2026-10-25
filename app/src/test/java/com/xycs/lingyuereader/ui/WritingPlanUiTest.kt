@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
 import android.content.Context
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -65,6 +69,9 @@ class WritingPlanUiTest {
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** 状态对话框里的分段控件那一格（章节卡片上也有同名的状态小标签，按“标签页”的角色找）。 */
+    private fun statusTab(label: String) = compose.onNode(hasText(label) and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab))
+
     @Test
     fun finalizeLocksTheTextAndUnlockingNeedsAReason() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -76,7 +83,7 @@ class WritingPlanUiTest {
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("章节状态").performClick()
         waitForText("的状态")
-        compose.onNodeWithContentDescription("状态定稿").performClick()
+        statusTab("定稿").performClick()
         waitForText("定稿后正文锁定")
         compose.onNodeWithText("好").performClick()
         waitFor { store.get(workId)!!.chapter(chapterId)!!.status == ChapterStatus.FINAL }
@@ -95,9 +102,9 @@ class WritingPlanUiTest {
         // 解锁：原因必填，选“涉及设定”。
         compose.onNodeWithText("解锁修改").performClick()
         waitForText("为什么要改")
-        compose.onNodeWithContentDescription("状态修订").performClick()
+        statusTab("修订").performClick()
         compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("老周改为第九章战死")
-        compose.onNodeWithContentDescription("涉及设定，要同步设定包").performClick()
+        compose.onNodeWithText("涉及设定，要同步设定包").performClick()
         compose.onNodeWithText("解锁").performClick()
         waitFor { store.get(workId)!!.chapter(chapterId)!!.status == ChapterStatus.REVISION }
         val unlock = store.changes(workId).first()
@@ -122,10 +129,10 @@ class WritingPlanUiTest {
         waitForText("本章事实与结果")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("护送队十二人到石桥")
         waitFor { store.card(workId, chapterId).facts == "护送队十二人到石桥" }
-        // 从这里也能改状态。
-        compose.onNodeWithContentDescription("改状态").performClick()
+        // 从这里也能改状态：点章名那一行。
+        compose.onNodeWithText("第1章").performClick()
         waitForText("的状态")
-        compose.onNodeWithContentDescription("状态修订").performClick()
+        statusTab("修订").performClick()
         compose.onNodeWithText("好").performClick()
         waitFor { store.get(workId)!!.chapter(chapterId)!!.status == ChapterStatus.REVISION }
     }

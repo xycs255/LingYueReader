@@ -1,6 +1,9 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -117,7 +120,7 @@ class WritingRulesUiTest {
         // 定稿前提醒还有几条不合规则（不拦着）。
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("章节状态").performClick()
-        compose.onNodeWithContentDescription("状态定稿").performClick()
+        compose.onNode(hasText("定稿") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
         waitForText("这一章还有 2 条不合")
         compose.onNodeWithText("取消").performClick()
 

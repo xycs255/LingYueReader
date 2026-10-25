@@ -2,6 +2,12 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -285,14 +291,16 @@ class WritingAiUiTest {
     fun dialogsOpenOnTheWorkAndBiblePages() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         val store = WorkStore(writingDir)
-        // 作品页：长按章节改名（对话框要挂在页面的浮层宿主上才看得见）。
+        // 作品页：长按章节弹出菜单，选“改名”（菜单、对话框要挂在页面的浮层宿主上才看得见）。
         compose.runOnUiThread { vm.open(Screen.Work(workId)) }
         waitForText("新的一章")
         // “继续写”那行也写着“第1章”，章节列表在它下面。
         compose.onAllNodesWithText("第1章").onLast().performTouchInput { longClick() }
         waitForText("上移")
+        compose.onNodeWithText("改名").performClick()
+        waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasSetTextAction())[0].performTextReplacement("第一章 雪夜")
-        compose.onNodeWithText("完成").performClick()
+        compose.onNodeWithText("好").performClick()
         waitFor { store.get(workId)!!.chapters[0].title == "第一章 雪夜" }
 
         // 设定包：新建一份人物档案（带人物卡模板），写进去，改优先级。
@@ -313,7 +321,8 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("属性（类型、优先级）").performClick()
         waitForText("文档属性")
-        compose.onNodeWithContentDescription("优先级1").performClick()
+        // 优先级是 1–9 的滑块（读屏能直接设值）。
+        compose.onNodeWithContentDescription("优先级").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(1f) }
         compose.onNodeWithText("保存").performClick()
         waitFor { store.pack(workId).single().priority == 1 }
         compose.onNodeWithContentDescription("返回").performClick()
@@ -352,7 +361,7 @@ class WritingAiUiTest {
         // 不导入写作约定：点那一行，选“不导入”。
         compose.onNodeWithText("正文写作约定").performClick()
         waitForText("不导入")
-        compose.onNodeWithContentDescription("导入与否不导入").performClick()
+        compose.onNode(hasText("不导入") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
         compose.onNodeWithText("好").performClick()
         compose.onNodeWithText("导入 2 个文件").performClick()
         waitFor { store.pack(workId).map { it.title } == listOf("人物设定档案") }

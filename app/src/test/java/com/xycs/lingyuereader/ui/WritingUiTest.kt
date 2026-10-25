@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -11,6 +13,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
+import androidx.lifecycle.ViewModelProvider
+import com.xycs.lingyuereader.AppViewModel
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -45,7 +51,7 @@ class WritingUiTest {
             File(files, "books/index.json").writeText("[]")
             writingDir.deleteRecursively()
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
-            if (name.methodName.startsWith("preview")) {
+            if (name.methodName.startsWith("preview") || name.methodName.startsWith("chapters")) {
                 val store = WorkStore(writingDir)
                 val w = store.create("长夜", "某某")
                 store.renameChapter(w.id, w.chapters[0].id, "第一章 雪夜")
@@ -147,5 +153,45 @@ class WritingUiTest {
                 compose.onAllNodesWithText("鸡叫了三遍。", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
         assertEquals(1, JSONArray(indexFile.readText()).length())
+    }
+
+    @Test
+    fun chaptersAddedDeletedAndMovedShowUpInTheRightPlace() {
+        val store = WorkStore(writingDir)
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val w = store.get(seededWork!!)!!
+        openWritingTab()
+        waitForText("长夜")
+        compose.onNodeWithText("长夜").performClick()
+        waitForText("第二章 天亮")
+        // 章节那一行（能长按的那个；“继续写”那行的右边也写着章名）。
+        fun row(title: String) = compose.onNode(hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick))
+        fun top(title: String) = row(title).fetchSemanticsNode().boundsInRoot.top
+        fun shown(title: String) = compose.onAllNodes(hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)).fetchSemanticsNodes().isNotEmpty()
+
+        // 加一章：接在这一卷最后（章节一格一格懒加载，新的那格淡入）。
+        compose.runOnUiThread { vm.writing.addChapter(w.id, w.volumes[0].id) }
+        compose.waitUntil(10_000) { shown("第3章") }
+        assertTrue(top("第一章 雪夜") < top("第二章 天亮") && top("第二章 天亮") < top("第3章"))
+
+        // 长按一章弹出菜单，删除放在最后，还要再确认。
+        row("第二章 天亮").performTouchInput { longClick() }
+        waitForText("细纲卡")
+        compose.onNodeWithText("删除").performClick()
+        waitForText("会从作品里删除")
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("删除").fetchSemanticsNodes().size == 1 }
+        compose.onNodeWithText("删除").performClick()
+        compose.waitUntil(10_000) { store.get(w.id)!!.chapters.size == 2 }
+        // 删掉的那格淡出后不留空位，其余两章还在，先后不乱。
+        compose.waitUntil(10_000) { !shown("第二章 天亮") }
+        assertTrue(top("第一章 雪夜") < top("第3章"))
+
+        // 上移：第 3 章挪到第一章前面，列表跟着换位。
+        row("第3章").performTouchInput { longClick() }
+        waitForText("上移")
+        compose.onNodeWithText("上移").performClick()
+        compose.waitUntil(10_000) { store.get(w.id)!!.chapters.first().title == "第3章" }
+        compose.waitUntil(10_000) { top("第3章") < top("第一章 雪夜") }
+        assertEquals(listOf("第3章", "第一章 雪夜"), store.get(w.id)!!.chapters.map { it.title })
     }
 }
