@@ -135,8 +135,9 @@ class WritingDraftUiTest {
         assertTrue("上一章结尾：\n沈默进了城。" in user)
         assertTrue("对白要短。" in user && "字数：至少 10" in user)
         assertTrue("本章细纲卡" in system && "杜娘开门，门外来了人" in system)
-        // 前一章的摘要当前情带上了。
-        assertTrue("【前情·第 1 章 第1章】\n沈默进城，在杜娘的茶馆落脚。" in system)
+        // 前一章的摘要当前情带上了；设定包整份在前面。
+        assertTrue("【前情】\n- 第 1 章 第1章：沈默进城，在杜娘的茶馆落脚。" in system)
+        assertTrue(system.startsWith("下面是作者这部作品的设定包"))
 
         // 接着写：接在草稿后面。
         compose.onNodeWithText("接着写").performScrollTo().performClick()

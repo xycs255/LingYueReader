@@ -52,9 +52,13 @@ internal fun SentDialog(sent: SentRequest, onDismiss: () -> Unit) {
             SelectionContainer { Text(sent.system, color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
             Text("请求（${sent.prompt.length} 字）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
             SelectionContainer { Text(sent.prompt, color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
+            if (sent.lookups.isNotEmpty()) {
+                Text("AI 查了（${sent.lookups.size} 次）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+                sent.lookups.forEach { Text("· $it", color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
+            }
         }
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(text = "复制", onClick = { clipboard.setText(AnnotatedString("【系统提示】\n${sent.system}\n\n【请求】\n${sent.prompt}")) }, modifier = Modifier.weight(1f))
+            TextButton(text = "复制", onClick = { clipboard.setText(AnnotatedString("【系统提示】\n${sent.system}\n\n【请求】\n${sent.prompt}" + if (sent.lookups.isEmpty()) "" else "\n\n【AI 查了】\n" + sent.lookups.joinToString("\n"))) }, modifier = Modifier.weight(1f))
             TextButton(text = "好", onClick = onDismiss, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColorsPrimary())
         }
     }

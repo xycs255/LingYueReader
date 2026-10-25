@@ -293,6 +293,114 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         }
 
     /**
+     * 带工具的对话：AI 可以先用工具查（交给 [run] 执行，拿结果）再答，最多查 [maxRounds] 轮，到了上限要求它直接作答。
+     * 回答一段段到时调 [onText]；AI 决定去查时调 [onLookup]（这一轮之前说的话不是回答，调用方清掉重来）。
+     * 返回最后一轮的回答。服务商或模型不支持工具调用时，去掉工具重发一次。
+     * [system] 的前 [cachePrefix] 个字每次都一样（设定包），Anthropic 上标成可缓存。
+     */
+    suspend fun converse(
+        config: AiConfig,
+        system: String,
+        prompt: String,
+        tools: List<AiTool>,
+        run: suspend (AiToolCall) -> String,
+        cachePrefix: Int = 0,
+        maxRounds: Int = 6,
+        whole: Boolean = false,
+        maxTokens: Int? = null,
+        onLookup: (AiToolCall) -> Unit = {},
+        onText: (String) -> Unit = {},
+    ): String {
+        if (config.onDevice || config.protocol == AiProtocol.DEVICE) return stream(config, system, listOf(AiMessage("user", prompt)), whole, onText)
+        var useTools = tools
+        retry@ while (true) {
+            val turns = JSONArray().put(AiToolWire.user(config, prompt))
+            var round = 0
+            try {
+                while (true) {
+                    val allow = useTools.isNotEmpty() && round < maxRounds
+                    val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens)
+                    val turn = post(config, body, onText)
+                    if (turn.calls.isEmpty() || !allow) {
+                        val out = StringBuilder(turn.text)
+                        if (turn.truncated) {
+                            if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
+                            "\n\n（回答太长，后面被截断了。）".let { out.append(it); onText(it) }
+                        }
+                        if (turn.refused) ("\n\n（模型中途停止了回答。）".takeIf { out.isNotEmpty() } ?: "模型拒绝回答这个问题。").let { out.append(it); onText(it) }
+                        if (out.isBlank()) throw AiException("服务商没有返回内容")
+                        return out.toString()
+                    }
+                    round++
+                    turns.put(turn.message)
+                    val results = turn.calls.map { call ->
+                        onLookup(call)
+                        call to run(call)
+                    }
+                    AiToolWire.results(config, results).forEach { turns.put(it) }
+                }
+            } catch (e: AiException) {
+                if (useTools.isNotEmpty() && round == 0 && AiToolWire.unsupported(e.message)) {
+                    useTools = emptyList()
+                    continue@retry
+                }
+                throw e
+            }
+        }
+    }
+
+    /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。 */
+    private suspend fun post(config: AiConfig, body: String, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
+        val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
+            ?: throw AiException("接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
+        val conn = try {
+            open(url)
+        } catch (e: IOException) {
+            throw AiException(networkError(e, url))
+        }
+        val watcher = disconnectOnCancel(conn)
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 15_000
+            // 带着整个知识库的请求，服务商开始回答前要读一会儿。
+            conn.readTimeout = 180_000
+            conn.doOutput = true
+            AiWire.headers(config).forEach { (k, v) -> conn.setRequestProperty(k, v) }
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            redirected(conn, code)?.let { throw AiException(it) }
+            if (code !in 200..299) {
+                val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                throw AiException(AiWire.error(code, err))
+            }
+            val collector = AiToolWire.Collector(config.protocol, onText)
+            val type = conn.contentType.orEmpty()
+            conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                if (type.contains("json") && !type.contains("event-stream")) {
+                    collector.feedWhole(reader.readText())
+                    return@use
+                }
+                while (true) {
+                    coroutineContext.ensureActive()
+                    val line = reader.readLine() ?: break
+                    if (!line.startsWith("data:")) continue
+                    collector.feed(line.removePrefix("data:"))
+                    if (collector.finished) break
+                }
+            }
+            collector.finish()
+        } catch (e: AiException) {
+            throw e
+        } catch (e: IOException) {
+            coroutineContext.ensureActive()
+            throw AiException(networkError(e, url))
+        } finally {
+            watcher.cancel()
+            conn.disconnect()
+        }
+    }
+
+    /**
      * 文本向量（OpenAI 兼容的 /embeddings 接口）：问这本书时找相关原文用。一次最多发 [EMBED_BATCH] 段。
      * Anthropic 接口没有向量模型。
      */

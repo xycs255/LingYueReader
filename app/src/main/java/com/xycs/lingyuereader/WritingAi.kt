@@ -10,6 +10,13 @@ import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterReview
 import com.xycs.lingyuereader.data.plannedCard
+import com.xycs.lingyuereader.ai.AiProtocol
+import com.xycs.lingyuereader.data.AiPack
+import com.xycs.lingyuereader.data.PackKnowledge
+import com.xycs.lingyuereader.data.PackTools
+import com.xycs.lingyuereader.data.aiPack
+import com.xycs.lingyuereader.data.chapterHints
+import com.xycs.lingyuereader.data.packTools
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.GateResult
@@ -186,7 +193,9 @@ class WritingAi(
                     WriteAiTask.Review -> "读者点评"
                     WriteAiTask.Consistency -> "矛盾检查"
                 }
-                val answer = ask(label, system, prompt) { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
+                val onPiece: (String) -> Unit = { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
+                val answer = if (task == WriteAiTask.Review) ask(label, system, prompt, onText = onPiece)
+                else askWithPack(label, workId, system, prompt, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false) ?: s }
                 // 灵感、点评、矛盾检查记下来，关了面板还能回头翻。
@@ -333,7 +342,10 @@ class WritingAi(
         val i = chapters.indexOfFirst { it.id == chapterId }
         val prev = chapters.getOrNull(i - 1)
         val card = WritePrompts.card(store.plannedCard(workId, chapterId).card, prev?.title, prev?.let { store.plannedCard(workId, it.id).card })
-        return listOfNotNull(store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, style)?.render(), card).joinToString("\n\n").ifEmpty { null }
+        // 能查设定包的模型：设定包整份在前面，这里只给本章提示（细纲原文、察觉、伏笔、前情、章目录）；
+        // 本机模型：按章挑选的资料。
+        val brief = if (canUsePack) store.chapterHints(workId, chapterId, text) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, style)?.render()
+        return listOfNotNull(brief, card).filter { it.isNotBlank() }.joinToString("\n\n").ifEmpty { null }
     }
 
     // ---------- 三道审稿 ----------
@@ -347,6 +359,71 @@ class WritingAi(
         _lastRequest.value = SentRequest(label, system, prompt, System.currentTimeMillis())
         return ai.ask(system, prompt, whole, onText)
     }
+
+    /** 知识库最多整份放多少字：作品里设了按设的，没设按模型的上下文算。 */
+    private suspend fun knowledgeBudget(workId: String): Int {
+        val set = assistOf(workId).knowledgeLimit
+        val c = ai.currentConfig
+        return if (set > 0) set else PackKnowledge.budget(c.contextTokens, c.protocol == AiProtocol.ANTHROPIC)
+    }
+
+    private val _lookup = MutableStateFlow<String?>(null)
+    /** AI 正在查什么（“读《第一卷细纲》 › 细纲”“搜「渡口」”）：界面上显示，查完清空。 */
+    val lookup: StateFlow<String?> = _lookup.asStateFlow()
+
+    /** 能用设定包工具的模型（联网的服务商）；本机模型上下文小、不能用工具，走按章挑选的资料。 */
+    private val canUsePack: Boolean get() = !localModel
+
+    /**
+     * 带设定包的请求：作者的工作说明和知识库放在系统提示最前面（文档不改就每次一样，服务商能按相同开头缓存），
+     * 后面是这次的规矩 [rest]（作品、文风、本章提示、细纲卡）；AI 可以用工具读按需的文档、搜关键词、读某一章正文。
+     * AI 决定去查时调 [onReset]：之前流出来的话不是回答，清掉。
+     */
+    private suspend fun askWithPack(
+        label: String,
+        workId: String,
+        rest: String,
+        prompt: String,
+        whole: Boolean = false,
+        maxTokens: Int? = null,
+        onReset: () -> Unit = {},
+        onText: (String) -> Unit = {},
+    ): String {
+        if (!canUsePack) return ask(label, rest, prompt, whole, onText)
+        val budget = knowledgeBudget(workId)
+        val (pack, tools) = withContext(Dispatchers.IO) { store.aiPack(workId, budget) to store.packTools(workId) }
+        val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + "\n\n" + WritePrompts.TOOL_GUIDE
+        _lastRequest.value = SentRequest(label, system, prompt, System.currentTimeMillis())
+        try {
+            return ai.converse(
+                system, prompt, PackTools.TOOLS,
+                run = { call ->
+                    val out = withContext(Dispatchers.IO) { tools.run(call) }
+                    _lookup.value = tools.lookups.lastOrNull()
+                    _lastRequest.update { it?.copy(lookups = tools.lookups.toList()) }
+                    out
+                },
+                cachePrefix = pack.prefix.length,
+                whole = whole,
+                maxTokens = maxTokens,
+                onLookup = { onReset() },
+                onText = onText,
+            )
+        } finally {
+            _lookup.value = null
+        }
+    }
+
+    /** 这部作品现在给 AI 的设定包（看“本章资料”用）；本机模型不用这一套，返回空。 */
+    suspend fun aiPack(workId: String): AiPack? {
+        if (!canUsePack) return null
+        val budget = knowledgeBudget(workId)
+        return withContext(Dispatchers.IO) { store.aiPack(workId, budget) }
+    }
+
+    /** 写一整章时回答的长度上限：这几家能放到 8K token（约五六千字），别家用默认。 */
+    private val draftTokens: Int?
+        get() = ai.currentConfig.preset.takeIf { it in setOf("deepseek", "qwen", "kimi") }?.let { 8_192 }
 
     /** 记一条写作 AI 的结果（灵感、点评、矛盾检查、写本章）。 */
     private suspend fun log(workId: String, chapterId: String, kind: String, ask: String, text: String) {
@@ -429,7 +506,7 @@ class WritingAi(
                                     val i = work.chapters.indexOfFirst { it.id == chapterId }
                                     chapterContext(workId, chapterId, text) to (work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
                                 }
-                                val answer = ask("事实关", WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true)
+                                val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true)
                                 reviewResult(gate, answer)
                             }
                         }
@@ -501,11 +578,11 @@ class WritingAi(
             val previous = work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty()
             val next = work.chapters.getOrNull(i + 1)
             val text = store.text(workId, chapterId)
-            val pack = store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render()
+            val pack = if (canUsePack) store.chapterHints(workId, chapterId, text) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render()
             WritePrompts.system(work.title, assistOf(workId), pack) to
                 WritePrompts.plan(chapter.title, previous, next?.let { store.plannedCard(workId, it.id).card }, next?.title, text)
         }
-        val answer = ask("拟细纲", system, prompt, whole = true)
+        val answer = askWithPack("拟细纲", workId, system, prompt, whole = true)
         val card = WritePrompts.parsePlan(answer)
         if (card.isEmpty) throw IllegalStateException("AI 没按格式回，换个模型或再试一次")
         log(workId, chapterId, "拟细纲", "", answer.trim())
@@ -632,7 +709,8 @@ class WritingAi(
                     val i = work.chapters.indexOfFirst { it.id == chapterId }
                     listOf(
                         chapterContext(workId, chapterId, store.text(workId, chapterId)).orEmpty(),
-                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(2_000) }.orEmpty(),
+                        // 上一章结尾：能查设定包的模型多给些（要更多它自己读），本机模型少给。
+                        work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(if (canUsePack) 6_000 else 2_000) }.orEmpty(),
                         writingRules(workId, chapterId, store.text(workId, chapterId)),
                         lengthOf(workId),
                     )
@@ -641,7 +719,13 @@ class WritingAi(
                 else WritePrompts.draftMore(chapter.title, prefix, rules, length)
                 val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true)
                 var written = ""
-                val answer = ask(if (prefix.isEmpty()) "写本章" else "接着写", system, prompt, whole = true) { piece ->
+                val answer = askWithPack(
+                    if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens,
+                    onReset = {
+                        written = ""
+                        _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = prefix) ?: d }
+                    },
+                ) { piece ->
                     written += piece
                     _draft.update { d -> d?.takeIf { it.chapterId == chapterId }?.copy(text = prefix + written) ?: d }
                 }
@@ -746,6 +830,13 @@ data class DraftState(
 )
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
-data class SentRequest(val label: String, val system: String, val prompt: String, val at: Long) {
+data class SentRequest(
+    val label: String,
+    val system: String,
+    val prompt: String,
+    val at: Long,
+    /** AI 用工具查了什么（读了哪份文档、哪一节，搜了什么，读了哪一章）。 */
+    val lookups: List<String> = emptyList(),
+) {
     val size: Int get() = system.length + prompt.length
 }

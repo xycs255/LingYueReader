@@ -45,6 +45,10 @@ object WritePrompts {
     /** 整章点评、矛盾检查最多发多少字。 */
     const val CHAPTER_CHARS = 14_000
 
+    /** 能查设定包时加在系统提示后面：要用就查，别凭印象编；查完直接作答。 */
+    const val TOOL_GUIDE = "设定包里没整份给出的内容（某一章正文、细纲原文、某个人物、某个数字、谁什么时候知道了什么），" +
+        "拿不准就先用工具查，不要凭印象编。查够了就直接作答：回答里不要复述查到的资料，也不要说你查了什么。"
+
     /** [pack] 是拼好的设定包（见 [com.xycs.lingyuereader.data.PackContext]），为空时不带设定。 */
     fun system(title: String, assist: WorkAssist, pack: String? = null, examples: Boolean = false): String = buildString {
         append("你是写作软件“灵阅”里的编辑助手，在帮作者写长篇小说")

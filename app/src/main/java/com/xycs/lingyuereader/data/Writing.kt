@@ -113,12 +113,15 @@ data class WorkAssist(
     val declined: List<StyleExample> = emptyList(),
     /** 本章资料最多带多少字（上下文长的模型可以放宽）。 */
     val briefLimit: Int = 12_000,
+    /** 设定包的知识库最多整份放多少字；0 按模型的上下文算。 */
+    val knowledgeLimit: Int = 0,
 ) {
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
         const val KEEP_REJECTED = 10
         val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
+        val KNOWLEDGE_LIMITS = listOf(0, 30_000, 60_000, 100_000, 150_000, 300_000)
     }
 }
 
@@ -882,6 +885,7 @@ class WorkStore(private val root: File) {
             .put("accepted", JSONArray().apply { accepted.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
             .put("declined", JSONArray().apply { declined.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
             .put("briefLimit", briefLimit)
+            .put("knowledgeLimit", knowledgeLimit)
 
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
@@ -906,6 +910,7 @@ class WorkStore(private val root: File) {
                     }
                 },
                 briefLimit = optInt("briefLimit", 12_000),
+                knowledgeLimit = optInt("knowledgeLimit", 0),
             )
         }
 

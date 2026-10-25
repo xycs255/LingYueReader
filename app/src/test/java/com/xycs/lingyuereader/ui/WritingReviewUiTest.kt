@@ -127,10 +127,10 @@ class WritingReviewUiTest {
         waitForText("三、规则关 · 1 处")
         waitForText("「笑了笑」1 处，不用")
 
-        // 事实关带上了本章资料：出场人物的人物卡、还不该知道的事、该回收的伏笔、上一章结尾。
+        // 事实关：设定包的知识库整份在前面（人物档案、察觉表），后面是这一章的提示：出场人物、还不该知道的事、该回收的伏笔。
         val (system, user) = asked.first { "请做事实审稿" in it.second }
-        assertTrue("【人物·林月】" in system)
-        assertFalse("【人物·沈默】" in system)
+        assertTrue("=== 知识库（整份） ===" in system && "【人物档案】（人物档案）" in system && "【察觉表】（察觉表）" in system)
+        assertTrue("【这一章出场或提到的人物】林月" in system)
         assertTrue("杜娘说出玉佩来历" in system.substringAfter("还没发生"))
         assertTrue("【计划在这一章回收的伏笔】\n- 半块玉佩" in system)
         assertTrue(chapterText in user)

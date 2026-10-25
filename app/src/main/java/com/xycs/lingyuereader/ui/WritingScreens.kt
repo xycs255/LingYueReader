@@ -719,6 +719,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var issuesOpen by remember { mutableStateOf(false) }
     val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
+    val aiLookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     val realtime by vm.writingAi.realtime.collectAsStateWithLifecycle()
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -965,6 +966,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 if (panel != null && current != null) {
                     WriteAiPanel(
                         panel,
+                        lookup = aiLookup,
                         model = "${aiConfig.providerLabel} · ${aiConfig.model}",
                         onAccept = { result ->
                             val task = panel.task as WriteAiTask.Edit

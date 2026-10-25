@@ -64,6 +64,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val draft = state?.takeIf { it.workId == workId && it.chapterId == chapterId }
     val text = draft?.text.orEmpty()
     val loading = draft?.loading == true
+    val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // 写完以后按检查规则看一遍（本机算）。
     val hits by produceState<Int?>(null, text, loading) {
         value = if (loading || text.isBlank()) null else vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { CheckRules.check(text, it).hits.size }
@@ -132,7 +133,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         GroupedSection(
                             header = buildString {
                                 append("草稿 · ${WordCount.of(text)} 字")
-                                if (loading) append(" · 正在写……")
+                                if (loading) append(lookup?.let { " · 正在查：$it" } ?: " · 正在写……")
                                 hits?.let { append(if (it == 0) " · 合规则" else " · $it 条不合规则") }
                             },
                         ) {

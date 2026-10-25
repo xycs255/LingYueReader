@@ -220,6 +220,8 @@ internal fun WriteAiPanel(
     state: WriteAiState,
     model: String,
     onAccept: (String) -> Unit,
+    /** AI 正在查设定包的什么（查完为空）。 */
+    lookup: String? = null,
     onInsert: (String) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
@@ -239,7 +241,7 @@ internal fun WriteAiPanel(
             Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
             Text(task.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 6.dp))
             Text(
-                if (state.loading) "  生成中……" else "  $model 生成，可能有误",
+                if (state.loading) lookup?.let { "  正在查：$it" } ?: "  生成中……" else "  $model 生成，可能有误",
                 color = c.tertiary,
                 fontSize = 12.sp,
                 maxLines = 1,
@@ -438,11 +440,21 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         }
                     }
                     GroupedSection(
-                        header = "本章资料",
-                        footer = "请 AI 时最多带多少字的设定资料（人物卡、前情、察觉、伏笔、相关细纲）。上下文长的模型可以放宽；本机模型总是只带一小段。",
+                        header = "设定包",
+                        footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
+                            "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
+                            "放得越多，AI 越不用查，但每次请求越大（相同的开头服务商会缓存，后面几次便宜很多）。" +
+                            "本章资料字数上限只给本机模型用：它不能自己查，按章挑着带。",
                     ) {
                         row {
-                            PickerRow("字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                            PickerRow(
+                                "知识库上限",
+                                WorkAssist.KNOWLEDGE_LIMITS.map { it to if (it == 0) "按模型" else "${it / 10_000} 万字" },
+                                assist.knowledgeLimit,
+                            ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
+                        }
+                        row {
+                            PickerRow("本章资料字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
                                 vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
                             }
                         }

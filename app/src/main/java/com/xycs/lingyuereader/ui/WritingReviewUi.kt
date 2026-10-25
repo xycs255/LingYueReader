@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.BriefItem
+import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.PackKind
@@ -106,14 +107,31 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var brief by remember { mutableStateOf<ChapterBrief?>(null) }
     var loaded by remember { mutableStateOf(false) }
     var open by remember { mutableStateOf<BriefItem?>(null) }
-    LaunchedEffect(workId, chapterId) {
+    var pack by remember { mutableStateOf<AiPack?>(null) }
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    LaunchedEffect(workId, chapterId, aiConfig) {
         brief = vm.writing.brief(workId, chapterId)
+        pack = runCatching { vm.writingAi.aiPack(workId) }.getOrNull()
         loaded = true
     }
     val c = LocalGroupedColors.current
     WritingPage(vm, "本章资料", content = {
         item {
             val b = brief
+            val p = pack
+            // 联网的服务商：设定包照作者的工作说明整份给，AI 自己查；这里列出它拿到了什么，下面是随这一章带的提示。
+            if (p != null && (p.instructions.isNotEmpty() || p.knowledge.isNotEmpty() || p.onDemand.isNotEmpty())) {
+                GroupedSection(
+                    header = "AI 拿到的设定包",
+                    footer = "照你在设定包里写的工作说明办：工作说明和知识库整份放在每次请求的最前面（文档不改就不变，DeepSeek 这类服务商会缓存，" +
+                        "后面几次便宜很多）；没整份给出的文档，AI 看目录自己读、按关键词搜，已写的章也能读全文。" +
+                        "知识库按模型的上下文最多放约 ${p.budget / 10_000} 万字，放不下时从最大的一份起改成按需查；上限可以在作品的 AI 设置里改。",
+                ) {
+                    p.instructions.forEach { d -> row { TwoLineRow(d.title, "工作说明 · 放在最前面") } }
+                    p.knowledge.forEach { d -> row { TwoLineRow(d.title, "知识库 · 整份 · ${d.kind.label}") } }
+                    p.onDemand.forEach { d -> row { TwoLineRow(d.title, (if (d in p.overflow) "知识库放不下，改为按需查" else "按需查阅") + " · ${d.kind.label}", titleColor = if (d in p.overflow) Color(0xFFFF9500) else null) } }
+                }
+            }
             if (loaded && (b == null || b.isEmpty)) {
                 GroupedSection(footer = "设定包里放了文档，这里就会按章挑出要带给 AI 的部分。") {
                     row { Text("还没有可带的资料。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp)) }
@@ -122,10 +140,14 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             if (b != null && !b.isEmpty) {
                 val total = b.render()?.length ?: 0
                 GroupedSection(
-                    footer = "请 AI 改稿、给灵感、查矛盾、审稿、写本章时带上这些，约 $total 字。人物按名字、称呼在正文和细纲卡里认；" +
-                        "察觉表按“第几章”“第几卷”分已知道和还不该知道；前几章没写摘要的用它们的细纲当前情。" +
-                        "短的常用文档整份带，长的（总纲、人物档案这类）切成小块，单独写到这一章的、写到出场人物的、和细纲用词相近的先带，" +
-                        "“第一至四十章”这样的大范围不算，隔了一卷以上的后文不带。",
+                    header = if (p != null) "随这一章带的提示" else null,
+                    footer = if (p != null) {
+                        "设定包里写这一章的原文、出场人物、前情、伏笔、还不该知道的事，随每次请求带上，AI 不用自己去找。"
+                    } else {
+                        "本机模型上下文小、不能自己查，按章挑着带，约 $total 字。人物按名字、称呼在正文和细纲卡里认；" +
+                            "察觉表按“第几章”“第几卷”分已知道和还不该知道；前几章没写摘要的用它们的细纲当前情。" +
+                            "短的常用文档整份带，长的切成小块，单独写到这一章的、写到出场人物的、和细纲用词相近的先带，隔了一卷以上的后文不带。"
+                    },
                 ) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -134,7 +156,8 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                 }
-                b.items.groupBy { it.group }.forEach { (group, list) ->
+                // 联网的服务商：设定包整份给了，按块挑的那些不再带，只列前情。
+                b.items.filter { p == null || it.group == "前情" }.groupBy { it.group }.forEach { (group, list) ->
                     GroupedSection(header = group) {
                         list.forEach { it -> row { TwoLineRow(it.title, it.reason + " · ${it.text.length} 字", maxLines = 1) { open = it } } }
                     }

@@ -20,6 +20,8 @@ data class AiPreset(
     val model: String,
     /** 去哪里申请密钥。 */
     val keySite: String,
+    /** 上下文多大（token）：写作 AI 按它决定设定包的知识库能整份放进多少。 */
+    val context: Int = 64_000,
 )
 
 object AiPresets {
@@ -28,12 +30,12 @@ object AiPresets {
     const val DEVICE = "device"
 
     val ALL = listOf(
-        AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com"),
-        AiPreset("qwen", "通义千问", AiProtocol.OPENAI, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "阿里云百炼控制台"),
-        AiPreset("kimi", "Kimi", AiProtocol.OPENAI, "https://api.moonshot.cn/v1", "kimi-latest", "platform.moonshot.cn"),
-        AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn"),
-        AiPreset("claude", "Claude", AiProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-opus-5-5", "console.anthropic.com"),
-        AiPreset(LOCAL, "局域网模型", AiProtocol.OPENAI, "http://192.168.1.2:11434/v1", "qwen3:8b", ""),
+        AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com", 128_000),
+        AiPreset("qwen", "通义千问", AiProtocol.OPENAI, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "阿里云百炼控制台", 128_000),
+        AiPreset("kimi", "Kimi", AiProtocol.OPENAI, "https://api.moonshot.cn/v1", "kimi-latest", "platform.moonshot.cn", 128_000),
+        AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn", 128_000),
+        AiPreset("claude", "Claude", AiProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-opus-5-5", "console.anthropic.com", 200_000),
+        AiPreset(LOCAL, "局域网模型", AiProtocol.OPENAI, "http://192.168.1.2:11434/v1", "qwen3:8b", "", 32_000),
         AiPreset(DEVICE, "本机模型（离线）", AiProtocol.DEVICE, "", "", ""),
         AiPreset(CUSTOM, "自定义", AiProtocol.OPENAI, "", "", ""),
     )
@@ -101,6 +103,9 @@ data class AiConfig(
 
     /** 地址、模型、密钥都填了（局域网里的模型可以不要密钥）。 */
     val complete: Boolean get() = if (onDevice) model.isNotBlank() else baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+
+    /** 模型的上下文大约多大（token）：按选的服务商。 */
+    val contextTokens: Int get() = AiPresets.of(preset).context
 
     /** 用本机模型：不联网，上下文短。 */
     val onDevice: Boolean get() = protocol == AiProtocol.DEVICE

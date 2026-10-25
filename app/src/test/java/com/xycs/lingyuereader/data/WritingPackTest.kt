@@ -23,7 +23,7 @@ class WritingPackTest {
     @Test
     fun fileNamesAreSortedIntoKinds() {
         val cases = mapOf(
-            "00_使用说明.md" to PackKind.REFERENCE,
+            "00_使用说明.md" to PackKind.INSTRUCTION,
             "全本总纲.txt" to PackKind.OUTLINE,
             "人物设定档案.md" to PackKind.CHARACTER,
             "对白与人物语气.md" to PackKind.VOICE,
