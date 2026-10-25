@@ -1370,7 +1370,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 knowledgeLimit = optInt("knowledgeLimit", 0),
                 suggestKinds = optJSONArray("suggestKinds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: WorkAssist.SUGGEST_KINDS,
                 suggestGap = optInt("suggestGap", 20),
-                suggestCap = optInt("suggestCap", 200),
+                suggestCap = optInt("suggestCap", 50),
             )
         }
 

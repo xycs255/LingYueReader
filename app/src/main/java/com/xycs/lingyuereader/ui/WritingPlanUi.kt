@@ -34,7 +34,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewModelScope
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChangeEntry
@@ -224,11 +223,13 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
         val base = saved ?: return@LaunchedEffect
         if (now == base) return@LaunchedEffect
         delay(600)
-        val merged = mergeCard(base, now, vm.writing.cards(workId, chapterId).first.card)
-        vm.writing.saveCard(workId, chapterId, merged)
-        saved = merged
-        // 别处写进来的（比如 AI 补的摘要）也显示出来。
-        if (merged != now) card = merged
+        // 合并在写盘队列里、和读最新卡片在同一把锁里做，补写摘要这时写进来也不会丢。
+        saved = now
+        vm.writing.updateCard(workId, chapterId, { latest -> mergeCard(base, now, latest) }) { merged ->
+            saved = merged
+            // 别处写进来的（比如 AI 补的摘要）也显示出来；这期间作者又改了的就不动。
+            if (merged != now && card == now) card = merged
+        }
     }
     val latest by rememberUpdatedState(card)
     val latestSaved by rememberUpdatedState(saved)
@@ -237,7 +238,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
             val now = latest
             val base = latestSaved
             if (now != null && base != null && now != base) {
-                vm.viewModelScope.launch { vm.writing.saveCard(workId, chapterId, mergeCard(base, now, vm.writing.cards(workId, chapterId).first.card)) }
+                vm.writing.updateCard(workId, chapterId, { latest -> mergeCard(base, now, latest) })
             }
         }
     }

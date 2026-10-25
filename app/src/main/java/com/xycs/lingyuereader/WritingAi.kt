@@ -874,14 +874,9 @@ class WritingAi(
                         }
                         val text = summarize(workId, c.id)
                         // 写入前重新读一次卡片：只填摘要，别的项用最新的；摘要已经有了就不动。
+                        // 在同一把锁里读改写：细纲卡页面这时存卡也不会和这里互相盖掉。
                         val wrote = withContext(Dispatchers.IO) {
-                            val latest = store.card(workId, c.id)
-                            if (latest.summary.isNotBlank()) {
-                                false
-                            } else {
-                                store.saveCard(workId, c.id, latest.copy(summary = text))
-                                true
-                            }
+                            store.updateCard(workId, c.id) { latest -> if (latest.summary.isBlank()) latest.copy(summary = text) else latest }.summary == text
                         }
                         if (!wrote) skipped++
                     } catch (e: CancellationException) {
