@@ -1242,3 +1242,43 @@ internal fun BarTextAction(text: String, onClick: () -> Unit, enabled: Boolean =
             .padding(horizontal = 10.dp, vertical = 12.dp),
     )
 }
+
+/**
+ * 长列表里的一格：同一组的格子连成一张圆角卡片（首格上面圆角、末格下面圆角），和 [GroupedSection] 一个样子，
+ * 但能懒加载、每格能单独做增删动画（LazyColumn 的 items + animateItem）。[last] 那格下面留出 [gap]：
+ * 卡片之间 12dp，下面紧跟说明小字时 8dp（[GroupedListFooter]）。
+ */
+@Composable
+internal fun GroupedListCell(first: Boolean, last: Boolean, modifier: Modifier = Modifier, gap: Dp = 12.dp, content: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    val r = 16.dp
+    val shape = RoundedCornerShape(
+        topStart = if (first) r else 0.dp,
+        topEnd = if (first) r else 0.dp,
+        bottomStart = if (last) r else 0.dp,
+        bottomEnd = if (last) r else 0.dp,
+    )
+    Box(modifier.fillMaxWidth().padding(bottom = if (last) gap else 0.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
+            content()
+        }
+    }
+}
+
+/** 长列表的组名：和 [GroupedSection] 的组名一样，卡片上方的灰色小字。 */
+@Composable
+internal fun GroupedListHeader(text: String, modifier: Modifier = Modifier) {
+    SmallTitle(text, modifier = modifier, textColor = LocalGroupedColors.current.secondary)
+}
+
+/** 长列表卡片下的说明小字（和 [GroupedSection] 的 footer 一样）：末格用 `gap = 8.dp`，下面再留 12dp。 */
+@Composable
+internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = LocalGroupedColors.current.secondary,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
+    )
+}

@@ -151,7 +151,7 @@ internal fun CatalogSheet(
                         LazyColumn(state = state, contentPadding = PaddingValues(bottom = 16.dp)) {
                             itemsIndexed(chapters) { index, chapter ->
                                 val now = index == current
-                                GroupedListCell(index, chapters.size, separatorStart = 50.dp) {
+                                GroupedListCell(index == 0, index == chapters.size - 1, gap = 0.dp) {
                                     // 一行：序号、章名（宋体）、右边本章要读多久；正在读的那章铺一层淡强调色，写读到百分之几。
                                     Row(
                                         Modifier
@@ -202,7 +202,7 @@ internal fun CatalogSheet(
                         LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                             itemsIndexed(list, key = { _, b -> b.id }) { i, b ->
                                 // 删掉一条：它淡出，下面的平滑补上来。
-                                GroupedListCell(i, list.size, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                                GroupedListCell(i == 0, i == list.size - 1, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()), gap = 0.dp) {
                                     MarkRow(
                                         title = if (b.lost) "原文已改动 · ${b.chapterTitle}" else chapters.getOrNull(b.chapterIndex)?.title ?: b.chapterTitle,
                                         body = b.excerpt,
@@ -225,7 +225,7 @@ internal fun CatalogSheet(
                                 GroupedSection { row { ActionRow("导出全部批注（Markdown）", onClick = onExportNotes) } }
                             }
                             itemsIndexed(list, key = { _, n -> n.id }) { i, n ->
-                                GroupedListCell(i, list.size, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+                                GroupedListCell(i == 0, i == list.size - 1, Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()), gap = 0.dp) {
                                     MarkRow(
                                         title = if (n.lost) "原文已改动 · ${n.chapterTitle}" else chapters.getOrNull(n.chapterIndex)?.title ?: n.chapterTitle,
                                         body = n.quote,
@@ -242,29 +242,6 @@ internal fun CatalogSheet(
                 }
             }
         }
-    }
-}
-
-/** 长列表里的一格：同一组的格子连成一张圆角卡片（首尾圆角、中间细线），像分组列表但可以懒加载。 */
-@Composable
-private fun GroupedListCell(
-    index: Int,
-    count: Int,
-    modifier: Modifier = Modifier,
-    @Suppress("UNUSED_PARAMETER") separatorStart: Dp = 0.dp,
-    content: @Composable () -> Unit,
-) {
-    val c = LocalGroupedColors.current
-    val r = 16.dp
-    val shape = RoundedCornerShape(
-        topStart = if (index == 0) r else 0.dp,
-        topEnd = if (index == 0) r else 0.dp,
-        bottomStart = if (index == count - 1) r else 0.dp,
-        bottomEnd = if (index == count - 1) r else 0.dp,
-    )
-    // miuix 卡片里不画分隔线，一行行靠留白分开。
-    Column(modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(shape).background(c.cell)) {
-        content()
     }
 }
 
