@@ -621,7 +621,7 @@ private fun LedgerHistory(vm: AppViewModel, workId: String, padding: PaddingValu
             else -> {
                 itemsIndexed(list, key = { _, v -> v.at }) { i, v ->
                     GroupedListCell(i == 0, i == list.lastIndex, gap = 8.dp) {
-                        NavRow(whenLabel(v.at), value = "${v.count} 条", subtitle = "“${v.label}”之前") { onOpen(v) }
+                        NavRow(whenLabel(v.at), value = "${v.count} 条", subtitle = "${v.label}前的样子") { onOpen(v) }
                     }
                 }
                 item(key = "footer") { GroupedListFooter(rule) }

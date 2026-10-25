@@ -226,7 +226,7 @@ class LedgerUiTest {
         waitForText("历史版本")
         compose.onNodeWithText("历史版本").performClick()
         waitForText("4 条")
-        waitForText("“手动删除”之前")
+        waitForText("手动删除前的样子")
         compose.onNodeWithText("4 条").performClick()
         // 那一版的条目：船还在。
         waitForText("换回这个版本")

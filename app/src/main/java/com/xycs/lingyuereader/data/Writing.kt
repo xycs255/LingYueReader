@@ -502,7 +502,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val old = ledgerVersion(workId, at) ?: return false
         val now = ledger(workId)
         if (old == now) return true
-        saveLedger(workId, now, old, "换回之前的版本")
+        saveLedger(workId, now, old, "换回旧版本")
         return true
     }
 

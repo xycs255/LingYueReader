@@ -172,6 +172,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     ) {
                         rows.take(LEDGER_ROWS).forEach { r -> row { TwoLine(r.title, r.subtitle, trailing = r.tag?.let { t -> { Tag(t, c.warning) } }) } }
                         if (rows.size > LEDGER_ROWS) row { EmptyRow("还有 ${rows.size - LEDGER_ROWS} 条没列出") }
+                        row { NavRow("打开故事账本") { vm.open(Screen.WorkLedger(workId, chapterId)) } }
                     }
                 }
                 groups(b.items.drop(b.ledgerAt))
