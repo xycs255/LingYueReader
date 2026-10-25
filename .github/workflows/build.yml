@@ -77,3 +77,14 @@ jobs:
             app/build/outputs/ui-check/night-catalog.png
             app/build/outputs/ui-check/night-typography.png
           if-no-files-found: error
+      - name: Verify motion UI previews
+        run: |
+          test -s app/build/outputs/ui-check/import-modes.png
+          test -s app/build/outputs/ui-check/page-mode-preview.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LingYueReader-motion-ui
+          path: |
+            app/build/outputs/ui-check/import-modes.png
+            app/build/outputs/ui-check/page-mode-preview.png
+          if-no-files-found: error
