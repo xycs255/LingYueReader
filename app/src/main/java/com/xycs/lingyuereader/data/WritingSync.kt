@@ -5,7 +5,7 @@ package com.xycs.lingyuereader.data
  * 作者逐条勾选、改过，才写进设定包。这里是不联网的部分：定位写进哪份文档哪一处、写进去、记下哪些章整理过。
  */
 
-/** 整理过的一章：整理时正文的哈希（[String.hashCode]，和审稿记的一样）、什么时候整理的。 */
+/** 整理过的一章：整理时正文的哈希（[ChapterSyncs.hash]，早先记的是 [String.hashCode]，也认）、什么时候整理的。 */
 data class SyncMark(val hash: Int, val at: Long)
 
 /** 整理结果的三组。 */
@@ -71,8 +71,25 @@ data class SyncItem(
 }
 
 object ChapterSyncs {
-    /** 这一章整理过、整理以后正文没改过。 */
-    fun isSynced(mark: SyncMark?, text: String): Boolean = mark != null && mark.hash == text.hashCode()
+    /** 半角标点、各式引号对应的统一写法（只用来算哈希）。 */
+    private val PUNCT = mapOf(
+        ',' to '，', '.' to '。', ';' to '；', ':' to '：', '?' to '？', '!' to '！', '(' to '（', ')' to '）', '~' to '～',
+        '“' to '"', '”' to '"', '「' to '"', '」' to '"', '＂' to '"', '‘' to '\'', '’' to '\'', '『' to '\'', '』' to '\'', '＇' to '\'',
+    )
+
+    /** 去掉所有空白，统一全半角标点、引号、省略号、破折号：只改了排版的正文规范化以后一样。 */
+    internal fun normalize(text: String): String {
+        val t = text.replace(Regex("[\\s\\u3000\\u00A0]+"), "")
+            .replace(Regex("\\.{3,}|。{3,}|…+|⋯+"), "…")
+            .replace(Regex("-{2,}|－{2,}|—+|―+|─+"), "—")
+        return buildString(t.length) { t.forEach { append(PUNCT[it] ?: it) } }
+    }
+
+    /** 记“已整理”用的哈希：先规范化再算，只改标点、空行的排版不会让整章变回“未整理”。 */
+    fun hash(text: String): Int = normalize(text).hashCode()
+
+    /** 这一章整理过、整理以后正文没改过（排版不算改过）。早先记的是正文直接的哈希，也认。 */
+    fun isSynced(mark: SyncMark?, text: String): Boolean = mark != null && (mark.hash == hash(text) || mark.hash == text.hashCode())
 
     /** 有正文、还没整理（或整理以后正文改过）的章，按目录顺序。没整理过的章不用读正文。 */
     fun unsynced(chapters: List<WorkChapter>, marks: Map<String, SyncMark>, text: (String) -> String): List<WorkChapter> =
@@ -144,6 +161,88 @@ object PackSync {
         return lines.indexOfFirst { Regex("^[-*]\\s*\\**$a\\**\\s*[：:]").containsMatchIn(it.trim()) }
     }
 
+    /** [anchor] 那一节（标题下面到下一个同级标题）的各行，或写成“- 名字：……”的那一条；都没有是 null。 */
+    private fun section(lines: List<String>, anchor: String): List<String>? {
+        val h = heading(lines, anchor)
+        if (h >= 0) {
+            val level = lines[h].trim().takeWhile { it == '#' }.length
+            var stop = h + 1
+            while (stop < lines.size && !Regex("^#{1,$level}\\s").containsMatchIn(lines[stop].trim())) stop++
+            return lines.subList(h + 1, stop)
+        }
+        return bullet(lines, anchor).takeIf { it >= 0 }?.let { listOf(lines[it]) }
+    }
+
+    /** 这几行里已经有“第N章”开头的一行（或一条里有“；第N章”）：本章的经历记过了。 */
+    private fun hasChapter(lines: List<String>, chapter: Int): Boolean {
+        val r = Regex("(^[-*]?\\s*|[；;]\\s*)第\\s*$chapter\\s*章")
+        return lines.any { r.containsMatchIn(it.trim()) }
+    }
+
+    /** “- 第N章：……”这样记本章经历的一行，返回 N。 */
+    private fun chapterOf(line: String): Int? = Regex("^[-*]?\\s*第\\s*(\\d+)\\s*章").find(line.trim())?.groupValues?.get(1)?.toIntOrNull()
+
+    /** 察觉 [who] 知道 [what] 在 [text] 里已经有了（表格的一行，或“- 谁：……”的一条）。 */
+    private fun knownAwareness(text: String, who: String, what: String): Boolean {
+        val inTable = MdTable.parse(text).any { t ->
+            val whoCol = t.column("人物", "谁", "角色")
+            val whatCol = t.column("知道", "内容", "什么", "事情", "察觉", "知情")
+            whatCol >= 0 && t.rows.any { cells ->
+                val rowWho = t.cell(cells, whoCol)
+                (whoCol < 0 || rowWho.contains(who) || (rowWho.isNotBlank() && who.contains(rowWho))) && similar(t.cell(cells, whatCol), what)
+            }
+        }
+        return inTable || text.lines().any { l -> Regex("^[-*]\\s*${Regex.escape(who)}\\s*[：:]").containsMatchIn(l.trim()) && similar(l.trim().substringAfter('：').substringAfter(':'), what) }
+    }
+
+    /** 察觉的“谁”。 */
+    private fun whoOf(item: SyncItem) = item.field("人物").ifBlank { item.name }.trim()
+
+    /**
+     * 两条提议说的是不是同一个新人物、同一处地方（同名），或同一个人知道了同一件事（跨章、分段去重用）。
+     * 给已有人物补本章经历的（追加到他那一节的）每章各记各的，不算重复；冲突不比。
+     */
+    fun sameThing(a: SyncItem, b: SyncItem): Boolean {
+        if (a.group != b.group) return false
+        return when (a.group) {
+            SyncGroup.NEW -> {
+                fun supplement(i: SyncItem) = i.kind == PackKind.CHARACTER && i.place == SyncPlace.SECTION
+                val n = clean(a.name)
+                n.isNotEmpty() && n == clean(b.name) && (a.kind == PackKind.CHARACTER) == (b.kind == PackKind.CHARACTER) && !supplement(a) && !supplement(b)
+            }
+            SyncGroup.AWARENESS -> whoOf(a).let { it.isNotEmpty() && it == whoOf(b) } && similar(a.field("知道什么"), b.field("知道什么"))
+            SyncGroup.CONFLICT -> false
+        }
+    }
+
+    /**
+     * 同一章分段整理时几段提的同一个人、同一件事并成一条：留前面那条；人物的称呼、身份、关系空着的用后面的补上，本章经历接在后面。
+     */
+    fun merge(items: List<SyncItem>): List<SyncItem> {
+        val out = mutableListOf<SyncItem>()
+        items.forEach { item ->
+            val i = out.indexOfFirst { it.chapterId == item.chapterId && sameThing(it, item) }
+            if (i < 0) {
+                out += item
+                return@forEach
+            }
+            val first = out[i]
+            if (first.kind != PackKind.CHARACTER || first.group != SyncGroup.NEW) return@forEach
+            val names = (first.fields.map { it.first } + item.fields.map { it.first }).distinct()
+            out[i] = first.copy(fields = names.map { k ->
+                val a = first.field(k)
+                val b = item.field(k)
+                k to when {
+                    b.isBlank() || b in a -> a
+                    a.isBlank() -> b
+                    k == "本章" -> "$a；$b"
+                    else -> a
+                }
+            })
+        }
+        return out
+    }
+
     /** 两句说的是不是同一件事：去掉标点后一个包含另一个，或两两相连的字一半以上相同。 */
     internal fun similar(a: String, b: String): Boolean {
         fun norm(s: String) = s.replace(Regex("^(知道|得知|知晓|发现|察觉|明白)了?"), "").replace(Regex("[\\p{P}\\s]"), "")
@@ -196,12 +295,14 @@ object PackSync {
             val chapterLine = item.field("本章").takeIf { it.isNotBlank() }?.let { "- 第${item.chapter}章：$it" }
             if (known) {
                 // 已有的人物：有他那一节（或那一条）才补本章的新信息，在表格里的不重复提。
+                val owner = docs.filter { it.first.kind == PackKind.CHARACTER }.firstOrNull { d -> section(d.second.lines(), name) != null }
+                // 这一节里已经记过这一章（同一章再整理一次）：本章这一行不再追加。
+                val recorded = owner?.let { hasChapter(section(it.second.lines(), name).orEmpty(), item.chapter) } == true
                 val extra = listOfNotNull(
                     item.field("称呼").takeIf { it.isNotBlank() && it !in characterText }?.let { "- 称呼：$it" },
                     item.field("关系").takeIf { it.isNotBlank() && it !in characterText }?.let { "- 关系：$it" },
-                    chapterLine,
+                    chapterLine?.takeUnless { recorded },
                 )
-                val owner = docs.filter { it.first.kind == PackKind.CHARACTER }.firstOrNull { d -> d.second.lines().let { heading(it, name) >= 0 || bullet(it, name) >= 0 } }
                 if (owner == null || extra.isEmpty()) return null
                 return item.copy(title = "补充人物：$name").into(owner, SyncPlace.SECTION, extra.joinToString("\n"), name)
             }
@@ -291,8 +392,58 @@ object PackSync {
         return if (item.section.isNotBlank()) item.into(named, SyncPlace.SECTION, line, item.section.trim()) else item.into(named, SyncPlace.END, line)
     }
 
-    /** 把一条写进文档 [text]（新建的文档是空的）。位置在写的时候再找一次：同一份文档前面几条可能已经改过它。 */
-    fun apply(text: String, item: SyncItem): String {
+    /**
+     * 写之前用现在的文字 [text] 再查一遍：前面几条（批量时前面几章）可能已经写过同一个人、同一处地方、同一件事，
+     * 上次写到一半出错、重试时这一条可能已经写进去了。已经有的返回 null（跳过）；
+     * 写成一节（或一条）的人物已经有了，改成把本章这一行补进他那一节。
+     */
+    private fun recheck(text: String, item: SyncItem): SyncItem? {
+        if (text.isBlank()) return item
+        val add = item.text.trim('\n')
+        val lines = text.lines()
+        val have = lines.map { it.trim() }.filter { it.isNotEmpty() }.toHashSet()
+        // 原样写过了（重试）。
+        if (item.place == SyncPlace.REPLACE) {
+            if (item.anchor.isNotEmpty() && item.anchor !in text && add.trim() in text) return null
+        } else if (item.place != SyncPlace.SECTION && add.lines().all { it.isBlank() || it.trim() in have }) {
+            return null
+        }
+        val name = item.name.trim()
+        return when {
+            item.group == SyncGroup.NEW && item.kind == PackKind.CHARACTER && item.place != SyncPlace.SECTION -> {
+                if (name.isEmpty()) return item
+                if (section(lines, name) != null) {
+                    // 前面已经给他起了一节：只把本章的经历补进去（这一章已经记过的话，写的时候再跳过）。
+                    val did = item.field("本章").ifBlank { return null }
+                    return item.copy(place = SyncPlace.SECTION, anchor = name, text = "- 第${item.chapter}章：$did")
+                }
+                val inTable = MdTable.parse(text).any { t ->
+                    val col = t.column("人物", "角色", "姓名", "名字")
+                    col >= 0 && t.rows.any { clean(t.cell(it, col)) == clean(name) }
+                }
+                if (inTable) null else item
+            }
+            item.group == SyncGroup.NEW && item.kind != PackKind.CHARACTER -> if (name.length >= 2 && name in text) null else item
+            item.group == SyncGroup.AWARENESS -> {
+                val who = whoOf(item)
+                if (who.isNotEmpty() && knownAwareness(text, who, item.field("知道什么"))) null else item
+            }
+            else -> item
+        }
+    }
+
+    /** 要补进 [have]（某一节的各行）的几行里，去掉已经有的、已经记过那一章的。 */
+    private fun fresh(add: List<String>, have: List<String>): List<String> {
+        val set = have.map { it.trim() }.toHashSet()
+        return add.filter { l -> l.isNotBlank() && l.trim() !in set && chapterOf(l)?.let { hasChapter(have, it) } != true }
+    }
+
+    /**
+     * 把一条写进文档 [text]（新建的文档是空的）。位置在写的时候再找一次：同一份文档前面几条可能已经改过它；
+     * 已经写过的不再写（返回原文），所以重复执行也不会写出两份。
+     */
+    fun apply(text: String, planned: SyncItem): String {
+        val item = recheck(text, planned) ?: return text
         val add = item.text.trim('\n')
         if (add.isBlank()) return text
         fun end(t: String) = if (t.isBlank()) add else t.trimEnd() + "\n\n" + add
@@ -318,14 +469,20 @@ object PackSync {
                     val level = lines[h].trim().takeWhile { it == '#' }.length
                     var stop = h + 1
                     while (stop < lines.size && !Regex("^#{1,$level}\\s").containsMatchIn(lines[stop].trim())) stop++
+                    // 这一节里已经有的行、已经记过的那一章不再追加。
+                    val rest = fresh(add.lines(), lines.subList(h + 1, stop))
+                    if (rest.isEmpty()) return text
                     var at = stop
                     while (at - 1 > h && lines[at - 1].isBlank()) at--
-                    lines.addAll(at, add.lines())
+                    lines.addAll(at, rest)
                     return lines.joinToString("\n")
                 }
                 val b = bullet(lines, item.anchor)
                 if (b >= 0) {
-                    lines[b] = lines[b].trimEnd() + "；" + add.lines().joinToString("；") { it.trim().removePrefix("- ").removePrefix("* ") }
+                    val parts = add.lines().map { it.trim().removePrefix("- ").removePrefix("* ") }
+                        .filter { p -> p.isNotBlank() && p !in lines[b] && chapterOf(p)?.let { hasChapter(listOf(lines[b]), it) } != true }
+                    if (parts.isEmpty()) return text
+                    lines[b] = lines[b].trimEnd() + "；" + parts.joinToString("；")
                     return lines.joinToString("\n")
                 }
                 // 还没有这一节：在末尾新起一节。
@@ -338,6 +495,8 @@ object PackSync {
 /**
  * 把作者勾选的提议写进设定包：同一份文档的几条依次写进去，写之前把原来的文字存一个历史版本；
  * 没有对应文档的新建一份。每写一条在变更登记里记一笔“整理第 N 章：……”。返回写进了哪几份文档、各几条。
+ * 写的时候用已经写进去的文字再查一遍（[PackSync.apply]）：前几章写过的同一个人、上次写到一半出错已经写进去的，跳过、不计数，
+ * 所以出错以后重试不会写出两份。
  */
 fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int> {
     val work = requireNotNull(get(workId)) { "作品不在了" }
@@ -347,13 +506,21 @@ fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int>
     val counts = LinkedHashMap<String, Int>()
     val done = mutableListOf<Pair<SyncItem, String>>()
     items.filter { it.writable }.forEach { item ->
-        val id = item.docId?.takeIf { id -> docs.any { it.id == id } }
-        val title = if (id != null) docs.first { it.id == id }.title else item.docTitle.ifBlank { item.kind.label }
+        val fallback = item.docTitle.ifBlank { item.kind.label }
+        // 要新建的文档：上次写到一半出错时可能已经建好了，就写进那一份，不再建第二份。
+        val id = item.docId?.takeIf { id -> docs.any { it.id == id } } ?: docs.firstOrNull { it.kind == item.kind && it.title == fallback }?.id
+        val title = if (id != null) docs.first { it.id == id }.title else fallback
         if (id != null) {
-            changed[id] = PackSync.apply(changed[id] ?: packText(workId, id), item)
+            val before = changed[id] ?: packText(workId, id)
+            val after = PackSync.apply(before, item)
+            if (after == before) return@forEach
+            changed[id] = after
         } else {
             val key = item.kind to title
-            created[key] = PackSync.apply(created[key].orEmpty(), item)
+            val before = created[key].orEmpty()
+            val after = PackSync.apply(before, item)
+            if (after == before) return@forEach
+            created[key] = after
         }
         counts[title] = (counts[title] ?: 0) + 1
         done += item to title

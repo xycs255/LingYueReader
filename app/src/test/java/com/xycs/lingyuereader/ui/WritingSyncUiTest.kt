@@ -48,6 +48,9 @@ class WritingSyncUiTest {
     private var chapterId = ""
     private lateinit var server: HttpServer
     private val bodies: MutableList<JSONObject> = Collections.synchronizedList(mutableListOf())
+    /** 请求正文里含这几个字的回 500（模拟分段整理时有一段没成）。 */
+    @Volatile
+    private var failWhen: String? = null
     private val text = "渡口起了雾。\n杜娘把茶碗推给林月，说老周昨夜里走了。\n顾长风在门外喊她“月丫头”。\n林月这才知道沈默是朝廷的卧底。"
 
     private val answer = JSONObject()
@@ -75,6 +78,13 @@ class WritingSyncUiTest {
                 createContext("/v1/chat/completions") { ex ->
                     val body = JSONObject(ex.requestBody.readBytes().decodeToString())
                     bodies += body
+                    val fail = failWhen
+                    if (fail != null && fail in lastMessage(body)) {
+                        val err = JSONObject().put("error", JSONObject().put("message", "服务器忙")).toString().toByteArray()
+                        ex.sendResponseHeaders(500, err.size.toLong())
+                        runCatching { ex.responseBody.use { it.write(err) } }
+                        return@createContext
+                    }
                     val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("role", "assistant").put("content", "整理好了：\n```json\n$answer\n```")).put("finish_reason", "stop")))
                         .toString().toByteArray()
                     ex.responseHeaders.add("Content-Type", "application/json")
@@ -133,6 +143,11 @@ class WritingSyncUiTest {
         waitFor { seen(t) }
         compose.onNodeWithText(t).performClick()
     }
+
+    private fun lastMessage(body: JSONObject): String = body.getJSONArray("messages").let { it.getJSONObject(it.length() - 1).optString("content") }
+
+    /** 一章写得很长（两万来字）：开头是那几句有依据的，后面是凑字数的段落。 */
+    private fun longText(): String = text + "\n" + List(1_100) { "雾气贴着河面慢慢地散开，船桨一下一下地响。$it" }.joinToString("\n")
 
     private fun openSyncFromEditor() {
         compose.onNodeWithContentDescription("更多").performClick()
@@ -232,5 +247,68 @@ class WritingSyncUiTest {
         waitForText("新人物：杜娘")
         waitFor { !store.assist(workId).syncTip }
         assertTrue(store.get(workId)!!.chapter(chapterId)!!.locked)
+    }
+
+    @Test
+    fun aSingleChapterIsMergedIntoUnwrittenBatchResultsAndRepeatsAreNotPicked() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        val (_, two) = store.addChapter(workId, store.get(workId)!!.volumes[0].id, "第十三章 茶馆")!!
+        store.saveText(workId, two.id, text, count = false)
+        compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncAll(workId) }
+        waitFor { vm.writingAi.sync.value?.let { it.running == null && it.results.size == 2 } == true }
+        assertEquals(2, bodies.size)
+        // 两章都写到杜娘、渡口、林月知道沈默是卧底：后面那章的默认不勾，标“前面章已有”。
+        assertTrue(seen("前面章已有"))
+        assertTrue(seen("写进设定包（3 条）"))
+
+        // 还没写进去，又在编辑器里整理了第十二章：并进来，不冲掉第十三章的结果。
+        compose.runOnUiThread { vm.writingAi.syncChapter(workId, chapterId) }
+        waitForText("已并进还没写入的整理结果")
+        waitFor { vm.writingAi.sync.value?.let { it.running == null && it.results.size == 2 } == true }
+        assertEquals(setOf(chapterId, two.id), vm.writingAi.sync.value!!.results.map { it.chapterId }.toSet())
+        assertTrue(seen("写进设定包（3 条）"))
+
+        // 把后面那章的杜娘也勾上：写的时候再查一遍，人物档案里还是只有一行杜娘。
+        val repeat = vm.writingAi.sync.value!!.let { s -> s.items.first { it.key in s.repeats && it.title == "新人物：杜娘" } }
+        compose.runOnUiThread { vm.writingAi.toggleSync(repeat.key, true) }
+        // 等提示条收起（它盖在按钮上）。
+        waitFor { !has("已并进还没写入的整理结果") }
+        press("写进设定包（4 条）")
+        waitFor { store.assist(workId).synced.keys.containsAll(listOf(chapterId, two.id)) }
+        val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
+        assertEquals(1, store.packText(workId, people.id).lines().count { "杜娘" in it })
+    }
+
+    @Test
+    fun aLongChapterIsSyncedInPartsAndCountsAsSynced() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        store.saveText(workId, chapterId, longText(), count = false)
+        compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncChapter(workId, chapterId) }
+        waitForText("分 2 段整理")
+        // 两次请求：第二次带着前一段的末尾；两段提的同一个人并成一条。
+        assertEquals(2, bodies.size)
+        assertTrue("第 1 段" in lastMessage(bodies[0]) && "第 2 段" in lastMessage(bodies[1]) && "上一段的末尾" in lastMessage(bodies[1]))
+        assertEquals(1, vm.writingAi.sync.value!!.items.count { it.title == "新人物：杜娘" })
+        press("写进设定包（3 条）")
+        waitFor { store.assist(workId).synced.containsKey(chapterId) }
+    }
+
+    @Test
+    fun aFailedPartKeepsTheLongChapterUnsynced() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        store.saveText(workId, chapterId, longText(), count = false)
+        failWhen = "第 2 段"
+        compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncChapter(workId, chapterId) }
+        waitForText("没整理全")
+        assertEquals(2, bodies.size)
+        // 第一段的提议照样能写，但这一章不记为已整理。
+        press("写进设定包（3 条）")
+        val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
+        waitFor { "杜娘" in store.packText(workId, people.id) }
+        waitFor { vm.writingAi.sync.value == null }
+        assertFalse(store.assist(workId).synced.containsKey(chapterId))
     }
 }

@@ -637,8 +637,8 @@ class WritingAi(
     private fun characterNames(workId: String): List<String> =
         characterDocs(workId).flatMap { WritePrompts.characterNames(store.packText(workId, it.id)) }.distinct()
 
-    /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。 */
-    private fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false): String? {
+    /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。[upTo] 为真时章目录只列到这一章（查阅工具也只能读到这一章）。 */
+    private fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false, upTo: Boolean = false): String? {
         val work = store.get(workId) ?: return null
         val chapters = work.chapters
         val i = chapters.indexOfFirst { it.id == chapterId }
@@ -646,7 +646,7 @@ class WritingAi(
         val card = WritePrompts.card(store.plannedCard(workId, chapterId).card, prev?.title, prev?.let { store.plannedCard(workId, it.id).card })
         // 能查设定包的模型：设定包整份在前面，这里只给本章提示（细纲原文、察觉、伏笔、前情、章目录）；
         // 本机模型：按章挑选的资料。
-        val brief = if (canUsePack) store.chapterHints(workId, chapterId, text) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, style)?.render()
+        val brief = if (canUsePack) store.chapterHints(workId, chapterId, text, upTo) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, style)?.render()
         return listOfNotNull(brief, card).filter { it.isNotBlank() }.joinToString("\n\n").ifEmpty { null }
     }
 
@@ -1260,23 +1260,53 @@ class WritingAi(
     val sync: StateFlow<SyncSession?> = _sync.asStateFlow()
     private var syncJob: Job? = null
 
-    /** 整理一章：读这一章（[text] 是编辑框里现在的正文），带上设定包，一次请求，最多查两轮。 */
+    /**
+     * 整理一章：读这一章（[text] 是编辑框里现在的正文），带上设定包，一次请求，最多查两轮。
+     * 太长的章（超过 [WritePrompts.CHAPTER_CHARS] 字）在段落处分几段，每段一次请求（带上前一段的末尾），合起来去重；
+     * 花费记在同一个计量器上。有一段没整理成：其余几段的提议照样列出，但这一章带着 error，不记为已整理。
+     */
     private suspend fun syncOne(workId: String, chapterId: String, text: String): ChapterSyncResult {
         if (!canUsePack) throw IllegalStateException("本机模型上下文太小、不能查设定包，整理本章要用联网的 AI 服务商")
         val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
         val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
         val number = withContext(Dispatchers.IO) { store.chapterNo(work, chapterId) } ?: (work.chapters.indexOfFirst { it.id == chapterId } + 1)
-        val base = ChapterSyncResult(chapterId, chapter.title, number, text.hashCode())
+        val base = ChapterSyncResult(chapterId, chapter.title, number, ChapterSyncs.hash(text))
         if (text.isBlank()) return base.copy(error = "这一章还没有正文")
-        val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text) }
-        val answer = askWithPack(
-            "整理本章", workId, WritePrompts.system(work.title, assistOf(workId), hints), WritePrompts.sync(chapter.title, number, text),
-            whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
-        )
-        val parsed = WritePrompts.parseSync(answer, text, chapterId, number)
+        val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, upTo = true) }
+        val system = WritePrompts.system(work.title, assistOf(workId), hints)
+        val parts = WritePrompts.syncParts(text)
+        val meter = AiMeter(AiFeature.SYNC, workId)
+        val found = mutableListOf<SyncItem>()
+        var dropped = 0
+        var answered = 0
+        var failed: Pair<Int, Exception>? = null
+        parts.forEachIndexed { i, part ->
+            try {
+                val before = parts.getOrNull(i - 1)?.takeLast(WritePrompts.SYNC_OVERLAP).orEmpty()
+                val answer = askWithPack(
+                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before),
+                    whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId, meter = meter,
+                )
+                // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
+                val parsed = WritePrompts.parseSync(answer, text, chapterId, number)
+                found += parsed.items
+                dropped += parsed.dropped
+                answered++
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (failed == null) failed = i + 1 to e
+            }
+        }
+        // 一段都没整理成：和整章没整理成一样，报错。
+        failed?.let { (_, e) -> if (answered == 0) throw e }
+        val merged = PackSync.merge(found)
         val docs = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } }
-        val planned = PackSync.plan(parsed.items, docs)
-        return base.copy(items = planned, dropped = parsed.dropped, known = parsed.items.size - planned.size)
+        val planned = PackSync.plan(merged, docs)
+        return base.copy(
+            items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size,
+            error = failed?.let { (i, e) -> "第 $i 段（共 ${parts.size} 段）没整理成：${e.message ?: "请求失败"}；这一章先不记为已整理" },
+        )
     }
 
     /** 现在不能整理的原因（没设 AI、用的是本机模型）；能整理时为空。 */
@@ -1298,7 +1328,15 @@ class WritingAi(
             return
         }
         syncJob?.cancel()
-        _sync.value = SyncSession(workId, running = "", total = 1)
+        // 还有没写进设定包的结果（批量整理的几章、别的章）：这一章并进去，不冲掉。
+        val kept = _sync.value?.takeIf { s -> s.workId == workId && s.results.any { it.chapterId != chapterId } }
+        if (kept != null) {
+            val others = kept.results.count { it.chapterId != chapterId }
+            _sync.value = kept.copy(running = "", done = others, total = others + 1)
+            message("已并进还没写入的整理结果")
+        } else {
+            _sync.value = SyncSession(workId, running = "", total = 1)
+        }
         syncJob = scope.launch {
             val (title, body) = withContext(Dispatchers.IO) { store.get(workId)?.chapter(chapterId)?.title.orEmpty() to (text ?: store.text(workId, chapterId)) }
             _sync.update { s -> s?.copy(running = title) }
@@ -1307,9 +1345,9 @@ class WritingAi(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ChapterSyncResult(chapterId, title, 0, body.hashCode(), error = e.message ?: "请求失败")
+                ChapterSyncResult(chapterId, title, 0, ChapterSyncs.hash(body), error = e.message ?: "请求失败")
             }
-            _sync.update { s -> s?.takeIf { it.workId == workId }?.with(result)?.copy(running = null, done = 1) ?: s }
+            _sync.update { s -> s?.takeIf { it.workId == workId }?.with(result)?.let { it.copy(running = null, done = it.results.size, total = it.results.size) } ?: s }
         }
     }
 
@@ -1342,7 +1380,7 @@ class WritingAi(
                         throw e
                     } catch (e: Exception) {
                         failed++
-                        ChapterSyncResult(c.id, c.title, 0, text.hashCode(), error = e.message ?: "请求失败")
+                        ChapterSyncResult(c.id, c.title, 0, ChapterSyncs.hash(text), error = e.message ?: "请求失败")
                     }
                     _sync.update { it?.with(result) }
                     if (failed >= 3) throw IllegalStateException(result.error)
@@ -1383,9 +1421,10 @@ class WritingAi(
 
     /**
      * 把勾选的写进设定包（改过的按改过的写），写之前存历史版本、每条记一笔变更登记；
-     * 这次整理的各章（没出错的）记成已整理。[then] 拿到一句“写了几条进哪几份文档”。
+     * 这次整理的各章（没出错的）记成已整理。[then] 拿到一句“写了几条进哪几份文档”；写失败调 [failed]（界面把按钮放开，
+     * 可以重试，已经写进去的重试时跳过）。
      */
-    fun applySync(workId: String, then: (String) -> Unit = {}) {
+    fun applySync(workId: String, failed: () -> Unit = {}, then: (String) -> Unit = {}) {
         val session = _sync.value?.takeIf { it.workId == workId && it.running == null } ?: return
         val picked = session.items.filter { it.writable && it.key in session.picked }.map { i -> session.edits[i.key]?.let { i.copy(text = it) } ?: i }
         scope.launch {
@@ -1403,6 +1442,7 @@ class WritingAi(
                 throw e
             } catch (e: Exception) {
                 message("写进设定包失败：${e.message ?: "写入出错"}")
+                failed()
             }
         }
     }
@@ -1473,7 +1513,10 @@ data class SentRequest(
     val size: Int get() = system.length + prompt.length
 }
 
-/** 一章的整理结果：[hash] 是整理时正文的哈希；[dropped] 是正文里找不到原句丢掉的，[known] 是设定包里已有、没再列的。 */
+/**
+ * 一章的整理结果：[hash] 是整理时正文的哈希（[ChapterSyncs.hash]）；[dropped] 是正文里找不到原句丢掉的，[known] 是设定包里已有、没再列的；
+ * [parts] 是分了几段整理（太长的章）。有 [error] 的不记为已整理（分段时有一段没成，其余几段的 [items] 照样有）。
+ */
 data class ChapterSyncResult(
     val chapterId: String,
     val title: String,
@@ -1483,6 +1526,7 @@ data class ChapterSyncResult(
     val dropped: Int = 0,
     val known: Int = 0,
     val error: String? = null,
+    val parts: Int = 1,
 )
 
 /**
@@ -1501,8 +1545,29 @@ data class SyncSession(
 ) {
     val items: List<SyncItem> get() = results.flatMap { it.items }
 
-    /** 加上一章的结果：默认勾上新设定和察觉。 */
-    fun with(r: ChapterSyncResult): SyncSession =
-        copy(results = results.filterNot { it.chapterId == r.chapterId } + r, picked = picked + r.items.filter { it.defaultOn }.map { it.key })
+    /**
+     * 前面的章已经提过的同一个新人物、同一处地方、同一件事（按章号，同一章号按整理的先后）：
+     * 后面章的这几条默认不勾，结果页标“前面章已有”（勾上了，写的时候也会再查一遍，不会写出两份）。
+     */
+    val repeats: Set<String>
+        get() {
+            val seen = mutableListOf<SyncItem>()
+            val out = HashSet<String>()
+            results.withIndex().sortedWith(compareBy({ it.value.number }, { it.index })).forEach { (_, r) ->
+                r.items.forEach { i -> if (seen.any { it.chapterId != i.chapterId && PackSync.sameThing(it, i) }) out += i.key }
+                seen += r.items
+            }
+            return out
+        }
+
+    /**
+     * 加上一章的结果（同一章再整理一次的换掉原来的）：默认勾上新设定和察觉，前面章已有的不勾；
+     * 并进来的是更前面的章时，后面章因此变成重复的几条也取消勾选。
+     */
+    fun with(r: ChapterSyncResult): SyncSession {
+        val next = copy(results = results.filterNot { it.chapterId == r.chapterId } + r)
+        val repeats = next.repeats
+        return next.copy(picked = picked - (repeats - this.repeats) + r.items.filter { it.defaultOn && it.key !in repeats }.map { it.key })
+    }
 }
 
