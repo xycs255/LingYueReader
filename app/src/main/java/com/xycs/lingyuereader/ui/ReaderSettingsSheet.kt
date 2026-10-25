@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -20,16 +21,20 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -39,22 +44,28 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -174,7 +185,7 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
             Box(
                 Modifier
                     .align(Alignment.CenterStart)
-                    .size(44.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onBack)
                     .semantics { contentDescription = "返回$back"; role = Role.Button },
@@ -194,7 +205,7 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .heightIn(min = 44.dp)
+                    .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(22.dp))
                     .clickable(role = Role.Button, onClick = action.second)
                     .padding(horizontal = 12.dp, vertical = 11.dp),
@@ -317,18 +328,22 @@ private fun BrightnessRow(brightness: Float, onChange: (Float) -> Unit) {
             )
         }
         Icon(LingYueIcons.Brightness, contentDescription = null, tint = c.secondary, modifier = Modifier.size(22.dp))
-        Text(
-            "自动",
-            color = if (auto) c.tint else c.secondary,
-            fontSize = 13.sp,
-            fontWeight = if (auto) FontWeight.Medium else FontWeight.Normal,
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(if (auto) c.tint.copy(alpha = 0.12f) else c.fill)
+        Box(
+            Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 .toggleable(value = auto, role = Role.Switch) { on -> onChange(if (on) -1f else 0.5f) }
-                .semantics { contentDescription = "亮度跟随系统" }
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-        )
+                .semantics { contentDescription = "亮度跟随系统" },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "自动",
+                color = if (auto) c.tint else c.secondary,
+                fontSize = 13.sp,
+                fontWeight = if (auto) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier.clip(RoundedCornerShape(50))
+                    .background(if (auto) c.tint.copy(alpha = 0.12f) else c.fill)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+            )
+        }
     }
 }
 
@@ -491,16 +506,167 @@ private fun LayoutPage(settings: ReaderSettings, update: ((ReaderSettings) -> Re
 // ---------- 翻页方式 ----------
 
 @Composable
-private fun PagingPage(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
-    GroupedSection(footer = "滚动和翻页读起来没有明显差别，选顺手的就好。仿真：在上、下三分之一处按住掀起那个角，在中间按住整页卷过去。") {
-        PageMode.entries.forEach { mode ->
-            row { CheckRow(mode.label, settings.pageMode == mode) { update { it.copy(pageMode = mode) } } }
+internal fun PagingPage(settings: ReaderSettings, update: ((ReaderSettings) -> ReaderSettings) -> Unit) {
+    GroupedSection(header = "试翻") {
+        row { PageModePreview(settings.pageMode) }
+        row {
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                PageMode.entries.chunked(2).forEach { pair ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        pair.forEach { mode ->
+                            PageModeChoice(mode, settings.pageMode == mode, Modifier.weight(1f)) {
+                                update { it.copy(pageMode = mode) }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-    GroupedSection(footer = "书页厚度：翻页时屏幕两侧画出读过和剩下的页，像拿着纸书一样知道读到哪。") {
+    GroupedSection {
         row { ToggleRow("书页厚度", settings.pageEdges) { v -> update { it.copy(pageEdges = v) } } }
         row { ToggleRow("横屏时双页", settings.twoPage) { v -> update { it.copy(twoPage = v) } } }
     }
+}
+
+/** 只演示一次因果关系，实际阅读的翻页方式仍由阅读页负责。关动画时直接给终态。 */
+@Composable
+internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    val noMotion = Effects.noMotion
+    var replay by remember(mode) { mutableIntStateOf(0) }
+    val turn = remember(mode, noMotion) { Animatable(if (noMotion || mode == PageMode.NONE) 1f else 0f) }
+    LaunchedEffect(mode, replay, noMotion) {
+        if (noMotion) turn.snapTo(if (replay % 2 == 0) 1f else 0f)
+        else if (mode == PageMode.NONE) turn.snapTo(1f)
+        else {
+            turn.snapTo(0f)
+            turn.animateTo(1f, Motion.standard(if (mode == PageMode.CURL) Motion.CURL_TURN else Motion.TURN))
+        }
+    }
+    val vertical = mode == PageMode.VERTICAL
+    val page = if (mode == PageMode.NONE && replay % 2 == 1) 0 else 1
+    val shape = RoundedCornerShape(18.dp)
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(164.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(shape)
+            .background(c.fill)
+            .clickable(role = Role.Button) { replay++ }
+            .semantics {
+                contentDescription = "${mode.label}翻页预览，${if (noMotion) "点按切换静态纸页" else "点按重播"}。${mode.previewMeaning()}"
+                stateDescription = if (noMotion) "减少动态效果，显示第${if (replay % 2 == 0) 2 else 1}页" else if (mode == PageMode.NONE) "立即切换到第${page + 1}页" else "翻页演示"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        val paper = if (c.cell.luminance() < 0.4f) Color(0xFF39342E) else Color(0xFFF6F0E5)
+        val ink = if (c.cell.luminance() < 0.4f) Color(0xFFE9DFD0) else Color(0xFF524A40)
+        BoxWithConstraints(Modifier.width(220.dp).height(130.dp).clip(RoundedCornerShape(10.dp)).clipToBounds()) {
+            val widthPx = with(LocalDensity.current) { maxWidth.toPx() }
+            val heightPx = with(LocalDensity.current) { maxHeight.toPx() }
+            val amount = turn.value
+            when (mode) {
+                PageMode.SCROLL -> {
+                    PreviewPaper(1, false, paper, ink, Modifier.graphicsLayer { translationY = heightPx * (1f - amount) })
+                    PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer { translationY = -heightPx * amount })
+                }
+                PageMode.SLIDE -> {
+                    PreviewPaper(1, false, paper, ink, Modifier.graphicsLayer { translationX = widthPx * (1f - amount) })
+                    PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer { translationX = -widthPx * amount })
+                }
+                PageMode.COVER -> {
+                    PreviewPaper(0, false, paper, ink)
+                    PreviewPaper(1, false, paper, ink, Modifier.graphicsLayer { translationX = widthPx * (1f - amount) })
+                }
+                PageMode.CURL -> {
+                    PreviewPaper(1, false, paper, ink)
+                    PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer {
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                        rotationY = -86f * amount
+                        cameraDistance = 12f * density
+                        alpha = (1f - amount).coerceIn(0f, 1f)
+                        shadowElevation = 8.dp.toPx() * (1f - amount)
+                    })
+                }
+                PageMode.NONE -> PreviewPaper(page, false, paper, ink)
+                PageMode.VERTICAL -> {
+                    PreviewPaper(1, vertical, paper, ink, Modifier.graphicsLayer { translationX = -widthPx * (1f - amount) })
+                    PreviewPaper(0, vertical, paper, ink, Modifier.graphicsLayer { translationX = widthPx * amount })
+                }
+            }
+        }
+        Icon(
+            LingYueIcons.Redo,
+            contentDescription = null,
+            tint = c.secondary,
+            modifier = Modifier.align(Alignment.TopEnd).padding(9.dp).size(17.dp),
+        )
+    }
+}
+
+/** 暖纸缩图使用少量真正的文字和墨线，图形本身不进入无障碍树。 */
+@Composable
+private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color, modifier: Modifier = Modifier) {
+    Box(
+        Modifier.fillMaxSize().then(modifier).background(paper)
+            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+            .clearAndSetSemantics { },
+    ) {
+        if (vertical) {
+            Row(
+                Modifier.align(Alignment.Center).padding(horizontal = 22.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                listOf("春\n风\n起", "山\n河\n新", if (page == 0) "开\n卷\n时" else "续\n读\n时").forEach { column ->
+                    Text(column, color = ink, fontSize = 12.sp, lineHeight = 19.sp)
+                }
+            }
+        } else {
+            Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
+                Text(if (page == 0) "第一章" else "第二页", color = ink.copy(alpha = 0.6f), fontSize = 10.sp)
+                Spacer(Modifier.height(9.dp))
+                Text(if (page == 0) "翻开故事" else "接着读下去", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(10.dp))
+                listOf(0.95f, 0.83f, 0.89f).forEach { width ->
+                    Box(Modifier.fillMaxWidth(width).height(3.dp).clip(CircleShape).background(ink.copy(alpha = 0.22f)))
+                    Spacer(Modifier.height(7.dp))
+                }
+            }
+        }
+        Text("0${page + 1}", color = ink.copy(alpha = 0.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp))
+    }
+}
+
+@Composable
+private fun PageModeChoice(mode: PageMode, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val fill by animateColorAsState(if (selected) c.tint.copy(alpha = 0.15f) else c.fill, Motion.standard(Motion.SHORT), label = "pageModeFill")
+    val border by animateColorAsState(if (selected) c.tint.copy(alpha = 0.6f) else c.separator, Motion.standard(Motion.SHORT), label = "pageModeBorder")
+    Row(
+        modifier
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(fill)
+            .border(1.dp, border, RoundedCornerShape(14.dp))
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = "${mode.label}：${mode.previewMeaning()}" },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.padding(start = 13.dp).size(7.dp).clip(CircleShape).background(if (selected) c.tint else c.secondary.copy(alpha = 0.45f)))
+        Text(mode.label, color = if (selected) c.tint else c.label, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
+    }
+}
+
+private fun PageMode.previewMeaning(): String = when (this) {
+    PageMode.SCROLL -> "正文向上移动，接着阅读"
+    PageMode.SLIDE -> "旧页向左移出，新页从右进入"
+    PageMode.COVER -> "新页从右盖住旧页"
+    PageMode.CURL -> "纸页从书脊掀起，露出下一页"
+    PageMode.NONE -> "点按后立即换页"
+    PageMode.VERTICAL -> "竖排文字向右翻到下一页"
 }
 
 // ---------- 点按与按键 ----------
