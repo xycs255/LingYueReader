@@ -168,6 +168,8 @@ sealed interface Screen {
     data class WorkAi(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
+    /** 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。 */
+    data class WorkLedger(val workId: String, val chapterId: String? = null) : Screen
     /** 设定包里的一份文档。 */
     data class PackDoc(val workId: String, val docId: String) : Screen
     /** 一章的细纲卡。 */
