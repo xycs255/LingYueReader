@@ -293,12 +293,12 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
                         "排之前存一个历史版本，排版改的不算码字数。“***”“——”这类单独一行的场景分隔原样不动。",
                 ) {
                     row {
-                        ToggleRow("段首段尾空白", f.trim, subtitle = "去掉段首段尾的半角、全角空格和制表符；段首缩进是编辑器显示时加的，不存进正文") { on ->
+                        ToggleRow("段首段尾空白", f.trim, subtitle = "去掉段尾的空白和段首普通的缩进（1–2 个全角空格或几个半角空格），段首缩进是编辑器显示时加的，不存进正文；诗歌、落款那样排的留着") { on ->
                             update { it.copy(trim = on) }
                         }
                     }
                     row {
-                        ToggleRow("段内多余空格", f.spaces, subtitle = "汉字、中文标点之间的空格去掉；英文单词、数字之间的压成一个") { on -> update { it.copy(spaces = on) } }
+                        ToggleRow("段内多余空格", f.spaces, subtitle = "汉字、中文标点之间的半角空格去掉（“第三章 归来”也会排成“第三章归来”），全角空格留着；英文单词、数字之间的压成一个") { on -> update { it.copy(spaces = on) } }
                     }
                     row {
                         ToggleRow("中英文之间加空格", f.mixedSpace, subtitle = "汉字和英文、数字之间加一个空格；网文一般不加") { on -> update { it.copy(mixedSpace = on) } }
@@ -313,7 +313,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
             item(key = "punct") {
                 GroupedSection(header = "标点") {
                     row {
-                        ToggleRow("标点换全角", f.punct, subtitle = "中文里的 , . ? ! : ; ( ) 换成 ，。？！：；（）；小数、千分位、时间、网址、邮箱、文件名和英文句子不动") { on ->
+                        ToggleRow("标点换全角", f.punct, subtitle = "中文里的 , . ? ! : ; ( ) 换成 ，。？！：；（）；小数、时间、“1.”这类编号、网址、文件名、代码、:) 和英文句子不动") { on ->
                             update { it.copy(punct = on) }
                         }
                     }
@@ -336,7 +336,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
             item(key = "quote") {
                 GroupedSection(header = "引号", footer = "引号风格也用在输入时自动排版上。") {
                     row {
-                        ToggleRow("统一引号", f.quotes, subtitle = "直引号、英文弯引号在中文里换成成对的中文引号，按段里出现的先后配对；配不上的不动，预览里标出来") { on ->
+                        ToggleRow("统一引号", f.quotes, subtitle = "中文里的直引号按前后的引号和位置换成开引号或闭引号；已有的中文引号不改方向，「」风格下按里外层换成「」『』；判断不了、配不上的不动，预览里标出来") { on ->
                             update { it.copy(quotes = on) }
                         }
                     }
