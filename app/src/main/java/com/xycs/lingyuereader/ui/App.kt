@@ -177,8 +177,9 @@ fun App(vm: AppViewModel = viewModel()) {
 
     AnimatedContent(
         targetState = stack.last(),
-        transitionSpec = { screenTransform(appearance.transition, depth.forward) },
-        contentKey = { it::class },
+        // 编辑器换章（上一章、下一章、写下一章）也滑一页：按章节先后定左右，不整页硬换。
+        transitionSpec = { screenTransform(appearance.transition, editorStepForward(vm, initialState, targetState) ?: depth.forward) },
+        contentKey = { if (it is Screen.Editor) it::class to it.chapterId else it::class },
         label = "screen",
     ) { screen ->
         when (screen) {
