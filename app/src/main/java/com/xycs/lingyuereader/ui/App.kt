@@ -2,6 +2,10 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -58,6 +62,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -70,6 +75,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -93,7 +99,6 @@ import com.xycs.lingyuereader.data.Library
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
@@ -108,7 +113,6 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
-import top.yukonga.miuix.kmp.preference.RadioButtonPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -450,16 +454,22 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
         @Composable
         fun Chip(label: String, value: String?, onLongClick: (() -> Unit)? = null) {
             val on = selected == value
-            Text(
-                label,
-                fontSize = 14.sp,
-                color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer)
-                    .combinedClickable(onClick = { vm.selectGroup(value) }, onLongClick = onLongClick)
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            val fill by animateColorAsState(
+                if (on) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.secondaryContainer,
+                Motion.standard(Motion.SHORT), label = "groupChipFill",
             )
+            Box(
+                Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(fill)
+                    .combinedClickable(role = Role.Button, onClick = { vm.selectGroup(value) }, onLongClick = onLongClick)
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, fontSize = 14.sp,
+                    color = if (on) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface)
+            }
         }
         Chip("全部", null)
         groups.forEach { g -> Chip(g, g) { editing = g } }
@@ -619,7 +629,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
             Box {
                 Box(
                     Modifier
-                        .size(28.dp)
+                        .size(48.dp)
                         .clip(RoundedCornerShape(50))
                         .clickable(role = Role.Button) { menu = true }
                         .semantics { contentDescription = "操作" },
@@ -894,20 +904,14 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
         summary = sorted.take(5).joinToString("\n") + if (sorted.size > 5) "\n……" else "",
         onDismissRequest = vm::dismissImport,
     ) {
-        Card(colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.secondaryContainer)) {
-            RadioButtonPreference(
-                title = "合成一本书",
-                summary = "分卷、分章的文稿；按章号排序，同一章以后面的文件为准",
-                selected = merge,
-                onClick = { merge = true },
-            )
-            RadioButtonPreference(
-                title = "分别作为 ${files.size} 本书",
-                selected = !merge,
-                onClick = { merge = false },
-            )
-        }
+        ImportModeChoices(files.size, merge) { merge = it }
         if (merge) {
+            Text(
+                "按章号排序 · 同章以后面的文件为准",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 10.dp),
+            )
             TextField(
                 value = title,
                 onValueChange = { title = it },
@@ -918,6 +922,102 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
         }
         DialogButtons(confirm = "导入", onDismiss = vm::dismissImport) {
             vm.importBooks(files, merge, title)
+        }
+    }
+}
+
+/** 纸页移动直接展示导入后的书架结果；重选当前卡片也会重播一次。 */
+@Composable
+internal fun ImportModeChoices(fileCount: Int, merge: Boolean, onSelect: (Boolean) -> Unit) {
+    var replay by remember { mutableIntStateOf(0) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ImportModeChoice(
+            combine = true, selected = merge, replay = replay,
+            label = "合成 1 本",
+            description = "合成一本书：按章号排序，同一章以后面的文件为准",
+            modifier = Modifier.weight(1f),
+        ) { replay++; onSelect(true) }
+        ImportModeChoice(
+            combine = false, selected = !merge, replay = replay,
+            label = "分别导入",
+            description = "分别导入 $fileCount 本书：每个文件成为一本书",
+            modifier = Modifier.weight(1f),
+        ) { replay++; onSelect(false) }
+    }
+}
+
+@Composable
+private fun ImportModeChoice(
+    combine: Boolean,
+    selected: Boolean,
+    replay: Int,
+    label: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val accent = MiuixTheme.colorScheme.primary
+    val surface = MiuixTheme.colorScheme.secondaryContainer
+    val fill by animateColorAsState(if (selected) lerp(surface, accent, 0.08f) else surface,
+        Motion.standard(Motion.SHORT), label = "importModeFill")
+    val outline by animateColorAsState(if (selected) accent else MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+        Motion.standard(Motion.SHORT), label = "importModeOutline")
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier
+            .heightIn(min = 112.dp)
+            .clip(shape)
+            .background(fill)
+            .border(if (selected) 2.dp else 1.dp, outline, shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = description }
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ImportPaperPreview(combine, selected, replay)
+        Text(label, color = if (selected) accent else MiuixTheme.colorScheme.onSurface,
+            fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ImportPaperPreview(combine: Boolean, selected: Boolean, replay: Int) {
+    val progress = remember { Animatable(1f) }
+    LaunchedEffect(selected, replay, Effects.noMotion) {
+        if (selected && !Effects.noMotion) {
+            progress.snapTo(0f)
+            progress.animateTo(1f, Motion.standard(Motion.MEDIUM))
+        } else progress.snapTo(1f)
+    }
+    val paper = Color(0xFFF7F0E3)
+    val ink = Color(0xFF9A8066)
+    Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
+        repeat(3) { i ->
+            val spread = (i - 1) * 31f
+            val stacked = (i - 1) * 3f
+            val from = if (combine) spread else stacked
+            val to = if (combine) stacked else spread
+            val x = from + (to - from) * progress.value
+            Box(
+                Modifier.offset(x = x.dp, y = (i - 1).dp)
+                    .width(29.dp).height(43.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(paper)
+                    .border(0.5.dp, ink.copy(alpha = 0.28f), RoundedCornerShape(3.dp))
+                    .padding(horizontal = 5.dp, vertical = 10.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(ink.copy(alpha = 0.55f)))
+                    Box(Modifier.width(13.dp).height(1.dp).background(ink.copy(alpha = 0.4f)))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(ink.copy(alpha = 0.4f)))
+                }
+            }
+        }
+        if (combine) {
+            Box(Modifier.offset(x = (-16).dp).width(3.dp).height(45.dp)
+                .graphicsLayer { alpha = progress.value }
+                .background(ink.copy(alpha = 0.65f)))
         }
     }
 }

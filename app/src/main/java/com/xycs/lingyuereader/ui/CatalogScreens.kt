@@ -1,5 +1,13 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,6 +24,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -587,26 +596,65 @@ private fun sizeLabel(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
+private enum class DownloadStage { READY, BUSY, SHELVED }
+
+/** 下载箭头落成等待环、再变成勾；状态靠图形变化读懂，读屏仍能获得完整说明。 */
 @Composable
-private fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String = "下载", onClick: () -> Unit) {
+internal fun DownloadPill(inShelf: Boolean, downloading: Boolean, label: String = "下载", onClick: () -> Unit) {
     val c = LocalGroupedColors.current
-    when {
-        downloading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(horizontal = 6.dp)) {
-            InfiniteProgressIndicator(size = 16.dp, color = c.tint)
-            Text("下载中", color = c.secondary, fontSize = 13.sp)
-        }
-        inShelf -> Text("已在书架", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 6.dp))
-        else -> Row(
-            Modifier
-                .clip(RoundedCornerShape(50))
-                .background(c.tint.copy(alpha = 0.12f))
-                .clickable(role = Role.Button, onClick = onClick)
-                .padding(start = 10.dp, end = 14.dp, top = 7.dp, bottom = 7.dp)
-                .semantics { contentDescription = label },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(LingYueIcons.Download, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
-            Text(label, color = c.tint, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 4.dp))
+    val stage = when {
+        inShelf -> DownloadStage.SHELVED
+        downloading -> DownloadStage.BUSY
+        else -> DownloadStage.READY
+    }
+    val background by animateColorAsState(
+        if (stage == DownloadStage.SHELVED) c.secondary.copy(alpha = 0.09f) else c.tint.copy(alpha = 0.12f),
+        Motion.standard(Motion.SHORT), label = "downloadBackground",
+    )
+    Box(
+        Modifier
+            .widthIn(min = 96.dp)
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(background)
+            .clickable(enabled = stage == DownloadStage.READY, role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                contentDescription = when (stage) {
+                    DownloadStage.READY -> label
+                    DownloadStage.BUSY -> "正在下载"
+                    DownloadStage.SHELVED -> "已在书架"
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        AnimatedContent(stage, transitionSpec = {
+            if (Effects.noMotion) EnterTransition.None togetherWith ExitTransition.None
+            else (fadeIn(Motion.standard(Motion.SHORT)) + slideInVertically(
+                animationSpec = Motion.standard(Motion.SHORT), initialOffsetY = { -it / 3 },
+            )) togetherWith fadeOut(Motion.exit(Motion.SHORT))
+        }, label = "downloadStage") { shown ->
+            val tint = if (shown == DownloadStage.SHELVED) c.secondary else c.tint
+            Row(
+                Modifier.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                when (shown) {
+                    DownloadStage.READY -> Icon(LingYueIcons.Download, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                    DownloadStage.BUSY -> if (Effects.noMotion) {
+                        Icon(LingYueIcons.Timer, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                    } else InfiniteProgressIndicator(size = 18.dp, color = tint)
+                    DownloadStage.SHELVED -> Icon(LingYueIcons.Check, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                }
+                Text(
+                    when (shown) {
+                        DownloadStage.READY -> label
+                        DownloadStage.BUSY -> "下载中"
+                        DownloadStage.SHELVED -> "已入书架"
+                    },
+                    color = tint, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                )
+            }
         }
     }
 }
