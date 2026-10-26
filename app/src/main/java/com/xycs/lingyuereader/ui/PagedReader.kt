@@ -397,13 +397,16 @@ internal fun PagedReader(
                             if (r > 0f && r < 1f) {
                                 // 旧页的右边缘在下一页上的 x。阴影画在静止的下页里，
                                 // 避免旧页画出边界的阴影被 graphicsLayer 裁掉，翻到一半突然消失。
-                                val edge = r * size.width
+                                // Pager 按整屏宽度滑动，bookPage 却将纸面缩去书口厚度。
+                                // 用缩后的宽度算接缝会把阴影错开 (1-r)×书口厚度，露出一条亮缝。
+                                val insetPx = inset?.total?.roundToPx()?.toFloat() ?: 0f
+                                val edge = r * (size.width + insetPx) - insetPx
                                 val alpha = 0.18f * 4f * r * (1f - r)
                                 val reach = 24.dp.toPx()
                                 drawRect(
-                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = alpha), Color.Transparent), edge, edge + reach),
-                                    topLeft = Offset(edge, 0f),
-                                    size = Size(reach, size.height),
+                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = alpha), Color.Transparent), edge - 1f, edge + reach),
+                                    topLeft = Offset(edge - 1f, 0f),
+                                    size = Size(reach + 1f, size.height),
                                 )
                             }
                         }

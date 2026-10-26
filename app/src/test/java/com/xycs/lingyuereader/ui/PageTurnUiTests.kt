@@ -32,7 +32,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /** 仿真、无动画翻页，横屏双页。 */
-abstract class PageTurnUiBase(private val mode: String) {
+abstract class PageTurnUiBase(private val mode: String, private val charCount: Long = 1500L) {
     protected val context: Context get() = ApplicationProvider.getApplicationContext()
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -43,7 +43,7 @@ abstract class PageTurnUiBase(private val mode: String) {
             File(dir, "s0.txt").writeText("第一章 开端\n$chapter\n第二章 进城\n　　第二章正文。\n")
             val entry = JSONObject()
                 .put("id", "b1").put("title", "测试书").put("author", "").put("format", "TXT")
-                .put("addedAt", 1L).put("openedAt", 0L).put("chapterCount", 2).put("charCount", 1500)
+                .put("addedAt", 1L).put("openedAt", 0L).put("chapterCount", 2).put("charCount", charCount)
                 .put("sources", JSONArray().put(JSONObject().put("name", "测试书.txt").put("uri", "").put("file", "s0.txt")))
             File(files, "books/index.json").writeText(JSONArray().put(entry).toString())
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear()
@@ -288,6 +288,49 @@ class CoverTurnUiTest : PageTurnUiBase("COVER") {
         val backwardMid = image()
         val backwardDifference = changedFraction(backwardMid, settled, settled.width * 95 / 100, settled.width - 5)
         assertTrue("返回时当前页应静止，右侧正文差异 $backwardDifference", backwardDifference < 0.01f)
+        compose.mainClock.autoAdvance = true
+        waitForText("第 1/")
+    }
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36], qualifiers = "w411dp-h891dp")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+class CoverWithPageEdgesUiTest : PageTurnUiBase("COVER", charCount = 1_000_000L) {
+    override fun prefs(editor: android.content.SharedPreferences.Editor) {
+        editor.putBoolean("pageEdges", true).putBoolean("ambientLight", false).putBoolean("eveningWarmth", false)
+    }
+
+    @Test fun thickBookKeepsItsShadowAttachedToTheMovingPage() {
+        open()
+        waitForText("第 1/")
+        fun assertSeam(label: String) {
+            val image = compose.onRoot().captureToImage().asAndroidBitmap()
+            val seam = compose.onNodeWithTag("reader-page-0", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot.right.toInt()
+            val rows = listOf(8, 40, image.height - 110)
+            fun brightness(x: Int, y: Int) = image.getPixel(x.coerceIn(0, image.width - 1), y).let {
+                (android.graphics.Color.red(it) + android.graphics.Color.green(it) + android.graphics.Color.blue(it)) / 3
+            }
+            val contrast = rows.map { y -> brightness(seam + 28, y) - brightness(seam + 2, y) }
+            assertTrue("$label 书页边缘 $seam 的阴影不能隔着亮缝或消失：$contrast", contrast.all { it > 8 })
+        }
+        compose.mainClock.autoAdvance = false
+        compose.onRoot().performTouchInput { click(centerRight.copy(x = width * 0.9f)) }
+        compose.mainClock.advanceTimeBy(70)
+        assertSeam("前进 70ms")
+        compose.mainClock.advanceTimeBy(40)
+        assertSeam("前进 110ms")
+        capture("page-cover-thick-mid")
+        compose.mainClock.advanceTimeBy(40)
+        assertSeam("前进 150ms")
+        compose.mainClock.autoAdvance = true
+        waitForText("第 2/")
+        compose.mainClock.autoAdvance = false
+        compose.onRoot().performTouchInput { click(centerLeft.copy(x = width * 0.1f)) }
+        compose.mainClock.advanceTimeBy(110)
+        assertSeam("返回 110ms")
+        capture("page-cover-thick-back-mid")
         compose.mainClock.autoAdvance = true
         waitForText("第 1/")
     }

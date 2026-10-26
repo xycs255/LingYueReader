@@ -101,6 +101,8 @@ jobs:
           test -s app/build/outputs/ui-check/import-modes.png
           test -s app/build/outputs/ui-check/page-mode-preview.png
           test -s app/build/outputs/ui-check/page-cover-mid.png
+          test -s app/build/outputs/ui-check/page-cover-thick-mid.png
+          test -s app/build/outputs/ui-check/page-cover-thick-back-mid.png
           test -s app/build/outputs/ui-check/page-curl-middle.png
           test -s app/build/outputs/ui-check/page-curl-portrait-mid.png
           test -s app/build/outputs/ui-check/page-slide-landscape-mid.png
@@ -115,6 +117,8 @@ jobs:
             app/build/outputs/ui-check/import-modes.png
             app/build/outputs/ui-check/page-mode-preview.png
             app/build/outputs/ui-check/page-cover-mid.png
+            app/build/outputs/ui-check/page-cover-thick-mid.png
+            app/build/outputs/ui-check/page-cover-thick-back-mid.png
             app/build/outputs/ui-check/page-curl-middle.png
             app/build/outputs/ui-check/page-curl-portrait-mid.png
             app/build/outputs/ui-check/page-slide-landscape-mid.png
