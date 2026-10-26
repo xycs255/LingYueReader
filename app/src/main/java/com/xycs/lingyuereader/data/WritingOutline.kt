@@ -324,8 +324,8 @@ fun ChapterCard.withOutline(o: ChapterCard): ChapterCard =
 
 private fun ChapterCard.sameFields(o: ChapterCard) = outlineHash() == o.outlineHash()
 
-/** 哪几类文档里会写到各章的细纲，按这个先后用：卷纲细纲、不变量和接续索引、总纲、硬性设定、资料。 */
-private val OUTLINE_KINDS = listOf(PackKind.VOLUME, PackKind.INVARIANT, PackKind.OUTLINE, PackKind.CANON, PackKind.REFERENCE)
+/** 参考样章和审读报告不能因提到章号就变成细纲；明确的规划与固定事实才参与提取。 */
+private val OUTLINE_KINDS = listOf(PackKind.VOLUME, PackKind.INVARIANT, PackKind.OUTLINE, PackKind.CANON)
 
 /** 解析过的文档按（文档、改动时间、字数）记着，挑资料时一章要找好几次。 */
 private val outlineCache = object : LinkedHashMap<String, List<OutlineEntry>>(32, 0.75f, true) {
@@ -334,11 +334,12 @@ private val outlineCache = object : LinkedHashMap<String, List<OutlineEntry>>(32
 
 /** 设定包里所有写到某一章的段落（卷纲细纲在前）。 */
 fun WorkStore.outlineEntries(workId: String): List<OutlineEntry> =
-    pack(workId).filter { it.kind in OUTLINE_KINDS }.sortedBy { OUTLINE_KINDS.indexOf(it.kind) * 100 + it.priority }.flatMapIndexed { rank, d ->
+    ProjectSources.forPhase(pack(workId).map { it to packText(workId, it.id) }, WritingPhase.CREATE)
+        .filter { it.first.kind in OUTLINE_KINDS }.sortedBy { OUTLINE_KINDS.indexOf(it.first.kind) * 100 + it.first.priority }.flatMapIndexed { rank, (d, text) ->
         val key = "$workId/${d.id}/${d.updatedAt}/${d.words}"
-        val parsed = synchronized(outlineCache) { outlineCache[key] } ?: ChapterOutlines.parse(listOf(d.title to packText(workId, d.id))).also { synchronized(outlineCache) { outlineCache[key] = it } }
+        val parsed = synchronized(outlineCache) { outlineCache[key] } ?: ChapterOutlines.parse(listOf(d.title to text)).also { synchronized(outlineCache) { outlineCache[key] = it } }
         parsed.map { it.copy(rank = rank) }
-    }
+    }.distinctBy { listOf(it.from, it.to, it.title, it.volume, it.text.replace(Regex("\\s|　"), "")) }
 
 /**
  * 这一章要用的细纲卡：作者写过的照用；没写过，或者是从细纲提取、作者没改过的，就按设定包里写到这一章的段落

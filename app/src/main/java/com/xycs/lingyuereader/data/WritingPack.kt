@@ -93,7 +93,7 @@ object PackImport {
         Regex("人物|角色|人设") to PackKind.CHARACTER,
         Regex("技法|样板|摘要") to PackKind.TECHNIQUE,
         Regex("约定|规范|写作要求|文风") to PackKind.STYLE,
-        Regex("细纲|卷纲|分章|章组|因果") to PackKind.VOLUME,
+        Regex("细纲|卷纲|章纲|分章|章组|分镜|因果") to PackKind.VOLUME,
         Regex("接续|索引") to PackKind.INVARIANT,
         Regex("总纲|大纲") to PackKind.OUTLINE,
         Regex("硬性|设定|世界观|战役|地图|制度|势力|年表") to PackKind.CANON,
@@ -105,7 +105,17 @@ object PackImport {
     /** 按文件名认类型。写手版、速查这类压缩版比原件低一级。 */
     fun classify(fileName: String, text: String = ""): PackImportItem {
         val name = fileName.substringAfterLast('/').substringBeforeLast('.')
-        if (chapterFile.containsMatchIn(name) && !Regex("约定|规范|写法").containsMatchIn(name)) {
+        val path = fileName.replace('\\', '/')
+        // A reference manuscript is not an accepted chapter, even when “正文” occurs in its filename.
+        if (Regex("(?:^|/)(?:参考|参考资料|维护记录)(?:/|$)|验证样章|参考样章|未定样章|试写样章|排版参照|样章参照").containsMatchIn(path)) {
+            return PackImportItem(fileName, text, PackKind.REFERENCE, asChapters = false, always = false)
+        }
+        // Stage templates often contain “正文”; recognise their role before deciding to split chapters.
+        if (Regex("提示词|(?i:prompt)").containsMatchIn(name)) {
+            return PackImportItem(fileName, text, PackKind.INSTRUCTION, asChapters = false)
+        }
+        val planning = Regex("细纲|卷纲|章纲|章组|分章|分镜|总纲|大纲|叙事因果").containsMatchIn(name)
+        if (!planning && chapterFile.containsMatchIn(name) && !Regex("约定|规范|写法").containsMatchIn(name)) {
             return PackImportItem(fileName, text, PackKind.REFERENCE, asChapters = true)
         }
         val kind = rules.firstOrNull { (r, _) -> r.containsMatchIn(name) }?.second ?: PackKind.REFERENCE

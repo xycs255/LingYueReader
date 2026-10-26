@@ -59,13 +59,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -87,6 +91,7 @@ import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.FormatKind
 import com.xycs.lingyuereader.data.FormatResult
 import com.xycs.lingyuereader.data.FormatSettings
@@ -400,12 +405,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var syncConfirm by remember { mutableStateOf(false) }
     var syncTipFor by remember { mutableStateOf<WorkChapter?>(null) }
     var foreshadowNote by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(workId, pack) {
-        val (list, latest) = vm.writing.foreshadows(workId)
+    LaunchedEffect(workId, pack, ledgers[workId]) {
+        val (legacy, latest) = vm.writing.foreshadows(workId)
+        val list = mergeWritingForeshadows(legacy, ledgers[workId].orEmpty()).map { it.display }
         val open = list.filter { !it.done }
         val due = open.count { it.payoff != null && it.payoff <= latest }
         foreshadowNote = when {
-            pack?.none { it.kind == PackKind.FORESHADOW } != false -> null
+            list.isEmpty() -> null
             due > 0 -> "$due 条该回收了"
             else -> "${open.size} 条没回收"
         }
@@ -880,6 +886,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var ideas by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var issuesOpen by remember { mutableStateOf(false) }
+    var companionOpen by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
+    var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
+    var companionAnalyses by remember(workId, chapterId) { mutableStateOf<List<ReferenceAnalysis>>(emptyList()) }
+    var companionSelection by remember(workId, chapterId) { mutableStateOf(vm.companionReference(workId, chapterId)) }
     val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
     val aiLookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // AI 在编辑器里写的那一段（这一章的才显示）；写的时候正文只读。
@@ -920,6 +930,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         // 写作建议只查打开以后改过、新写的段：已有的段落算查过。
         vm.writingAi.baseline(workId, chapterId, text)
         state = TextFieldState(text).apply { edit { placeCursorAtEnd() } }
+    }
+    LaunchedEffect(workId, chapterId) {
+        try { companionAnalyses = vm.writing.referenceAnalyses(workId, chapterId) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { vm.showMessage("读取范本分析失败：${e.message}") }
     }
     val current = state
     // 自动保存：停笔 800 毫秒存一次。
@@ -974,7 +989,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 改稿类：选中的文字或光标所在的段。 */
-    fun runEdit(action: WriteAction, instruction: String = "") {
+    fun runEdit(action: WriteAction, instruction: String = "", reviewFix: com.xycs.lingyuereader.ReviewFix? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -982,11 +997,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val target = editTarget(st.text.toString(), st.selection, action, instruction)
         if (target == null) vm.showMessage(if (action == WriteAction.CONTINUE) "先写一点，再让 AI 接着写" else "先选中文字，或把光标放在要改的那段")
-        else runAi(target)
+        else runAi(target.copy(reviewFix = reviewFix))
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
-    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false) {
+    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -994,7 +1009,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val text = st.text.toString()
         val at = if (atEnd) text.length else st.selection.max
-        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction)
+        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId)
     }
 
     /** 整理本章进设定包：用编辑框里现在的正文；同一份正文刚整理好（单章或批量里的）、还没写进去的，直接看结果。 */
@@ -1100,6 +1115,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("故事账本" to { vm.open(Screen.WorkLedger(workId, chapterId)) })
+                                        add("从范本找写法" to { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
                                         add("自动排版" to {
                                             when {
@@ -1155,7 +1171,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 current.edit { selection = TextRange(at, at + minOf(quote.length, text.length - at)) }
                                 runCatching { focus.requestFocus() }
                                 // “按这条改”：选中的这句交给 AI 按意见改，结果照常先看对比再采纳。
-                                j.instruction?.let { runEdit(WriteAction.CUSTOM, it) }
+                                j.instruction?.let { runEdit(WriteAction.CUSTOM, it, j.reviewFix) }
                             }
                         }
                     }
@@ -1237,7 +1253,35 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val shownIssue = (settled as? WriteIssue)?.takeIf { s -> issueSpans.any { it.second == s } }
                 val shownRule = (settled as? RuleAt)?.let { s -> focusRule?.takeIf { it.key == s.key } ?: ruleSpans.firstOrNull { it.second.key == s.key }?.second }
 
-                Box(Modifier.weight(1f).fillMaxWidth()) {
+                val textScroll = remember(current) { androidx.compose.foundation.ScrollState(0) }
+                var editorFocused by remember(current) { mutableStateOf(false) }
+                var textLayout by remember(current) { mutableStateOf<TextLayoutResult?>(null) }
+                var textCoordinates by remember(current) { mutableStateOf<LayoutCoordinates?>(null) }
+                var viewportCoordinates by remember(current) { mutableStateOf<LayoutCoordinates?>(null) }
+                var settledCompanionCaret by remember(current) { mutableStateOf<Int?>(null) }
+                // 输入或移动光标时保留系统光标；停稳后书灵才出现，不遮住输入法合成文字或划选。
+                LaunchedEffect(current, caret, textNow, editorFocused, readOnly, current?.composition, inline) {
+                    settledCompanionCaret = null
+                    if (current != null && caret != null && editorFocused && !readOnly &&
+                        current.composition == null && inline == null
+                    ) {
+                        delay(450)
+                        settledCompanionCaret = caret
+                    }
+                }
+                val companionCaret = settledCompanionCaret?.takeIf {
+                    it == caret && editorFocused && !readOnly && current?.composition == null && inline == null
+                }
+                val companionPosition = companionCaret?.let { at ->
+                    val layout = textLayout
+                    val text = textCoordinates
+                    val viewport = viewportCoordinates
+                    if (layout != null && text?.isAttached == true && viewport?.isAttached == true) {
+                        editorCompanionPosition(layout, at, text, viewport)
+                    } else null
+                }
+
+                Box(Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { viewportCoordinates = it }) {
                     if (current != null) {
                         LaunchedEffect(current) { if (current.text.isEmpty()) runCatching { focus.requestFocus() } }
                         BasicTextField(
@@ -1249,14 +1293,17 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             modifier = Modifier
                                 .fillMaxSize()
                                 .focusRequester(focus)
+                                .onFocusChanged { editorFocused = it.isFocused }
                                 .semantics { contentDescription = "正文" }
                                 .padding(start = 22.dp, end = 22.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
                             // 每段首行空两格（只是显示，存的正文不带缩进），段和折行一眼分得清。
                             textStyle = TextStyle(color = scheme.onSurface, fontSize = 18.sp, lineHeight = 32.sp, textIndent = TextIndent(firstLine = 2.em)),
-                            cursorBrush = SolidColor(scheme.primary),
+                            cursorBrush = SolidColor(if (companionPosition == null) scheme.primary else Color.Unspecified),
                             lineLimits = TextFieldLineLimits.MultiLine(),
+                            scrollState = textScroll,
+                            onTextLayout = { result -> textLayout = result() },
                             decorator = { inner ->
-                                Box {
+                                Box(Modifier.onGloballyPositioned { textCoordinates = it }) {
                                     if (current.text.isEmpty()) {
                                         Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp)
                                     }
@@ -1264,6 +1311,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 }
                             },
                         )
+                    }
+                    if (companionPosition != null) {
+                        WritingCaretCompanion(companionPosition, textScroll, aiConfig, scheme.primary)
                     }
                 }
                 // 键盘上方的几样（定稿锁定条、AI 的面板、写作建议、伏笔提醒）出现、收起都平滑：高矮慢慢变，正文框跟着慢慢变高变矮，
@@ -1279,15 +1329,17 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
                 val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
+                val chosenCompanionAnalysis = companionAnalyses.firstOrNull { it.id == companionSelection }
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
                     inline != null -> EditorPanel.Inline(inline)
                     formatOpen -> EditorPanel.Format
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
-                    shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
-                    shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
                     issuesOpen && realtimeOn -> EditorPanel.Issues
                     rulesOpen -> EditorPanel.Rules
+                    companionOpen && !locked -> EditorPanel.Companion
+                    shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
+                    shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
                     realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null || realtime.waiting != null) && realtime.chapterId == chapterId ->
                         EditorPanel.Realtime
                     else -> EditorPanel.None
@@ -1309,6 +1361,35 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 ) { p ->
                     val st = current
                     if (st != null) when (p) {
+                        EditorPanel.Companion -> WritingCompanionPanel(
+                            source = chosenCompanionAnalysis?.let { "《${it.referenceTitle}》·${it.chapterTitle}（${it.part.label}）" },
+                            model = if (aiConfig.ready) aiConfig.providerLabel else "AI 未设置",
+                            ready = aiConfig.ready,
+                            onWriteHere = {
+                                when {
+                                    companionSelection != null && chosenCompanionAnalysis == null -> {
+                                        vm.showMessage("已选范本不在了，请重新选择")
+                                        companionChoosing = true
+                                    }
+                                    !st.selection.collapsed -> vm.showMessage("先点正文，把光标放在想写的地方")
+                                    else -> asking = "这一段要发生什么？" to { intent ->
+                                        startInline(InlineMode.CUSTOM, intent, referenceAnalysisId = chosenCompanionAnalysis?.id)
+                                    }
+                                }
+                            },
+                            onWriteChapter = {
+                                vm.writing.save(workId, chapterId, st.text.toString(), onSaved = {
+                                    vm.open(Screen.ChapterDraft(workId, chapterId))
+                                })
+                            },
+                            onSelectReference = { companionChoosing = true },
+                            onClearReference = {
+                                companionSelection = null
+                                vm.clearCompanionReference(workId, chapterId)
+                            },
+                            onConfigureAi = { vm.open(Screen.Ai) },
+                            onClose = { companionOpen = false },
+                        )
                         is EditorPanel.Inline -> InlineBar(
                             p.write,
                             lookup = aiLookup,
@@ -1317,7 +1398,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 val w = p.write
                                 val done = vm.writingAi.acceptInline(st.text.toString())
                                 if (done == null) {
-                                    vm.showMessage("正文已经改动，没法插进去")
+                                    vm.showMessage(vm.writingAi.inline.value?.error ?: if (w.referenceAnalysisId != null && !w.referenceValidated)
+                                        "这一段未通过范本核验，请重写" else "正文或范本已经变化，请重新生成")
                                 } else {
                                     st.edit {
                                         replace(0, length, done.first)
@@ -1371,10 +1453,29 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             p.state,
                             lookup = aiLookup,
                             model = "${aiConfig.providerLabel} · ${aiConfig.model}",
-                            onAccept = { result ->
+                            onAccept = accept@{ result ->
+                                if (locked) {
+                                    vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                    return@accept
+                                }
                                 val task = p.state.task as WriteAiTask.Edit
+                                val before = st.text.toString()
                                 when (applyEdit(st, task, result)) {
-                                    EditApply.DONE -> vm.writingAi.accepted(workId, task.action, task.original, result)
+                                    EditApply.DONE -> {
+                                        vm.writingAi.accepted(workId, task.action, task.original, result)
+                                        val after = st.text.toString()
+                                        task.reviewFix?.takeIf { before != after }?.let { fix ->
+                                            // 成功替换并真正落盘以后，才处理来源审稿里的同一条问题。
+                                            vm.writing.save(workId, chapterId, after, onSaved = {
+                                                val report = vm.writingAi.reviews.value[workId to chapterId]?.review
+                                                if (report != null && report.at == fix.reviewAt && report.textHash == fix.textHash &&
+                                                    report.gate(fix.gate)?.issues?.any { it == fix.issue } == true
+                                                ) {
+                                                    vm.writingAi.markIssue(workId, chapterId, fix.gate, fix.issue, com.xycs.lingyuereader.data.ReviewIssue.FIXED)
+                                                }
+                                            })
+                                        }
+                                    }
                                     EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
                                     EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
                                 }
@@ -1427,7 +1528,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }
                 }
-                AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !rulesOpen && !issuesOpen, enter = barEnter(), exit = barExit()) {
+                AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !rulesOpen && !issuesOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
                 // 键盘上方的条：左边 ✦ 在标点和 AI 操作之间切换；上面一道细线和正文隔开。
@@ -1446,6 +1547,33 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             .padding(horizontal = 10.dp, vertical = 8.dp),
                     ) {
                         Icon(LingYueIcons.Sparkle, contentDescription = null, tint = toggleTint, modifier = Modifier.size(20.dp))
+                    }
+                    Box(
+                        Modifier
+                            .padding(start = 2.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (companionOpen) c.tint.copy(alpha = 0.15f) else Color.Transparent)
+                            .combinedClickableCompat {
+                                when {
+                                    locked -> vm.showMessage("这一章已定稿，要继续写请先解锁")
+                                    inline != null -> vm.showMessage("先处理正在写入的 AI 正文")
+                                    aiState?.let { it.workId == workId && it.chapterId == chapterId } == true ->
+                                        vm.showMessage("先处理当前的 AI 结果，再打开书灵")
+                                    else -> {
+                                        companionOpen = !companionOpen
+                                        if (companionOpen) {
+                                            formatOpen = false
+                                            issuesOpen = false
+                                            rulesOpen = false
+                                        }
+                                    }
+                                }
+                            }
+                            .semantics { contentDescription = "书灵写作" }
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                    ) {
+                        Icon(LingYueIcons.Book, contentDescription = null,
+                            tint = if (companionOpen) c.tint else c.secondary, modifier = Modifier.size(20.dp))
                     }
                     // 两排工具上下换：AI 操作从下面上来，换回标点时反过来（[Motion.MEDIUM]）。
                     AnimatedContent(
@@ -1506,11 +1634,33 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     vm.writing.renameChapter(workId, chapterId, it)
                 }
             }
+            if (companionChoosing) {
+                WritingCompanionSelectionDialog(
+                    analyses = companionAnalyses,
+                    selectedId = companionSelection,
+                    onSelect = { id ->
+                        companionSelection = id
+                        vm.chooseCompanionReference(workId, chapterId, id)
+                        companionOpen = true
+                        companionChoosing = false
+                    },
+                    onCreate = {
+                        companionChoosing = false
+                        current?.text?.toString()?.let { text ->
+                            vm.writing.save(workId, chapterId, text, onSaved = {
+                                vm.open(Screen.WritingReference(workId, chapterId))
+                            })
+                        }
+                    },
+                    onDismiss = { companionChoosing = false },
+                )
+            }
             if (statusDialog && chapter != null) {
                 StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
-                    vm.writing.setStatus(workId, chapterId, st, reason, canon)
-                    if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
+                    vm.writing.setStatus(workId, chapterId, st, reason, canon, currentText = current?.text?.toString()) {
+                        if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
+                    }
                 }
             }
             if (syncTip) {
@@ -1558,6 +1708,7 @@ private const val CARET_SETTLE = 150L
 
 /** 键盘上方那块放什么：一次放一样，换了种类才升起、落下，同一种只换里面的字。 */
 private sealed interface EditorPanel {
+    data object Companion : EditorPanel
     data class Inline(val write: InlineWrite) : EditorPanel
     data class Ai(val state: WriteAiState) : EditorPanel
     data class Suggestion(val issue: WriteIssue) : EditorPanel

@@ -267,6 +267,14 @@ object PackSync {
     /** 察觉的“谁”。 */
     private fun whoOf(item: SyncItem) = item.field("人物").ifBlank { item.name }.trim()
 
+    private fun stateWho(item: SyncItem) = clean(item.entry?.subject?.ifBlank { item.name } ?: item.name)
+
+    /** 状态里的否定、程度、位置细节不能靠包含关系判成相同；只忽略空白和标点差异。 */
+    private fun sameState(a: String, b: String): Boolean {
+        fun value(s: String) = ChapterSyncs.normalize(s).replace(Regex("\\p{P}"), "")
+        return value(a).let { it.isNotEmpty() && it == value(b) }
+    }
+
     /**
      * 两条提议说的是不是同一个新人物、同一处地方（同名），或同一个人知道了同一件事（跨章、分段去重用）。
      * 给已有人物补本章经历的（追加到他那一节的）每章各记各的，不算重复；冲突不比。
@@ -281,12 +289,31 @@ object PackSync {
                 n.isNotEmpty() && n == clean(b.name) && (a.kind == PackKind.CHARACTER) == (b.kind == PackKind.CHARACTER) && !supplement(a) && !supplement(b)
             }
             SyncGroup.AWARENESS -> whoOf(a).let { it.isNotEmpty() && it == whoOf(b) } && similar(a.field("知道什么"), b.field("知道什么"))
-            SyncGroup.STATE -> clean(a.name).let { it.isNotEmpty() && it == clean(b.name) } && a.entry?.aspect.orEmpty() == b.entry?.aspect.orEmpty() && similar(a.text, b.text)
+            SyncGroup.STATE -> stateWho(a).let { it.isNotEmpty() && it == stateWho(b) } && a.entry?.aspect.orEmpty() == b.entry?.aspect.orEmpty() && sameState(a.text, b.text)
             SyncGroup.EVENT -> similar(a.text, b.text)
             SyncGroup.PROMISE -> if (a.closes != null || b.closes != null) a.closes?.id == b.closes?.id else similar(a.text, b.text)
             SyncGroup.TIME -> a.chapterId == b.chapterId
             SyncGroup.CONFLICT -> false
         }
+    }
+
+    /**
+     * 跨章默认去重：人物状态只和同一人物同一方面的上一条有效状态比。
+     * “在渡口 → 在京城 → 在渡口”最后一次回到渡口是新变化，不能拿第一章的状态抹掉。
+     * 没有方面的状态彼此独立，不替作者猜哪些属于同一方面；真正写入时仍会检查重复。
+     */
+    fun repeatedBefore(item: SyncItem, previous: List<SyncItem>): Boolean {
+        val before = previous.filter { it.chapterId != item.chapterId }
+        if (item.group != SyncGroup.STATE) return before.any { sameThing(it, item) }
+        val state = item.entry ?: return false
+        val who = clean(state.subject.ifBlank { item.name })
+        if (who.isEmpty() || state.aspect.isBlank()) return false
+        val latest = before.lastOrNull { old ->
+            val entry = old.entry
+            old.group == SyncGroup.STATE && entry != null && entry.validAt(item.chapter) &&
+                clean(entry.subject.ifBlank { old.name }) == who && entry.aspect == state.aspect
+        } ?: return false
+        return sameState(latest.text, item.text)
     }
 
     /**
@@ -483,8 +510,8 @@ object PackSync {
         return when (e.kind) {
             LedgerKind.STATE -> {
                 val same = ledger.filter { it.kind == LedgerKind.STATE && clean(it.subject) == clean(e.subject) && it.validAt(n) }
-                if (e.aspect.isBlank()) same.any { similar(it.text, text) }
-                else same.filter { it.aspect == e.aspect }.maxWithOrNull(compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt }))?.let { similar(it.text, text) } == true
+                if (e.aspect.isBlank()) same.any { sameState(it.text, text) }
+                else same.filter { it.aspect == e.aspect }.maxWithOrNull(compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt }))?.let { sameState(it.text, text) } == true
             }
             LedgerKind.EVENT -> ledger.any { it.kind == LedgerKind.EVENT && similar(it.text, text) }
             LedgerKind.KNOW -> ledger.any { it.kind == LedgerKind.KNOW && sameWho(it.subject, e.subject) && similar(it.text, text) }

@@ -248,6 +248,93 @@ class WritingSyncTest {
     }
 
     @Test
+    fun batchKeepsAStateThatReturnsToAnEarlierValueAndWritesTheRightSnapshot() {
+        val store = store()
+        val work = store.create("长夜")
+        val one = work.chapters.single()
+        val (_, two) = store.addChapter(work.id, work.volumes.single().id, "第二章")!!
+        val (_, three) = store.addChapter(work.id, work.volumes.single().id, "第三章")!!
+        val (_, four) = store.addChapter(work.id, work.volumes.single().id, "第四章")!!
+        fun state(c: WorkChapter, number: Int, where: String): SyncItem {
+            val quote = "林月$where。"
+            val item = SyncItem(
+                SyncGroup.STATE, "林月·位置：$where", quote, PackKind.CHARACTER, name = "林月", text = where,
+                chapterId = c.id, chapter = number, place = SyncPlace.LEDGER,
+                entry = LedgerEntry(kind = LedgerKind.STATE, text = where, subject = "林月", aspect = "位置", from = number),
+            )
+            return PackSync.plan(listOf(item), emptyList(), store.ledger(work.id)).single()
+        }
+        val a = state(one, 1, "在渡口")
+        val b = state(two, 2, "在京城")
+        val back = state(three, 3, "在渡口")
+        val unchanged = state(four, 4, "在渡口")
+        val session = listOf(a, b, back, unchanged).fold(SyncSession(work.id)) { current, item ->
+            current.with(ChapterSyncResult(item.chapterId, "第${item.chapter}章", item.chapter, 0, listOf(item)))
+        }
+        assertEquals(setOf(unchanged.key), session.repeats)
+        assertEquals(listOf(a.key, b.key, back.key), session.chosen.map { it.key })
+        assertEquals(mapOf(PackSync.LEDGER to 3), store.applySync(work.id, session.chosen))
+        val ledger = store.ledger(work.id)
+        assertEquals("在京城", StoryLedger.snapshot(ledger, 2).states.single().text)
+        assertEquals("在渡口", StoryLedger.snapshot(ledger, 3).states.single().text)
+        assertEquals("在渡口", StoryLedger.snapshot(ledger, 4).states.single().text)
+        assertEquals(listOf(1, 2, 3), ledger.map { it.from })
+        assertEquals(emptyMap<String, Int>(), store.applySync(work.id, session.chosen))
+    }
+
+    @Test
+    fun insertingTheMiddleChapterRestoresTheLaterStateToTheDefaultSelection() {
+        fun state(id: String, chapter: Int, text: String) = SyncItem(
+            SyncGroup.STATE, "林月·位置：$text", "原句$id", PackKind.CHARACTER, name = "林月", text = text,
+            chapterId = id, chapter = chapter, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.STATE, text = text, subject = "林月", aspect = "位置", from = chapter),
+        )
+        fun result(item: SyncItem) = ChapterSyncResult(item.chapterId, "第${item.chapter}章", item.chapter, 0, listOf(item))
+        val one = state("c1", 1, "在渡口")
+        val two = state("c2", 2, "在京城")
+        val three = state("c3", 3, "在渡口")
+        val before = SyncSession("w").with(result(one)).with(result(three))
+        assertEquals(setOf(three.key), before.repeats)
+        assertFalse(three.key in before.picked)
+        val after = before.with(result(two))
+        assertTrue(after.repeats.isEmpty())
+        assertEquals(setOf(one.key, two.key, three.key), after.picked)
+    }
+
+    @Test
+    fun anExpiredStateAndAnUnrelatedAspectDoNotHideANewState() {
+        fun state(id: String, chapter: Int, aspect: String, until: Int? = null) = SyncItem(
+            SyncGroup.STATE, "林月·$aspect：无伤", "原句$id", PackKind.CHARACTER, text = "无伤",
+            chapterId = id, chapter = chapter, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.STATE, text = "无伤", subject = "林月", aspect = aspect, from = chapter, until = until),
+        )
+        val expired = state("c1", 1, "身体", until = 2)
+        val unrelated = state("c2", 2, "情绪")
+        val current = state("c3", 3, "身体")
+        assertFalse(PackSync.repeatedBefore(current, listOf(expired, unrelated)))
+        assertTrue(PackSync.repeatedBefore(current, listOf(expired.copy(entry = expired.entry!!.copy(until = null)))))
+    }
+
+    @Test
+    fun stateDeduplicationNeverDropsANegationOrANewLocationDetail() {
+        fun state(id: String, number: Int, text: String) = SyncItem(
+            SyncGroup.STATE, "林月·身体：$text", "原句$id", PackKind.CHARACTER, name = "林月", text = text,
+            chapterId = id, chapter = number, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.STATE, text = text, subject = "林月", aspect = "身体", from = number),
+        )
+        val hurt = state("c1", 1, "受伤")
+        val unhurt = state("c2", 2, "未受伤")
+        assertFalse(PackSync.sameThing(hurt, unhurt))
+        assertFalse(PackSync.repeatedBefore(unhurt, listOf(hurt)))
+        assertFalse(PackSync.inLedger(unhurt, listOf(hurt.entry!!)))
+        val here = state("c1", 1, "在渡口").let { it.copy(entry = it.entry!!.copy(aspect = "位置")) }
+        val detail = state("c2", 2, "在渡口的茶馆").let { it.copy(entry = it.entry!!.copy(aspect = "位置")) }
+        assertFalse(PackSync.inLedger(detail, listOf(here.entry!!)))
+        val punctuationOnly = here.copy(chapterId = "c2", chapter = 2, text = " 在渡口。 ", entry = here.entry!!.copy(id = "punctuation", from = 2))
+        assertTrue(PackSync.inLedger(punctuationOnly, listOf(here.entry!!)))
+    }
+
+    @Test
     fun theLedgerViewNumbersOpenPromisesAndStopsAtTheLastChapter() {
         val entries = listOf(
             LedgerEntry(id = "a", kind = LedgerKind.PROMISE, text = "顾长风说三日后再来", from = 8, payoff = 11),

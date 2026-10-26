@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui
 
+import com.xycs.lingyuereader.data.brief
+
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -179,7 +181,54 @@ class WritingReviewUiTest {
         compose.onNodeWithText("标为已回收").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.pack(workId).first { it.kind == PackKind.FORESHADOW }.let { "已回收" in store.packText(workId, it.id) } }
+        // 旧表回收也记到账本；给 AI 的下一章资料不再把它当作未收的伏笔。
+        val closed = store.ledger(workId).single { it.kind == LedgerKind.PROMISE && it.text == "半块玉佩" }
+        assertTrue(closed.done)
+        assertEquals(3, closed.closed)
+        assertTrue(store.brief(workId, chapterId)!!.ledger?.open.orEmpty().none { it.id == closed.id })
         waitForText("已回收")
+    }
+
+    @Test
+    fun foreshadowPageUsesLedgerStateAndCanCloseANewLedgerPromise() {
+        val store = WorkStore(writingDir)
+        store.applyLedger(
+            workId,
+            listOf(
+                // 来源表还写着未收，当前账本已收；页面必须只保留账本的那一份状态。
+                LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "半块玉佩", from = 1, payoff = 3, done = true, closed = 2)),
+                LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "合成样本：未送出的纸鹤", from = 1, payoff = 3)),
+            ),
+            "合成样本",
+        )
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.Foreshadows(workId)) }
+        waitForText("合成样本：未送出的纸鹤")
+        assertEquals(1, compose.onAllNodesWithText("半块玉佩").fetchSemanticsNodes().size)
+        compose.onNodeWithText("合成样本：未送出的纸鹤").performClick()
+        compose.onNodeWithText("标为已回收").performClick()
+        waitFor { store.ledger(workId).all { it.kind != LedgerKind.PROMISE || it.done } }
+        assertTrue(store.brief(workId, chapterId)!!.ledger?.open.orEmpty().isEmpty())
+    }
+
+    @Test
+    fun requestingAnAiFixDoesNotMarkAnUnacceptedIssueFixed() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
+        waitForText("这一章计划回收的伏笔")
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("三道审稿").performClick()
+        waitForText("还没有审过")
+        compose.onNodeWithText("开始审稿").performClick()
+        waitForGate("事实关：1 处")
+        waitForGate("规则关：1 处")
+        compose.onNodeWithText("察觉表里林月第五章才知道玉佩来历").performScrollTo().performClick()
+        compose.onNodeWithText("按这条让 AI 改").performClick()
+        waitFor { vm.writingAi.state.value?.loading == false }
+        compose.runOnUiThread { vm.writingAi.close() }
+        assertTrue(store.review(workId, chapterId)!!.gate(ReviewGate.FACT)!!.issues.single().open)
+        assertEquals(chapterText, store.text(workId, chapterId))
     }
 
     @Test

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -30,7 +32,11 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.saveReferenceAnalysis
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -284,6 +290,76 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(3))
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
+        assertTrue(prompts.isEmpty())
+    }
+
+    @Test
+    fun aiWriterUsesAnExplicitReferenceAndWaitsForAuthorAcceptance() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        openEditor()
+        compose.onNodeWithContentDescription("书灵写作").performClick()
+        waitForText("先说这一段要发生什么")
+        compose.onNodeWithText("选择范本").performClick()
+        waitForText("本章还没有范本分析")
+        compose.onNodeWithText("关闭").performClick()
+
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(3))
+        compose.onNodeWithContentDescription("正文").performTextInput("又")
+        Thread.sleep(4_000)
+        ShadowLooper.idleMainLooper()
+        assertTrue("打字、移动光标和打开书灵写作都不能自动发请求", prompts.isEmpty())
+
+        compose.onNodeWithText("选择范本").performClick()
+        compose.onNodeWithText("新增/分析范本").performClick()
+        waitForText("写作范本")
+        val store = WorkStore(writingDir)
+        val reference = store.importReference(workId, "合成范本.txt", "第一章 模拟范本\n门外有人叩门。她先问身份，再把信封压在桌角。")
+        val chapter = reference.chapters.single()
+        val excerpt = store.selectedChapterExcerpt(workId, reference.id, chapter.id)!!
+        store.saveReferenceAnalysis(workId, ReferenceAnalysis.from(excerpt, chapterId, "test-target", "开头先听见叩门声，再让对白试探身份。"))
+        val sourceLabel = "《${reference.title}》 · ${chapter.title}"
+        compose.runOnUiThread { vm.back() }
+        waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
+        if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
+            compose.onNodeWithContentDescription("书灵写作").performClick()
+        }
+        waitForText("选择范本")
+        compose.onNodeWithText("选择范本").performClick()
+        waitForText(sourceLabel)
+        compose.onNodeWithText(sourceLabel).performClick()
+        waitForText("交给 AI 写这一段")
+        assertTrue("选中范本也不能自动发请求", prompts.isEmpty())
+
+        compose.onNodeWithText("交给 AI 写这一段").performClick()
+        waitForText("这一段要发生什么？")
+        assertTrue("只有作者给出构思并提交才请求模型", prompts.isEmpty())
+        val intent = "来人递出军令，守门人先试探身份"
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(intent)
+        compose.onNodeWithText("好").performClick()
+        waitFor { vm.writingAi.inline.value?.let { !it.loading && it.text.isNotBlank() } == true }
+        val candidate = vm.writingAi.inline.value!!
+        assertTrue(prompts.single().contains(intent))
+        assertTrue(prompts.single().contains("门外有人叩门"))
+        assertEquals("作者采纳前，候选正文不写入章节", candidate.base, store.text(workId, chapterId))
+
+        compose.onNodeWithText("采纳").performClick()
+        val accepted = candidate.base.substring(0, candidate.at) + candidate.text + candidate.base.substring(candidate.at)
+        waitFor { store.text(workId, chapterId) == accepted }
+    }
+
+    @Test
+    fun pastingStyleAndLeavingImmediatelyStillSavesIt() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val requested = "合成样本：对白短一些，人物各有语气；叙述保持清楚。"
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitFor { vm.writingAi.assists.value[workId] != null }
+        compose.onNodeWithText("对文风的要求").performScrollTo()
+        // 同一个事件里输入并返回，不给 600ms 防抖机会；退出补存必须读到字段的最新值。
+        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
+            set(AnnotatedString(requested))
+            vm.back()
+        }
+        waitFor { WorkStore(writingDir).assist(workId).style == requested }
         assertTrue(prompts.isEmpty())
     }
 

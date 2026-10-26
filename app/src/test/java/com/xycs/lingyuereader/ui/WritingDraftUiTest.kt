@@ -10,6 +10,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performTextReplacement
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,7 +21,12 @@ import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.ReferencePart
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.saveReferenceAnalysis
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -78,6 +85,7 @@ class WritingDraftUiTest {
                         WorkStore(writingDir).let { it.saveCard(workId, c2, it.card(workId, c2).copy(summary = "作者自己写的摘要")) }
                     }
                     val answer = when {
+                        "只返回一个 JSON 对象" in user -> """{"nodes":[{"kind":"信息","label":"声响引题","quote":"夜里有人叩门"},{"kind":"动作","label":"靠近灯盏","quote":"移近灯盏"}],"dialogue":null}"""
                         "请写出这一章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
                         "请从最后一句接着往下写" in user -> "门外的人没有回答。"
                         "概括这一章" in user -> "沈默进城，在杜娘的茶馆落脚。"
@@ -136,6 +144,44 @@ class WritingDraftUiTest {
     private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     @Test
+    fun authorSelectsARealReferenceBeforeAiWritesTheDraft() {
+        val store = WorkStore(writingDir)
+        val book = store.importReference(workId, "合成范本.txt", "第一章 门外\n夜里有人叩门。掌柜先问来者身份，等对方迟疑后才移近灯盏。")
+        val excerpt = store.selectedChapterExcerpt(workId, book.id, book.chapters.single().id, ReferencePart.OPENING, 100)!!
+        val analysis = store.saveReferenceAnalysis(workId, ReferenceAnalysis.from(excerpt, c2, "旧正文指纹",
+            "此合成片段先给出声音，再通过一次对白和动作改变人物处境。"))
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("你的构思")
+        waitForText("AI 拟写法")
+        compose.onNodeWithText("写作范本").performScrollTo().performClick()
+        waitForText("AI 写作范本")
+        compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
+        waitFor { vm.companionReference(workId, c2) == analysis.id }
+        waitFor { compose.onAllNodesWithContentDescription("范本开头，选中第", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue("选范本与看范围不能自行发起 AI 请求", asked.isEmpty())
+
+        compose.onNodeWithText("生成写法图（会发送一次 AI 请求）").performScrollTo().performClick()
+        waitForText("声响引题")
+        waitForText("靠近灯盏")
+        assertEquals("写法图只由作者点击后请求一次", 1, asked.count { (_, user) -> "只返回一个 JSON 对象" in user })
+        assertEquals("分析范本不能自行写正文", 0, asked.count { (_, user) -> "请写出这一章" in user })
+        compose.onNodeWithText("写作范本").performScrollTo().performClick()
+        compose.onNodeWithText("不使用范本").performClick()
+        compose.waitForIdle()
+        assertTrue("取消范本后不能露出上一张写法图", compose.onAllNodesWithText("声响引题", substring = true).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("写作范本").performClick()
+        compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
+        waitForText("声响引题")
+
+        compose.onNodeWithText("写本章").performScrollTo().performClick()
+        waitFor { asked.any { (system, user) -> "夜里有人叩门" in system + user } }
+        waitForText("杜娘把门打开")
+        assertEquals("AI 只应在作者点击写本章后写一版", 1, asked.count { (_, user) -> "请写出这一章" in user })
+        assertEquals("候选稿不能自动进入正文", "旧稿一句。", store.text(workId, c2))
+    }
+
+    @Test
     fun aiWritesTheChapterThenItGoesIntoTheText() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         val store = WorkStore(writingDir)
@@ -153,7 +199,8 @@ class WritingDraftUiTest {
         compose.onNodeWithText("AI 写一版草稿").performClick()
         waitForText("这一章想怎么写")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("多写对白")
-        compose.onNodeWithText("写本章").performClick()
+        waitForText("本章写作任务")
+        compose.onNodeWithText("写本章").performScrollTo().performClick()
         waitForText("杜娘把门打开，雪灌了进来。")
         // 章名和“本章完”去掉了；草稿存下来了。
         waitFor { store.draft(workId, c2) == "杜娘把门打开，雪灌了进来。\n“谁？”她问。" }
@@ -180,6 +227,25 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c2).isEmpty() }
         // 回到编辑器，看到的是新正文。
         waitForText("门外的人没有回答。")
+    }
+
+    @Test
+    fun reopeningACandidateRestoresItsRequestWithoutOverwritingNewEdits() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留人物的迟疑", targetLength = "约30字") }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.text.isNotBlank() } == true }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("保留人物的迟疑")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        waitForText("旧稿一句。")
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("保留人物的迟疑")).performTextReplacement("保留人物的犹豫和改口")
+        compose.waitForIdle()
+        compose.onNode(hasSetTextAction() and hasText("保留人物的犹豫和改口")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
     }
 
     @Test

@@ -36,12 +36,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.ReviewFix
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.BriefItem
 import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOp
+import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.LedgerSnapshot
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewGate
@@ -273,9 +278,9 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
         }
     }
 
-    fun jump(issue: ReviewIssue, instruction: String? = null) {
+    fun jump(issue: ReviewIssue, instruction: String? = null, reviewFix: ReviewFix? = null) {
         if (issue.quote.isBlank()) return
-        vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote, instruction)
+        vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote, instruction, reviewFix)
         vm.back()
     }
     var acting by remember { mutableStateOf<Pair<ReviewGate, ReviewIssue>?>(null) }
@@ -365,8 +370,12 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         when (action) {
                             IssueAction.JUMP -> jump(issue)
                             IssueAction.AI_FIX -> {
-                                vm.writingAi.markIssue(workId, chapterId, gate, issue, ReviewIssue.FIXED)
-                                jump(issue, listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。")
+                                // 发起改稿不等于已经改好：失败、关闭或未采纳时，问题仍应保持未处理。
+                                jump(
+                                    issue,
+                                    listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。",
+                                    review?.let { ReviewFix(gate, issue, it.at, it.textHash) },
+                                )
                             }
                         }
                     })
@@ -436,67 +445,122 @@ private fun IssueRow(issue: ReviewIssue, onClick: () -> Unit) {
     }
 }
 
-/**
- * 伏笔：伏笔表里的每一条——该回收了（计划回收的章已经写到）、还没回收、已回收。点一条可以标为已回收（改伏笔表那一行）。
- */
+/** 伏笔统一视图：账本是当前状态，旧表保留为来源；没有导入的旧表条目仍可操作。 */
+internal data class WritingForeshadow(
+    val display: Foreshadow,
+    val ledger: LedgerEntry? = null,
+    val legacy: List<Foreshadow> = emptyList(),
+) {
+    fun close(chapter: Int?): LedgerOp = ledger?.let { LedgerOp.Close(it.id, chapter) }
+        ?: LedgerOp.Add(
+            LedgerEntry(
+                kind = LedgerKind.PROMISE,
+                text = display.what.trim().removeSuffix("（只有作者知道）"),
+                from = display.planted,
+                payoff = display.payoff,
+                done = true,
+                closed = chapter,
+                secret = display.what.trim().endsWith("（只有作者知道）"),
+                quote = display.what,
+                origin = LedgerOrigin.IMPORT,
+            ),
+        )
+}
+
+/** 和本章资料采用同一匹配方式：已有账本记录时，不再展示旧表里的第二份状态。 */
+internal fun mergeWritingForeshadows(legacy: List<Foreshadow>, ledger: List<LedgerEntry>): List<WritingForeshadow> {
+    fun same(a: String, b: String) = ChapterBriefs.same(a.removeSuffix("（只有作者知道）"), b.removeSuffix("（只有作者知道）"))
+    val promises = ledger.filter { it.kind == LedgerKind.PROMISE }
+    val result = promises.map { e ->
+        WritingForeshadow(
+            display = Foreshadow(e.text, e.from, e.payoff, e.done, closed = e.closed),
+            ledger = e,
+            legacy = legacy.filter { same(it.what, e.text) },
+        )
+    }.toMutableList()
+    legacy.forEach { f ->
+        if (result.none { same(it.display.what, f.what) }) {
+            result += WritingForeshadow(f, legacy = legacy.filter { same(it.what, f.what) })
+        }
+    }
+    return result
+}
+
+/** 全部伏笔：按账本显示最新回收状态，未导入的旧表条目回收时也记进账本。 */
 @Composable
 fun ForeshadowScreen(vm: AppViewModel, workId: String) {
     val packs by vm.writing.packs.collectAsStateWithLifecycle()
     val pack = packs[workId]
+    val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
     val docs = pack.orEmpty().filter { it.kind == PackKind.FORESHADOW }
     var data by remember { mutableStateOf<Pair<List<Foreshadow>, Int>?>(null) }
-    var open by remember { mutableStateOf<Foreshadow?>(null) }
-    LaunchedEffect(workId) { vm.writing.loadPack(workId) }
+    var open by remember { mutableStateOf<WritingForeshadow?>(null) }
+    LaunchedEffect(workId) {
+        vm.writing.loadPack(workId)
+        vm.writing.loadLedger(workId)
+    }
     LaunchedEffect(workId, pack) { data = vm.writing.foreshadows(workId) }
     WritingPage(vm, "伏笔", content = {
         item {
             // 配色要在 WritingPage 提供的配色里面读，不能在外面先读好。
             val c = LocalGroupedColors.current
             val loadedData = data
-            if (pack == null || loadedData == null) {
-                LoadingState("正在读伏笔表……")
+            if (pack == null || loadedData == null || ledgers[workId] == null) {
+                LoadingState("正在读伏笔……")
                 return@item
             }
-            val (list, latest) = loadedData
-            val due = list.filter { !it.done && it.payoff != null && it.payoff <= latest }
-            val waiting = list.filter { !it.done } - due.toSet()
-            val done = list.filter { it.done }
-            if (docs.isEmpty()) {
-                GroupedSection(footer = "伏笔表是设定包里的一份表格：伏笔、第几章埋下、计划第几章回收、状态。写作 AI 会记着没回收的伏笔，到了计划的那一章会提醒。") {
+            val (legacy, latest) = loadedData
+            val list = mergeWritingForeshadows(legacy, ledgers[workId].orEmpty())
+            val due = list.filter { !it.display.done && it.display.payoff?.let { n -> n <= latest } == true }
+            val waiting = list.filter { !it.display.done } - due.toSet()
+            val done = list.filter { it.display.done }
+            GroupedSection(footer = "这里合并显示全部伏笔，回收状态以故事账本为准。回收后，后续写作和审稿也会使用同一状态。") {
+                row { NavRow("故事账本", value = "${list.size} 条伏笔") { vm.open(Screen.WorkLedger(workId)) } }
+            }
+            if (list.isEmpty()) {
+                GroupedSection(footer = "伏笔可以在故事账本里添加，或从设定包的伏笔表导入。到了计划回收的章节会提醒。") {
                     row {
-                        ActionRow("新建伏笔表") { vm.writing.addDoc(workId, PackKind.FORESHADOW, PackKind.FORESHADOW.label) { vm.open(Screen.PackDoc(workId, it.id)) } }
+                        NavRow("添加伏笔") { vm.open(Screen.WorkLedger(workId)) }
                     }
                 }
             } else {
                 if (due.isNotEmpty()) {
                     GroupedSection(header = "该回收了", footer = "计划回收的章已经写到（写到第 $latest 章），还没标为已回收。") {
                         due.forEach { f ->
-                            row { NavRow(f.what, subtitle = ChapterBrief.foreshadowWhen(f).trim('（', '）'), trailing = { Tag("该回收", c.warning) }) { open = f } }
+                            row { NavRow(f.display.what, subtitle = ChapterBrief.foreshadowWhen(f.display).trim('（', '）'), trailing = { Tag("该回收", c.warning) }) { open = f } }
                         }
                     }
                 }
                 GroupedSection(header = "还没回收") {
                     if (waiting.isEmpty()) row { EmptyRow("没有。") }
-                    waiting.forEach { f -> row { NavRow(f.what, subtitle = ChapterBrief.foreshadowWhen(f).trim('（', '）')) { open = f } } }
+                    waiting.forEach { f -> row { NavRow(f.display.what, subtitle = ChapterBrief.foreshadowWhen(f.display).trim('（', '）')) { open = f } } }
                 }
                 if (done.isNotEmpty()) {
                     GroupedSection(header = "已回收") {
-                        done.forEach { f -> row { TwoLine(f.what, ChapterBrief.foreshadowWhen(f).trim('（', '）'), trailing = { Tag("已回收", c.success) }) } }
+                        done.forEach { f -> row { TwoLine(f.display.what, ChapterBrief.foreshadowWhen(f.display).trim('（', '）'), trailing = { Tag("已回收", c.success) }) } }
                     }
                 }
-                GroupedSection(footer = "伏笔写在设定包的伏笔表里：表格要有“伏笔”“埋下”“回收”几列（“状态”可选），或者写成列表“- 玉佩：第3章埋，第20章回收”。") {
+            }
+            if (docs.isNotEmpty()) {
+                GroupedSection(header = "来源文档", footer = "表格尚未导入的条目也会显示；与账本重复时，账本里的状态优先。") {
                     docs.forEach { d -> row { NavRow(if (docs.size == 1) "编辑伏笔表" else "编辑“${d.title}”") { vm.open(Screen.PackDoc(workId, d.id)) } } }
                 }
             }
         }
     }) {
         open?.let { f ->
-            GlassDialog(show = true, title = f.what, summary = ChapterBrief.foreshadowWhen(f).trim('（', '）').ifEmpty { null }, onDismissRequest = { open = null }) {
+            GlassDialog(show = true, title = f.display.what, summary = ChapterBrief.foreshadowWhen(f.display).trim('（', '）').ifEmpty { null }, onDismissRequest = { open = null }) {
                 DialogButtons(
                     onDismiss = { open = null },
                     onConfirm = {
                         open = null
-                        vm.writing.markForeshadow(workId, f)
+                        val chapter = data?.second?.takeIf { it > 0 }
+                        val current = mergeWritingForeshadows(data?.first.orEmpty(), vm.writing.ledgers.value[workId].orEmpty())
+                            .firstOrNull { ChapterBriefs.same(it.display.what, f.display.what) } ?: f
+                        // 先写当前状态；旧表镜像失败也不会让界面与 AI 继续使用不同的回收状态。
+                        vm.writing.editLedger(workId, listOf(current.close(chapter)), "回收伏笔") {
+                            current.legacy.forEach { old -> vm.writing.markForeshadow(workId, old) }
+                        }
                     },
                     confirmText = "标为已回收",
                 )

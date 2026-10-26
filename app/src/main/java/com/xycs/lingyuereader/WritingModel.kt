@@ -33,6 +33,22 @@ import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.data.WorkExport
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.WritingReference
+import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.ReferenceExcerpt
+import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.referenceAnalysisCurrent
+import com.xycs.lingyuereader.data.writingTask
+import com.xycs.lingyuereader.data.references
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.importBookReference
+import com.xycs.lingyuereader.data.referenceText
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
+import com.xycs.lingyuereader.data.deleteReference
+import com.xycs.lingyuereader.data.referenceAnalyses
+import com.xycs.lingyuereader.data.setReferenceAnalysisApplied
+import com.xycs.lingyuereader.data.deleteReferenceAnalysis
 import com.xycs.lingyuereader.data.WritingBackup
 import com.xycs.lingyuereader.data.WritingRestore
 import com.xycs.lingyuereader.data.WritingStats
@@ -344,13 +360,16 @@ class WritingModel(
     }
 
     /** 改章节状态。从定稿改出去要写 [reason]；[canon] 为真表示改动涉及设定，登记里会提醒同步设定包。 */
-    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, then: () -> Unit = {}) {
+    fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null, then: () -> Unit = {}) {
         scope.launch {
             try {
-                val work = withContext(disk) {
-                    store.setStatus(workId, chapterId, status, reason, canon).also { refreshChanges(workId) }
+                val (work, stats) = withContext(disk) {
+                    val updated = requireNotNull(store.setStatus(workId, chapterId, status, reason, canon, currentText)) { "章节不在了" }
+                    refreshChanges(workId)
+                    updated to store.stats()
                 }
                 publish(work)
+                _stats.value = stats
                 then()
             } catch (e: CancellationException) {
                 throw e
@@ -670,6 +689,45 @@ class WritingModel(
         }) { saved?.let(then) }
     }
 
+    // ---------- 写作范本 ----------
+
+    /** 范本存放在作品自己的独立目录，不作为本作的设定或正文。 */
+    suspend fun references(workId: String): List<WritingReference> = withContext(disk) { store.references(workId) }
+
+    suspend fun importReference(workId: String, fileName: String, bytes: ByteArray): WritingReference =
+        withContext(disk) { store.importReference(workId, fileName, bytes) }
+
+    suspend fun importBookReference(workId: String, bookId: String, content: BookContent, sourceName: String = "书架"): WritingReference =
+        withContext(disk) { store.importBookReference(workId, bookId, content, sourceName) }
+
+    suspend fun referenceText(workId: String, referenceId: String, chapterId: String): String? =
+        withContext(disk) { store.referenceText(workId, referenceId, chapterId) }
+
+    suspend fun selectedChapterExcerpt(
+        workId: String, referenceId: String, chapterId: String,
+        part: ReferencePart = ReferencePart.OPENING, maxChars: Int = 2400, start: Int = 0, end: Int = 0,
+    ): ReferenceExcerpt? = withContext(disk) {
+        store.selectedChapterExcerpt(workId, referenceId, chapterId, part, maxChars, start, end)
+    }
+
+    suspend fun deleteReference(workId: String, referenceId: String): Boolean =
+        withContext(disk) { store.deleteReference(workId, referenceId) }
+
+    suspend fun referenceAnalyses(workId: String, targetChapterId: String? = null): List<ReferenceAnalysis> =
+        withContext(disk) { store.referenceAnalyses(workId, targetChapterId) }
+
+    suspend fun referenceAnalysisCurrent(workId: String, analysis: ReferenceAnalysis): Boolean = withContext(disk) {
+        val task = store.writingTask(workId, analysis.targetChapterId) ?: return@withContext false
+        val target = WritingReferenceAi.targetFingerprint(task, store.text(workId, analysis.targetChapterId))
+        store.referenceAnalysisCurrent(workId, analysis, target)
+    }
+
+    suspend fun setReferenceAnalysisApplied(workId: String, id: String, applied: Boolean): Boolean =
+        withContext(disk) { store.setReferenceAnalysisApplied(workId, id, applied) }
+
+    suspend fun deleteReferenceAnalysis(workId: String, id: String): Boolean =
+        withContext(disk) { store.deleteReferenceAnalysis(workId, id) }
+
     // ---------- 导出、预览、备份 ----------
 
     suspend fun export(workId: String, format: ExportFormat, out: OutputStream) = withContext(disk) {
@@ -739,7 +797,7 @@ data class FormatRun(
 }
 
 /** 回到编辑器要选中的一句：哪一章、原文、要不要按一条意见让 AI 改。 */
-data class Jump(val chapterId: String, val quote: String, val instruction: String? = null)
+data class Jump(val chapterId: String, val quote: String, val instruction: String? = null, val reviewFix: ReviewFix? = null)
 
 /** 账本页能翻到的一章：[no] 是按设定算的章号，[volume] 是第几卷。 */
 data class LedgerChapter(val id: String, val title: String, val no: Int, val volume: Int)
