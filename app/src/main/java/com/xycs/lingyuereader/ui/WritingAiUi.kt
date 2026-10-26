@@ -607,6 +607,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                                 vm.open(Screen.WorkPack(workId))
                             }
                         }
+                        row {
+                            NavRow("写作范本", value = "结构、对白与本章写法", icon = LingYueIcons.Book, iconBackground = Color(0xFFAF52DE)) {
+                                vm.open(Screen.WritingReference(workId))
+                            }
+                        }
                     }
                     GroupedSection(
                         header = "记录",

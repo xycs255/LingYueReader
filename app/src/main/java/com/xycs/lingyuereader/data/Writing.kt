@@ -265,6 +265,12 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         return File(works, workId)
     }
 
+    /** 范本书与分析独立于设定包、账本和正文；只在作者明确选择范本时读取。 */
+    internal fun referenceRoot(workId: String): File {
+        require(get(workId) != null) { "作品不在了" }
+        return File(dir(workId), WritingReferences.DIRECTORY)
+    }
+
     private fun chapterFile(workId: String, chapterId: String): File {
         require(ID.matches(chapterId)) { "章节 id 无效" }
         return File(dir(workId), "$chapterId.txt")
@@ -1134,7 +1140,31 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             value.days.forEach { (d, n) -> days.put(d.toString(), n) }
             backup.put("goal", value.goal).put("days", days)
         }
-        return WritingBackup(backup.toString().toByteArray(), skipped)
+        // 外层备份把 writing.json 当作最多 64 MiB 的 JSON 读入。先给作者正文等原有内容
+        // 留足空间，再按整份备份 24 MiB 的预算收范本；大范本逐部报告，不产生无法恢复的备份。
+        val originalBytes = backup.toString().toByteArray().size.toLong()
+        check(originalBytes <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "写作数据超过 64 MB，无法生成可恢复的备份" }
+        var referenceBudget = minOf(WritingReferences.MAX_BACKUP_BYTES,
+            (WritingReferenceBackup.MAX_WRITING_JSON_BYTES - originalBytes - 1024 * 1024).coerceAtLeast(0))
+        all.forEachIndexed { i, work ->
+            try {
+                val snapshot = WritingReferenceBackup.snapshot(File(dir(work.id), WritingReferences.DIRECTORY), referenceBudget) { title, reason ->
+                    skipped += WritingSkip(work.title, "${WritingReferences.DIRECTORY}/$title", reason)
+                }
+                if (snapshot != null) {
+                    val bytes = snapshot.toString().toByteArray().size + 32L
+                    if (bytes <= referenceBudget) {
+                        array.getJSONObject(i).put("references", snapshot)
+                        referenceBudget -= bytes
+                    }
+                }
+            } catch (failure: Exception) {
+                skipped += WritingSkip(work.title, WritingReferences.DIRECTORY, "范本或分析索引读不出，没有放进备份：${failure.message.orEmpty()}")
+            }
+        }
+        val bytes = backup.toString().toByteArray()
+        check(bytes.size.toLong() <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "写作数据超过 64 MB，无法生成可恢复的备份" }
+        return WritingBackup(bytes, skipped)
     }
 
     private data class RestoreWork(
@@ -1148,6 +1178,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val pack: List<Pair<PackDoc, String>>?,
         val localPack: List<PackDoc>,
         val assist: WorkAssist?,
+        val references: ReferenceArchive?,
     )
 
     /**
@@ -1218,6 +1249,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             }
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
+        val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) else null
 
         val localDir = dir(incoming.id)
         if (localDir.exists()) require(localDir.isDirectory) { "本机作品路径无效" }
@@ -1279,12 +1311,13 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, drafts, cards, changes, ledger, pack, localPack, assist)
+        return RestoreWork(incoming, local, texts, drafts, cards, changes, ledger, pack, localPack, assist, references)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
     @Synchronized
     fun validateBackup(json: String) {
+        require(json.toByteArray().size.toLong() <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "备份写作数据超过 64 MB" }
         preflightRestoreBackup(JSONObject(json))
     }
 
@@ -1294,10 +1327,15 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val array = if (backup.has("works")) backup.getJSONArray("works") else JSONArray()
         val seen = mutableSetOf<String>()
         val skipped = mutableListOf<WritingSkip>()
+        var referenceBytes = 0L
         val plans = (0 until array.length()).mapNotNull { index ->
             val entry = array.getJSONObject(index)
             val id = entry.getString("id")
             require(seen.add(id)) { "备份作品 id 重复" }
+            if (entry.has("references")) {
+                referenceBytes += entry.getJSONObject("references").toString().toByteArray().size
+                require(referenceBytes <= WritingReferences.MAX_BACKUP_BYTES) { "备份范本总量超过安全上限" }
+            }
             parseRestoreWork(entry, skipped)
         }
         val days = if (backup.has("days")) {
@@ -1352,6 +1390,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         plan.assist?.let {
             check(DurableFiles.write(File(destination, ASSIST), it.toJson().toString().toByteArray())) { "无法暂存设定" }
         }
+        plan.references?.let { WritingReferenceBackup.stage(it, File(destination, WritingReferences.DIRECTORY), incoming.chapters.map { chapter -> chapter.id }.toSet()) }
         val metadata = incoming.copy(previewBookId = plan.local?.previewBookId ?: incoming.previewBookId)
         check(DurableFiles.write(File(destination, WORK), metadata.toJson().toString().toByteArray())) { "无法暂存作品信息" }
     }
@@ -1379,6 +1418,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
     /** 同 [restoreBackup]，另外报告整部没有恢复的作品（本机的较新，或本机的文件读不出）。 */
     @Synchronized
     fun restoreBackupReport(json: String): WritingRestore {
+        require(json.toByteArray().size.toLong() <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "备份写作数据超过 64 MB" }
         val backup = JSONObject(json)
         val preflight = preflightRestoreBackup(backup)
         val plans = preflight.plans

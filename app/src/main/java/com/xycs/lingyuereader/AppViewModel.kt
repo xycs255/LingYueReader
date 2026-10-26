@@ -195,6 +195,9 @@ sealed interface Screen {
     /** 作品的文风范例：看看挑了哪几段，换一段、不用这段。 */
     data class WorkStyleSamples(val workId: String) : Screen
 
+    /** 作者导入的外部范本：按真实章节与片段分析写法，并对照当前写作章。 */
+    data class WritingReference(val workId: String, val chapterId: String? = null) : Screen
+
     /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
     data class ChapterSync(val workId: String) : Screen
 
@@ -1406,6 +1409,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 写作的 AI：改稿、灵感、点评、矛盾检查、写作建议、设定集。 */
     val writingAi = WritingAi(workStore, assistant, viewModelScope, app.getSharedPreferences("writing_ai", android.content.Context.MODE_PRIVATE)) { _messages.value = it }
+    val referenceAi = WritingReferenceAi(workStore, assistant, viewModelScope) { _messages.value = it }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss

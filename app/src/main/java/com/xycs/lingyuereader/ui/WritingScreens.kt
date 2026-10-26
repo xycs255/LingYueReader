@@ -1101,6 +1101,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("故事账本" to { vm.open(Screen.WorkLedger(workId, chapterId)) })
+                                        add("从范本找写法" to { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) })
                                         add("规则检查" to { rulesOpen = true })
                                         add("自动排版" to {
                                             when {

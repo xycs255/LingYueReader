@@ -33,6 +33,22 @@ import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.data.WorkExport
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.WritingReference
+import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.ReferenceExcerpt
+import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.BookContent
+import com.xycs.lingyuereader.data.referenceAnalysisCurrent
+import com.xycs.lingyuereader.data.writingTask
+import com.xycs.lingyuereader.data.references
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.importBookReference
+import com.xycs.lingyuereader.data.referenceText
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
+import com.xycs.lingyuereader.data.deleteReference
+import com.xycs.lingyuereader.data.referenceAnalyses
+import com.xycs.lingyuereader.data.setReferenceAnalysisApplied
+import com.xycs.lingyuereader.data.deleteReferenceAnalysis
 import com.xycs.lingyuereader.data.WritingBackup
 import com.xycs.lingyuereader.data.WritingRestore
 import com.xycs.lingyuereader.data.WritingStats
@@ -672,6 +688,45 @@ class WritingModel(
             }
         }) { saved?.let(then) }
     }
+
+    // ---------- 写作范本 ----------
+
+    /** 范本存放在作品自己的独立目录，不作为本作的设定或正文。 */
+    suspend fun references(workId: String): List<WritingReference> = withContext(disk) { store.references(workId) }
+
+    suspend fun importReference(workId: String, fileName: String, bytes: ByteArray): WritingReference =
+        withContext(disk) { store.importReference(workId, fileName, bytes) }
+
+    suspend fun importBookReference(workId: String, bookId: String, content: BookContent, sourceName: String = "书架"): WritingReference =
+        withContext(disk) { store.importBookReference(workId, bookId, content, sourceName) }
+
+    suspend fun referenceText(workId: String, referenceId: String, chapterId: String): String? =
+        withContext(disk) { store.referenceText(workId, referenceId, chapterId) }
+
+    suspend fun selectedChapterExcerpt(
+        workId: String, referenceId: String, chapterId: String,
+        part: ReferencePart = ReferencePart.OPENING, maxChars: Int = 2400, start: Int = 0, end: Int = 0,
+    ): ReferenceExcerpt? = withContext(disk) {
+        store.selectedChapterExcerpt(workId, referenceId, chapterId, part, maxChars, start, end)
+    }
+
+    suspend fun deleteReference(workId: String, referenceId: String): Boolean =
+        withContext(disk) { store.deleteReference(workId, referenceId) }
+
+    suspend fun referenceAnalyses(workId: String, targetChapterId: String? = null): List<ReferenceAnalysis> =
+        withContext(disk) { store.referenceAnalyses(workId, targetChapterId) }
+
+    suspend fun referenceAnalysisCurrent(workId: String, analysis: ReferenceAnalysis): Boolean = withContext(disk) {
+        val task = store.writingTask(workId, analysis.targetChapterId) ?: return@withContext false
+        val target = WritingReferenceAi.targetFingerprint(task, store.text(workId, analysis.targetChapterId))
+        store.referenceAnalysisCurrent(workId, analysis, target)
+    }
+
+    suspend fun setReferenceAnalysisApplied(workId: String, id: String, applied: Boolean): Boolean =
+        withContext(disk) { store.setReferenceAnalysisApplied(workId, id, applied) }
+
+    suspend fun deleteReferenceAnalysis(workId: String, id: String): Boolean =
+        withContext(disk) { store.deleteReferenceAnalysis(workId, id) }
 
     // ---------- 导出、预览、备份 ----------
 
