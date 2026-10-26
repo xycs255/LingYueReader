@@ -383,6 +383,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         reviewFile(workId, chapterId).delete()
         draftFile(workId, chapterId).delete()
         draftReferenceFile(workId, chapterId).delete()
+        scenePlanFile(workId, chapterId).delete()
         return work
     }
 
@@ -575,6 +576,32 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
     private fun draftReferenceFile(workId: String, chapterId: String): File {
         require(ID.matches(chapterId)) { "章节 id 无效" }
         return File(dir(workId), "$chapterId.draft.reference.json")
+    }
+
+    private fun scenePlanFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.scene-plan.json")
+    }
+
+    /** Scene routes are author-editable plans, separate from confirmed chapter facts and prose. */
+    @Synchronized
+    fun scenePlan(workId: String, chapterId: String): WritingScenePlan? = scenePlanFile(workId, chapterId)
+        .takeIf { it.isFile }?.let { WritingScenePlan.fromJson(JSONObject(it.readText())) }
+
+    @Synchronized
+    fun saveScenePlan(workId: String, chapterId: String, plan: WritingScenePlan?) {
+        require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        val file = scenePlanFile(workId, chapterId)
+        val raw = plan?.validated()?.toJson()?.toString()
+        if (raw == null) {
+            if (!file.exists()) return
+            check(file.delete()) { "无法删除场景安排" }
+        } else {
+            if (file.isFile && file.readText() == raw) return
+            check(DurableFiles.write(file, raw.toByteArray())) { "无法保存场景安排" }
+        }
+        // A scene plan is author work too: backups and restore conflict checks need a new revision.
+        update(workId) { it }
     }
 
     /** AI 写的本章草稿（还没放进正文的；离开页面再回来还在）。 */
@@ -1079,6 +1106,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
     /**
      * 同 [backup]，另外报告没能放进去的文件。某个文件读不出时不再让整份备份失败：
      * - 作品信息（work.json）读不出：这部作品整部不放；
+     * - 场景安排读不出、或已写进度与候选稿不符：这部作品整部不放，避免恢复成错配状态；
      * - 细纲卡读不出：这张卡不放；变更登记、AI 设置、设定包索引读不出：这一项不放（恢复时保留那台手机上的）；
      * - 码字统计读不出：统计不放；
      * - 章节正文、设定文档的文件不见了：放空的，也报告出来。
@@ -1103,6 +1131,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             }
         }
         val array = JSONArray()
+        val backedUp = mutableListOf<Work>()
         all.forEach { w ->
             fun skip(file: String, reason: String) { skipped += WritingSkip(w.title, file, reason) }
             /** 读一个附加文件；读不出就另存一份、记下来，返回 null。 */
@@ -1121,6 +1150,8 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             val texts = JSONObject()
             val drafts = JSONObject()
             val draftSources = JSONObject()
+            val scenePlans = JSONObject()
+            var unsafeScenePlan = false
             w.chapters.forEach { c ->
                 val source = chapterFile(w.id, c.id)
                 if (!source.isFile && c.words > 0) skip(source.name, "「${c.title}」的正文文件不见了，备份里这一章是空的")
@@ -1146,7 +1177,23 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                     drafts.put(c.id, draft)
                     draftSources.put(c.id, safeProvenance)
                 }
+                val sceneSource = scenePlanFile(w.id, c.id)
+                if (sceneSource.isFile) {
+                    val plan = component(sceneSource, "「${c.title}」的场景安排损坏，整部作品没有放进备份") { raw ->
+                        WritingScenePlan.fromJson(JSONObject(raw))
+                    }
+                    if (plan == null) unsafeScenePlan = true
+                    else {
+                        if (plan.completed > 0 && (draft.isNullOrBlank() || !plan.matchesDraft(draft))) {
+                            skip(sceneSource.name, "「${c.title}」的场景进度与候选稿不符，整部作品没有放进备份")
+                            unsafeScenePlan = true
+                        } else scenePlans.put(c.id, plan.toJson())
+                    }
+                } else scenePlans.put(c.id, JSONObject.NULL)
             }
+            // A candidate without its approved scene progress could be adopted out of order.
+            // Keep the entire local work intact instead of emitting a partial backup.
+            if (unsafeScenePlan) return@forEach
             val pack = if (!packReadable) null else JSONArray().apply { pack(w.id).forEach { d ->
                 val source = packFile(w.id, d.id)
                 if (!source.isFile && d.words > 0) skip("$PACK/${source.name}", "设定文档「${d.title}」的文件不见了，备份里是空的")
@@ -1167,7 +1214,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
             val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)
-                .put("draftSources", draftSources)
+                .put("draftSources", draftSources).put("scenePlans", scenePlans)
             assist?.let { entry.put("assist", it.toJson()) }
             pack?.let { entry.put("pack", it) }
             changes?.let { entry.put("changes", it) }
@@ -1175,6 +1222,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             if (ledgerSource.isFile) component(ledgerSource, "故事账本读不出，没有放进备份") { StoryLedger.parse(it) }
                 ?.let { entry.put("ledger", StoryLedger.toJson(it).getJSONArray("entries")) }
             array.put(entry)
+            backedUp += w
         }
         val backup = JSONObject().put("format", 1).put("works", array)
         val stats = try {
@@ -1195,7 +1243,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         check(originalBytes <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "写作数据超过 64 MB，无法生成可恢复的备份" }
         var referenceBudget = minOf(WritingReferences.MAX_BACKUP_BYTES,
             (WritingReferenceBackup.MAX_WRITING_JSON_BYTES - originalBytes - 1024 * 1024).coerceAtLeast(0))
-        all.forEachIndexed { i, work ->
+        backedUp.forEachIndexed { i, work ->
             try {
                 val snapshot = WritingReferenceBackup.snapshot(File(dir(work.id), WritingReferences.DIRECTORY), referenceBudget) { title, reason ->
                     skipped += WritingSkip(work.title, "${WritingReferences.DIRECTORY}/$title", reason)
@@ -1222,6 +1270,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val texts: Map<String, String>,
         val drafts: Map<String, String>?,
         val draftSources: Map<String, String?>?,
+        val scenePlans: Map<String, String?>?,
         val cards: Map<String, ChapterCard>?,
         val changes: List<ChangeEntry>?,
         val ledger: List<LedgerEntry>?,
@@ -1268,6 +1317,23 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         } else null // Backups made before this feature, or without a drafts component, preserve local drafts.
+        val scenePlans = if (o.has("scenePlans")) {
+            val raw = o.getJSONObject("scenePlans")
+            require(raw.length() == chapterIds.size && chapterIds.all { raw.has(it) }) { "备份场景安排数量不符" }
+            raw.keys().asSequence().associateWith { id ->
+                require(id in chapterIds) { "备份场景安排指向未知章节" }
+                when (val value = raw.get(id)) {
+                    JSONObject.NULL -> null
+                    is JSONObject -> WritingScenePlan.fromJson(value).also { plan ->
+                        if (plan.completed > 0) {
+                            val body = drafts?.get(id).orEmpty()
+                            require(body.isNotEmpty() && plan.matchesDraft(body)) { "备份场景进度与候选稿不符" }
+                        }
+                    }.toJson().toString()
+                    else -> throw IllegalArgumentException("备份场景安排格式无效")
+                }
+            }
+        } else null // Backups from before scene cards leave the local plan untouched.
         val cards = if (o.has("cards")) {
             val raw = o.getJSONObject("cards")
             raw.keys().asSequence().associateWith { id ->
@@ -1342,6 +1408,20 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             return null
         }
         if (local != null) {
+            // Older archives have no scenePlans key. They preserve local plans, so a restored
+            // candidate must still match any progress that those plans carry.
+            if (scenePlans == null && drafts != null) {
+                for (chapter in local.chapters) {
+                    if (chapter.id !in chapterIds || chapter.id !in drafts) continue
+                    val source = scenePlanFile(local.id, chapter.id)
+                    if (!source.isFile) continue
+                    val current = readLocal(source) { WritingScenePlan.fromJson(JSONObject(it)) } ?: return null
+                    if (current.completed > 0 && !current.matchesDraft(drafts.getValue(chapter.id))) {
+                        skipped += WritingSkip(local.title, source.name, "旧备份的候选稿与本机场景进度不符，整部作品保留本机版本")
+                        return null
+                    }
+                }
+            }
             val incomingDocs = pack?.associate { it.first.id to it.first }
             if (incomingDocs != null) {
                 val hasUnresolvedDoc = localPack.any { current ->
@@ -1374,7 +1454,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, drafts, draftSources, cards, changes, ledger, pack, localPack, assist, references)
+        return RestoreWork(incoming, local, texts, drafts, draftSources, scenePlans, cards, changes, ledger, pack, localPack, assist, references)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -1419,7 +1499,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         } else check(destination.mkdirs()) { "无法创建作品暂存区" }
         val incoming = plan.incoming
         plan.local?.chapters?.filter { incoming.chapter(it.id) == null }?.forEach { old ->
-            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt", old.id + ".draft.reference.json")
+            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt", old.id + ".draft.reference.json", old.id + ".scene-plan.json")
                 .forEach { name -> check(!File(destination, name).exists() || File(destination, name).delete()) { "无法暂存章节删除" } }
         }
         plan.texts.forEach { (id, body) ->
@@ -1433,6 +1513,11 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             val source = plan.draftSources?.get(id)
             if (source == null) check(!provenance.exists() || provenance.delete()) { "无法暂存草稿来源删除" }
             else check(DurableFiles.write(provenance, source.toByteArray())) { "无法暂存草稿来源" }
+        }
+        plan.scenePlans?.forEach { (id, raw) ->
+            val file = File(destination, "$id.scene-plan.json")
+            if (raw == null) check(!file.exists() || file.delete()) { "无法暂存场景安排删除" }
+            else check(DurableFiles.write(file, raw.toByteArray())) { "无法暂存场景安排" }
         }
         plan.cards?.forEach { (id, card) ->
             check(DurableFiles.write(File(destination, id + ".card.json"), card.toJson().toString().toByteArray())) { "无法暂存细纲卡" }

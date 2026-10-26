@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterWritingTask
+import com.xycs.lingyuereader.data.WritingScene
 import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterTitles
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
@@ -79,6 +80,30 @@ data class BibleProposal(val name: String, val text: String, val existing: Boole
  * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
  */
 object WritePrompts {
+    /** A scene suggestion is an editable route through the author's existing chapter boundary. */
+    fun suggestScenes(task: ChapterWritingTask): String = buildString {
+        append(task.render()).append("\n\n【当前阶段：建议场景安排】\n")
+        append("只依据本章任务与可用的已定前文，提出这一章自然需要的 1—4 个场景建议；不为凑场数改变章界、关键选择或结果。")
+        append("未定规划、参考样章与待核增量不能冒充已发生事实。场景只是供作者修改、取舍的写作安排，不是正文，也不是新设定。")
+        append("每场写清目标、阻力或冲突、推进中的变化、离场时留下的状态；不要替作者捏造本章任务没有授权的不可逆事件或人物知情。")
+        append("只返回 JSON 对象，格式为 {\"scenes\":[{\"goal\":\"…\",\"conflict\":\"…\",\"turn\":\"…\",\"exit\":\"…\"}]}，不要 Markdown 或解释。")
+    }
+
+    /** Generate only the confirmed next scene; prior accepted prose is context, not text to repeat. */
+    fun writeScene(task: ChapterWritingTask, scene: WritingScene, number: Int, total: Int, written: String, rules: String): String = buildString {
+        append(task.render()).append("\n\n【当前阶段：创作第 ").append(number).append('/').append(total).append(" 场】\n")
+        append("以下是作者选定、可修改的场景安排，只指导当前一场，不凌驾于本章事实和章界之上。\n")
+        append("目标：").append(scene.goal).append("\n阻力：").append(scene.conflict)
+            .append("\n变化：").append(scene.turn).append("\n离场状态：").append(scene.exit).append('\n')
+        if (written.isNotBlank()) append("\n此前已由作者保留的正文（仅用于承接，不要重写或重复输出）：\n")
+            .append(written.takeLast(3_000)).append('\n')
+        if (rules.isNotBlank()) append("\n作者的写作规范与检查规则：\n").append(rules.trim()).append('\n')
+        append("只写这一场的小说正文，一行一段，不写场景标题、提纲、说明或审读报告。")
+        append("承接已写正文的时间、位置、情绪与人物知情；不提前表演后续场景，不改变任务中的章末结果。")
+        if (number < total) append("这一场结束时自然停下，不写全章总结或“本章完”。")
+        else append("这一场是选定安排的最后一场，按任务要求自然收束本章。")
+    }
+
     /** A complete chapter is composed from a bounded task, never from the review or repair template. */
     fun projectDraft(task: ChapterWritingTask, rules: String): String = buildString {
         append(task.render()).append("\n\n【当前阶段：创作】\n")

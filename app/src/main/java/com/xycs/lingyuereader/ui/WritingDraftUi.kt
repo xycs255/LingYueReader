@@ -73,13 +73,18 @@ private enum class DraftMode { STOP, WRITE, REWRITE }
 @Composable
 fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val drafts by vm.writingAi.drafts.collectAsStateWithLifecycle()
+    val scenePlans by vm.writingAi.scenePlans.collectAsStateWithLifecycle()
     val methodMapState by vm.writingMethodMap.state.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
     val draft = drafts[workId to chapterId]
+    val sceneState = scenePlans[workId to chapterId]
+    val scenePlan = sceneState?.suggestion ?: sceneState?.plan
+    val sceneApproved = sceneState?.plan != null && sceneState.suggestion == null
     var instruction by rememberSaveable(workId, chapterId) { mutableStateOf(draft?.instruction.orEmpty()) }
     var targetLength by rememberSaveable(workId, chapterId) { mutableStateOf(draft?.targetLength.orEmpty()) }
+    var sceneInputsRestored by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var workflowChoice by rememberSaveable(workId, chapterId) { mutableStateOf<Boolean?>(true.takeIf { draft?.workflow == true }) }
     var task by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
     var taskError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
@@ -105,11 +110,18 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var sourceLoading by remember(workId, chapterId) { mutableStateOf(false) }
     LaunchedEffect(workId, chapterId) {
         vm.writingAi.loadDraft(workId, chapterId)
+        vm.writingAi.loadScenePlan(workId, chapterId)
         card = vm.writing.cards(workId, chapterId).first.card
         try { analyses = vm.writing.referenceAnalyses(workId, chapterId) }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { sourceError = "范本分析读取失败：${e.message}" }
         finally { analysesLoaded = true }
+    }
+    LaunchedEffect(sceneState?.loading, sceneState?.plan) {
+        if (!sceneInputsRestored && sceneState != null && !sceneState.loading) {
+            sceneState.plan?.let { instruction = it.instruction; targetLength = it.targetLength }
+            sceneInputsRestored = true
+        }
     }
     val selectedAnalysis = analyses.firstOrNull { it.id == referenceId }
     LaunchedEffect(workId, chapterId, referenceId, selectedAnalysis, analysesLoaded) {
@@ -156,16 +168,22 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             verifiedMap = activeMap
         }
     }
-    fun startDraft(more: Boolean = false, reviewOnly: Boolean = false) {
-        val action = {
-            if (reviewOnly) vm.writingAi.reviewDraft(workId, chapterId, instruction, targetLength)
-            else vm.writingAi.writeDraft(workId, chapterId, instruction, more = more, workflow = workflow,
-                targetLength = targetLength, referenceAnalysisId = referenceId)
-        }
+    fun withContinuationCheck(action: () -> Unit) {
         if (task?.project == true && task?.previousLabel?.startsWith("以细纲结果承接") == true && !planContinuationAccepted) {
             pendingContinuation = action
         } else action()
     }
+    fun startDraft(more: Boolean = false, reviewOnly: Boolean = false) {
+        withContinuationCheck {
+            if (reviewOnly) vm.writingAi.reviewDraft(workId, chapterId, instruction, targetLength)
+            else vm.writingAi.writeDraft(workId, chapterId, instruction, more = more, workflow = workflow,
+                targetLength = targetLength, referenceAnalysisId = referenceId)
+        }
+    }
+    val sceneTaskCurrent = scenePlan == null || scenePlan.taskFingerprint == task?.fingerprint
+    val sceneComplete = sceneState?.plan?.let { it.completed == it.selectedScenes.size && it.matchesDraft(text) } ?: true
+    val sceneStorageError = sceneState?.error?.startsWith("场景安排读取失败") == true
+    val directCanWrite = canWrite && sceneState != null && !sceneState.loading && scenePlan == null && !sceneStorageError
     val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // 写完以后按检查规则看一遍（本机算）。
     val hits by produceState<Int?>(null, text, loading) {
@@ -254,6 +272,34 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     row { NavRow(if (card?.isEmpty == true) "先写细纲卡" else "编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                 }
+                WritingScenePlanSection(
+                    plan = scenePlan,
+                    approved = sceneApproved,
+                    draftStarted = scenePlan?.completed?.let { it > 0 } == true || text.isNotBlank(),
+                    loading = sceneState?.loading == true,
+                    error = sceneState?.error ?: when {
+                        !sceneTaskCurrent -> "本章任务或要求已变化，请重新生成场景安排"
+                        scenePlan != null && scenePlan.completed > 0 && !scenePlan.matchesDraft(text) && !loading ->
+                            "候选稿与场景进度不一致，可能是写作或审读中断。请核对稿件，退出场景安排后重新审读。"
+                        else -> null
+                    },
+                    canGenerate = canWrite && sceneState != null && !sceneState.loading && !loading && text.isBlank(),
+                    canWrite = canWrite && !loading && sceneApproved && sceneTaskCurrent &&
+                        sceneState.plan.let { plan ->
+                            plan.completed < plan.selectedScenes.size &&
+                                (plan.completed == 0 && text.isBlank() || plan.matchesDraft(text))
+                        } == true,
+                    onGenerate = { withContinuationCheck { vm.writingAi.suggestScenes(workId, chapterId, instruction, targetLength) } },
+                    onChangePlan = { vm.writingAi.changeSceneProposal(workId, chapterId, it) },
+                    onSavePlan = { vm.writingAi.approveScenePlan(workId, chapterId, it, instruction, targetLength) },
+                    onWriteNext = { withContinuationCheck {
+                        vm.writingAi.writeNextScene(workId, chapterId, instruction, targetLength, referenceId)
+                    } },
+                    onReset = {
+                        if (sceneApproved || sceneStorageError) vm.writingAi.leaveScenePlan(workId, chapterId)
+                        else vm.writingAi.discardSceneProposal(workId, chapterId)
+                    },
+                )
                 GroupedSection(
                     header = if (text.isBlank()) "开始创作" else "继续处理",
                     footer = if (text.isBlank() && !loading) "AI 先写一版候选稿。你通读并审定后，才会进入正文。" else null,
@@ -268,15 +314,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         AnimatedContent(mode, transitionSpec = { Motion.fadeThrough() }, label = "draftAction") { m ->
                             when (m) {
                                 DraftMode.STOP -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft(workId, chapterId) }
-                                DraftMode.WRITE -> ActionRow("写本章", enabled = canWrite) { startDraft() }
+                                DraftMode.WRITE -> ActionRow("写本章", enabled = directCanWrite) { startDraft() }
                                 DraftMode.REWRITE -> Text("AI 已写出候选稿，请在下方审定。", color = c.secondary, fontSize = 13.sp,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                             }
                         }
                     }
                     if (text.isNotBlank() && !loading) {
-                        row { ActionRow("接着写", enabled = canWrite) { startDraft(more = true) } }
-                        row { ActionRow("审读并修订此稿", enabled = canReview) { startDraft(reviewOnly = true) } }
+                        row { ActionRow("接着写", enabled = directCanWrite) { startDraft(more = true) } }
+                        row { ActionRow("审读并修订此稿", enabled = canReview && sceneComplete) { startDraft(reviewOnly = true) } }
                     }
                     if (sent != null && sent?.label in setOf("写本章", "接着写", "本稿审读", "本稿修订")) {
                         row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
@@ -421,13 +467,13 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 Text(reviewSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
                             }
                         }
-                        row { ActionRow("放进正文", enabled = !locked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
+                        row { ActionRow("放进正文", enabled = !locked && text.isNotBlank() && reviewed && sceneComplete && draft?.error == null && sourceChecked) { placing = true } }
                         if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                         if (!reviewed && draft.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
                         row { ActionRow("修改此稿", enabled = !locked) { editedDraft = text; editingDraft = true } }
                         row { ActionRow("修改方向") { directionText = instruction; directionDialog = true } }
-                        row { ActionRow("重写一版", enabled = canWrite) { startDraft() } }
+                        row { ActionRow("重写一版", enabled = directCanWrite) { startDraft() } }
                         row { ActionRow("不要这版", destructive = true) { vm.writingAi.clearDraft(workId, chapterId) } }
                     }
                 }
@@ -501,7 +547,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     val blocked = vm.writingAi.draftBlocked(workId, chapterId, instruction, targetLength)
                     if (blocked != null) { vm.showMessage(blocked); return@launch }
                     vm.writing.applyDraft(workId, chapterId, text, replace) {
-                        vm.writingAi.clearDraft(workId, chapterId)
+                        vm.writingAi.clearDraft(workId, chapterId, removeScenePlan = true)
                         vm.showMessage("已放进正文，仍待你确认定稿")
                         vm.back()
                     }

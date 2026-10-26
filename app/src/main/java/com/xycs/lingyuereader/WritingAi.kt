@@ -51,6 +51,7 @@ import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.DraftAssessment
 import com.xycs.lingyuereader.data.DraftChecks
 import com.xycs.lingyuereader.data.DraftStage
+import com.xycs.lingyuereader.data.WritingScenePlan
 import com.xycs.lingyuereader.data.DraftWorkflow
 import com.xycs.lingyuereader.data.DraftReferenceProvenance
 import com.xycs.lingyuereader.data.DraftContent
@@ -219,6 +220,9 @@ class WritingAi(
         draftJobs.values.forEach { it.cancel() }
         draftJobs.clear()
         _drafts.value = emptyMap()
+        sceneJobs.values.forEach { it.cancel() }
+        sceneJobs.clear()
+        _scenePlans.value = emptyMap()
     }
 
     private suspend fun assistOf(workId: String): WorkAssist =
@@ -748,7 +752,7 @@ class WritingAi(
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
         "整理本章" -> AiFeature.SYNC
-        "拟细纲", "章节摘要" -> AiFeature.PLAN
+        "拟细纲", "拟场景", "章节摘要" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
         else -> AiFeature.OTHER
     }
@@ -1124,6 +1128,114 @@ class WritingAi(
     // ---------- AI 写本章 ----------
 
     private val _drafts = MutableStateFlow<Map<Pair<String, String>, DraftState>>(emptyMap())
+    private val _scenePlans = MutableStateFlow<Map<Pair<String, String>, ScenePlanState>>(emptyMap())
+    val scenePlans: StateFlow<Map<Pair<String, String>, ScenePlanState>> = _scenePlans.asStateFlow()
+    private val sceneJobs = HashMap<Pair<String, String>, Job>()
+
+    /** A proposal is not approved merely because the AI returned it or the author edited it. */
+    fun loadScenePlan(workId: String, chapterId: String) {
+        val key = workId to chapterId
+        if (key in _scenePlans.value) return
+        _scenePlans.update { it + (key to ScenePlanState(loading = true)) }
+        scope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) } }
+            _scenePlans.update { states -> states + (key to ScenePlanState(
+                plan = result.getOrNull(), error = result.exceptionOrNull()?.message?.let { "场景安排读取失败：$it" },
+            )) }
+        }
+    }
+
+    fun changeSceneProposal(workId: String, chapterId: String, plan: WritingScenePlan) {
+        val key = workId to chapterId
+        val state = _scenePlans.value[key] ?: return
+        if (state.loading || (_drafts.value[key]?.text?.isNotBlank() == true && state.plan?.completed != 0)) return
+        _scenePlans.update { it + (key to state.copy(suggestion = plan, error = null)) }
+    }
+
+    /** Discard a proposal without deleting an earlier author-approved route. */
+    fun discardSceneProposal(workId: String, chapterId: String) {
+        val key = workId to chapterId
+        sceneJobs[key]?.cancel()
+        _scenePlans.update { states -> states[key]?.let { states + (key to it.copy(suggestion = null, loading = false, error = null)) } ?: states }
+    }
+
+    /** Only this explicit author action persists an editable AI suggestion. */
+    fun approveScenePlan(workId: String, chapterId: String, plan: WritingScenePlan, instruction: String = "", targetLength: String = "") {
+        val key = workId to chapterId
+        if (_drafts.value[key]?.loading == true) return
+        _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = true, error = null)) }
+        sceneJobs[key]?.cancel()
+        sceneJobs[key] = scope.launch {
+            try {
+                val task = writingTask(workId, chapterId, instruction, targetLength)
+                    ?: error("作品或章节不在了")
+                check(task.fingerprint == plan.taskFingerprint) { "本章资料或要求已经变化，请重新生成场景安排" }
+                check(plan.instruction == instruction && plan.targetLength == targetLength) {
+                    "本次要求或目标篇幅已变化，请重新生成场景安排"
+                }
+                val saved = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                check(saved?.completed == null || saved.completed == 0) { "已有场景正文，不能改动正在执行的安排" }
+                check(_drafts.value[key]?.text.isNullOrBlank() && withContext(Dispatchers.IO) {
+                    store.draft(workId, chapterId).isBlank()
+                }) { "已有候选稿，请先处理后再改场景安排" }
+                val approved = plan.copy(completed = 0, draftHash = "").validated()
+                check(approved.selectedScenes.isNotEmpty()) { "请至少选用一场" }
+                withContext(Dispatchers.IO) { store.saveScenePlan(workId, chapterId, approved) }
+                _scenePlans.update { it + (key to ScenePlanState(plan = approved)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = false, error = e.message ?: "场景安排保存失败")) }
+            }
+        }
+    }
+
+    /** AI may suggest a route; only the author can approve the selected, edited cards. */
+    fun suggestScenes(workId: String, chapterId: String, instruction: String = "", targetLength: String = "") {
+        val key = workId to chapterId
+        if (!ready) { message("请先设置写作 AI"); return }
+        if (_drafts.value[key]?.text?.isNotBlank() == true) { message("已有候选稿，请先处理后再规划场景"); return }
+        sceneJobs[key]?.cancel()
+        _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = true, error = null)) }
+        sceneJobs[key] = scope.launch {
+            try {
+                val task = writingTask(workId, chapterId, instruction, targetLength) ?: error("作品或章节不在了")
+                check(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
+                check(withContext(Dispatchers.IO) { store.draft(workId, chapterId).isBlank() }) {
+                    "已有候选稿，请先处理后再规划场景"
+                }
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: error("作品不在了")
+                check(work.chapter(chapterId)?.locked != true) { "本章已定稿，请先解锁" }
+                val answer = askWithPack("拟场景", workId,
+                    WritePrompts.system(work.title, assistOf(workId), task.render()), WritePrompts.suggestScenes(task),
+                    whole = true, toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = task.project)
+                val proposal = WritingScenePlan.parseSuggestion(answer, task.fingerprint, instruction, targetLength)
+                check(writingTask(workId, chapterId, instruction, targetLength)?.fingerprint == task.fingerprint) {
+                    "本章资料在规划期间变化，请重新生成场景安排"
+                }
+                _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(suggestion = proposal, loading = false)) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = false, error = e.message ?: "生成场景建议失败")) }
+            }
+        }
+    }
+
+    /** Leaving scene mode keeps any candidate, but requires the existing review gate before adoption. */
+    fun leaveScenePlan(workId: String, chapterId: String) {
+        val key = workId to chapterId
+        if (_drafts.value[key]?.loading == true) return
+        sceneJobs[key]?.cancel()
+        _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = true, error = null)) }
+        sceneJobs[key] = scope.launch {
+            try {
+                withContext(Dispatchers.IO) { store.saveScenePlan(workId, chapterId, null) }
+                _scenePlans.update { it + (key to ScenePlanState()) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _scenePlans.update { it + (key to (it[key] ?: ScenePlanState()).copy(loading = false, error = e.message ?: "场景安排删除失败")) }
+            }
+        }
+    }
     /**
      * AI 写的各章草稿（正在写或写好了的），按（作品id、章id）分开：
      * A 章在写时打开 B 章的草稿页，不会把 A 的状态换掉，回到 A 也不会把没写完的当成写好了。
@@ -1216,6 +1328,10 @@ class WritingAi(
      * 作者看过再放进正文。
      */
     fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false, workflow: Boolean = false, targetLength: String = "", referenceAnalysisId: String? = null) {
+        if (_scenePlans.value[workId to chapterId]?.plan != null) {
+            message("已确认场景安排，请按场景继续；若要直接写本章，先移除安排")
+            return
+        }
         if (workflow) {
             writeProjectDraft(workId, chapterId, instruction, targetLength, more = more, referenceAnalysisId = referenceAnalysisId)
             return
@@ -1322,14 +1438,114 @@ class WritingAi(
         }
     }
 
+    /** One confirmed scene per request. The previous scene stays intact if this request stops or fails. */
+    fun writeNextScene(workId: String, chapterId: String, instruction: String? = null, targetLength: String? = null, referenceAnalysisId: String? = null) {
+        val key = workId to chapterId
+        if (!ready) { message("请先设置写作 AI"); return }
+        val planState = _scenePlans.value[key]
+        if (planState?.loading == true || planState?.suggestion != null) { message("请先确认当前场景安排"); return }
+        val plan = planState?.plan ?: run { message("请先生成并确认场景安排"); return }
+        val effectiveInstruction = instruction ?: plan.instruction
+        val effectiveLength = targetLength ?: plan.targetLength
+        val before = _drafts.value[key] ?: DraftState(workId, chapterId, "")
+        if (before.loading) return
+        val run = ++draftSeq
+        draftRuns[key] = run
+        draftJobs[key]?.cancel()
+        _drafts.update { it + (key to before.copy(loading = true, error = null, workflow = true,
+            stage = DraftStage.CREATING, assessment = null, instruction = effectiveInstruction, targetLength = effectiveLength,
+            referenceAnalysisId = referenceAnalysisId,
+            referenceValidated = if (plan.completed == 0) false else before.referenceValidated)) }
+        val meter = AiMeter(AiFeature.DRAFT, workId)
+        draftJobs[key] = scope.launch {
+            try {
+                val savedPlan = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                    ?: error("场景安排已不存在，请重新确认")
+                check(savedPlan == plan) { "场景安排已变化，请重新打开本章" }
+                val selected = plan.selectedScenes
+                check(selected.isNotEmpty() && plan.completed in 0 until selected.size) { "没有下一场可写" }
+                val previous = before.text
+                check(if (plan.completed == 0) previous.isBlank() else plan.matchesDraft(previous)) {
+                    "候选稿与场景进度不一致，请核对后再继续"
+                }
+                val task = writingTask(workId, chapterId, effectiveInstruction, effectiveLength) ?: error("作品或章节不在了")
+                check(task.fingerprint == plan.taskFingerprint) { "本章资料或要求已变化，请重新规划场景" }
+                check(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: error("作品不在了")
+                check(work.chapter(chapterId)?.locked != true) { "本章已定稿，请先解锁" }
+                if (plan.completed > 0 && before.referenceAnalysisId != referenceAnalysisId)
+                    throw RejectedReferenceWriting("续写场景须沿用这份候选稿的范本选择")
+                if (before.referenceProvenanceBlocked) throw RejectedReferenceWriting(before.error ?: "候选稿来源无法核验")
+                val reference = referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
+                if (plan.completed > 0 && reference != null) {
+                    check(before.referenceValidated && before.referenceFingerprint == reference.excerpt.fingerprint &&
+                        before.referenceChapterLength == reference.excerpt.chapterLength) { "范本来源已变化，请重新核对" }
+                    ReferenceWriting.verifyProse(previous, reference)
+                }
+                val rules = withContext(Dispatchers.IO) { writingRules(workId, chapterId, previous) }
+                val samples = samplesFor(workId, chapterId)
+                val system = WritePrompts.system(work.title, assistOf(workId), task.render(), examples = true, samples = samples) +
+                    (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
+                val prompt = WritePrompts.writeScene(task, selected[plan.completed], plan.completed + 1, selected.size, previous, rules) +
+                    (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: "")
+                if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
+                val answer = askWithPack("写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
+                    toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = task.project,
+                    stable = samples, meter = meter)
+                val sceneText = WritePrompts.cleanDraft(answer).trim()
+                check(sceneText.isNotBlank()) { "AI 没有返回这一场的正文；此前稿件已保留" }
+                val nextText = if (previous.isBlank()) sceneText else previous.trimEnd() + "\n" + sceneText
+                if (reference != null) {
+                    ReferenceWriting.verifyProse(nextText, reference)
+                    withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
+                }
+                check(writingTask(workId, chapterId, effectiveInstruction, effectiveLength)?.fingerprint == task.fingerprint) {
+                    "本章资料在写作期间变化；这一场未写入候选稿，请重新核对"
+                }
+                updateDraft(key, run) { it.copy(text = nextText, referenceFingerprint = reference?.excerpt?.fingerprint,
+                    referenceChapterLength = reference?.excerpt?.chapterLength, referenceValidated = reference != null) }
+                // A process death between the two durable files leaves a hash mismatch, which blocks
+                // continuation/adoption instead of silently duplicating or skipping a scene.
+                withContext(NonCancellable) {
+                    persistDraft(key, run, nextText, workflow = true)
+                    withContext(draftDisk) {
+                        if (draftRuns[key] == run) store.saveScenePlan(workId, chapterId,
+                            plan.copy(completed = plan.completed + 1, draftHash = WritingScenePlan.hash(nextText)))
+                    }
+                }
+                if (draftRuns[key] != run) return@launch
+                val advanced = plan.copy(completed = plan.completed + 1, draftHash = WritingScenePlan.hash(nextText))
+                _scenePlans.update { it + (key to ScenePlanState(plan = advanced)) }
+                updateDraft(key, run) { it.copy(loading = false, stage = DraftStage.NEEDS_REVIEW,
+                    usage = meter.usage, cost = meter.cost) }
+                log(workId, chapterId, "写第 ${advanced.completed} 场", effectiveInstruction, sceneText, meter)
+            } catch (e: CancellationException) {
+                if (draftRuns[key] == run) updateDraft(key, run) { it.copy(text = before.text, loading = false,
+                    referenceValidated = before.referenceValidated, stage = DraftStage.STOPPED) }
+                throw e
+            } catch (e: Exception) {
+                val savedCandidate = withContext(Dispatchers.IO) {
+                    runCatching { store.draft(workId, chapterId) }.getOrNull()
+                } ?: before.text
+                updateDraft(key, run) { it.copy(text = savedCandidate, loading = false, stage = DraftStage.ERROR,
+                    referenceValidated = before.referenceValidated,
+                    error = e.message ?: "这一场未完成；此前稿件已保留", usage = meter.usage, cost = meter.cost) }
+            }
+        }
+    }
+
     /** Build the same explicit task that the next workflow request will use. Never calls an AI. */
     suspend fun writingTask(workId: String, chapterId: String, instruction: String = "", targetLength: String = ""): ChapterWritingTask? =
         withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, instruction, targetLength) }
 
     /** A restored or interrupted candidate has no valid pass; run the actual review on it again. */
-    fun reviewDraft(workId: String, chapterId: String, instruction: String = "", targetLength: String = "") =
-        writeProjectDraft(workId, chapterId, instruction, targetLength, reviewOnly = true,
-            referenceAnalysisId = _drafts.value[workId to chapterId]?.referenceAnalysisId)
+    fun reviewDraft(workId: String, chapterId: String, instruction: String? = null, targetLength: String? = null) {
+        val plan = _scenePlans.value[workId to chapterId]?.plan
+        val draft = _drafts.value[workId to chapterId]
+        writeProjectDraft(workId, chapterId, instruction ?: plan?.instruction ?: draft?.instruction.orEmpty(),
+            targetLength ?: plan?.targetLength ?: draft?.targetLength.orEmpty(), reviewOnly = true,
+            referenceAnalysisId = draft?.referenceAnalysisId)
+    }
 
     /** An author edit creates a new candidate version and invalidates every earlier assessment. */
     fun updateDraftText(workId: String, chapterId: String, text: String) {
@@ -1341,7 +1557,15 @@ class WritingAi(
         _drafts.update { it + (key to d.copy(text = text, loading = false, assessment = null, stage = DraftStage.IDLE,
             error = if (d.referenceProvenanceBlocked) d.error else null)) }
         scope.launch {
-            try { persistDraft(key, run, text, d.workflow) }
+            try {
+                persistDraft(key, run, text, d.workflow)
+                val plan = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                if (plan != null && plan.completed > 0 && plan.matchesDraft(d.text)) {
+                    val updated = plan.copy(draftHash = WritingScenePlan.hash(text))
+                    withContext(Dispatchers.IO) { if (draftRuns[key] == run) store.saveScenePlan(workId, chapterId, updated) }
+                    if (draftRuns[key] == run) _scenePlans.update { it + (key to ScenePlanState(plan = updated)) }
+                }
+            }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { message("候选稿保存失败：${e.message ?: "写入出错"}") }
         }
@@ -1354,6 +1578,12 @@ class WritingAi(
         if (d.referenceProvenanceBlocked) return d.error ?: "草稿来源无法核验，请重新生成"
         if (d.error != null) return d.error
         if (d.text.isBlank()) return "没有可采纳的草稿"
+        val scenePlan = try { withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) } }
+        catch (e: Exception) { return "场景安排读取失败：${e.message ?: "请核对后重试"}" }
+        if (scenePlan != null) {
+            if (scenePlan.completed > 0 && !scenePlan.matchesDraft(d.text)) return "候选稿与场景进度不一致，请核对场景安排"
+            if (scenePlan.completed < scenePlan.selectedScenes.size) return "所选场景尚未写完；请继续写或明确退出场景安排"
+        }
         d.referenceAnalysisId?.let { id ->
             if (!d.referenceValidated) return "这版范本候选稿尚未完成核验，请重新生成后采纳"
             try {
@@ -1365,7 +1595,10 @@ class WritingAi(
             catch (e: Exception) { return e.message ?: "范本来源已变化，请重新选择后写一版" }
         }
         if (!d.workflow) return null
-        val task = writingTask(workId, chapterId, instruction ?: d.instruction, targetLength ?: d.targetLength) ?: return "作品或章节不在了"
+        val task = writingTask(workId, chapterId, instruction ?: scenePlan?.instruction ?: d.instruction,
+            targetLength ?: scenePlan?.targetLength ?: d.targetLength) ?: return "作品或章节不在了"
+        if (scenePlan != null && task.fingerprint != scenePlan.taskFingerprint)
+            return "本章资料或要求已变化，请重新规划场景并审读"
         if (task.blocking.isNotEmpty()) return task.blocking.joinToString("；")
         val report = d.assessment ?: return "本稿尚未完成审读，请先审读此稿"
         if (!report.matches(d.text, task.fingerprint)) return "正文或项目资料已经变化，旧审读结果已过时，请重新审读"
@@ -1378,6 +1611,10 @@ class WritingAi(
             return
         }
         val key = workId to chapterId
+        if (!reviewOnly && _scenePlans.value[key]?.plan != null) {
+            message("已确认场景安排，请按场景继续；若要直接写本章，先移除安排")
+            return
+        }
         draftJobs[key]?.cancel()
         val run = ++draftSeq
         draftRuns[key] = run
@@ -1399,6 +1636,17 @@ class WritingAi(
         val meters = listOf(createMeter, reviewMeter, reviseMeter)
         draftJobs[key] = scope.launch {
             try {
+                if (reviewOnly) {
+                    val scenePlan = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                    if (scenePlan != null) {
+                        check(scenePlan.completed == scenePlan.selectedScenes.size && scenePlan.matchesDraft(previousCandidate)) {
+                            "所选场景尚未写完或候选稿与场景进度不一致"
+                        }
+                        check(writingTask(workId, chapterId, instruction, targetLength)?.fingerprint == scenePlan.taskFingerprint) {
+                            "本章资料或要求已变化，请重新规划场景"
+                        }
+                    }
+                }
                 if ((reviewOnly || more) && before?.referenceProvenanceBlocked == true)
                     throw RejectedReferenceWriting(before.error ?: "旧草稿来源无法核验，请从头重新生成")
                 if ((reviewOnly || more) && previousCandidate.isNotBlank() && before?.referenceAnalysisId != referenceAnalysisId)
@@ -1496,6 +1744,20 @@ class WritingAi(
                 }
                 val current = writingTask(workId, chapterId, instruction, targetLength)
                 val stale = current?.fingerprint != task.fingerprint
+                if (reviewOnly && draftRuns[key] == run) {
+                    // The existing review may revise the prose. Keep the completed scene route
+                    // bound to that durable candidate, while the review result remains the gate.
+                    val plan = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                    if (plan != null) {
+                        check(plan.completed == plan.selectedScenes.size && plan.matchesDraft(previousCandidate)) {
+                            "审读期间场景安排或候选稿已变化，请核对后重试"
+                        }
+                        persistDraft(key, run, result.text, workflow = true)
+                        val revisedPlan = plan.copy(draftHash = WritingScenePlan.hash(result.text))
+                        withContext(Dispatchers.IO) { store.saveScenePlan(workId, chapterId, revisedPlan) }
+                        _scenePlans.update { it + (key to ScenePlanState(plan = revisedPlan)) }
+                    }
+                }
                 updateDraft(key, run) { it.copy(
                     text = result.text, loading = false, assessment = result.assessment,
                     referenceValidated = reference != null,
@@ -1548,14 +1810,27 @@ class WritingAi(
     }
 
     /** 草稿放进正文以后（或作者不要了）：清掉。 */
-    fun clearDraft(workId: String, chapterId: String) {
+    fun clearDraft(workId: String, chapterId: String, removeScenePlan: Boolean = false) {
         val key = workId to chapterId
         // 换个编号：正在写的那次被取消时不再存草稿。
         val run = ++draftSeq
         draftRuns[key] = run
         draftJobs.remove(key)?.cancel()
         _drafts.update { it + (key to DraftState(workId, chapterId, "")) }
-        scope.launch { runCatching { persistDraft(key, run, "", workflow = false) } }
+        scope.launch {
+            runCatching {
+                persistDraft(key, run, "", workflow = false)
+                val plan = withContext(Dispatchers.IO) { store.scenePlan(workId, chapterId) }
+                if (plan != null && draftRuns[key] == run && removeScenePlan) {
+                    withContext(Dispatchers.IO) { store.saveScenePlan(workId, chapterId, null) }
+                    _scenePlans.update { it + (key to ScenePlanState()) }
+                } else if (plan != null && draftRuns[key] == run) {
+                    val reset = plan.copy(completed = 0, draftHash = "")
+                    withContext(Dispatchers.IO) { store.saveScenePlan(workId, chapterId, reset) }
+                    _scenePlans.update { it + (key to ScenePlanState(plan = reset)) }
+                }
+            }.onFailure { message("清理候选稿或场景进度失败：${it.message ?: "写入出错"}") }
+        }
     }
 
     /** 作者把一处问题标为已改、不改（[state] 为空是改回没处理）。 */
@@ -1851,6 +2126,15 @@ data class ReviewRun(val workId: String, val chapterId: String, val running: Rev
 
 /** 批量写摘要的进度：第 [done] 章（从 0 数）/ 共 [total] 章，正在写 [title]。 */
 data class SummaryProgress(val workId: String, val done: Int, val total: Int, val title: String)
+
+/** Author-approved scene route and a separate unapproved AI proposal for one chapter. */
+data class ScenePlanState(
+    /** Only [plan] is an author-approved durable route. [suggestion] has never been adopted. */
+    val plan: WritingScenePlan? = null,
+    val suggestion: WritingScenePlan? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+)
 
 /** AI 写的本章草稿。 */
 data class DraftState(

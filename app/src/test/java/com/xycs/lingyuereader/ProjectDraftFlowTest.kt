@@ -61,7 +61,7 @@ class ProjectDraftFlowTest {
     @Volatile private var holdReview = false
     @Volatile private var reviewMode = ReviewMode.ISSUE_THEN_PASS
 
-    private enum class ReviewMode { ISSUE_THEN_PASS, PASS, MALFORMED }
+    private enum class ReviewMode { ISSUE_THEN_PASS, SCENE_ISSUE_THEN_PASS, PASS, MALFORMED }
     private data class Request(val phase: String, val system: String, val user: String) {
         val all: String get() = "$system\n$user"
     }
@@ -92,6 +92,8 @@ class ProjectDraftFlowTest {
                 val system = list.filter { it.optString("role") == "system" }.joinToString("\n") { it.optString("content") }
                 val user = list.last { it.optString("role") == "user" }.getString("content")
                 val phase = when {
+                    "【当前阶段：建议场景安排】" in user -> "SCENE_PLAN"
+                    "【当前阶段：创作第 " in user -> "SCENE"
                     "【当前阶段：创作】" in user -> "CREATE"
                     "【当前阶段：审读】" in user -> "REVIEW"
                     "【当前阶段：修订】" in user -> "REVISE"
@@ -99,6 +101,8 @@ class ProjectDraftFlowTest {
                 }
                 asked += Request(phase, system, user)
                 val answer = when (phase) {
+                    "SCENE_PLAN" -> """{"scenes":[{"goal":"先把门打开","conflict":"陈青犹豫","turn":"他决定开门","exit":"看见门外来客"},{"goal":"借出灯笼","conflict":"来客急着出发","turn":"陈青答应借灯","exit":"留在屋内"}]}"""
+                    "SCENE" -> if ("第 1/2 场" in user) "陈青先打开门，看见门外来客。" else "陈青借出灯笼，然后留在屋里。"
                     "CREATE" -> candidate
                     "REVISE" -> revised
                     "REVIEW" -> {
@@ -110,6 +114,8 @@ class ProjectDraftFlowTest {
                         when {
                             reviewMode == ReviewMode.MALFORMED -> "这份稿子很好，可以直接使用。"
                             reviewMode == ReviewMode.ISSUE_THEN_PASS && round == 1 -> finding()
+                            reviewMode == ReviewMode.SCENE_ISSUE_THEN_PASS && round == 1 ->
+                                finding("陈青先打开门，看见门外来客。")
                             else -> pass
                         }
                     }
@@ -159,11 +165,11 @@ class ProjectDraftFlowTest {
         executor.shutdownNow()
     }
 
-    private fun finding(): String = JSONObject()
+    private fun finding(quote: String = candidate): String = JSONObject()
         .put("summary", JSONArray().put("看见来客之前缺少开门动作"))
         .put("missing", JSONArray())
         .put("issues", JSONArray().put(
-            JSONObject().put("kind", "FACT").put("quote", candidate)
+            JSONObject().put("kind", "FACT").put("quote", quote)
                 .put("problem", "门尚未打开，人物已看清屋外来客，因果承接缺了一步")
                 .put("basis", "第一卷细纲·第一章：陈青先打开门，再看清来客")
                 .put("fix", "在看清来客之前补回开门动作").put("required", true),
@@ -194,6 +200,121 @@ class ProjectDraftFlowTest {
         assertEquals(review, asked.count { it.phase == "REVIEW" })
         assertEquals(revise, asked.count { it.phase == "REVISE" })
         assertEquals(create + review + revise, asked.size)
+    }
+
+    @Test
+    fun authorConfirmsEditedScenesThenWritesOneAtATimeAndReviewsAfterRestart() {
+        reviewMode = ReviewMode.PASS
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        vm.writingAi.loadScenePlan(workId, chapterId)
+        waitUntil("场景安排尚未载入") { vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false }
+        vm.writingAi.suggestScenes(workId, chapterId, targetLength = "10—100字")
+        waitUntil("场景建议未完成") { vm.writingAi.scenePlans.value[workId to chapterId]?.suggestion != null }
+        val suggested = vm.writingAi.scenePlans.value.getValue(workId to chapterId).suggestion!!
+        assertNull("AI 建议不能自动成为作者计划", store.scenePlan(workId, chapterId))
+        assertEquals("", store.draft(workId, chapterId))
+        assertEquals(original, store.text(workId, chapterId))
+        val edited = suggested.copy(scenes = suggested.scenes.mapIndexed { index, scene ->
+            if (index == 0) scene.copy(goal = "作者修改：先听清来客身份再开门") else scene
+        })
+        vm.writingAi.changeSceneProposal(workId, chapterId, edited)
+        assertNull(store.scenePlan(workId, chapterId))
+        vm.writingAi.approveScenePlan(workId, chapterId, edited, targetLength = "10—100字")
+        waitUntil("作者确认的场景安排尚未持久化") {
+            store.scenePlan(workId, chapterId) == edited && vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false
+        }
+        vm.writingAi.changeSceneProposal(workId, chapterId, edited.copy(scenes = edited.scenes.mapIndexed { index, scene ->
+            if (index == 0) scene.copy(goal = "一次未确认的改动") else scene
+        }))
+        vm.writingAi.discardSceneProposal(workId, chapterId)
+        assertEquals("放弃新建议不应删去已确认安排", edited, store.scenePlan(workId, chapterId))
+        vm.writingAi.writeNextScene(workId, chapterId, targetLength = "10—100字")
+        waitUntil("第一场未完成") {
+            store.scenePlan(workId, chapterId)?.completed == 1 && vm.writingAi.drafts.value[workId to chapterId]?.loading == false
+        }
+        assertTrue(asked.any { it.phase == "SCENE" && "作者修改：先听清来客身份再开门" in it.user })
+        val first = store.draft(workId, chapterId)
+        assertEquals("陈青先打开门，看见门外来客。", first)
+        assertTrue(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) }.orEmpty().contains("尚未写完"))
+
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        restarted.writingAi.loadScenePlan(workId, chapterId)
+        waitUntil("重启后未恢复草稿和场景进度") {
+            restarted.writingAi.drafts.value[workId to chapterId]?.text == first &&
+                restarted.writingAi.scenePlans.value[workId to chapterId]?.plan?.completed == 1
+        }
+        restarted.writingAi.writeNextScene(workId, chapterId)
+        waitUntil("第二场未完成") {
+            store.scenePlan(workId, chapterId)?.completed == 2 && restarted.writingAi.drafts.value[workId to chapterId]?.loading == false
+        }
+        val manuscript = store.draft(workId, chapterId)
+        assertTrue(manuscript.contains(first) && manuscript.contains("陈青借出灯笼"))
+        assertTrue(runBlocking { restarted.writingAi.draftBlocked(workId, chapterId) }.orEmpty().contains("尚未完成审读"))
+        restarted.writingAi.reviewDraft(workId, chapterId)
+        waitUntil("场景稿未通过原有审读") {
+            restarted.writingAi.drafts.value[workId to chapterId]?.let { it.stage == DraftStage.READY && !it.loading } == true
+        }
+        assertNull(runBlocking { restarted.writingAi.draftBlocked(workId, chapterId) })
+        assertEquals("生成和审读不能直接改正式正文", original, store.text(workId, chapterId))
+        assertEquals(1, asked.count { it.phase == "SCENE_PLAN" })
+        assertEquals(2, asked.count { it.phase == "SCENE" })
+        assertEquals(1, asked.count { it.phase == "REVIEW" })
+    }
+
+    @Test
+    fun reviewRevisionRebindsCompletedScenesToRevisedCandidate() {
+        reviewMode = ReviewMode.SCENE_ISSUE_THEN_PASS
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        vm.writingAi.loadScenePlan(workId, chapterId)
+        waitUntil("场景安排尚未载入") { vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false }
+        vm.writingAi.suggestScenes(workId, chapterId)
+        waitUntil("场景建议未完成") { vm.writingAi.scenePlans.value[workId to chapterId]?.suggestion != null }
+        vm.writingAi.approveScenePlan(workId, chapterId,
+            vm.writingAi.scenePlans.value.getValue(workId to chapterId).suggestion!!)
+        waitUntil("场景安排尚未保存") {
+            store.scenePlan(workId, chapterId) != null && vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false
+        }
+        vm.writingAi.writeNextScene(workId, chapterId)
+        waitUntil("第一场未完成") {
+            store.scenePlan(workId, chapterId)?.completed == 1 && vm.writingAi.drafts.value[workId to chapterId]?.loading == false
+        }
+        vm.writingAi.writeNextScene(workId, chapterId)
+        waitUntil("第二场未完成") {
+            store.scenePlan(workId, chapterId)?.completed == 2 && vm.writingAi.drafts.value[workId to chapterId]?.loading == false
+        }
+        vm.writingAi.reviewDraft(workId, chapterId)
+        waitUntil("场景审读与修订未完成") {
+            vm.writingAi.drafts.value[workId to chapterId]?.let { it.stage == DraftStage.READY && !it.loading } == true
+        }
+        assertEquals(revised, store.draft(workId, chapterId))
+        assertTrue(store.scenePlan(workId, chapterId)!!.matchesDraft(revised))
+        assertNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+        assertEquals(original, store.text(workId, chapterId))
+        assertEquals(1, asked.count { it.phase == "REVISE" })
+    }
+
+    @Test
+    fun changedChapterMaterialsRejectAnApprovedSceneBeforeAnyProseRequest() {
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        vm.writingAi.loadScenePlan(workId, chapterId)
+        waitUntil("场景安排尚未载入") { vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false }
+        vm.writingAi.suggestScenes(workId, chapterId)
+        waitUntil("场景建议未完成") { vm.writingAi.scenePlans.value[workId to chapterId]?.suggestion != null }
+        val plan = vm.writingAi.scenePlans.value.getValue(workId to chapterId).suggestion!!
+        vm.writingAi.approveScenePlan(workId, chapterId, plan)
+        waitUntil("场景安排尚未保存") {
+            store.scenePlan(workId, chapterId) == plan && vm.writingAi.scenePlans.value[workId to chapterId]?.loading == false
+        }
+        store.saveCard(workId, chapterId, store.card(workId, chapterId).copy(facts = "修改后的事实：本章不开门"))
+        vm.writingAi.writeNextScene(workId, chapterId)
+        waitUntil("过期场景未被拒绝") { vm.writingAi.drafts.value[workId to chapterId]?.error?.contains("变化") == true }
+        assertEquals(0, asked.count { it.phase == "SCENE" })
+        assertEquals("", store.draft(workId, chapterId))
+        assertEquals(original, store.text(workId, chapterId))
     }
 
     @Test

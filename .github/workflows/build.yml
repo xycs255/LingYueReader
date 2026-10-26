@@ -87,6 +87,8 @@ jobs:
           done
           test -s app/build/outputs/ui-check/stats-expanded.png
           test -s app/build/outputs/ui-check/selection-compact.png
+          test -s app/build/outputs/ui-check/scene-plan-paper.png
+          test -s app/build/outputs/ui-check/scene-plan-night.png
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-ui-samples
@@ -95,6 +97,8 @@ jobs:
             app/build/outputs/ui-check/ink-*.png
             app/build/outputs/ui-check/stats-expanded.png
             app/build/outputs/ui-check/selection-compact.png
+            app/build/outputs/ui-check/scene-plan-paper.png
+            app/build/outputs/ui-check/scene-plan-night.png
           if-no-files-found: error
       - name: Verify motion UI previews
         run: |
