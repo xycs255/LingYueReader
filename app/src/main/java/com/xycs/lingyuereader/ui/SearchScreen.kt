@@ -48,9 +48,8 @@ import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 @Composable
 fun SearchScreen(vm: AppViewModel, bookId: String) {
-    val savedQuery by vm.searchQuery.collectAsStateWithLifecycle()
-    val hits by vm.searchHits.collectAsStateWithLifecycle()
-    var query by remember { mutableStateOf(savedQuery) }
+    val search by vm.bookSearch.collectAsStateWithLifecycle()
+    var query by remember { mutableStateOf(search.query) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -102,13 +101,21 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
             overscrollEffect = null,
         ) {
             when {
-                savedQuery.isBlank() -> item { EmptyState(LingYueIcons.Search, "在这本书里找", "人名、地名、记得的一句话都行。") }
-                hits.isEmpty() -> item { EmptyState(LingYueIcons.Search, "没有找到“$savedQuery”", "换个说法，或者少打几个字试试。") }
+                search.query.isBlank() -> item { EmptyState(LingYueIcons.Search, "在这本书里找", "人名、地名、记得的一句话都行。") }
+                search.running -> item {
+                    ProvideGroupedColors {
+                        GroupedSection(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            row { LoadingRow("正在搜索“${search.query}”…") }
+                        }
+                    }
+                }
+                search.error != null -> item { EmptyState(LingYueIcons.Search, "搜索失败", search.error!!) }
+                search.hits.isEmpty() -> item { EmptyState(LingYueIcons.Search, "没有找到“${search.query}”", "换个说法，或者少打几个字试试。") }
                 else -> item {
-                    SmallTitle(if (hits.size >= 300) "300 处以上，只列前 300 处" else "共 ${hits.size} 处", textColor = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    SmallTitle(if (search.hits.size >= 300) "300 处以上，只列前 300 处" else "共 ${search.hits.size} 处", textColor = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
             }
-            items(hits) { hit ->
+            items(search.hits) { hit ->
                 GlassCard(
                     modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 10.dp),
                     pressFeedbackType = pressFeedback(),

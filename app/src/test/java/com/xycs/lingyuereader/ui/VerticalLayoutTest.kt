@@ -3,8 +3,11 @@ package com.xycs.lingyuereader.ui
 import com.xycs.lingyuereader.data.Block
 import com.xycs.lingyuereader.data.Chapter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CancellationException
 
 class VerticalLayoutTest {
     private fun texts(column: List<VerticalLayout.Cell>) = column.joinToString("") { it.text.ifEmpty { "□" } }
@@ -76,5 +79,27 @@ class VerticalLayoutTest {
         val pages = VerticalLayout(rows = 6, columns = 2, indent = false).layout(chapter)
         // 后面几页全是表格的行：进度要记在表格那一块，不能记成第 0 块。
         assertEquals(1, pages.last().firstBlock)
+    }
+
+    @Test
+    fun cancelledLongTextStopsWithoutCachingPartialPages() {
+        for ((text, limit) in listOf("字".repeat(5_000) to 5, "A".repeat(5_000) to 24)) {
+            val chapter = Chapter("章", listOf(Block.Para(text, prose = false)))
+            val layout = VerticalLayout(rows = 40, columns = 4, indent = false)
+            val cache = ChapterCache<List<VerticalLayout.VPage>>()
+            var checks = 0
+            val stopped = runCatching {
+                cache.get("vertical", 0) {
+                    layout.layout(chapter) {
+                        if (++checks > limit) throw CancellationException("排版已取消")
+                    }
+                }
+            }
+            assertTrue("$checks checkpoints for ${text.first()}", stopped.exceptionOrNull() is CancellationException)
+            assertNull("取消后不能留下不完整页", cache.peek("vertical", 0))
+            val complete = cache.get("vertical", 0) { layout.layout(chapter) }!!
+            assertEquals(0 to text.lastIndex, complete.last().lastPosition())
+            assertSame(complete, cache.peek("vertical", 0))
+        }
     }
 }

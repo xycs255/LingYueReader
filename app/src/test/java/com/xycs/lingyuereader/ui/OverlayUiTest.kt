@@ -12,6 +12,8 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -95,6 +97,31 @@ class OverlayUiTest {
         compose.onNodeWithText("回到刚才", substring = true).performClick()
         waitForText("正文一。")
         compose.waitUntil(5_000) { compose.onAllNodesWithText("回到刚才", substring = true).fetchSemanticsNodes().isEmpty() }
+    }
+
+    @Test
+    fun progressAndReturnChipKeepFullSizeIndependentTouchTargets() {
+        openReaderMenu()
+        val minTouchPx = compose.activity.resources.displayMetrics.density * 48f - 1f
+        val progress = compose.onNodeWithContentDescription("全书进度")
+        assertTrue("进度条可拖区域至少 48 dp", progress.fetchSemanticsNode().boundsInRoot.height >= minTouchPx)
+        assertTrue(progress.fetchSemanticsNode().config.contains(SemanticsActions.SetProgress))
+
+        // 在细轨上方的命中区点击，仍应跳到第二章并显示可返回的浮层。
+        val progressWidth = progress.fetchSemanticsNode().boundsInRoot.width
+        progress.performTouchInput { click(Offset(progressWidth * 0.75f, 1f)) }
+        waitForText("正文二。")
+        waitForText("回到刚才 · 第一章 开端")
+
+        val returnBounds = compose.onNodeWithText("回到刚才", substring = true).fetchSemanticsNode().boundsInRoot
+        val dismissBounds = compose.onNodeWithContentDescription("不用回去").fetchSemanticsNode().boundsInRoot
+        assertTrue("返回操作区域至少 48 dp", returnBounds.height >= minTouchPx)
+        assertTrue("关闭操作区域至少 48 dp", dismissBounds.height >= minTouchPx)
+        assertTrue("两个操作区域不能重叠", returnBounds.right <= dismissBounds.left)
+
+        compose.onNodeWithContentDescription("不用回去").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("回到刚才", substring = true).fetchSemanticsNodes().isEmpty() }
+        waitForText("正文二。")
     }
 
     @Test

@@ -44,9 +44,15 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 
-/** 听书时浮在底部的控制条：播放/暂停、设置、停止。 */
+/** 听书时浮在底部的控制条：播放/暂停、设置、停止；暂停后跳转可从这里回到原位。 */
 @Composable
-internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSettings: () -> Unit) {
+internal fun ReadAloudBar(
+    state: ReadAloudState,
+    palette: ReaderPalette,
+    returnChapter: String? = null,
+    onReturn: (() -> Unit)? = null,
+    onSettings: () -> Unit,
+) {
     // 出错用阅读面板配色里的删除色（随书页深浅调过），不用强调色——强调色在这里是“播放”的意思。
     val danger = remember(palette) { readerGroupedColors(palette, palette.accent).destructive }
     Row(
@@ -90,8 +96,15 @@ internal fun ReadAloudBar(state: ReadAloudState, palette: ReaderPalette, onSetti
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        IconButton(onClick = onSettings) {
-            Icon(LingYueIcons.Timer, contentDescription = "语速与定时", tint = palette.text)
+        // 暂停听书后从目录/搜索跳转，复用这个图标位；设置仍可从中央详情打开。
+        if (!state.playing && returnChapter != null && onReturn != null) {
+            IconButton(onClick = onReturn, modifier = Modifier.size(48.dp)) {
+                Icon(LingYueIcons.Back, contentDescription = "回到刚才 · $returnChapter", tint = palette.accent)
+            }
+        } else {
+            IconButton(onClick = onSettings) {
+                Icon(LingYueIcons.Timer, contentDescription = "语速与定时", tint = palette.text)
+            }
         }
         IconButton(onClick = ReadAloud::stop) {
             Icon(LingYueIcons.Close, contentDescription = "停止听书", tint = palette.text)

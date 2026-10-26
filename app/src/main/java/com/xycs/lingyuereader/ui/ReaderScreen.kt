@@ -883,7 +883,15 @@ private fun Reader(
             exit = Effects.exit(slideOutVertically(Motion.exit()) { it / 2 } + fadeOut(Motion.exit())),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            listening?.let { l -> ReadAloudBar(l, palette, onSettings = { sheet = ReaderSheet.ReadAloud }) }
+            listening?.let { l ->
+                ReadAloudBar(
+                    l,
+                    palette,
+                    onSettings = { sheet = ReaderSheet.ReadAloud },
+                    returnChapter = back?.chapterTitle,
+                    onReturn = vm::jumpBack,
+                )
+            }
         }
         AnimatedVisibility(
             visible = autoScroll && listening == null && !menuVisible,
@@ -1465,7 +1473,7 @@ private fun BookProgress(
     }
 }
 
-/** 细线滑块：3dp 的轨道、强调色的已读段、白色圆钮；整条 32dp 高都能按、能拖。读屏能读值、能调。 */
+/** 细线滑块：3dp 的轨道、强调色的已读段、白色圆钮；48dp 命中区内都能按、能拖。读屏能读值、能调。 */
 @Composable
 private fun ThinSlider(
     value: Float,
@@ -1485,7 +1493,7 @@ private fun ThinSlider(
     Box(
         modifier
             .fillMaxWidth()
-            .height(32.dp)
+            .height(48.dp)
             .semantics {
                 contentDescription = label
                 stateDescription = valueText
@@ -1625,8 +1633,9 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
         Row(
             modifier = Modifier
                 .widthIn(max = 240.dp)
+                .heightIn(min = 48.dp)
                 .clip(RoundedCornerShape(50))
-                .clickable(onClick = onReturn)
+                .clickable(role = Role.Button, onClick = onReturn)
                 .padding(start = 12.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1641,7 +1650,7 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
             modifier = Modifier
                 .size(48.dp)
                 .clip(RoundedCornerShape(50))
-                .clickable(onClick = onDismiss)
+                .clickable(role = Role.Button, onClick = onDismiss)
                 .padding(15.dp),
         )
     }
