@@ -35,6 +35,7 @@ import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowLooper
 import java.io.File
 
 private val context: Context get() = ApplicationProvider.getApplicationContext()
@@ -169,6 +170,12 @@ class OpenWithUiTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
+    private fun waitForImportedReader() = compose.waitUntil(15_000) {
+        // ACTION_VIEW 的导入在后台完成；忙碌的 runner 上还需让主线程处理打开阅读页的消息。
+        ShadowLooper.idleMainLooper()
+        compose.onAllNodesWithText("外部正文", substring = true).fetchSemanticsNodes().isNotEmpty()
+    }
+
     @Test
     fun viewIntentImportsAndOpensOnceOnly() {
         File(context.filesDir, "books").deleteRecursively()
@@ -176,11 +183,11 @@ class OpenWithUiTest {
         val intent = Intent(Intent.ACTION_VIEW, Uri.fromFile(file), context, MainActivity::class.java)
 
         ActivityScenario.launch<MainActivity>(intent).use {
-            compose.waitUntil(10_000) { compose.onAllNodesWithText("外部正文", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            waitForImportedReader()
         }
         // 再打开一次同一个文件，书架上仍然只有一本。
         ActivityScenario.launch<MainActivity>(intent).use {
-            compose.waitUntil(10_000) { compose.onAllNodesWithText("外部正文", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            waitForImportedReader()
         }
         val index = JSONArray(File(context.filesDir, "books/index.json").readText())
         assertEquals(1, index.length())
