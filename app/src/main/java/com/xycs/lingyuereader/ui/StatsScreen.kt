@@ -39,6 +39,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -130,8 +131,8 @@ fun StatsScreen(vm: AppViewModel) {
                         }
                         (if (showAll) books else books.take(TOP_BOOKS)).forEach { b ->
                             row {
-                                // 行高、字号同 NavRow：书名 16sp 半粗、右边时长 14sp 灰字，至少 56dp 高。
-                                Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
+                                // 书名、时长和进度条一起呈现，行高按内容自然展开。
+                                Column(Modifier.fillMaxWidth().testTag("stats-book-${b.id}").heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(b.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))

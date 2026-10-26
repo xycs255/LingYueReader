@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -85,6 +86,42 @@ class ReadAloudUiTest {
         assertEquals(Role.Button, details.config[SemanticsProperties.Role])
         compose.onNodeWithContentDescription("打开听书设置").performClick()
         assertEquals(1, openings)
+    }
+
+    @Test
+    fun pausedJumpOffersReturnInTimerSlotAndKeepsSettingsAvailable() {
+        val barState = mutableStateOf(state())
+        val returnChapter = mutableStateOf<String?>(null)
+        var returns = 0
+        var openings = 0
+        compose.setContent {
+            LingYueTheme {
+                ReadAloudBar(
+                    barState.value,
+                    palette,
+                    returnChapter = returnChapter.value,
+                    onReturn = { returns++ },
+                    onSettings = { openings++ },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("语速与定时").fetchSemanticsNode()
+
+        compose.runOnUiThread { returnChapter.value = "第一章" }
+        compose.waitForIdle()
+        val returnLabel = "回到刚才 · 第一章"
+        val target = compose.onNodeWithContentDescription(returnLabel).fetchSemanticsNode()
+        assertTrue(target.boundsInRoot.height >= minTouchHeightPx())
+        assertTrue(compose.onAllNodesWithContentDescription("语速与定时").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithContentDescription("打开听书设置").performClick()
+        compose.onNodeWithContentDescription(returnLabel).performClick()
+        assertEquals(1, openings)
+        assertEquals(1, returns)
+
+        compose.runOnUiThread { barState.value = barState.value.copy(playing = true) }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithContentDescription(returnLabel).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithContentDescription("语速与定时").fetchSemanticsNode()
     }
 
     @Test

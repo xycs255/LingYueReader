@@ -1,7 +1,10 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -91,6 +94,13 @@ class CrossSelectionUiTest {
         val third = compose.onAllNodesWithText("第3段", substring = true)[0].fetchSemanticsNode().boundsInRoot
         dragFrom(1) { _, _ -> Offset(third.right - 4f, third.center.y) }
         waitForText("批注")
+        val copy = compose.onNodeWithText("复制").fetchSemanticsNode().boundsInRoot
+        assertTrue("划选操作虽缩小，点击区仍需至少 48dp：${copy.height}", copy.height >= context.resources.displayMetrics.density * 48f - 1f)
+        val working = File(requireNotNull(System.getProperty("user.dir")))
+        val appDir = if (working.name == "app") working else File(working, "app")
+        val screenshot = File(appDir, "build/outputs/ui-check/selection-compact.png")
+        screenshot.parentFile!!.mkdirs()
+        screenshot.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
         // 跨段落时不查词。
         compose.onNodeWithText("查词").assertDoesNotExist()
         compose.onNodeWithText("复制").performClick()
@@ -153,6 +163,7 @@ class CrossSelectionUiTest {
         dragFrom(1) { _, _ -> Offset(third.right - 4f, third.center.y) }
         waitForText("批注")
         val handle = compose.onNodeWithContentDescription("选区终点").fetchSemanticsNode().boundsInRoot
+        assertTrue("把手点击区需至少 48dp：${handle.height}", handle.height >= context.resources.displayMetrics.density * 48f - 1f)
         compose.onRoot().performTouchInput {
             // 按在把手的下半部，往上拖到第 2 段。
             down(Offset(handle.center.x, handle.top + 16.dp.toPx()))

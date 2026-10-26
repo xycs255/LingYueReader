@@ -77,14 +77,55 @@ jobs:
             app/build/outputs/ui-check/night-catalog.png
             app/build/outputs/ui-check/night-typography.png
           if-no-files-found: error
+      - name: Verify paper UI screenshots
+        run: |
+          for screen in shelf writing work editor vocabulary stats me theme reader; do
+            test -s "app/build/outputs/ui-check/paper-$screen.png"
+          done
+          for screen in theme me writing; do
+            test -s "app/build/outputs/ui-check/ink-$screen.png"
+          done
+          test -s app/build/outputs/ui-check/stats-expanded.png
+          test -s app/build/outputs/ui-check/selection-compact.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LingYueReader-ui-samples
+          path: |
+            app/build/outputs/ui-check/paper-*.png
+            app/build/outputs/ui-check/ink-*.png
+            app/build/outputs/ui-check/stats-expanded.png
+            app/build/outputs/ui-check/selection-compact.png
+          if-no-files-found: error
       - name: Verify motion UI previews
         run: |
           test -s app/build/outputs/ui-check/import-modes.png
           test -s app/build/outputs/ui-check/page-mode-preview.png
+          test -s app/build/outputs/ui-check/page-cover-mid.png
+          test -s app/build/outputs/ui-check/page-cover-thick-mid.png
+          test -s app/build/outputs/ui-check/page-cover-thick-back-mid.png
+          test -s app/build/outputs/ui-check/page-curl-middle.png
+          test -s app/build/outputs/ui-check/page-curl-portrait-mid.png
+          test -s app/build/outputs/ui-check/page-slide-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-cover-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-diagonal-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-back-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-motion-ui
           path: |
             app/build/outputs/ui-check/import-modes.png
             app/build/outputs/ui-check/page-mode-preview.png
+            app/build/outputs/ui-check/page-cover-mid.png
+            app/build/outputs/ui-check/page-cover-thick-mid.png
+            app/build/outputs/ui-check/page-cover-thick-back-mid.png
+            app/build/outputs/ui-check/page-curl-middle.png
+            app/build/outputs/ui-check/page-curl-portrait-mid.png
+            app/build/outputs/ui-check/page-slide-landscape-mid.png
+            app/build/outputs/ui-check/page-cover-landscape-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-diagonal-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-back-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
           if-no-files-found: error

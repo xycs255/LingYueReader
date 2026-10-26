@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import com.xycs.lingyuereader.data.Appearance
@@ -17,14 +18,24 @@ import com.xycs.lingyuereader.data.ReaderTheme
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
+import top.yukonga.miuix.kmp.theme.Colors
+import top.yukonga.miuix.kmp.theme.lightColorScheme
+import top.yukonga.miuix.kmp.theme.darkColorScheme
 
-/** 阅读页的强调色。界面其余部分用 miuix 默认配色，随系统深浅色切换。 */
+/** 阅读页的强调色。界面其余部分默认用纸色，仍可使用 Monet 或自选强调色。 */
 private val Cinnabar = Color(0xFFB5432F)
+internal val PaperAccent = Color(0xFFA94B36)
 /** 夜间强调色用琥珀色：深底上红、绿文字最易累眼（Fan 等，2024）。 */
 private val Amber = Color(0xFFE0905F)
 
 @Composable
 fun LingYueTheme(appearance: Appearance = Appearance(), content: @Composable () -> Unit) {
+    val systemDark = isSystemInDarkTheme()
+    val dark = when (appearance.mode) {
+        ThemeMode.SYSTEM -> systemDark
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     val controller = remember(appearance.mode, appearance.dynamicColors, appearance.accent, appearance.paletteStyle) {
         val mode = when (appearance.mode) {
             ThemeMode.SYSTEM -> if (appearance.dynamicColors) ColorSchemeMode.MonetSystem else ColorSchemeMode.System
@@ -48,9 +59,60 @@ fun LingYueTheme(appearance: Appearance = Appearance(), content: @Composable () 
     val density = LocalDensity.current
     val scaled = remember(density, appearance.scale) { Density(density.density * appearance.scale, density.fontScale) }
     CompositionLocalProvider(LocalDensity provides scaled) {
-        MiuixTheme(controller = controller, content = content)
+        // 默认外观用样稿的暖纸色和朱砂色；读者选了壁纸取色或自定义强调色时仍交给 miuix 生成配色。
+        if (appearance.dynamicColors) MiuixTheme(controller = controller, content = content)
+        else MiuixTheme(colors = remember(dark) { paperAppColors(dark) }, content = content)
     }
 }
+
+/** 全应用默认中性色：纸张承载内容，玻璃只用于导航与浮层。 */
+internal fun paperAppColors(dark: Boolean): Colors = if (dark) darkColorScheme().copy(
+    primary = Amber,
+    onPrimary = Color(0xFF241810),
+    primaryContainer = Color(0xFF493326),
+    onPrimaryContainer = Color(0xFFF4D9BE),
+    secondary = Color(0xFFB9AB99),
+    onSecondary = Color(0xFF221E1A),
+    secondaryContainer = Color(0xFF332E28),
+    onSecondaryContainer = Color(0xFFE6DDCF),
+    background = Color(0xFF191714),
+    onBackground = Color(0xFFE6DDCF),
+    surface = Color(0xFF1E1B18),
+    onSurface = Color(0xFFE6DDCF),
+    surfaceVariant = Color(0xFF332E28),
+    surfaceContainer = Color(0xFF292521),
+    onSurfaceContainer = Color(0xFFE6DDCF),
+    surfaceContainerHigh = Color(0xFF302B26),
+    onSurfaceContainerHigh = Color(0xFFE6DDCF),
+    surfaceContainerHighest = Color(0xFF38322C),
+    onSurfaceContainerHighest = Color(0xFFE6DDCF),
+    onSurfaceVariantSummary = Color(0xFFB9AB99),
+    onSurfaceVariantActions = Color(0xFF9D9081),
+    dividerLine = Color(0xFF4A4036),
+) else lightColorScheme().copy(
+    primary = PaperAccent,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFF1DED2),
+    onPrimaryContainer = Color(0xFF6E2D20),
+    secondary = Color(0xFF75695D),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFEDE7DE),
+    onSecondaryContainer = Color(0xFF292621),
+    background = Color(0xFFF6F2EA),
+    onBackground = Color(0xFF292621),
+    surface = Color(0xFFF6F2EA),
+    onSurface = Color(0xFF292621),
+    surfaceVariant = Color(0xFFEDE7DE),
+    surfaceContainer = Color(0xFFFFFCF7),
+    onSurfaceContainer = Color(0xFF292621),
+    surfaceContainerHigh = Color(0xFFF2ECE3),
+    onSurfaceContainerHigh = Color(0xFF292621),
+    surfaceContainerHighest = Color(0xFFEAE2D8),
+    onSurfaceContainerHighest = Color(0xFF292621),
+    onSurfaceVariantSummary = Color(0xFF71675C),
+    onSurfaceVariantActions = Color(0xFF84786B),
+    dividerLine = Color(0xFFE4DBD0),
+)
 
 data class ReaderPalette(
     val background: Color,

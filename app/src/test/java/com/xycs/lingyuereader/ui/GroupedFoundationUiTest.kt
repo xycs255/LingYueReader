@@ -16,7 +16,9 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -41,6 +43,36 @@ class GroupedFoundationUiTest {
     @get:Rule val compose = createComposeRule()
 
     @After fun resetMotion() { Effects.reduced = false }
+
+    @Test
+    fun compactSegmentsKeepFullTouchTargets() {
+        val selected = mutableIntStateOf(0)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    SegmentedControl(listOf(0 to "目录", 1 to "书签", 2 to "批注"), selected.intValue) {
+                        selected.intValue = it
+                    }
+                }
+            }
+        }
+        val bookmark = compose.onNodeWithText("书签")
+        val bounds = bookmark.getUnclippedBoundsInRoot()
+        assertTrue("分段控件虽然视觉收紧，触控区仍需至少 48dp", bounds.bottom - bounds.top >= 48.dp)
+        bookmark.performClick()
+        assertEquals(1, selected.intValue)
+    }
+
+    @Test
+    fun compactPanelCloseKeepsFullTouchTarget() {
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors { PanelCloseButton("关闭目录", onClick = {}) }
+            }
+        }
+        val bounds = compose.onNodeWithContentDescription("关闭目录").getUnclippedBoundsInRoot()
+        assertTrue("面板关闭按钮需至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+    }
 
     @Test
     fun readingGroupedColorsOutsideAProviderFails() {

@@ -96,5 +96,18 @@ class ListenSearchJumpUiTest {
         assertTrue(compose.onAllNodesWithText("第1段", substring = true).fetchSemanticsNodes().isEmpty())
         compose.waitUntil(5_000) { savedChapter() == 1 }
         assertEquals(0, ReadAloud.state.value?.chapterIndex)
+
+        // 暂停听书时底栏仍能回到搜索前的位置，且不会恢复播放或占出第二条浮层。
+        val returnLabel = "回到刚才 · 第一章 柳岸"
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithContentDescription(returnLabel).fetchSemanticsNodes().isNotEmpty()
+        }
+        val returnTarget = compose.onNodeWithContentDescription(returnLabel).fetchSemanticsNode()
+        assertTrue(returnTarget.boundsInRoot.height >= context.resources.displayMetrics.density * 48f - 1f)
+        compose.onNodeWithContentDescription(returnLabel).performClick()
+        waitForText("第1段")
+        compose.waitUntil(5_000) { savedChapter() == 0 }
+        assertEquals(false, ReadAloud.state.value?.playing)
+        assertTrue(compose.onAllNodesWithContentDescription(returnLabel).fetchSemanticsNodes().isEmpty())
     }
 }

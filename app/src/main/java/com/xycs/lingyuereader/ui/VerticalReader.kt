@@ -26,6 +26,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -42,6 +43,7 @@ import com.xycs.lingyuereader.data.Utterance
 import com.xycs.lingyuereader.data.displayText
 import com.xycs.lingyuereader.dict.WordFinder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,7 +92,8 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
         fun lastPosition(): Pair<Int, Int>? = if (image != null) imageBlock to 0 else cells.lastOrNull()?.let { it.block to it.last }
     }
 
-    fun layout(chapter: Chapter): List<VPage> {
+    fun layout(chapter: Chapter, checkpoint: () -> Unit = {}): List<VPage> {
+        checkpoint()
         val pages = mutableListOf<VPage>()
         val page = mutableListOf<List<Cell>>()
         var column = mutableListOf<Cell>()
@@ -122,25 +125,44 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
         /** [positioned] 为假时格子记在块 [block] 下、但没有字位（表格的行不是块文字里的字）。 */
         fun text(s: String, block: Int, kind: Kind, positioned: Boolean = true) {
             fun pos(i: Int) = if (block < 0 || !positioned) -1 else i
+            var lastCheck = 0
+            fun checkAt(position: Int) {
+                if (position - lastCheck >= 256) {
+                    checkpoint()
+                    lastCheck = position
+                }
+            }
             var i = 0
             while (i < s.length) {
+                checkAt(i)
                 val cp = s.codePointAt(i)
                 val n = Character.charCount(cp)
                 val c = s[i]
                 if (n == 1 && isLatin(c)) {
                     // 一串英文、数字：连成一段，紧挨着中文的空格去掉。
                     var end = i
-                    while (end < s.length && (isLatin(s[end]) || (s[end] == ' ' && end + 1 < s.length && isLatin(s[end + 1])))) end++
-                    val run = s.substring(i, end)
-                    if (run.length <= 2 && run.all { it in '0'..'9' }) {
+                    while (end < s.length && (isLatin(s[end]) || (s[end] == ' ' && end + 1 < s.length && isLatin(s[end + 1])))) {
+                        end++
+                        checkAt(end)
+                    }
+                    if (end - i <= 2 && (i until end).all { s[it] in '0'..'9' }) {
                         // 一两位数字横着并排放在一格里（纵中横）。
-                        put(Cell(run, block, pos(i), kind))
+                        put(Cell(s.substring(i, end), block, pos(i), kind))
                     } else {
                         // 其余横躺着画，两个半角字占一格。
-                        run.chunked(2).forEachIndexed { k, part -> put(Cell(part, block, pos(i + k * 2), Kind.ROTATED)) }
+                        lastCheck = i
+                        var at = i
+                        while (at < end) {
+                            checkAt(at)
+                            put(Cell(s.substring(at, minOf(at + 2, end)), block, pos(at), Kind.ROTATED))
+                            at += 2
+                        }
                     }
                     i = end
-                    while (i < s.length && s[i] == ' ') i++
+                    while (i < s.length && s[i] == ' ') {
+                        i++
+                        checkAt(i)
+                    }
                     continue
                 }
                 val ch = String(Character.toChars(cp))
@@ -159,6 +181,7 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
         newColumn()
         newColumn()
         chapter.blocks.forEachIndexed { index, block ->
+            checkpoint()
             when (block) {
                 is Block.Image -> {
                     startBlock()
@@ -177,6 +200,7 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
                 is Block.Table -> {
                     startBlock()
                     block.rows.forEach { row ->
+                        checkpoint()
                         // 表格竖排没法对齐，每行一列，格子之间空一格。
                         text(row.joinToString("　"), index, Kind.TEXT, positioned = false)
                         newColumn()
@@ -192,6 +216,7 @@ internal class VerticalLayout(private val rows: Int, private val columns: Int, p
         }
         if (column.isNotEmpty()) newColumn()
         flushPage()
+        checkpoint()
         return pages.ifEmpty { listOf(VPage(listOf(emptyList()))) }
     }
 
@@ -258,14 +283,14 @@ internal fun VerticalReader(
         val cacheKey = listOf(rows, columns, styles.settings.indent)
 
         // 排版要先读出整章（读盘、繁简转换），只在后台线程里调。
-        fun pagesOf(index: Int): List<VerticalLayout.VPage>? = content.chapters.getOrNull(index)?.let { c ->
-            pageCache.get(cacheKey, index) { layout.layout(c) }
+        fun pagesOf(index: Int, checkpoint: () -> Unit): List<VerticalLayout.VPage>? = content.chapters.getOrNull(index)?.let { c ->
+            pageCache.get(cacheKey, index) { layout.layout(c, checkpoint) }
         }
         val chapter = content.chapters[chapterIndex]
         // 本章在后台排好之前只露出纸；邻章等本章画出来、书页停着时再排（见下面）。
         var ready by remember(chapter, layout) { mutableStateOf(pageCache.peek(cacheKey, chapterIndex)) }
         LaunchedEffect(chapter, layout) {
-            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) }
+            if (ready == null) ready = withContext(Dispatchers.Default) { pagesOf(chapterIndex) { ensureActive() } }
         }
         val pages = ready ?: run {
             // 还在排版：轻点照样能叫出菜单、翻页（左边是下一页）。
@@ -301,10 +326,10 @@ internal fun VerticalReader(
             // 先让这一章画出来，再趁书页停着时排；往后翻的多，先排下一章。
             repeat(2) { withFrameNanos { } }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) }
+            if (next == null) next = withContext(Dispatchers.Default) { pagesOf(chapterIndex + 1) { ensureActive() } }
             withFrameNanos { }
             snapshotFlow { pager.isScrollInProgress }.first { !it }
-            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) }
+            if (prev == null) prev = withContext(Dispatchers.Default) { pagesOf(chapterIndex - 1) { ensureActive() } }
         }
         DisposableEffect(pager) {
             registerTurner { forward ->
@@ -374,6 +399,12 @@ internal fun VerticalReader(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .then(if (Effects.noMotion) Modifier.graphicsLayer {
+                        // reverseLayout 的下一页在左侧；抵消手势位移，停稳后才换页。
+                        val r = p - (pager.currentPage + pager.currentPageOffsetFraction)
+                        translationX = r * size.width
+                        alpha = if (p == pager.settledPage) 1f else 0f
+                    } else Modifier)
                     .bookPage(inset)
                     .background(styles.palette.background)
                     .semantics {

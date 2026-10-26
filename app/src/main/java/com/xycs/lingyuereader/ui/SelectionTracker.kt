@@ -233,18 +233,27 @@ internal class SelectionTracker(
     private fun resolve(p: Offset, caret: Boolean): Pair<Int, Int>? {
         val r = root?.takeIf { it.isAttached } ?: return null
         val width = r.size.width.toFloat()
+        val height = r.size.height.toFloat()
         var best: Pair<Entry, Rect>? = null
         var bestDistance = Float.MAX_VALUE
         for (e in entries.values) {
             if (!e.coords.isAttached) continue
             val b = r.localBoundingBoxOf(e.coords, clipBounds = false)
-            // 翻页模式里左右两页都排着，不在屏幕上的那页不算。
-            if (b.right <= 0f || b.left >= width) continue
-            val d = when {
+            // 翻页或滚动时屏外文字可能还登记着，只从当前可见的块中选最近者。
+            if (b.right <= 0f || b.left >= width || b.bottom <= 0f || b.top >= height) continue
+            val dx = when {
+                p.x < b.left -> b.left - p.x
+                p.x > b.right -> p.x - b.right
+                else -> 0f
+            }
+            val dy = when {
                 p.y < b.top -> b.top - p.y
                 p.y > b.bottom -> p.y - b.bottom
                 else -> 0f
             }
+            // 横屏双页的左右文字常在同一高度，必须同时比较横向距离，
+            // 否则右页拖动会落到先登记的左页，放大镜也会因离字太远而收起。
+            val d = dx * dx + dy * dy
             if (d < bestDistance) {
                 bestDistance = d
                 best = e to b

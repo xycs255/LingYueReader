@@ -51,36 +51,35 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
- * 行首图标（[RowIcon]）的底色，照 HyperOS 设置首页：同一个图标在哪一页都是同一个颜色，
- * 不在“我的”里是绿色、到了 AI 设置里又成了粉色。新加的图标行从这里取，不另写颜色。
+ * 行首图标的语义色。由 [RowIcon] 淡化成浅底图标，同一个入口在各页使用同一色。
  */
 internal object RowIconColors {
     /** 词典（Translate）。 */
-    val Dictionary = Color(0xFFFF9500)
+    val Dictionary = Color(0xFF956B50)
     /** 主题设置（Tune）。 */
-    val Theme = Color(0xFF007AFF)
+    val Theme = Color(0xFF8B6759)
     /** 文件夹（Folder）：书源、WebDAV、备份位置。 */
-    val Folder = Color(0xFF34C759)
+    val Folder = Color(0xFF66806B)
     /** AI（Sparkle）。 */
-    val Ai = Color(0xFFAF52DE)
+    val Ai = Color(0xFF8B6B79)
     /** 声音（VolumeUp）：离线语音、AI 朗读。 */
-    val Voice = Color(0xFF34C759)
+    val Voice = Color(0xFF5C7B78)
     /** 备份、上传（Upload）。 */
-    val Upload = Color(0xFF34C759)
+    val Upload = Color(0xFF687E63)
     /** 恢复、下载（Download）。 */
-    val Download = Color(0xFF30B0C7)
+    val Download = Color(0xFF5B7C84)
     /** 定时（Timer）：自动备份、写作时给建议。 */
-    val Timer = Color(0xFF5856D6)
+    val Timer = Color(0xFF88705D)
     /** 添加（Add）。 */
-    val Add = Color(0xFF34C759)
+    val Add = Color(0xFFA94B36)
     /** 关于、版本这类说明（Info）。 */
-    val Info = Color(0xFF8E8E93)
+    val Info = Color(0xFF7D746C)
     /** 外部链接（Share）。 */
-    val Link = Color(0xFF636366)
+    val Link = Color(0xFF696F6C)
 }
 
 /**
- * “我的”，照 HyperOS 设置的样子：分组列表——阅读（词典、主题设置）、备份、关于，每行一个彩色图标。
+ * “我的”：分组列表——阅读、备份、关于；淡色图标辅助扫描，不压过文字。
  * 每行一个短名字，状态写在右边灰字或组下面的小字里。
  */
 @Composable

@@ -5,8 +5,6 @@ import com.xycs.lingyuereader.data.ReaderTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import top.yukonga.miuix.kmp.theme.darkColorScheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 /** 设置页的语义色（强调色底上的字、提醒、成功）在各种底上都要读得清：普通小字 4.5:1（WCAG AA）。 */
 class SemanticColorsTest {
@@ -44,19 +42,21 @@ class SemanticColorsTest {
         for (dark in listOf(false, true)) {
             for (tint in tints) {
                 val c = groupedColors(dark, tint)
-                if (tint == (if (dark) darkColorScheme() else lightColorScheme()).primary) continue
+                if (tint == paperAppColors(dark).primary) continue
                 assertReadable("设置页强调色底上的字", c.onTint, c.tint)
             }
         }
     }
 
     @Test
-    fun theDefaultBlueKeepsMiuixWhiteText() {
-        // miuix 默认的蓝配白字（浅色 3.6:1、深色 4.0:1）照 HyperOS 留着；只有不到 3:1 时才换黑白。
-        for ((dark, scheme) in listOf(false to lightColorScheme(), true to darkColorScheme())) {
+    fun theDefaultPaperAccentUsesReadableText() {
+        for (dark in listOf(false, true)) {
+            val scheme = paperAppColors(dark)
             val c = groupedColors(dark, scheme.primary)
             assertEquals(scheme.onPrimary, c.onTint)
-            assertTrue(contrastRatio(c.onTint, c.tint) >= 3f)
+            assertTrue(contrastRatio(c.onTint, c.tint) >= 4.5f)
+            assertReadable("默认纸色正文", scheme.onSurface, scheme.surface, scheme.surfaceContainer)
+            assertReadable("默认纸色说明", scheme.onSurfaceVariantSummary, scheme.surface, scheme.surfaceContainer)
         }
     }
 

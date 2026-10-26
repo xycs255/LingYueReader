@@ -4,18 +4,23 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Rule
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.rules.ExternalResource
 import org.junit.rules.RuleChain
@@ -73,17 +78,50 @@ class OverlayUiTest {
     }
 
     @Test
-    fun catalogSheetOpensAndJumps() {
+    fun catalogSidebarSortsAndJumps() {
         openReaderMenu()
         compose.onNodeWithText("目录").performClick()
         waitForText("目录 2")
-        compose.onAllNodesWithText("第二章 路上")[0].performClick()
+        val width = compose.activity.resources.displayMetrics.widthPixels
+        val tabRight = compose.onNodeWithText("目录 2").fetchSemanticsNode().boundsInRoot.right
+        assertTrue("目录应在侧栏内，right=$tabRight width=$width", tabRight < width - 24f)
+        compose.onNodeWithContentDescription("目录排序：正序").performClick()
+        waitForText("倒序")
+        val firstTop = compose.onNode(hasText("第一章 开端") and hasClickAction()).fetchSemanticsNode().boundsInRoot.top
+        val secondTop = compose.onNode(hasText("第二章 路上") and hasClickAction()).fetchSemanticsNode().boundsInRoot.top
+        assertTrue("倒序时第二章应在第一章前", secondTop < firstTop)
+        compose.onNode(hasText("第二章 路上") and hasClickAction()).performClick()
         waitForText("正文二。")
         // 跳过去后页底出现“回到刚才”，点一下回到第一章。
         waitForText("回到刚才 · 第一章 开端")
         compose.onNodeWithText("回到刚才", substring = true).performClick()
         waitForText("正文一。")
         compose.waitUntil(5_000) { compose.onAllNodesWithText("回到刚才", substring = true).fetchSemanticsNodes().isEmpty() }
+    }
+
+    @Test
+    fun progressAndReturnChipKeepFullSizeIndependentTouchTargets() {
+        openReaderMenu()
+        val minTouchPx = compose.activity.resources.displayMetrics.density * 48f - 1f
+        val progress = compose.onNodeWithContentDescription("全书进度")
+        assertTrue("进度条可拖区域至少 48 dp", progress.fetchSemanticsNode().boundsInRoot.height >= minTouchPx)
+        assertTrue(progress.fetchSemanticsNode().config.contains(SemanticsActions.SetProgress))
+
+        // 在细轨上方的命中区点击，仍应跳到第二章并显示可返回的浮层。
+        val progressWidth = progress.fetchSemanticsNode().boundsInRoot.width
+        progress.performTouchInput { click(Offset(progressWidth * 0.75f, 1f)) }
+        waitForText("正文二。")
+        waitForText("回到刚才 · 第一章 开端")
+
+        val returnBounds = compose.onNodeWithText("回到刚才", substring = true).fetchSemanticsNode().boundsInRoot
+        val dismissBounds = compose.onNodeWithContentDescription("不用回去").fetchSemanticsNode().boundsInRoot
+        assertTrue("返回操作区域至少 48 dp", returnBounds.height >= minTouchPx)
+        assertTrue("关闭操作区域至少 48 dp", dismissBounds.height >= minTouchPx)
+        assertTrue("两个操作区域不能重叠", returnBounds.right <= dismissBounds.left)
+
+        compose.onNodeWithContentDescription("不用回去").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("回到刚才", substring = true).fetchSemanticsNodes().isEmpty() }
+        waitForText("正文二。")
     }
 
     @Test

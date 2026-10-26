@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -22,6 +23,7 @@ import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -90,6 +92,38 @@ class ReaderPanelsMotionUiTest {
         compose.mainClock.advanceTimeBy(Motion.MEDIUM * 2L)
         compose.onNodeWithText("第一章 晨雾").assertDoesNotExist()
         compose.onNodeWithText("渡船靠岸").assertExists()
+    }
+
+    @Test
+    fun catalogSortReversesRowsButKeepsOriginalChapterTargets() {
+        var descending by mutableStateOf(false)
+        var picked: Int? = null
+        compose.setContent {
+            LingYueTheme {
+                CatalogSheet(
+                    chapters = chapters,
+                    current = 0,
+                    marks = Marks(),
+                    palette = ReaderTheme.PAPER.palette(),
+                    onPickChapter = { picked = it },
+                    onPickPosition = { _, _, _ -> },
+                    onDeleteBookmark = {},
+                    onDeleteNote = {},
+                    onExportNotes = {},
+                    sidebar = true,
+                    sortDescending = descending,
+                    onSortToggle = { descending = !descending },
+                )
+            }
+        }
+        val first = "第一章 晨雾"
+        val second = "第二章 渡口"
+        assertTrue(compose.onNodeWithText(first).fetchSemanticsNode().boundsInRoot.top < compose.onNodeWithText(second).fetchSemanticsNode().boundsInRoot.top)
+        compose.onNodeWithContentDescription("目录排序：正序").performClick()
+        compose.waitForIdle()
+        assertTrue(compose.onNodeWithText(second).fetchSemanticsNode().boundsInRoot.top < compose.onNodeWithText(first).fetchSemanticsNode().boundsInRoot.top)
+        compose.onNodeWithText(second).performClick()
+        assertEquals(1, picked)
     }
 
     @Test

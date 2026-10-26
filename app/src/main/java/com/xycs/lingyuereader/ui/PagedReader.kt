@@ -33,7 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -42,6 +42,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -63,15 +64,13 @@ import com.xycs.lingyuereader.data.Marks
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.Utterance
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import kotlin.math.floor
 
 /** 书签丝带：长条，下端剪一个燕尾。 */
 private val RibbonShape = GenericShape { size, _ ->
@@ -183,6 +182,11 @@ internal fun PagedReader(
         // 位置先占好，相邻章分好之前那一页只有纸和章名，页数不会因为分好了而变、当前页不会被挤开。
         val lead = if (hasPrev) 1 else 0
         val count = lead + spreads.size + if (hasNext) 1 else 0
+        fun spreadAt(p: Int): Pair<Int, List<Page>> = when {
+            hasPrev && p == 0 -> chapterIndex - 1 to (prevSpread ?: emptyList())
+            hasNext && p == count - 1 -> chapterIndex + 1 to (nextSpread ?: emptyList())
+            else -> chapterIndex to spreads[p - lead]
+        }
 
         // 最近停在哪一页的开头（块、字）：同一章重新分页（窗口大小变了）时按它找回所在的页，不按页码。
         val settledAt = remember { arrayOfNulls<Pair<Int, Int>>(1) }
@@ -200,6 +204,8 @@ internal fun PagedReader(
         val pageCount by rememberUpdatedState(count)
         val pager = remember(per, pages) { PagerState(lead + startPage / per) { pageCount } }
         val scope = rememberCoroutineScope()
+        // 减少动态效果也要覆盖手势翻页；只让点按/按键直接跳页还不够。
+        val visibleMode = if (Effects.noMotion) PageMode.NONE else mode
 
         LaunchedEffect(chapterIndex, content, paginator, widthPx, heightPx) {
             if ((!hasNext || next != null) && (!hasPrev || prev != null)) return@LaunchedEffect
@@ -232,7 +238,7 @@ internal fun PagedReader(
         }
 
         // 无动画：书页拖着不动，跨过一半（松手就会换页）时轻轻一震，免得以为没拖上。
-        if (mode == PageMode.NONE) {
+        if (mode == PageMode.NONE && !Effects.noMotion) {
             val haptic = LocalHapticFeedback.current
             LaunchedEffect(pager) {
                 snapshotFlow { pager.currentPage }.drop(1).collect {
@@ -253,35 +259,11 @@ internal fun PagedReader(
             }
         }
 
-        // 双页仿真：翻起的右页背面就是下一面的左页。每面边画边录一份，翻页开始时把下一面拍成图给着色器。
-        val curlSpreads = twoUp && mode == PageMode.CURL
-        val spreadLayers = remember { HashMap<Int, GraphicsLayer>() }
-        var backside by remember { mutableStateOf<Pair<Int, ImageBitmap>?>(null) }
-        if (curlSpreads) {
-            LaunchedEffect(pager) {
-                snapshotFlow {
-                    val pos = pager.currentPage + pager.currentPageOffsetFraction
-                    val k = floor(pos).toInt()
-                    if (pos - k > 0.001f) k else null
-                }.distinctUntilChanged().collectLatest { k ->
-                    // 停稳了就丢掉，下次翻页重拍：书页的配色、划线可能变了。
-                    if (k == null) {
-                        backside = null
-                        return@collectLatest
-                    }
-                    if (backside?.first == k) return@collectLatest
-                    // 下一面可能这一帧才开始画，等几帧。
-                    repeat(4) {
-                        val layer = spreadLayers[k + 1]
-                        if (layer != null && layer.size.width > 0 && layer.size.height > 0) {
-                            runCatching { layer.toImageBitmap() }.getOrNull()?.let { backside = k to it }
-                            return@collectLatest
-                        }
-                        withFrameNanos { }
-                    }
-                }
-            }
-        }
+        // 双页仿真：预先画好下一面，翻起的右页背面才能印出它的左页。
+        // Pager 的离屏页虽然已排版，未必会进入绘制阶段；等手势开始后再拍往往拿到 0×0 图层。
+        val curlSpreads = twoUp && visibleMode == PageMode.CURL
+        var backside by remember(pager) { mutableStateOf<Pair<Int, ImageBitmap>?>(null) }
+        var priorBackside by remember(pager) { mutableStateOf<Pair<Int, ImageBitmap>?>(null) }
 
         if (turn != null) {
             LaunchedEffect(pager, spreads) {
@@ -307,35 +289,81 @@ internal fun PagedReader(
             }
         }
 
+        val prewarmTarget = (pager.settledPage + 1).takeIf { curlSpreads && it < count }
+        val prewarmLayer = rememberGraphicsLayer()
+        if (prewarmTarget != null) {
+            val (prewarmChapter, prewarmSpread) = spreadAt(prewarmTarget)
+            val drawn = remember(prewarmTarget, prewarmChapter, prewarmSpread, styles.palette, marks) { Channel<Unit>(Channel.CONFLATED) }
+            // 下一面始终在当前纸页下面，既供折角露出，也在真正开始翻页前录好背面。
+            Box(
+                Modifier.fillMaxSize().bookPage(inset).clearAndSetSemantics { }
+                    .drawWithContent {
+                        val spineHalfWidth = 28.dp.toPx()
+                        prewarmLayer.record {
+                            this@drawWithContent.drawContent()
+                            drawSpreadSpine(spineHalfWidth)
+                        }
+                        drawLayer(prewarmLayer)
+                        drawn.trySend(Unit)
+                    }
+                    .background(styles.palette.background),
+            ) {
+                SpreadContent(
+                    content, prewarmChapter, prewarmSpread, per, styles, marks, topInset, imageMaxHeight,
+                    onTap = {}, selector = null, speaking = null, selected = null, onFootnote = {},
+                )
+            }
+            LaunchedEffect(prewarmTarget, drawn, prewarmLayer) {
+                // 等图层真正画过再转图片；只等固定几帧会在尚未首绘时拍到 0×0。
+                drawn.receive()
+                repeat(4) {
+                    val image = runCatching { prewarmLayer.toImageBitmap() }.getOrNull()
+                    if (image != null) {
+                        backside = (prewarmTarget - 1) to image
+                        return@LaunchedEffect
+                    }
+                    withFrameNanos { }
+                }
+            }
+        }
+
         HorizontalPager(
             state = pager,
             beyondViewportPageCount = 1,
             modifier = Modifier
                 .fillMaxSize()
                 .clipToBook(inset)
-                .then(if (mode == PageMode.NONE) Modifier.dragHint(pager, styles.palette.accent) else Modifier),
+                .then(if (mode == PageMode.NONE && !Effects.noMotion) Modifier.dragHint(pager, styles.palette.accent) else Modifier),
         ) { p ->
-            val (pageChapter, spread) = when {
-                hasPrev && p == 0 -> chapterIndex - 1 to (prevSpread ?: emptyList())
-                hasNext && p == count - 1 -> chapterIndex + 1 to (nextSpread ?: emptyList())
-                else -> chapterIndex to spreads[p - lead]
-            }
+            val (pageChapter, spread) = spreadAt(p)
             fun offset() = p - (pager.currentPage + pager.currentPageOffsetFraction)
-            val spreadLayer = rememberGraphicsLayer()
-            if (curlSpreads) {
-                DisposableEffect(p, spreadLayer) {
-                    spreadLayers[p] = spreadLayer
-                    onDispose { spreadLayers.remove(p, spreadLayer) }
+            // 当前页本来就会绘制，顺手录下它，供返回上一面时作为翻起纸张的背面。
+            // 这样连续返回多次也不依赖更早翻页时留下的位图。
+            val captureCurrent = curlSpreads && p == pager.settledPage && p > 0
+            val currentLayer = if (captureCurrent) rememberGraphicsLayer() else null
+            val currentDrawn = if (captureCurrent) remember(p, pageChapter, spread, styles.palette, marks) { Channel<Unit>(Channel.CONFLATED) } else null
+            if (currentLayer != null && currentDrawn != null) {
+                LaunchedEffect(p, currentDrawn, currentLayer) {
+                    currentDrawn.receive()
+                    repeat(4) {
+                        val image = runCatching { currentLayer.toImageBitmap() }.getOrNull()
+                        if (image != null) {
+                            priorBackside = (p - 1) to image
+                            return@LaunchedEffect
+                        }
+                        withFrameNanos { }
+                    }
                 }
             }
             Box(
                 Modifier
                     .fillMaxSize()
-                    // 覆盖式：后一页原地不动，当前页像纸一样盖在上面滑走。
+                    .testTag("reader-page-$p")
+                    // 覆盖式：旧页向左滑走，下一页留在原位；返回时上一页从左侧滑入。
                     .zIndex(-p.toFloat())
                     .graphicsLayer {
                         val r = offset()
-                        when (mode) {
+                        when (visibleMode) {
                             PageMode.COVER -> if (r > 0f) translationX = -r * size.width
                             // 仿真：两页都不动，前一页原地掀起来。
                             PageMode.CURL -> if (r > -1f && r < 1f) translationX = -r * size.width
@@ -349,111 +377,122 @@ internal fun PagedReader(
                     }
                     .bookPage(inset)
                     .then(
-                        if (mode == PageMode.CURL) {
+                        if (visibleMode == PageMode.CURL) {
                             Modifier.pageCurl(
                                 progress = { offset().let { if (it < 0f && it > -1f) -it else 0f } },
                                 touch = touch,
                                 paper = styles.palette.background,
                                 spine = if (twoUp) 0.5f else 0f,
-                                backside = { backside?.takeIf { it.first == p }?.second },
+                                backside = { (backside?.takeIf { it.first == p } ?: priorBackside?.takeIf { it.first == p })?.second },
                             )
-                        } else {
-                            Modifier
-                        },
-                    )
-                    .then(
-                        if (curlSpreads) {
-                            Modifier.drawWithContent {
-                                spreadLayer.record { this@drawWithContent.drawContent() }
-                                drawLayer(spreadLayer)
-                            }
                         } else {
                             Modifier
                         },
                     )
                     .drawWithContent {
                         drawContent()
-                        if (twoUp) {
-                            // 书脊：中间一道浅浅的阴影。
-                            val w = 28.dp.toPx()
-                            drawRect(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.07f), Color.Transparent),
-                                    size.width / 2 - w,
-                                    size.width / 2 + w,
-                                ),
-                                topLeft = Offset(size.width / 2 - w, 0f),
-                                size = Size(w * 2, size.height),
-                            )
-                        }
-                        if (mode == PageMode.COVER) {
+                        if (twoUp) drawSpreadSpine()
+                        if (visibleMode == PageMode.COVER) {
                             val r = offset()
-                            if (r < 0f && r > -1f) {
+                            if (r > 0f && r < 1f) {
+                                // 旧页的右边缘在下一页上的 x。阴影画在静止的下页里，
+                                // 避免旧页画出边界的阴影被 graphicsLayer 裁掉，翻到一半突然消失。
+                                // Pager 按整屏宽度滑动，bookPage 却将纸面缩去书口厚度。
+                                // 用缩后的宽度算接缝会把阴影错开 (1-r)×书口厚度，露出一条亮缝。
+                                val insetPx = inset?.total?.roundToPx()?.toFloat() ?: 0f
+                                val edge = r * (size.width + insetPx) - insetPx
+                                val alpha = 0.18f * 4f * r * (1f - r)
+                                val reach = 24.dp.toPx()
                                 drawRect(
-                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.18f), Color.Transparent), size.width, size.width + 24.dp.toPx()),
-                                    topLeft = Offset(size.width, 0f),
-                                    size = Size(24.dp.toPx(), size.height),
+                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = alpha), Color.Transparent), edge - 1f, edge + reach),
+                                    topLeft = Offset(edge - 1f, 0f),
+                                    size = Size(reach + 1f, size.height),
                                 )
                             }
                         }
                     }
+                    .then(if (currentLayer != null && currentDrawn != null) {
+                        Modifier.drawWithContent {
+                            currentLayer.record { this@drawWithContent.drawContent() }
+                            drawLayer(currentLayer)
+                            currentDrawn.trySend(Unit)
+                        }
+                    } else Modifier)
                     .background(styles.palette.background)
                     .pointerInput(Unit) { detectTapGestures(onTap = { onTap(it.x / size.width) }) },
             ) {
-                // 加了书签的页，右上角垂下一条书签丝带。
-                val pageChapterContent = content.chapters[pageChapter]
-                val bookmarked = marks.bookmarks.any { bm ->
-                    bm.chapterIndex == pageChapter && !bm.lost && spread.any { page ->
-                        val block = bm.itemIndex - HEADER_ITEMS
-                        page.contains(block, pageLayoutChar(pageChapterContent, block, bm.charOffset, styles.settings.indent))
+                SpreadContent(
+                    content, pageChapter, spread, per, styles, marks, topInset, imageMaxHeight, onTap,
+                    // 只让停在屏幕上的页参与选字，避免摸到压在下面的字。
+                    selector.takeIf { pageChapter == chapterIndex && p == pager.settledPage },
+                    speaking.takeIf { pageChapter == chapterIndex },
+                    selected.takeIf { pageChapter == chapterIndex },
+                    onFootnote,
+                )
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawSpreadSpine(halfWidth: Float = 28.dp.toPx()) {
+    drawRect(
+        Brush.horizontalGradient(
+            listOf(Color.Transparent, Color.Black.copy(alpha = 0.07f), Color.Transparent),
+            size.width / 2 - halfWidth, size.width / 2 + halfWidth,
+        ),
+        topLeft = Offset(size.width / 2 - halfWidth, 0f),
+        size = Size(halfWidth * 2, size.height),
+    )
+}
+
+@Composable
+private fun SpreadContent(
+    content: BookContent,
+    pageChapter: Int,
+    spread: List<Page>,
+    per: Int,
+    styles: ReaderStyles,
+    marks: Marks,
+    topInset: Dp,
+    imageMaxHeight: Dp,
+    onTap: (Float) -> Unit,
+    selector: TextSelector?,
+    speaking: Utterance?,
+    selected: Highlight?,
+    onFootnote: (String) -> Unit,
+) {
+    Box(Modifier.fillMaxSize()) {
+        val chapter = content.chapters[pageChapter]
+        val bookmarked = marks.bookmarks.any { bm ->
+            bm.chapterIndex == pageChapter && !bm.lost && spread.any { page ->
+                val block = bm.itemIndex - HEADER_ITEMS
+                page.contains(block, pageLayoutChar(chapter, block, bm.charOffset, styles.settings.indent))
+            }
+        }
+        if (bookmarked) {
+            Box(
+                Modifier.align(Alignment.TopEnd).padding(end = styles.horizontalPadding).size(14.dp, 36.dp)
+                    .background(styles.palette.accent, RibbonShape)
+                    .semantics { contentDescription = "本页有书签" },
+            )
+        }
+        if (topInset > PAGE_HEADER && spread.none { PageItem.Title in it.items }) {
+            Text(
+                chapter.title, color = styles.palette.secondary, fontSize = 12.sp, letterSpacing = 0.12.em,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(
+                    start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset - PAGE_HEADER,
+                ).clearAndSetSemantics { },
+            )
+        }
+        CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
+            Row(Modifier.fillMaxSize()) {
+                spread.forEach { page ->
+                    Box(Modifier.weight(1f)) {
+                        PageContent(chapter, pageChapter, page, styles, marks, topInset, onTap, selector, speaking, selected, onFootnote)
                     }
                 }
-                if (bookmarked) {
-                    Box(
-                        Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(end = styles.horizontalPadding)
-                            .size(14.dp, 36.dp)
-                            .background(styles.palette.accent, RibbonShape)
-                            .semantics { contentDescription = "本页有书签" },
-                    )
-                }
-                // 页眉：每页顶上一行小字写章名，跟着书页一起翻。章首页下面就是大字章名，不再重复。
-                if (topInset > PAGE_HEADER && spread.none { page -> PageItem.Title in page.items }) {
-                    Text(
-                        content.chapters[pageChapter].title,
-                        color = styles.palette.secondary,
-                        fontSize = 12.sp,
-                        letterSpacing = 0.12.em,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset - PAGE_HEADER)
-                            .clearAndSetSemantics { },
-                    )
-                }
-                // 插图最高一页，与分页时的估算一致（再减去段距）。
-                CompositionLocalProvider(LocalImageMaxHeight provides imageMaxHeight) {
-                    Row(Modifier.fillMaxSize()) {
-                        spread.forEach { page ->
-                            Box(Modifier.weight(1f)) {
-                                PageContent(
-                                    content.chapters[pageChapter], pageChapter, page, styles, marks, topInset, onTap,
-                                    // 只有停在屏幕上的那一页参与选字：覆盖翻页时下一页就垫在当前页下面、位置重合，
-                                    // 也算进来的话手指会选到看不见的字。
-                                    selector.takeIf { pageChapter == chapterIndex && p == pager.settledPage },
-                                    speaking.takeIf { pageChapter == chapterIndex },
-                                    selected.takeIf { pageChapter == chapterIndex },
-                                    onFootnote,
-                                )
-                            }
-                        }
-                        // 章末只剩一页时右边留白。
-                        if (spread.size < per) Box(Modifier.weight(1f))
-                    }
-                }
+                if (spread.size < per) Box(Modifier.weight(1f))
             }
         }
     }

@@ -111,6 +111,8 @@ class WritingFormatUiTest {
         compose.onNodeWithContentDescription("正文").performTextInput("杜娘也来了。")
         val typed = "${text}杜娘也来了。"
         waitFor { store.text(workId, chapterId) == typed }
+        // 正文与今日统计先后落盘；正文可见时统计仍可能是旧值。
+        waitFor { today() == 6 }
         val counted = today()
         assertEquals(6, counted)
         val versions = store.history(workId, chapterId).size

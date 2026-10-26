@@ -31,6 +31,7 @@ import org.robolectric.annotation.GraphicsMode
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.graphics.luminance
+import androidx.core.view.WindowCompat
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp-xxhdpi")
@@ -75,8 +76,11 @@ class ThemeUiTest {
     @Test
     fun darkModeAccentAndGlassSwitchesApply() {
         openThemePage()
+        val bars = WindowCompat.getInsetsController(compose.activity.window, compose.activity.window.decorView)
+        assertTrue("浅色页面应使用深色状态栏图标", bars.isAppearanceLightStatusBars)
         compose.onNodeWithText("深色").performClick()
         compose.waitForIdle()
+        assertFalse("手动深色应使用浅色状态栏图标", bars.isAppearanceLightStatusBars)
         compose.onNodeWithContentDescription("强调色 #D49A57").performScrollTo().performClick()
         waitForText("配色风格")
         compose.onNodeWithText("悬浮底栏").performScrollTo().performClick()

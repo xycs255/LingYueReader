@@ -377,7 +377,7 @@ internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<Int
 
 /**
  * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、
- * 口吻取强调色和删除色的中间（默认的蓝配红是紫）。都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。
+ * 口吻取强调色和删除色的中间。都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。
  */
 internal fun suggestColor(kind: String, c: GroupedColors): Color = when (SuggestKind.of(kind)) {
     SuggestKind.TYPO -> c.destructive

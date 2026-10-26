@@ -461,10 +461,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableStateFlow<String?>(null)
     val messages: StateFlow<String?> = _messages.asStateFlow()
 
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-    private val _searchHits = MutableStateFlow<List<SearchHit>>(emptyList())
-    val searchHits: StateFlow<List<SearchHit>> = _searchHits.asStateFlow()
+    /** 一次书内搜索的完整状态；查询、结果和运行标记一起更新，避免短暂误报“没有找到”。 */
+    data class BookSearchState(
+        val query: String = "",
+        val hits: List<SearchHit> = emptyList(),
+        val running: Boolean = false,
+        val error: String? = null,
+    )
+
+    private val _bookSearch = MutableStateFlow(BookSearchState())
+    val bookSearch: StateFlow<BookSearchState> = _bookSearch.asStateFlow()
 
     /** 全书架搜索：一本书一组结果，边搜边出。 */
     data class BookHits(val entry: BookEntry, val hits: List<SearchHit>, val more: Boolean)
@@ -2827,20 +2833,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var searchGeneration = 0L
 
     fun search(query: String) {
-        _searchQuery.value = query
         searchGeneration++
         searchJob?.cancel()
-        _searchHits.value = emptyList()
-        val book = _openBook.value ?: return
-        if (query.isBlank()) return
+        searchJob = null
+        val book = _openBook.value
+        _bookSearch.value = BookSearchState(
+            query = query,
+            running = query.isNotBlank() && book != null,
+            error = if (query.isNotBlank() && book == null) "这本书尚未打开，请返回阅读页后重试" else null,
+        )
+        if (query.isBlank() || book == null) return
         val generation = searchGeneration
         searchJob = viewModelScope.launch {
-            val hits = withContext(Dispatchers.Default) {
-                val worker = currentCoroutineContext()[Job]
-                BookParser.search(book.content, query, shouldContinue = { worker?.isActive == true })
-            }
-            if (generation == searchGeneration && _searchQuery.value == query && _openBook.value?.content === book.content) {
-                _searchHits.value = hits
+            try {
+                val hits = withContext(Dispatchers.Default) {
+                    val worker = currentCoroutineContext()[Job]
+                    BookParser.search(book.content, query, shouldContinue = { worker?.isActive == true })
+                }
+                if (generation == searchGeneration && _bookSearch.value.query == query) {
+                    _bookSearch.value = if (_openBook.value?.content === book.content) {
+                        BookSearchState(query, hits)
+                    } else {
+                        BookSearchState(query, error = "阅读的书已切换，请返回后重试")
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (generation == searchGeneration && _bookSearch.value.query == query) {
+                    _bookSearch.value = BookSearchState(query, error = "搜索失败，请重试")
+                }
             }
         }
     }
@@ -2953,8 +2975,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (screen is Screen.Search) {
             searchGeneration++
             searchJob?.cancel()
-            _searchQuery.value = ""
-            _searchHits.value = emptyList()
+            searchJob = null
+            _bookSearch.value = BookSearchState()
         }
         _stack.update { it + screen }
     }
