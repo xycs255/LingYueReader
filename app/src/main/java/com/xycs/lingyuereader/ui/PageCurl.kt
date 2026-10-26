@@ -300,7 +300,7 @@ internal fun Modifier.pageCurl(
     spine: Float = 0f,
     backside: () -> ImageBitmap? = { null },
 ): Modifier = when {
-    // 单页：经典仿真（弧边、镜像背面、渐变阴影）。
+    // 单页：经典仿真（弧边、素纸背面、渐变阴影）。
     spine <= 0f -> curlBezier(progress, touch, paper)
     // 双页：纸绕书脊卷过去。
     curlShaderSupported -> curlShader(progress, touch, paper, spine, backside)
@@ -529,7 +529,7 @@ internal data class CurlPoints(
 
 /**
  * 画一页经典仿真：掀开处透出底下的下一页（下一页由翻页器垫在下面），贴着折痕一道阴影；当前页去掉翻起的那块；
- * 翻起的纸边在当前页上投一道窄影；最上面是翻过来的背面——不透明的纸，隐约透出反着的字，靠折痕处暗一些。
+ * 翻起的纸边在当前页上投一道窄影；最上面是翻过来的不透明纸背，靠折痕处略暗。
  *
  * 各块的边都是用路径画出来的遮罩（离屏层里用 DstOut 挖掉不要的部分），不是 clipPath：硬件画布上的 clipPath 没有抗锯齿，
  * 斜边和弧边一动就是一圈锯齿在闪。[shade] 在翻完前的最后一段淡到 0，翻完那一下不留影子。
@@ -563,13 +563,13 @@ internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, d
     }
 
     // 1. 掀开处的下一页上，贴着折痕一道阴影，往纸角那边淡掉（画在翻起区里，背面会盖住其余部分）。
-    val revealShadow = (reach / 4f).coerceIn(8.dp.toPx(), 36.dp.toPx())
+    val revealShadow = (reach / 4f).coerceIn(8.dp.toPx(), 24.dp.toPx())
     if (shade > 0f) {
         masked(turnedBounds, turned, keep = true) {
             drawRect(
                 Brush.linearGradient(
-                    0f to Color.Black.copy(alpha = 0.30f * shade),
-                    0.35f to Color.Black.copy(alpha = 0.10f * shade),
+                    0f to Color.Black.copy(alpha = 0.22f * shade),
+                    0.35f to Color.Black.copy(alpha = 0.06f * shade),
                     1f to Color.Transparent,
                     start = fold,
                     end = fold + n * revealShadow,
@@ -581,7 +581,7 @@ internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, d
     masked(whole, turned, keep = false) { drawPage() }
     // 3. 翻起的纸边投在当前页上的影子：沿 a→e、a→h 两条纸边各一条窄带，往纸外面淡掉。
     if (shade > 0f) {
-        val edgeShadow = (reach / 10f).coerceIn(4.dp.toPx(), 18.dp.toPx())
+        val edgeShadow = (reach / 10f).coerceIn(4.dp.toPx(), 14.dp.toPx())
         val inner = (p.a + p.d + p.i) / 3f
         masked(whole, turned, keep = false) {
             for (end in listOf(p.e, p.h)) {
@@ -596,22 +596,19 @@ internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, d
                     lineTo(p.a.x + out.x * edgeShadow, p.a.y + out.y * edgeShadow)
                     close()
                 }
-                drawPath(band, Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.16f * shade), Color.Transparent), start = p.a, end = p.a + out * edgeShadow))
+                drawPath(band, Brush.linearGradient(listOf(Color.Black.copy(alpha = 0.12f * shade), Color.Transparent), start = p.a, end = p.a + out * edgeShadow))
             }
         }
     }
-    // 4. 翻过来的背面：先铺一层不透明的纸，再隐约透出镜像过去的字，最后是靠折痕处的暗。
+    // 4. 翻过来的背面是素纸。旧页文字反印在浅纸上会显得像重影，滚动时也多画一遍正文。
     val back = p.back()
     masked(back.getBounds().intersect(whole), back, keep = true) {
         drawRect(paper)
-        drawIntoCanvas { it.saveLayer(whole, Paint().apply { alpha = 0.10f }) }
-        withTransform({ transform(p.mirror) }) { drawPage() }
-        drawIntoCanvas { it.restore() }
-        val depth = dot(p.a - fold, -n).coerceAtLeast(1f)
+        val depth = dot(p.a - fold, -n).coerceIn(1f, 20.dp.toPx())
         drawRect(
             Brush.linearGradient(
-                0f to Color.Black.copy(alpha = 0.16f),
-                0.3f to Color.Black.copy(alpha = 0.03f),
+                0f to Color.Black.copy(alpha = 0.12f * shade),
+                0.3f to Color.Black.copy(alpha = 0.03f * shade),
                 1f to Color.Transparent,
                 start = fold,
                 end = fold - n * depth,

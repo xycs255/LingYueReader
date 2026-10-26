@@ -32,7 +32,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 import kotlin.math.abs
 
-/** 单页仿真（弧边、镜像背面）：几何关系，以及画出来每一块在该在的地方。 */
+/** 单页仿真（弧边、素纸背面）：几何关系，以及画出来每一块在该在的地方。 */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [36])
@@ -99,6 +99,17 @@ class CurlBezierTest {
         // 手指那里是翻过来的背面：纸色，不是红也不是蓝。
         val inBack = p.a + ((p.d + p.i) / 2f - p.a) * 0.2f
         assertTrue(Integer.toHexString(px(inBack.x, inBack.y)), isPaper(px(inBack.x, inBack.y)))
+        // 纸背不能混入旧页颜色；真机截图里的浅色反字就是旧正文被再次镜像绘制。
+        val otherFront = ImageBitmap(w.toInt(), h.toInt())
+        CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, Canvas(otherFront), Size(w, h)) {
+            drawRect(Color.Blue)
+            drawPageCurl(p, Color(0xFFF5F0E6), 1f) { drawRect(Color.Green) }
+        }
+        val backWithRedFront = px(inBack.x, inBack.y)
+        val backWithGreenFront = otherFront.asAndroidBitmap().getPixel(inBack.x.toInt(), inBack.y.toInt())
+        for (component in listOf(android.graphics.Color::red, android.graphics.Color::green, android.graphics.Color::blue)) {
+            assertTrue("纸背不应反印旧页颜色", abs(component(backWithRedFront) - component(backWithGreenFront)) <= 2)
+        }
         // 背面不透：这一页只画了左上角一小块（其余透明）时，翻过来的背面仍是纸色，透不出底下的下一页（蓝）。
         val sparse = ImageBitmap(w.toInt(), h.toInt())
         CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, Canvas(sparse), Size(w, h)) {
