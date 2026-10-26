@@ -26,6 +26,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -374,6 +375,12 @@ internal fun VerticalReader(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .then(if (Effects.noMotion) Modifier.graphicsLayer {
+                        // reverseLayout 的下一页在左侧；抵消手势位移，停稳后才换页。
+                        val r = p - (pager.currentPage + pager.currentPageOffsetFraction)
+                        translationX = r * size.width
+                        alpha = if (p == pager.settledPage) 1f else 0f
+                    } else Modifier)
                     .bookPage(inset)
                     .background(styles.palette.background)
                     .semantics {

@@ -54,7 +54,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
@@ -531,13 +530,8 @@ internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
                 }
                 PageMode.CURL -> {
                     PreviewPaper(1, false, paper, ink)
-                    PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer {
-                        transformOrigin = TransformOrigin(0f, 0.5f)
-                        rotationY = -86f * amount
-                        cameraDistance = 12f * density
-                        alpha = (1f - amount).coerceIn(0f, 1f)
-                        shadowElevation = 8.dp.toPx() * (1f - amount)
-                    })
+                    // 预览直接画阅读页的真实折角，避免旋转矩形与实际仿真表现不一致。
+                    if (amount < 1f) PreviewPaper(0, false, paper, ink, Modifier.pageCurl({ amount }, remember { CurlTouch() }, paper))
                 }
                 PageMode.NONE -> PreviewPaper(page, false, paper, ink)
                 PageMode.VERTICAL -> {
@@ -613,7 +607,7 @@ private fun PageMode.previewMeaning(): String = when (this) {
     PageMode.SCROLL -> "正文向上移动，接着阅读"
     PageMode.SLIDE -> "旧页向左移出，新页从右进入"
     PageMode.COVER -> "新页从右盖住旧页"
-    PageMode.CURL -> "纸页从书脊掀起，露出下一页"
+    PageMode.CURL -> "纸角翻起，露出下一页"
     PageMode.NONE -> "点按后立即换页"
     PageMode.VERTICAL -> "竖排文字向右翻到下一页"
 }

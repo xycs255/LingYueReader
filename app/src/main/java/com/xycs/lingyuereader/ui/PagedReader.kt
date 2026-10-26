@@ -42,6 +42,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -200,6 +201,8 @@ internal fun PagedReader(
         val pageCount by rememberUpdatedState(count)
         val pager = remember(per, pages) { PagerState(lead + startPage / per) { pageCount } }
         val scope = rememberCoroutineScope()
+        // 减少动态效果也要覆盖手势翻页；只让点按/按键直接跳页还不够。
+        val visibleMode = if (Effects.noMotion) PageMode.NONE else mode
 
         LaunchedEffect(chapterIndex, content, paginator, widthPx, heightPx) {
             if ((!hasNext || next != null) && (!hasPrev || prev != null)) return@LaunchedEffect
@@ -232,7 +235,7 @@ internal fun PagedReader(
         }
 
         // 无动画：书页拖着不动，跨过一半（松手就会换页）时轻轻一震，免得以为没拖上。
-        if (mode == PageMode.NONE) {
+        if (mode == PageMode.NONE && !Effects.noMotion) {
             val haptic = LocalHapticFeedback.current
             LaunchedEffect(pager) {
                 snapshotFlow { pager.currentPage }.drop(1).collect {
@@ -254,7 +257,7 @@ internal fun PagedReader(
         }
 
         // 双页仿真：翻起的右页背面就是下一面的左页。每面边画边录一份，翻页开始时把下一面拍成图给着色器。
-        val curlSpreads = twoUp && mode == PageMode.CURL
+        val curlSpreads = twoUp && visibleMode == PageMode.CURL
         val spreadLayers = remember { HashMap<Int, GraphicsLayer>() }
         var backside by remember { mutableStateOf<Pair<Int, ImageBitmap>?>(null) }
         if (curlSpreads) {
@@ -313,7 +316,7 @@ internal fun PagedReader(
             modifier = Modifier
                 .fillMaxSize()
                 .clipToBook(inset)
-                .then(if (mode == PageMode.NONE) Modifier.dragHint(pager, styles.palette.accent) else Modifier),
+                .then(if (mode == PageMode.NONE && !Effects.noMotion) Modifier.dragHint(pager, styles.palette.accent) else Modifier),
         ) { p ->
             val (pageChapter, spread) = when {
                 hasPrev && p == 0 -> chapterIndex - 1 to (prevSpread ?: emptyList())
@@ -331,12 +334,13 @@ internal fun PagedReader(
             Box(
                 Modifier
                     .fillMaxSize()
-                    // 覆盖式：后一页原地不动，当前页像纸一样盖在上面滑走。
-                    .zIndex(-p.toFloat())
+                    .testTag("reader-page-$p")
+                    // 覆盖式：下一页从右边盖上来；返回时当前页向右退出，露出上一页。
+                    .zIndex(if (visibleMode == PageMode.COVER) p.toFloat() else -p.toFloat())
                     .graphicsLayer {
                         val r = offset()
-                        when (mode) {
-                            PageMode.COVER -> if (r > 0f) translationX = -r * size.width
+                        when (visibleMode) {
+                            PageMode.COVER -> if (r < 0f) translationX = -r * size.width
                             // 仿真：两页都不动，前一页原地掀起来。
                             PageMode.CURL -> if (r > -1f && r < 1f) translationX = -r * size.width
                             // 无动画：拖动时书页不动，松手停稳后直接换成下一页。
@@ -349,7 +353,7 @@ internal fun PagedReader(
                     }
                     .bookPage(inset)
                     .then(
-                        if (mode == PageMode.CURL) {
+                        if (visibleMode == PageMode.CURL) {
                             Modifier.pageCurl(
                                 progress = { offset().let { if (it < 0f && it > -1f) -it else 0f } },
                                 touch = touch,
@@ -386,12 +390,12 @@ internal fun PagedReader(
                                 size = Size(w * 2, size.height),
                             )
                         }
-                        if (mode == PageMode.COVER) {
+                        if (visibleMode == PageMode.COVER) {
                             val r = offset()
-                            if (r < 0f && r > -1f) {
+                            if (r > 0f && r < 1f) {
                                 drawRect(
-                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.18f), Color.Transparent), size.width, size.width + 24.dp.toPx()),
-                                    topLeft = Offset(size.width, 0f),
+                                    Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.14f), Color.Transparent), 0f, 24.dp.toPx()),
+                                    topLeft = Offset.Zero,
                                     size = Size(24.dp.toPx(), size.height),
                                 )
                             }

@@ -1,23 +1,35 @@
 package com.xycs.lingyuereader.ui
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.io.File
 import kotlin.math.abs
 
 /** 单页仿真（弧边、镜像背面）：几何关系，以及画出来每一块在该在的地方。 */
@@ -25,6 +37,7 @@ import kotlin.math.abs
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [36])
 class CurlBezierTest {
+    @get:Rule val compose = createComposeRule()
     private val w = 400f
     private val h = 800f
 
@@ -106,5 +119,32 @@ class CurlBezierTest {
         }
         val e = end.asAndroidBitmap()
         for (x in 10 until w.toInt() step 40) for (y in 10 until h.toInt() step 80) assertTrue("$x,$y", !isRed(e.getPixel(x, y)))
+    }
+
+    @Test
+    fun middleDragDrawsAStableStraightFoldWithNoHoles() {
+        val paper = Color(0xFFF5F0E6)
+        val midpoint = with(compose.density) { 200.dp.toPx() }
+        val touch = CurlTouch().apply { pressY = midpoint; fingerY = midpoint }
+        compose.setContent {
+            Box(Modifier.size(400.dp).testTag("fold")) {
+                Box(Modifier.fillMaxSize().background(Color.Blue))
+                Box(Modifier.fillMaxSize().pageCurl({ 0.25f }, touch, paper).background(Color.Red))
+            }
+        }
+        val image = compose.onNodeWithTag("fold").captureToImage().asAndroidBitmap()
+        val workingDir = File(requireNotNull(System.getProperty("user.dir")))
+        val appDir = if (workingDir.name == "app") workingDir else File(workingDir, "app")
+        val output = File(appDir, "build/outputs/ui-check/page-curl-middle.png")
+        output.parentFile!!.mkdirs()
+        output.outputStream().use { check(image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        val y = image.height / 2
+        fun color(xFraction: Float) = image.getPixel((image.width * xFraction).toInt(), y)
+        fun isRed(c: Int) = android.graphics.Color.red(c) > 190 && android.graphics.Color.green(c) < 70
+        fun isBlue(c: Int) = android.graphics.Color.blue(c) > 190 && android.graphics.Color.red(c) < 70
+        fun isPaper(c: Int) = android.graphics.Color.red(c) > 180 && android.graphics.Color.green(c) > 170 && android.graphics.Color.blue(c) > 160
+        assertTrue("折痕左边仍是旧页", isRed(color(0.1f)))
+        assertTrue("翻起的背面应是不透明纸色", isPaper(color(0.62f)))
+        assertTrue("右侧露出新页", isBlue(color(0.9f)))
     }
 }

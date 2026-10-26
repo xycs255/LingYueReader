@@ -360,18 +360,12 @@ private fun List<Offset>.toPath() = Path().also { path ->
     path.close()
 }
 
-/** 平折：平铺的部分照常画，翻起的部分镜像过来、蒙一层纸色当作背面（隐约透出反着的字），折痕处加阴影。 */
-private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Color, spine: Float, backside: () -> ImageBitmap?): Modifier = drawWithContent {
-    val left = size.width * spine
-    val g = CurlGeometry.of(size.width, size.height, progress(), touch.pressY, touch.fingerY, left)
-    if (g == null) {
-        drawContent()
-        return@drawWithContent
-    }
+/** 平折：平铺的部分照常画，翻起的部分镜像过来、蒙一层纸色当作背面，折痕处加阴影。 */
+private fun DrawScope.drawFlatCurl(g: CurlGeometry, paper: Color, left: Float, back: ImageBitmap?, drawPage: DrawScope.() -> Unit) {
     // 双页：书脊左边那页不动。
-    if (left > 0f) clipRect(right = left) { this@drawWithContent.drawContent() }
-    if (g.flat.size >= 3) clipPath(g.flat.toPath()) { this@drawWithContent.drawContent() }
-    if (g.lifted.size < 3) return@drawWithContent
+    if (left > 0f) clipRect(right = left) { drawPage() }
+    if (g.flat.size >= 3) clipPath(g.flat.toPath()) { drawPage() }
+    if (g.lifted.size < 3) return
     val lifted = g.lifted.toPath()
     // 掀起来露出的下一页上，折痕旁边一道阴影。
     clipPath(lifted) {
@@ -379,7 +373,6 @@ private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Co
     }
     // 翻过来的背面。
     val depth = g.lifted.maxOf { dot(it - g.fold, g.normal) }.coerceAtLeast(1f)
-    val back = backside()
     withTransform({ transform(g.matrix) }) {
         clipPath(lifted) {
             if (back != null) {
@@ -387,7 +380,7 @@ private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Co
                 drawRect(paper)
                 withTransform({ scale(-1f, 1f, pivot = Offset(left, 0f)) }) { drawImage(back) }
             } else {
-                this@drawWithContent.drawContent()
+                drawPage()
                 drawRect(paper.copy(alpha = 0.86f))
             }
             // 靠折痕处弯着，暗一些；往外渐亮。
@@ -403,6 +396,12 @@ private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Co
         }
     }
     drawPath(g.lifted.map(g::reflect).toPath(), Color.Black.copy(alpha = 0.12f), style = Stroke(1.dp.toPx()))
+}
+
+private fun Modifier.curlFlat(progress: () -> Float, touch: CurlTouch, paper: Color, spine: Float, backside: () -> ImageBitmap?): Modifier = drawWithContent {
+    val left = size.width * spine
+    val g = CurlGeometry.of(size.width, size.height, progress(), touch.pressY, touch.fingerY, left)
+    if (g == null) drawContent() else drawFlatCurl(g, paper, left, backside()) { this@drawWithContent.drawContent() }
 }
 
 /**
@@ -624,6 +623,13 @@ internal fun DrawScope.drawPageCurl(p: CurlPoints, paper: Color, shade: Float, d
 /** 单页仿真：所有版本都用 [drawPageCurl]，不需要着色器。 */
 private fun Modifier.curlBezier(progress: () -> Float, touch: CurlTouch, paper: Color): Modifier = drawWithContent {
     val t = progress()
+    // 中部按下要整页直立翻过。弧角算法用近乎零的角度模拟直线时，
+    // 控制点会跑到屏幕外数万像素，出现闪烁和昂贵的离屏绘制。
+    if (touch.pressY > size.height / 3f && touch.pressY < size.height * 2f / 3f) {
+        val straight = CurlGeometry.of(size.width, size.height, t, touch.pressY, touch.fingerY)
+        if (straight == null) drawContent() else drawFlatCurl(straight, paper, 0f, null) { this@drawWithContent.drawContent() }
+        return@drawWithContent
+    }
     val p = CurlPoints.of(size.width, size.height, t, touch.pressY, touch.fingerY)
     if (p == null) {
         drawContent()

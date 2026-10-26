@@ -100,10 +100,14 @@ jobs:
         run: |
           test -s app/build/outputs/ui-check/import-modes.png
           test -s app/build/outputs/ui-check/page-mode-preview.png
+          test -s app/build/outputs/ui-check/page-cover-mid.png
+          test -s app/build/outputs/ui-check/page-curl-middle.png
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-motion-ui
           path: |
             app/build/outputs/ui-check/import-modes.png
             app/build/outputs/ui-check/page-mode-preview.png
+            app/build/outputs/ui-check/page-cover-mid.png
+            app/build/outputs/ui-check/page-curl-middle.png
           if-no-files-found: error

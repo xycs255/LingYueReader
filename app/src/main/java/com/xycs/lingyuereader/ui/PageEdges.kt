@@ -118,7 +118,7 @@ internal fun BookEdges(
             val left = leftPx(total).toFloat()
             val right = total - left
             val p = turn.progress
-            val lift = sin(PI.toFloat() * abs(p)) * turnShadow(mode)
+            val lift = if (Effects.noMotion) 0f else sin(PI.toFloat() * abs(p)) * turnShadow(mode)
             // 往后翻：纸从没读的那摞掀起，落到读过的那摞上；往前翻反过来。
             val towardRead = if (p >= 0f) abs(p) else 1f - abs(p)
             val readShade = lift * towardRead
