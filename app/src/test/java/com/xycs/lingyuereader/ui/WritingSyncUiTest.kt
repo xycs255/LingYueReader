@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
@@ -144,6 +146,19 @@ class WritingSyncUiTest {
         return has(t)
     }
 
+    private fun chapterRowMatcher() = hasText("第十二章 渡口") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
+
+    /** Scroll to the actual chapter row; overview's continuation tile also contains its title. */
+    private fun seeChapterRow(): Boolean {
+        val row = chapterRowMatcher()
+        runCatching { compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(row) }
+        ShadowLooper.idleMainLooper()
+        return compose.onAllNodes(row).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    private fun chapterRowShowsUnsynced(): Boolean =
+        seeChapterRow() && compose.onAllNodes(chapterRowMatcher() and hasText("未整理", substring = true)).fetchSemanticsNodes().isNotEmpty()
+
     private fun press(t: String) {
         waitFor { seen(t) }
         compose.onNodeWithText(t).performClick()
@@ -215,12 +230,10 @@ class WritingSyncUiTest {
 
         // 作品页：这一章不显示“未整理”；正文改过以后又显示。
         compose.runOnUiThread { vm.back(); vm.open(Screen.Work(workId)) }
-        waitForText("第十二章 渡口")
-        Thread.sleep(500)
-        ShadowLooper.idleMainLooper()
-        assertFalse(has("未整理"))
+        waitFor { seeChapterRow() }
+        assertFalse(chapterRowShowsUnsynced())
         compose.runOnUiThread { vm.writing.save(workId, chapterId, text + "\n雾散了。") }
-        waitForText("未整理")
+        waitFor { chapterRowShowsUnsynced() }
     }
 
     @Test

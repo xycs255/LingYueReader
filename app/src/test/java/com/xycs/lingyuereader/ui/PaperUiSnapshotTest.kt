@@ -4,17 +4,28 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.data.Appearance
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ThemeMode
 import com.xycs.lingyuereader.data.WorkStore
@@ -54,6 +65,15 @@ class PaperUiSnapshotTest {
             store.saveText(work.id, work.chapters[0].id, "他推开门，风雪灌进来。")
             val (_, next) = store.addChapter(work.id, work.volumes[0].id, "第二章 天亮")!!
             store.saveText(work.id, next.id, "天终于亮了。")
+            store.applyLedger(
+                work.id,
+                listOf(
+                    LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = "在渡口", subject = "沈青禾", aspect = "位置", from = 1)),
+                    LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "渡口封航", subject = "沈青禾", from = 2, via = "听船夫说")),
+                    LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "雪夜里的约定", from = 1, payoff = 2)),
+                ),
+                "截图示例",
+            )
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
             Prefs(context).saveAppearance(Appearance(mode = ThemeMode.LIGHT, blur = false, liquidGlass = false))
         }
@@ -63,6 +83,12 @@ class PaperUiSnapshotTest {
 
     private fun waitFor(text: String) {
         compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun waitForEditorTools() {
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithContentDescription("打开四组工具").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     private fun capture(name: String) {
@@ -87,11 +113,22 @@ class PaperUiSnapshotTest {
         compose.onNodeWithText("长夜").performClick()
         waitFor("第二章 天亮")
         capture("paper-work")
+        compose.onNodeWithContentDescription("展开第一章 雪夜细纲卡").performClick()
+        waitFor("事实结果 · 承接边界")
+        capture("paper-work-tree")
+        compose.onNodeWithText("故事账本").performClick()
+        waitFor("人物")
+        capture("paper-ledger")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitFor("第二章 天亮")
         // “继续写”也可能指向第一章；列表里的章节行始终在它后面。
         val chapterRows = compose.onAllNodesWithText("第一章 雪夜")
         chapterRows[chapterRows.fetchSemanticsNodes().lastIndex].performClick()
         waitFor("他推开门")
         capture("paper-editor")
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        waitFor("写作工具")
+        capture("paper-editor-tools")
         compose.onNodeWithContentDescription("返回").performClick()
         waitFor("第二章 天亮")
         compose.onNodeWithContentDescription("返回").performClick()
@@ -135,5 +172,34 @@ class PaperUiSnapshotTest {
         compose.onNodeWithText("写作").performClick()
         waitFor("长夜")
         capture("ink-writing")
+        compose.onNodeWithText("长夜").performClick()
+        waitFor("第二章 天亮")
+        capture("ink-work")
+        // 同一毫秒保存的两章可能并列为最近编辑，不能假设“继续写”会选中第二章。
+        val chapterRow = hasText("第二章 天亮") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
+        compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(hasText("作品进度")))
+            .performScrollToNode(chapterRow)
+        compose.onNode(chapterRow).performScrollTo().performClick()
+        waitFor("天终于亮了")
+        capture("ink-editor")
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        waitFor("写作工具")
+        capture("ink-editor-tools")
+    }
+
+    /** A short viewport approximates the space left to write when a phone keyboard is open. */
+    @Test
+    @Config(sdk = [36], qualifiers = "w360dp-h640dp")
+    fun compactWritingToolsKeepTheChapterVisible() {
+        waitFor("渡口夜话")
+        compose.onNodeWithText("写作").performClick()
+        waitFor("长夜")
+        compose.onNodeWithText("长夜").performClick()
+        waitFor("继续写")
+        compose.onNodeWithText("继续写").performClick()
+        waitForEditorTools()
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        waitFor("写作工具")
+        capture("paper-editor-compact-tools")
     }
 }

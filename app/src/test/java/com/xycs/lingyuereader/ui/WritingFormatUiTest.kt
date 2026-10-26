@@ -172,7 +172,9 @@ class WritingFormatUiTest {
         waitFor { body() == "林月，“" }
         field.performTextInput("\"")
         waitFor { body() == "林月，“”" }
-        // 快捷标点照旧。
+        // 从写作工具里切到快捷标点，旧的插入操作仍可用。
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        compose.onNodeWithText("快捷标点").performClick()
         compose.onNodeWithContentDescription("插入……").performClick()
         waitFor { body() == "林月，“”……" }
 

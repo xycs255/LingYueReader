@@ -97,6 +97,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var analysesLoaded by remember(workId, chapterId) { mutableStateOf(false) }
     var referenceId by remember(workId, chapterId) { mutableStateOf(vm.companionReference(workId, chapterId)) }
     var referenceDialog by remember { mutableStateOf(false) }
+    var referenceToolsExpanded by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
+    var reviewExpanded by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var showMethodSent by remember { mutableStateOf(false) }
     var sourceExcerpt by remember(workId, chapterId) { mutableStateOf<ReferenceExcerpt?>(null) }
     var sourceError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
@@ -241,9 +243,44 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                     task?.let { currentTask ->
-                        row { NavRow("本章写作任务", value = currentTask.targetLength) { showTask = true } }
+                        row {
+                            NavRow(
+                                "本章写作任务",
+                                value = currentTask.targetLength,
+                                subtitle = "${currentTask.sourceNames.size} 份材料 · ${currentTask.previousLabel}",
+                                subtitleMaxLines = 1,
+                            ) { showTask = true }
+                        }
                     }
                     row { NavRow(if (card?.isEmpty == true) "先写细纲卡" else "编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
+                }
+                GroupedSection(
+                    header = if (text.isBlank()) "开始创作" else "继续处理",
+                    footer = if (text.isBlank() && !loading) "AI 先写一版候选稿。你通读并审定后，才会进入正文。" else null,
+                ) {
+                    row {
+                        val mode = when {
+                            loading -> DraftMode.STOP
+                            text.isBlank() -> DraftMode.WRITE
+                            else -> DraftMode.REWRITE
+                        }
+                        // 写本章 ↔ 停止 ↔ 重写一版：原地淡入淡出，不一下换字。
+                        AnimatedContent(mode, transitionSpec = { Motion.fadeThrough() }, label = "draftAction") { m ->
+                            when (m) {
+                                DraftMode.STOP -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft(workId, chapterId) }
+                                DraftMode.WRITE -> ActionRow("写本章", enabled = canWrite) { startDraft() }
+                                DraftMode.REWRITE -> Text("AI 已写出候选稿，请在下方审定。", color = c.secondary, fontSize = 13.sp,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                            }
+                        }
+                    }
+                    if (text.isNotBlank() && !loading) {
+                        row { ActionRow("接着写", enabled = canWrite) { startDraft(more = true) } }
+                        row { ActionRow("审读并修订此稿", enabled = canReview) { startDraft(reviewOnly = true) } }
+                    }
+                    if (sent != null && sent?.label in setOf("写本章", "接着写", "本稿审读", "本稿修订")) {
+                        row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
+                    }
                 }
                 GroupedSection(
                     header = "AI 拟写法",
@@ -259,16 +296,31 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             referenceDialog = true
                         }
                     }
-                    sourceExcerpt?.let { excerpt ->
-                        row {
-                            ReferenceRangeRuler(excerpt.start, excerpt.end, excerpt.chapterLength, excerpt.part,
-                                Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
-                        }
-                    }
                     if (referenceId != null && sourceError != null) {
                         row { ActionRow("重新分析范本") { vm.open(Screen.WritingReference(workId, chapterId)) } }
                     }
                     if (sourceExcerpt != null && selectedAnalysis != null) {
+                        row {
+                            NavRow(
+                                title = if (referenceToolsExpanded) "收起写法图与原文范围" else "展开写法图与原文范围",
+                                value = when {
+                                    activeMap?.loading == true -> "生成中"
+                                    activeMap?.error != null || activeMap?.stale == true -> "需核对"
+                                    verifiedMap != null -> "已生成"
+                                    else -> "未生成"
+                                },
+                            ) { referenceToolsExpanded = !referenceToolsExpanded }
+                        }
+                    }
+                    if (referenceToolsExpanded) {
+                        sourceExcerpt?.let { excerpt ->
+                            row {
+                                ReferenceRangeRuler(excerpt.start, excerpt.end, excerpt.chapterLength, excerpt.part,
+                                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                            }
+                        }
+                    }
+                    if (referenceToolsExpanded && sourceExcerpt != null && selectedAnalysis != null) {
                         row {
                             if (activeMap?.loading == true) {
                                 ActionRow("停止生成写法图", destructive = true) { vm.writingMethodMap.stop() }
@@ -292,29 +344,6 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 row { NavRow("看写法图发给 AI 的内容", value = "${request.size} 字") { showMethodSent = true } }
                             }
                         }
-                    }
-                    row {
-                        val mode = when {
-                            loading -> DraftMode.STOP
-                            text.isBlank() -> DraftMode.WRITE
-                            else -> DraftMode.REWRITE
-                        }
-                        // 写本章 ↔ 停止 ↔ 重写一版：原地淡入淡出，不一下换字。
-                        AnimatedContent(mode, transitionSpec = { Motion.fadeThrough() }, label = "draftAction") { m ->
-                            when (m) {
-                                DraftMode.STOP -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft(workId, chapterId) }
-                                DraftMode.WRITE -> ActionRow("写本章", enabled = canWrite) { startDraft() }
-                                DraftMode.REWRITE -> Text("AI 已写出候选稿，请在下方审定。", color = c.secondary, fontSize = 13.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
-                            }
-                        }
-                    }
-                    if (text.isNotBlank() && !loading) {
-                        row { ActionRow("接着写", enabled = canWrite) { startDraft(more = true) } }
-                        row { ActionRow("审读并修订此稿", enabled = canReview) { startDraft(reviewOnly = true) } }
-                    }
-                    if (sent != null && sent?.label in setOf("写本章", "接着写", "本稿审读", "本稿修订")) {
-                        row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
                     }
                 }
                 // AI 正文与人的审定分开：候选稿不会自动进入正文。
@@ -353,23 +382,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                 }
-                if (text.isNotBlank() && !loading) {
-                    val reviewed = draft?.workflow != true || (draft.stage == DraftStage.READY && draft.assessment?.passed == true && task?.fingerprint == draft.assessment.materials)
-                    val sourceChecked = draft?.let { !it.referenceProvenanceBlocked && (it.referenceAnalysisId == null || it.referenceValidated) } == true
-                    GroupedSection(header = "你来审定", footer = "草稿由 AI 写出。你决定修改方向、是否采纳；采纳后仍需确认定稿。") {
-                        row { ActionRow("修改方向") { directionText = instruction; directionDialog = true } }
-                        row { ActionRow("修改此稿", enabled = !locked) { editedDraft = text; editingDraft = true } }
-                        row { ActionRow("重写一版", enabled = canWrite) { startDraft() } }
-                        row { ActionRow("放进正文", enabled = !locked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
-                        if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
-                        if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
-                        row { ActionRow("不要这版", destructive = true) { vm.writingAi.clearDraft(workId, chapterId) } }
-                    }
-                }
                 draft?.assessment?.let { report ->
                     GroupedSection(header = "本稿审读", footer = "结果只对应这一版稿件与项目资料。改稿或资料变化后要重新审读；流程通过不代表作者已定稿。") {
                         row {
+                            NavRow(if (reviewExpanded) "收起审读证据与建议" else "展开审读证据与建议",
+                                value = if (draft.stage == DraftStage.READY && report.passed && task?.fingerprint == report.materials) "可供审定" else "待核对") {
+                                reviewExpanded = !reviewExpanded
+                            }
+                        }
+                        if (reviewExpanded) row {
                             SelectionContainer {
                                 Text(
                                     report.render().ifBlank { "本次审读未提出必改问题，仍需你通读和采纳。" },
@@ -378,6 +399,36 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 )
                             }
                         }
+                    }
+                }
+                if (text.isNotBlank() && !loading) {
+                    val reviewed = draft?.workflow != true || (draft.stage == DraftStage.READY && draft.assessment?.passed == true && task?.fingerprint == draft.assessment.materials)
+                    val sourceChecked = draft?.let { !it.referenceProvenanceBlocked && (it.referenceAnalysisId == null || it.referenceValidated) } == true
+                    val sourceSummary = when {
+                        !sourceChecked -> "来源：范本片段待核验"
+                        draft.referenceAnalysisId != null -> "来源：范本片段已核验 · 本章任务资料"
+                        else -> "来源：本章任务资料 · 未使用范本"
+                    }
+                    val reviewSummary = when {
+                        draft?.workflow != true -> "审读：未启用自动审读，请自行通读"
+                        reviewed -> "审读：已通过，上方可展开证据"
+                        else -> "审读：未通过或已失效"
+                    }
+                    GroupedSection(header = "你来审定", footer = "草稿由 AI 写出。你决定修改方向、是否采纳；采纳后仍需确认定稿。") {
+                        row {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                Text(sourceSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
+                                Text(reviewSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
+                            }
+                        }
+                        row { ActionRow("放进正文", enabled = !locked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
+                        if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                        if (!reviewed && draft.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
+                        row { ActionRow("修改此稿", enabled = !locked) { editedDraft = text; editingDraft = true } }
+                        row { ActionRow("修改方向") { directionText = instruction; directionDialog = true } }
+                        row { ActionRow("重写一版", enabled = canWrite) { startDraft() } }
+                        row { ActionRow("不要这版", destructive = true) { vm.writingAi.clearDraft(workId, chapterId) } }
                     }
                 }
             }

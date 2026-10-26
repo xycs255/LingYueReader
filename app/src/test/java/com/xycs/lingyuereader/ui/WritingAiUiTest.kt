@@ -7,6 +7,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -369,9 +371,13 @@ class WritingAiUiTest {
         val store = WorkStore(writingDir)
         // 作品页：长按章节弹出菜单，选“改名”（菜单、对话框要挂在页面的浮层宿主上才看得见）。
         compose.runOnUiThread { vm.open(Screen.Work(workId)) }
-        waitForText("新的一章")
-        // “继续写”那行也写着“第1章”，章节列表在它下面。
-        compose.onAllNodesWithText("第1章").onLast().performTouchInput { longClick() }
+        waitForText("作品进度")
+        // 概览里的“继续写”也写着章名；规划树懒加载，先滚到能长按的章行。
+        val chapterRow = hasText("第1章") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
+        compose.onNode(hasScrollToIndexAction() and SemanticsMatcher("non-empty scroll viewport") {
+            it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f
+        }).performScrollToNode(chapterRow)
+        compose.onNode(chapterRow).performTouchInput { longClick() }
         waitForText("上移")
         compose.onNodeWithText("改名").performClick()
         waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }

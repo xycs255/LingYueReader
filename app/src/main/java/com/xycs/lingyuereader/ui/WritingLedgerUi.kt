@@ -129,6 +129,10 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     var editing by remember { mutableStateOf<LedgerEntry?>(null) }
     var adding by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LedgerEntry?>(null) }
+    var visualTab by rememberSaveable { mutableStateOf(if (chapterId == null) LedgerVisualTab.PEOPLE else LedgerVisualTab.RECORDS) }
+    var quickState by remember { mutableStateOf<LedgerQuickState?>(null) }
+    var quickKnowledge by remember { mutableStateOf<LedgerQuickKnowledge?>(null) }
+    var graphUndo by remember { mutableStateOf<LedgerGraphUndo?>(null) }
     var layer by remember { mutableStateOf<LedgerLayer?>(null) }
     val snackbar = rememberWritingMessages(vm)
     val scope = rememberCoroutineScope()
@@ -153,6 +157,34 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     fun startAdding() {
         editing = LedgerEntry(kind = LedgerKind.STATE, text = "", from = chapter?.no)
         adding = true
+    }
+
+    fun saveGraph(before: LedgerEntry?, after: LedgerEntry, label: String) {
+        val op = if (before == null) LedgerOp.Add(after) else LedgerOp.Update(after)
+        vm.writing.editLedger(workId, listOf(op), label) { added ->
+            if (before == null && added == 0) vm.showMessage("账本里已有同样的一条")
+            else if (
+                vm.writing.ledgers.value[workId]?.firstOrNull { it.id == after.id }?.copy(updatedAt = 0) !=
+                after.copy(updatedAt = 0)
+            ) vm.showMessage("条目已变化，刚才的改动没有写入")
+            else {
+                graphUndo = LedgerGraphUndo(before, after, label)
+                vm.showMessage("已保存；可在账本页撤销上一步")
+            }
+        }
+    }
+
+    fun undoGraph(change: LedgerGraphUndo) {
+        val op = ledgerGraphUndoOp(vm.writing.ledgers.value[workId].orEmpty(), change.before, change.after)
+        if (op == null) {
+            graphUndo = null
+            vm.showMessage("这条记录已有其他改动，请从历史版本核对")
+        } else {
+            vm.writing.editLedger(workId, listOf(op), "撤销" + change.label) {
+                if (graphUndo == change) graphUndo = null
+                vm.showMessage("已撤销上一步")
+            }
+        }
     }
 
     fun back() {
@@ -267,12 +299,40 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                     item(key = "head") {
                                         LedgerHead(view, list.size, subjects, onPick = { picking = true }, onPerson = { person = it })
                                     }
+                                    item(key = "graph:tabs") {
+                                        LedgerVisualTabs(visualTab) { visualTab = it }
+                                    }
+                                    graphUndo?.let { change ->
+                                        item(key = "graph:undo") {
+                                            GroupedSection {
+                                                row { ActionRow("撤销上一步 · " + change.label) { undoGraph(change) } }
+                                            }
+                                        }
+                                    }
                                     val open: (LedgerEntry) -> Unit = { e ->
                                         adding = false
                                         editing = e
                                     }
-                                    if (view.chapter == null) allEntries(list, view.person, open)
-                                    else snapshotEntries(list, view.chapter, view.person, open)
+                                    when (visualTab) {
+                                        LedgerVisualTab.PEOPLE -> ledgerPeopleGraph(
+                                            list, view.chapter, view.person,
+                                            onState = { quickState = it },
+                                            onRecords = { visualTab = LedgerVisualTab.RECORDS },
+                                        )
+                                        LedgerVisualTab.PROMISES -> ledgerPromiseGraph(
+                                            list, view.chapter, chapters.orEmpty(), view.person,
+                                            onPayoff = { e, payoff -> saveGraph(e, e.copy(payoff = payoff), "调整伏笔计划") },
+                                            onOpen = open,
+                                        )
+                                        LedgerVisualTab.KNOWLEDGE -> ledgerKnowledgeGraph(
+                                            list, view.chapter, view.person,
+                                            onKnown = open, onUnknown = { quickKnowledge = it },
+                                        )
+                                        LedgerVisualTab.RECORDS -> {
+                                            if (view.chapter == null) allEntries(list, view.person, open)
+                                            else snapshotEntries(list, view.chapter, view.person, open)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -285,6 +345,18 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
             ChapterPickDialog(chapters.orEmpty(), at, onDismiss = { picking = false }) {
                 picking = false
                 at = it
+            }
+        }
+        quickState?.let { target ->
+            LedgerQuickStateDialog(target, chapter, chapters.orEmpty(), onDismiss = { quickState = null }) { before, after ->
+                quickState = null
+                saveGraph(before, after, "手动登记人物状态")
+            }
+        }
+        quickKnowledge?.let { target ->
+            LedgerQuickKnowledgeDialog(target, chapter, chapters.orEmpty(), onDismiss = { quickKnowledge = null }) { after ->
+                quickKnowledge = null
+                saveGraph(null, after, "手动登记知情")
             }
         }
         editing?.let { e ->
