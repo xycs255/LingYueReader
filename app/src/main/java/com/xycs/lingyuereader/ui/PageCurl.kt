@@ -75,8 +75,11 @@ internal fun curlCorner(width: Float, height: Float, progress: Float, pressY: Fl
     val cornerY = if (y0 >= height / 2) height else 0f
     val bump = sin(PI.toFloat() * t).let { 1 - (1 - it) * (1 - it) }
     val y = cornerY + ((y0 - cornerY) * 0.7f + (fy - y0)) * bump
-    // 角不能往页外拉（另一角会翘起来），也不能提得太高、折痕太陡。
-    val clamped = if (cornerY > 0f) y.coerceIn(height * 0.35f, height) else y.coerceIn(0f, height * 0.65f)
+    // 横屏双页是半张纸绕书脊翻；沿用单页可抬起 65% 屏高的手势会让折痕
+    // 斜跨整张书，背面文字也跟着大幅旋转。按已拉开的横向距离限制斜率，
+    // 刚起手时同样不会突然翘出一个大三角；单页仍保留原来的跟手幅度。
+    val lift = if (left > 0f) min(height * 0.22f, (width - x) * 0.25f) else height * 0.65f
+    val clamped = if (cornerY > 0f) y.coerceIn(height - lift, height) else y.coerceIn(0f, lift)
     return Offset(width, cornerY) to Offset(x, clamped)
 }
 
@@ -173,8 +176,10 @@ internal data class CurlCylinder(
             if (len < 0.5f) return null
             val normal = d / len
             val landing = if (left > 0f) (1f - progress.coerceIn(0f, 1f)) * page / 2f else Float.MAX_VALUE
-            // 卷得粗一些（短边的 1/5）：翻起的纸大半在圆柱上，看得出是卷起来的，而不是折出一块平平的三角。
-            val radius = minOf(min(page, height) / 5f, len / PI.toFloat(), landing)
+            // 横屏双页的纸卷收窄，避免中间帧把半张书面盖成宽大的折片；
+            // 单页仍保持原来的厚实弧面。起手和落下时继续按距离平滑收拢。
+            val maxRadius = min(page, height) / if (left > 0f) 8f else 5f
+            val radius = minOf(maxRadius, len / PI.toFloat(), landing)
             val fromCorner = (len + PI.toFloat() * radius) / 2f
             val shade = ((1f - progress) * 4f).coerceIn(0f, 1f)
             return CurlCylinder(corner - normal * fromCorner, normal, radius, shade)

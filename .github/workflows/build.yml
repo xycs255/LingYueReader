@@ -108,6 +108,7 @@ jobs:
           test -s app/build/outputs/ui-check/page-slide-landscape-mid.png
           test -s app/build/outputs/ui-check/page-cover-landscape-mid.png
           test -s app/build/outputs/ui-check/page-curl-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-diagonal-mid.png
           test -s app/build/outputs/ui-check/page-curl-landscape-back-mid.png
           test -s app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
       - uses: actions/upload-artifact@v4
@@ -124,6 +125,7 @@ jobs:
             app/build/outputs/ui-check/page-slide-landscape-mid.png
             app/build/outputs/ui-check/page-cover-landscape-mid.png
             app/build/outputs/ui-check/page-curl-landscape-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-diagonal-mid.png
             app/build/outputs/ui-check/page-curl-landscape-back-mid.png
             app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
           if-no-files-found: error

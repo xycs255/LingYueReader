@@ -41,14 +41,17 @@ class CurlShaderTest {
 
     private fun render(progress: Float, pressY: Float): Bitmap = render(w, page(), progress, pressY, 0f, null)
 
-    private fun render(w: Int, content: Bitmap, progress: Float, pressY: Float, left: Float, backside: Bitmap?): Bitmap {
-        val g = CurlCylinder.of(w.toFloat(), h.toFloat(), progress, pressY, pressY, left)!!
+    private fun render(
+        w: Int, content: Bitmap, progress: Float, pressY: Float, left: Float, backside: Bitmap?,
+        fingerY: Float = pressY, height: Int = h,
+    ): Bitmap {
+        val g = CurlCylinder.of(w.toFloat(), height.toFloat(), progress, pressY, fingerY, left)!!
         val shader = RuntimeShader(CURL_SHADER).apply {
             setInputShader("content", BitmapShader(content, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
             setInputShader("backside", BitmapShader(backside ?: Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
             setFloatUniform("left", left)
             setFloatUniform("hasBack", if (backside != null) 1f else 0f)
-            setFloatUniform("size", w.toFloat(), h.toFloat())
+            setFloatUniform("size", w.toFloat(), height.toFloat())
             setFloatUniform("fold", g.fold.x, g.fold.y)
             setFloatUniform("normal", g.normal.x, g.normal.y)
             setFloatUniform("radius", g.radius)
@@ -57,13 +60,13 @@ class CurlShaderTest {
             setFloatUniform("paper", 0xF5 / 255f, 0xF0 / 255f, 0xE6 / 255f, 1f)
         }
         // 底下垫一页蓝的当“下一页”。着色器只能在 GPU 管线里画：录进 RenderNode，交给 HardwareRenderer。
-        val node = RenderNode("curl").apply { setPosition(0, 0, w, h) }
+        val node = RenderNode("curl").apply { setPosition(0, 0, w, height) }
         node.beginRecording().apply {
             drawColor(Color.BLUE)
-            drawRect(0f, 0f, w.toFloat(), h.toFloat(), Paint().apply { this.shader = shader })
+            drawRect(0f, 0f, w.toFloat(), height.toFloat(), Paint().apply { this.shader = shader })
         }
         node.endRecording()
-        val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 1, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT)
+        val reader = ImageReader.newInstance(w, height, PixelFormat.RGBA_8888, 1, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT)
         val renderer = HardwareRenderer().apply {
             setSurface(reader.surface)
             setContentRoot(node)
@@ -71,15 +74,15 @@ class CurlShaderTest {
         renderer.createRenderRequest().setWaitForPresent(true).syncAndDraw()
         val image = reader.acquireNextImage()
         val plane = image.planes[0]
-        val out = Bitmap.createBitmap(plane.rowStride / plane.pixelStride, h, Bitmap.Config.ARGB_8888).apply {
+        val out = Bitmap.createBitmap(plane.rowStride / plane.pixelStride, height, Bitmap.Config.ARGB_8888).apply {
             copyPixelsFromBuffer(plane.buffer)
-        }.let { Bitmap.createBitmap(it, 0, 0, w, h) }
+        }.let { Bitmap.createBitmap(it, 0, 0, w, height) }
         image.close()
         renderer.destroy()
         reader.close()
         System.getenv("CURL_SHOTS")?.let { dir ->
             File(dir).mkdirs()
-            File(dir, "curl-$w-$progress-$pressY.png").outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            File(dir, "curl-$w-$height-$progress-$pressY-$fingerY.png").outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         return out
     }
@@ -173,6 +176,51 @@ class CurlShaderTest {
             val px = done.getPixel(x, 400)
             if (x < spine - 8) assertTrue("$x ${Integer.toHexString(px)}", px.isYellowish())
             if (x > spine + 8) assertTrue("$x ${Integer.toHexString(px)}", px.isBlue())
+        }
+    }
+
+    @Test
+    fun diagonalLandscapeTurnKeepsThePagesOpaqueAndRevealsTheNextRightPage() {
+        val sw = 1280
+        val sh = 582
+        val spine = sw / 2f
+        fun spread(left: Int, right: Int) = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888).also { bitmap ->
+            Canvas(bitmap).apply {
+                drawRect(0f, 0f, spine, sh.toFloat(), Paint().apply { color = left })
+                drawRect(spine, 0f, sw.toFloat(), sh.toFloat(), Paint().apply { color = right })
+            }
+        }
+        val current = spread(Color.RED, Color.GREEN)
+        val next = spread(Color.YELLOW, Color.BLUE)
+        for ((press, finger) in listOf(sh * 0.9f to sh * 0.1f, sh * 0.1f to sh * 0.9f)) {
+            val cornerY = if (press > sh / 2f) sh - 4 else 4
+            for (progress in listOf(0.2f, 0.5f, 0.7f)) {
+                val image = render(sw, current, progress, press, spine, next, fingerY = finger, height = sh)
+                val oldLeft = image.getPixel(12, sh / 2)
+                assertTrue("旧左页应保持可见：$progress $press", Color.red(oldLeft) > 200 && Color.green(oldLeft) < 80)
+                assertTrue("下一面右页应从纸角露出：$progress $press", image.getPixel(sw - 4, cornerY).isBlue())
+                if (progress == 0.7f) {
+                    var printedBack = false
+                    for (y in 16 until sh - 16 step 16) for (x in sw / 3 until spine.toInt() step 16) {
+                        val pixel = image.getPixel(x, y)
+                        if (Color.red(pixel) > 170 && Color.green(pixel) > 170 && Color.blue(pixel) < 120) printedBack = true
+                    }
+                    assertTrue("下一面左页应印在翻起的纸背：$press", printedBack)
+                }
+                // 在任意横向扫描线上，露出新右页后不可再出现旧页／纸背：那会是卷纸中的透明孔洞。
+                for (y in 8 until sh - 8 step 16) {
+                    var firstBlue = -1
+                    for (x in spine.toInt() until sw - 8 step 4) {
+                        if (image.getPixel(x, y).isBlue()) {
+                            firstBlue = x
+                            break
+                        }
+                    }
+                    if (firstBlue >= 0) for (x in firstBlue + 8 until sw - 8 step 4) {
+                        assertTrue("双页斜拖漏缝：$progress $press ($x,$y)", image.getPixel(x, y).isBlue())
+                    }
+                }
+            }
         }
     }
 }

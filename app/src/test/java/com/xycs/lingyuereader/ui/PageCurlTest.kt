@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 class PageCurlTest {
     private fun near(expected: Offset, actual: Offset) =
@@ -91,5 +92,27 @@ class PageCurlTest {
         assertTrue(g.flat.all { it.x >= 400f - 0.01f })
         val flatDone = CurlGeometry.of(800f, 800f, 1f, 400f, left = 400f)!!
         flatDone.lifted.map(flatDone::reflect).forEach { assertTrue("$it", it.x <= 400.01f) }
+    }
+
+    @Test
+    fun landscapeCornerDragKeepsFoldNearVerticalWithoutRestrictingPortrait() {
+        val width = 1280f
+        val height = 582f
+        val spine = width / 2f
+        for ((press, finger) in listOf(height * 0.9f to height * 0.1f, height * 0.1f to height * 0.9f)) {
+            for (progress in listOf(0.2f, 0.5f, 0.8f)) {
+                val (corner, dragged) = curlCorner(width, height, progress, press, finger, left = spine)
+                val dx = corner.x - dragged.x
+                val dy = abs(corner.y - dragged.y)
+                assertTrue("双页斜拖 $progress: dy=$dy dx=$dx", dy <= dx * 0.25f + 0.5f)
+                assertTrue("双页仍应随手指轻微倾斜", dy > 0f)
+                val cylinder = CurlCylinder.of(width, height, progress, press, finger, left = spine)!!
+                assertTrue("圆柱法向应跟随受限折角", abs(cylinder.normal.y) <= 0.25f)
+                assertTrue("双页纸卷不应盖住太宽的书面", cylinder.radius <= height / 8f + 0.5f)
+            }
+            // 限幅只用于横屏双页；竖屏单页仍允许手指显著提起纸角。
+            val (corner, dragged) = curlCorner(width, height, 0.5f, press, finger)
+            assertTrue(abs(corner.y - dragged.y) > (corner.x - dragged.x) * 0.25f)
+        }
     }
 }

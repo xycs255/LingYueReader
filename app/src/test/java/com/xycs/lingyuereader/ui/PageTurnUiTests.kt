@@ -128,6 +128,40 @@ class LandscapeCoverUiTest : PageTurnUiBase("COVER") {
 @Config(sdk = [36], qualifiers = "w891dp-h411dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class LandscapeCurlUiTest : PageTurnUiBase("CURL") {
+    @Test fun diagonalCornerDragShowsTheFoldAndTurnsOneSpread() {
+        open()
+        waitForText("第 1-2/")
+        compose.waitForIdle()
+        val before = compose.onRoot().captureToImage().asAndroidBitmap()
+        compose.mainClock.autoAdvance = false
+        var mid: Bitmap? = null
+        var pressed = false
+        try {
+            // 按住右下角斜拖到上方；保持手指按下以检查真正的跟手中间帧。
+            compose.onRoot().performTouchInput { down(Offset(width * 0.94f, height * 0.86f)) }
+            pressed = true
+            compose.onRoot().performTouchInput { moveTo(Offset(width * 0.74f, height * 0.67f)) }
+            compose.onRoot().performTouchInput { moveTo(Offset(width * 0.40f, height * 0.30f)) }
+            compose.mainClock.advanceTimeBy(64)
+            mid = compose.onRoot().captureToImage().asAndroidBitmap()
+            capture("page-curl-landscape-diagonal-mid")
+        } finally {
+            if (pressed) compose.onRoot().performTouchInput { up() }
+            compose.mainClock.autoAdvance = true
+        }
+        val folded = requireNotNull(mid)
+        var changed = 0
+        var sampled = 0
+        for (y in before.height * 12 / 100 until before.height * 82 / 100 step 4) {
+            for (x in before.width * 55 / 100 until before.width * 95 / 100 step 4) {
+                sampled++
+                if (before.getPixel(x, y) != folded.getPixel(x, y)) changed++
+            }
+        }
+        assertTrue("斜拖中间帧应有可见折页：$changed/$sampled", changed > sampled * 0.04f)
+        waitForText("第 3-4/")
+    }
+
     @Test fun rightPageFoldsAroundSpineAndTurnsOneSpread() {
         open()
         waitForText("第 1-2/")
