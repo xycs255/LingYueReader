@@ -131,7 +131,19 @@ class TextRulesTest {
             assertTrue(runCatching { TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel) }.exceptionOrNull().let { it is RegexTooSlowException && it.busy })
             // 第一个跑完以后恢复。
             release.set(true)
-            assertEquals(2, TextRules.guarded("""第.+章""", "第二段") { 2 })
+            // 超时任务所在的线程需要一点时间退出；只等它释放锁，不放宽“卡住时拒绝新任务”的断言。
+            val deadline = System.nanoTime() + 5_000_000_000L
+            var recovered: Int? = null
+            while (recovered == null && System.nanoTime() < deadline) {
+                try {
+                    recovered = TextRules.guarded("""第.+章""", "第二段", limit = 1_000) { 2 }
+                } catch (busy: RegexTooSlowException) {
+                    if (!busy.busy || busy.pattern != """(林月\s?)+$""") throw busy
+                    Thread.sleep(10)
+                }
+            }
+            assertEquals(2, recovered)
+            TextRules.timeoutMillis = saved
             assertEquals(3, TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel).first)
         } finally {
             release.set(true)

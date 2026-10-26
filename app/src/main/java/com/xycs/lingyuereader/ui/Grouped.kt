@@ -107,14 +107,11 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.Colors
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.darkColorScheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
-import kotlin.math.roundToInt
 
 /*
- * 选项界面的组件，照 HyperOS（miuix）的设置页来做（规范见 docs/design.md）：
- * - 页面浅灰底（深色纯黑），一组选项放在一张 16dp 圆角的白卡片（深色 #242424）里，卡片之间留 12dp，不画分隔线；
- * - 组名是卡片上方的蓝灰小字（miuix SmallTitle），解释是卡片下方的灰色小字；
+ * 选项界面的共用组件。默认外观用暖纸色和紧凑卡片，深色用暖墨色；miuix 提供原生交互。
+ * - 一组选项放在一张 16dp 圆角的卡片里，组间留白，触控范围独立于可见图形；
+ * - 组名是卡片上方的次要色小字（miuix SmallTitle），解释是卡片下方的灰色小字；
  * - 一行：左边名字（下面可有灰色说明），右边当前值和小箭头；开关、滑块、下拉选择、分段都用 miuix 自己的控件；
  * - 强调色跟随主题（Monet / 自选强调色），阅读页的面板跟随书页。
  */
@@ -163,8 +160,7 @@ private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
     fill = secondaryContainer,
     segment = if (dark) secondary else surfaceContainer,
     tint = tint,
-    // miuix 自己配的 onPrimary（默认的蓝配白只有 3.6:1，照 HyperOS 留着白字）；
-    // 换了别的强调色，或 onPrimary 实在看不清（不到 3:1，比如自选了很浅的强调色）时在黑白里挑。
+    // miuix 自己配的 onPrimary 保留品牌对比；很浅的自选强调色则在黑白里挑可读字色。
     onTint = if (tint == primary && contrastRatio(onPrimary, tint) >= 3f) onPrimary else contentColorOn(tint),
     destructive = error,
     warning = (if (dark) WarningDark else WarningLight).readableOn(listOf(surfaceContainer, surface)),
@@ -173,10 +169,10 @@ private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
     dark = dark,
 )
 
-/** 不在 Compose 里时（比如给面板定底色）用 miuix 的默认浅色、深色方案。[elevated] 保留给浮在页面上的面板，配色相同。 */
+/** 不在 Compose 里时（比如给面板定底色）用默认纸色方案。[elevated] 保留给浮在页面上的面板，配色相同。 */
 @Suppress("UNUSED_PARAMETER")
 internal fun groupedColors(dark: Boolean, tint: Color, elevated: Boolean = false): GroupedColors =
-    (if (dark) darkColorScheme() else lightColorScheme()).grouped(tint, dark)
+    paperAppColors(dark).grouped(tint, dark)
 
 /**
  * 阅读页面板的配色：从书页配色调出来，不用 miuix 的冷灰和纯黑——纸白页上的面板是暖白，墨夜页上是深褐。
@@ -277,7 +273,7 @@ internal fun currentGroupedColorsOrTheme(): GroupedColors {
 
 /**
  * 提供设置页配色：深浅和当前 miuix 主题一致时直接用主题的配色（含 Monet），
- * 阅读页的面板按书页深浅另传 [dark]，与主题不一致时用 miuix 默认方案。
+ * 阅读页的面板按书页深浅另传 [dark]，与主题不一致时用纸色方案。
  */
 @Composable
 internal fun ProvideGroupedColors(
@@ -315,13 +311,14 @@ internal fun GroupedSection(
 ) {
     val c = LocalGroupedColors.current
     val scope = GroupedSectionScope().apply(content)
-    Column(modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+    Column(modifier.fillMaxWidth().padding(bottom = 10.dp)) {
         // 组名用灰色小字，不用强调色：组名是标签，不该比里面的内容还抢眼。
         if (header != null) SmallTitle(header, textColor = c.secondary)
         if (scope.rows.isNotEmpty()) {
             Card(
                 // 开关带出附属行、加载完多出几行时，卡片平滑长高，不一下跳开。
                 modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().animateHeightChanges(),
+                cornerRadius = 16.dp,
                 colors = CardDefaults.defaultColors(color = c.cell),
             ) {
                 scope.rows.forEach { it() }
@@ -342,7 +339,7 @@ internal fun GroupedSection(
 /** 图标行（miuix 卡片不画分隔线，和 [GroupedSectionScope.row] 一样）。 */
 internal fun GroupedSectionScope.iconRow(content: @Composable () -> Unit) = row(content = content)
 
-/** 一行的外壳：至少 56dp 高，左右 16dp，按下时整行变灰（miuix 的按压反馈）；可以长按（[onLongClick]）。 */
+/** 一行的外壳：至少 52dp 高，左右 16dp；紧凑显示并保留足够的触控范围。 */
 @Composable
 internal fun GroupedRow(
     modifier: Modifier = Modifier,
@@ -362,30 +359,33 @@ internal fun GroupedRow(
     Row(
         modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
+            .heightIn(min = 52.dp)
             .background(pressHighlight(pressed))
             .then(clickable)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content,
     )
 }
 
-/** HyperOS 设置首页式的图标：彩色圆角方块、白色图形。 */
+/** 设置入口图标：淡色底托住细线图形，不用高饱和实心方块抢过文字。 */
 @Composable
 internal fun RowIcon(icon: ImageVector, background: Color) {
-    Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(background), contentAlignment = Alignment.Center) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(19.dp))
+    val c = LocalGroupedColors.current
+    val ink = lerp(c.label, background, 0.5f).readableOn(listOf(c.cell, c.background))
+    val fill = lerp(c.cell, ink, if (c.dark) 0.20f else 0.12f)
+    Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(fill), contentAlignment = Alignment.Center) {
+        Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(17.dp))
     }
-    Spacer(Modifier.width(14.dp))
+    Spacer(Modifier.width(12.dp))
 }
 
 @Composable
 private fun RowScope.RowTitle(title: String, color: Color, enabled: Boolean, subtitle: String? = null, subtitleMaxLines: Int = Int.MAX_VALUE) {
     val c = LocalGroupedColors.current
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, color = if (enabled) color else c.tertiary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
+        Text(title, color = if (enabled) color else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -396,7 +396,7 @@ private fun RowValue(value: String, enabled: Boolean = true) {
     Text(
         value,
         color = if (enabled) c.secondary else c.tertiary,
-        fontSize = 14.sp,
+        fontSize = 13.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         textAlign = TextAlign.End,
@@ -446,9 +446,9 @@ internal fun ToggleRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
+            .heightIn(min = 52.dp)
             .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) RowIcon(icon, iconBackground)
@@ -691,27 +691,27 @@ internal fun <T> SegmentedControl(
     options: List<Pair<T, String>>,
     selected: T?,
     modifier: Modifier = Modifier,
-    height: Dp = 40.dp,
+    height: Dp = 36.dp,
     onSelect: (T) -> Unit,
 ) {
     val c = LocalGroupedColors.current
     val index = options.indexOfFirst { it.first == selected }
     val position by animateFloatAsState(index.coerceAtLeast(0).toFloat(), Motion.settle(), label = "segment")
-    BoxWithConstraints(
-        modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height * 0.35f)).background(c.fill).padding(3.dp),
-    ) {
-        val cell = maxWidth / options.size
+    BoxWithConstraints(modifier.fillMaxWidth().height(maxOf(48.dp, height))) {
+        Box(Modifier.align(Alignment.Center).fillMaxWidth().height(height).clip(RoundedCornerShape(height * 0.35f)).background(c.fill))
+        val cell = (maxWidth - 6.dp) / options.size
         if (index >= 0) {
             Box(
                 Modifier
-                    .offset { IntOffset((cell * position).roundToPx(), 0) }
+                    .align(Alignment.CenterStart)
+                    .offset { IntOffset((3.dp + cell * position).roundToPx(), 0) }
                     .width(cell)
-                    .fillMaxHeight()
+                    .height(height - 6.dp)
                     .clip(RoundedCornerShape(height * 0.35f - 3.dp))
                     .background(c.segment),
             )
         }
-        Row(Modifier.fillMaxWidth().fillMaxHeight()) {
+        Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, (value, label) ->
                 val source = remember { MutableInteractionSource() }
                 val color by animateColorAsState(if (i == index) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "segmentText")
@@ -726,7 +726,7 @@ internal fun <T> SegmentedControl(
                     Text(
                         label,
                         color = color,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         fontWeight = if (i == index) FontWeight.Medium else FontWeight.Normal,
                         maxLines = 1,
                     )
@@ -739,7 +739,7 @@ internal fun <T> SegmentedControl(
 /** 卡片里单独一行的分段控件。 */
 @Composable
 internal fun <T> SegmentedRow(options: List<Pair<T, String>>, selected: T?, onSelect: (T) -> Unit) {
-    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         SegmentedControl(options, selected, onSelect = onSelect)
     }
 }
@@ -775,28 +775,28 @@ internal fun EmptyState(
 ) {
     val scheme = MiuixTheme.colorScheme
     Column(
-        modifier.fillMaxWidth().padding(start = 40.dp, end = 40.dp, top = 72.dp, bottom = 24.dp),
+        modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 56.dp, bottom = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.size(72.dp).clip(CircleShape).background(scheme.secondaryContainer), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = scheme.onSurfaceVariantSummary, modifier = Modifier.size(34.dp))
+        Box(Modifier.size(50.dp).clip(CircleShape).background(scheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = scheme.onSurfaceVariantSummary, modifier = Modifier.size(23.dp))
         }
-        Text(title, color = scheme.onSurface, fontSize = 17.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 16.dp))
+        Text(title, color = scheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
         if (body != null) {
             Text(
                 body,
                 color = scheme.onSurfaceVariantSummary,
-                fontSize = 14.sp,
-                lineHeight = 21.sp,
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 8.dp).widthIn(max = 300.dp),
+                modifier = Modifier.padding(top = 6.dp).widthIn(max = 300.dp),
             )
         }
         if (action != null) {
             top.yukonga.miuix.kmp.basic.Button(
                 onClick = action.second,
                 colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.buttonColorsPrimary(),
-                modifier = Modifier.padding(top = 20.dp).widthIn(min = 160.dp),
+                modifier = Modifier.padding(top = 16.dp).widthIn(min = 148.dp),
             ) {
                 Text(action.first, color = scheme.onPrimary, fontWeight = FontWeight.Medium)
             }
@@ -824,10 +824,10 @@ internal fun Modifier.animateHeightChanges(): Modifier {
 internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
     val c = LocalGroupedColors.current
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 10.dp),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Text(title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
         control()
     }
 }
@@ -854,9 +854,9 @@ internal fun PrimaryButton(
     Box(
         modifier
             .fillMaxWidth()
-            .heightIn(min = 50.dp)
+            .heightIn(min = 48.dp)
             .pressScale(source, 0.97f)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(background)
             .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -864,7 +864,7 @@ internal fun PrimaryButton(
         Text(
             label,
             color = content,
-            fontSize = 17.sp,
+            fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -918,10 +918,10 @@ internal fun PillButton(
                 .heightIn(min = 36.dp)
                 .clip(CircleShape)
                 .background(background)
-                .padding(horizontal = 16.dp, vertical = 7.dp),
+                .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, color = content, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(label, color = content, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
         }
     }
 }
@@ -1083,13 +1083,13 @@ internal fun ErrorText(text: String, modifier: Modifier = Modifier) {
 
 // ---------- 面板、页面骨架 ----------
 
-/** 面板右上角的关闭钮：32dp 的圆底灰叉，能点的范围 44dp（目录面板、编辑器浮层面板）。 */
+/** 面板右上角的关闭钮：32dp 的圆底灰叉，能点的范围 48dp（目录面板、编辑器浮层面板）。 */
 @Composable
 internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Box(
         modifier
-            .size(44.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .clickable(onClickLabel = label, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = label },
@@ -1127,7 +1127,7 @@ internal fun InlinePanel(
             .animateHeightChanges()
             .padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 6.dp),
     ) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
             if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
             Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Text(

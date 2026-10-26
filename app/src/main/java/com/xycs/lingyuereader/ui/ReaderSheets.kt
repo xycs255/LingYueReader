@@ -26,9 +26,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -52,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -71,7 +74,10 @@ import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 
 // ---------- 目录 / 书签 / 批注 ----------
 
-/** 目录、书签、批注：顶上分段控件切换，下面是圆角卡片里的列表（照 Apple Books 的目录）。 */
+internal fun chapterIndexAt(row: Int, count: Int, descending: Boolean): Int = if (descending) count - 1 - row else row
+internal fun chapterRowFor(index: Int, count: Int, descending: Boolean): Int = chapterIndexAt(index, count, descending)
+
+/** 目录、书签、批注：顶上分段控件切换，侧栏里用紧凑列表。 */
 @Composable
 internal fun CatalogSheet(
     chapters: List<Chapter>,
@@ -97,15 +103,19 @@ internal fun CatalogSheet(
     summaries: Map<Int, String> = emptyMap(),
     /** 开了 AI 助手时的速读入口；为空不显示。 */
     summary: SummaryControls? = null,
+    /** 侧栏模式使用整屏高度；排序只影响章节列表，不改变书的原始章节编号。 */
+    sidebar: Boolean = false,
+    sortDescending: Boolean = false,
+    onSortToggle: () -> Unit = {},
 ) {
     ProvideReaderColors(palette, tint) {
         val c = LocalGroupedColors.current
         var tab by remember { mutableIntStateOf(0) }
-        Column {
+        Column(if (sidebar) Modifier.fillMaxHeight() else Modifier) {
             // 顶上：小书封、书名、作者 · 已读 · 还剩多久，右边关闭。
-            Row(Modifier.padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                MiniCover(bookTitle)
-                Column(Modifier.weight(1f).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(Modifier.padding(start = if (sidebar) 16.dp else 20.dp, end = 8.dp, top = if (sidebar) 12.dp else 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (!sidebar) MiniCover(bookTitle)
+                Column(Modifier.weight(1f).padding(horizontal = if (sidebar) 0.dp else 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(bookTitle.ifBlank { "目录" }, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val left = chapters.sumOf { it.charCount.toLong() } * (1f - bookFraction.coerceIn(0f, 1f)) / charsPerMinute
                     Text(
@@ -125,6 +135,24 @@ internal fun CatalogSheet(
                     tab,
                 ) { tab = it }
             }
+            if (tab == 0) {
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("章节", color = c.secondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Row(
+                        Modifier
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(role = Role.Button, onClick = onSortToggle)
+                            .semantics { contentDescription = "目录排序：${if (sortDescending) "倒序" else "正序"}" }
+                            .padding(horizontal = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(LingYueIcons.Sort, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
+                        Text(if (sortDescending) "倒序" else "正序", color = c.secondary, fontSize = 13.sp)
+                    }
+                }
+            }
             // 速读入口只在目录页：跟着标签页收起、展开，不一下把下面的列表顶开。
             AnimatedVisibility(
                 visible = tab == 0 && summary != null,
@@ -143,22 +171,26 @@ internal fun CatalogSheet(
                         .togetherWith(slideOutHorizontally(Motion.standard(Motion.MEDIUM)) { if (forward) -it / 4 else it / 4 } + fadeOut(Motion.exit()))
                 },
                 label = "catalogTab",
-                modifier = Modifier.fillMaxWidth().height(460.dp).padding(top = 6.dp),
+                modifier = (if (sidebar) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(460.dp)).padding(top = 6.dp),
             ) { page ->
                 when (page) {
                     0 -> {
-                        val state = rememberLazyListState((current - 3).coerceAtLeast(0))
+                        val state = androidx.compose.runtime.key(sortDescending) {
+                            rememberLazyListState((chapterRowFor(current, chapters.size, sortDescending) - 3).coerceAtLeast(0))
+                        }
                         LazyColumn(state = state, contentPadding = PaddingValues(bottom = 16.dp)) {
-                            itemsIndexed(chapters) { index, chapter ->
+                            items(chapters.size, key = { row -> chapterIndexAt(row, chapters.size, sortDescending) }) { row ->
+                                val index = chapterIndexAt(row, chapters.size, sortDescending)
+                                val chapter = chapters[index]
                                 val now = index == current
-                                GroupedListCell(index == 0, index == chapters.size - 1, gap = 0.dp) {
+                                GroupedListCell(row == 0, row == chapters.size - 1, gap = 0.dp) {
                                     // 一行：序号、章名（宋体）、右边本章要读多久；正在读的那章铺一层淡强调色，写读到百分之几。
                                     Row(
                                         Modifier
                                             .fillMaxWidth()
                                             .background(if (now) c.tint.copy(alpha = 0.07f) else Color.Transparent)
                                             .heightIn(min = 56.dp)
-                                            .clickable { onPickChapter(index) }
+                                            .clickable(role = Role.Button) { onPickChapter(index) }
                                             .padding(horizontal = 16.dp, vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {

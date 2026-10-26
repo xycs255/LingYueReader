@@ -40,7 +40,8 @@ class WritingStatusColorTest {
             // 修订用提醒色、定稿用成功色、细纲用次要色，不再写死 iOS 的橙和绿（为了小标签读得清最多再压深一点点）。
             assertTrue(contrastRatio(c.warning, statusColor(ChapterStatus.REVISION, c)) < 1.2f)
             assertTrue(contrastRatio(c.success, statusColor(ChapterStatus.FINAL, c)) < 1.2f)
-            assertEquals(c.secondary, statusColor(ChapterStatus.OUTLINE, c))
+            // 纸色卡片上的淡色标签会略微压深次要色，以保证标签底上的对比度。
+            assertTrue(contrastRatio(c.secondary, statusColor(ChapterStatus.OUTLINE, c)) < 1.2f)
             assertTrue(statusColor(ChapterStatus.REVISION, c) != Color(0xFFFF9500) && statusColor(ChapterStatus.FINAL, c) != Color(0xFF34C759))
             // 四种状态一眼分得开。
             assertEquals(4, ChapterStatus.entries.map { statusColor(it, c) }.distinct().size)

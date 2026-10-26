@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
@@ -72,6 +73,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -353,6 +355,7 @@ private fun Reader(
     }
     var menuVisible by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf<ReaderSheet?>(null) }
+    var catalogDescending by rememberSaveable(entry.id) { mutableStateOf(false) }
     // AI 工具面板（对话记录、人物表、读书笔记）。
     var aiTool by remember { mutableStateOf<AiTool?>(null) }
     // 面板一打开，菜单就收起：不然菜单的玻璃条压在面板后面，关掉面板时还挂在那儿。
@@ -618,7 +621,7 @@ private fun Reader(
                 tracker.root = it
                 tracker.dp = density.density
                 tracker.touchSlop = viewConfig.touchSlop
-                tracker.lensHalfWidth = with(density) { 75.dp.toPx() }
+                tracker.lensHalfWidth = with(density) { 58.dp.toPx() }
             }
             // 选字开始后，手指的移动和松手都在这里统一处理（抢在列表滚动、翻页之前）。
             .pointerInput(tracker) {
@@ -665,13 +668,13 @@ private fun Reader(
                             val src = tracker.lens
                             if (!src.isSpecified) Offset.Unspecified
                             else {
-                                val lift = 76.dp.toPx()
+                                val lift = 60.dp.toPx()
                                 if (src.y - lift < 48.dp.toPx()) src + Offset(0f, lift) else src - Offset(0f, lift)
                             }
                         },
-                        zoom = 1.5f,
-                        size = DpSize(150.dp, 56.dp),
-                        cornerRadius = 28.dp,
+                        zoom = 1.35f,
+                        size = DpSize(116.dp, 44.dp),
+                        cornerRadius = 22.dp,
                     )
                 },
             )
@@ -1108,11 +1111,9 @@ private fun Reader(
     // 面板的强调色：没在“主题设置”里挑过强调色、也没开 Monet 时，跟着书页走（纸白朱砂、墨夜琥珀）；挑过就用挑的。
     val appearance by vm.appearance.collectAsStateWithLifecycle()
     val appTint = if (appearance.accent != 0 || appearance.monet) MiuixTheme.colorScheme.primary else palette.accent
-    GlassSheet(
+    ReaderSidebar(
         show = sheet == ReaderSheet.Catalog,
-        title = null,
         background = readerGroupedColors(palette, appTint).background,
-        highlight = glassHighlight(palette.isDark, big = true),
         onDismissRequest = { sheet = null },
     ) {
         CatalogSheet(
@@ -1147,6 +1148,9 @@ private fun Reader(
                 onStart = { r -> vm.buildSummaries(vm.summaryTargets(r, chapterIndex)) },
                 onCancel = vm::cancelSummaries,
             ) else null,
+            sidebar = true,
+            sortDescending = catalogDescending,
+            onSortToggle = { catalogDescending = !catalogDescending },
         )
     }
     // 面板画在最外层的 Scaffold 里，拿不到这里提供的 CompositionLocal，光线读数要直接传进去。
@@ -1303,7 +1307,7 @@ private fun Reader(
     }
 }
 
-/** 划选后的操作条：一颗深色胶囊（墨色底、纸色字），点书页别处就收起；出现时从 0.9 倍弹出，收起时缩小淡出。 */
+/** 划选后的操作条：视觉上是 38dp 胶囊，操作项仍保留 48dp 高的点击范围。 */
 @Composable
 private fun SelectionBar(
     visible: Boolean,
@@ -1322,8 +1326,8 @@ private fun SelectionBar(
     Box(modifier) {
         AnimatedVisibility(
             visibleState = state,
-            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.9f) + fadeIn(Motion.standard(Motion.SHORT))),
-            exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.92f) + fadeOut(Motion.exit())),
+            enter = Effects.enter(scaleIn(Motion.standard(Motion.SHORT), initialScale = 0.96f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(scaleOut(Motion.exit(), targetScale = 0.98f) + fadeOut(Motion.exit())),
         ) {
             SelectionBarRow(palette, onLookup, onAskAi, onHighlight, onAnnotate, onCopy, onCard)
         }
@@ -1340,14 +1344,12 @@ private fun SelectionBarRow(
     onCopy: () -> Unit,
     onCard: () -> Unit,
 ) {
-    Row(
-        Modifier
-            .shadow(12.dp, RoundedCornerShape(50))
-            .clip(RoundedCornerShape(50))
-            .background(palette.text)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Box(Modifier.height(48.dp).widthIn(max = 340.dp)) {
+        Box(Modifier.matchParentSize().padding(vertical = 5.dp).shadow(8.dp, RoundedCornerShape(50)).clip(RoundedCornerShape(50)).background(palette.text))
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).height(48.dp).padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         // 跨段落的选区不查词。
         // 开了 AI 助手才有“问 AI”。
         val actions = listOfNotNull(onLookup?.let { "查词" to it }, onAskAi?.let { "问 AI" to it }, "划线" to onHighlight, "批注" to onAnnotate, "复制" to onCopy, "卡片" to onCard)
@@ -1356,13 +1358,15 @@ private fun SelectionBarRow(
             Text(
                 label,
                 color = palette.background,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontWeight = if (i == 0) FontWeight.Medium else FontWeight.Normal,
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
                     .clickable(role = Role.Button, onClick = action)
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                    .height(48.dp)
+                    .padding(horizontal = 10.dp, vertical = 14.dp),
             )
+        }
         }
     }
 }
@@ -1525,7 +1529,7 @@ private fun ChapterStep(label: String, icon: ImageVector, before: Boolean, enabl
     val color = if (enabled) palette.accent else palette.secondary.copy(alpha = 0.5f)
     Row(
         Modifier
-            .heightIn(min = 44.dp)
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 6.dp),
@@ -1587,16 +1591,16 @@ private fun PressRingOverlay(ring: PressRing, color: Color) {
     Canvas(Modifier.fillMaxSize()) {
         val c = ring.at
         if (!c.isSpecified) return@Canvas
-        val r = 30.dp.toPx()
+        val r = 12.5.dp.toPx()
         val b = ring.burst.value
         if (b > 0f) {
-            drawCircle(color.copy(alpha = 0.28f * (1f - b)), radius = r * (1f + 0.6f * b), center = c)
+            drawCircle(color.copy(alpha = 0.36f * (1f - b)), radius = r * (1f + 0.3f * b), center = c, style = Stroke(2.dp.toPx()))
             return@Canvas
         }
         val p = ring.progress.value
         if (p <= 0f) return@Canvas
-        val stroke = 3.dp.toPx()
-        drawCircle(color.copy(alpha = 0.15f), radius = r, center = c, style = Stroke(stroke))
+        val stroke = 2.dp.toPx()
+        drawCircle(color.copy(alpha = 0.22f), radius = r, center = c, style = Stroke(stroke))
         drawArc(
             color.copy(alpha = 0.75f),
             startAngle = -90f,

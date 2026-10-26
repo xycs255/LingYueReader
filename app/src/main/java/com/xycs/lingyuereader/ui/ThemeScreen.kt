@@ -215,14 +215,14 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
     }
 }
 
-/** 强调色：默认（miuix 蓝），加几种中国传统色，排成一行，放不下就左右滑。选中的那个打勾、外圈弹出来。圆点看着小，能点的范围 48dp。 */
+/** 强调色：默认朱砂色，加几种中国传统色；圆点看着小，点击范围仍是 48dp。 */
 @Composable
 private fun AccentDots(accent: Int, onPick: (Int) -> Unit) {
     val c = LocalGroupedColors.current
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp)) {
         (listOf(0) + Appearance.ACCENTS).forEach { color ->
             val on = color == accent
-            val dot = if (color == 0) Color(0xFF3482FF) else Color(color)
+            val dot = if (color == 0) PaperAccent else Color(color)
             val ring by animateDpAsState(if (on) 2.dp else 0.dp, Motion.pop(), label = "ring")
             Box(
                 Modifier

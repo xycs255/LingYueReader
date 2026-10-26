@@ -52,7 +52,7 @@ private fun tabBarInset(floating: Boolean): Dp {
     val nav = WindowInsets.navigationBars.only(WindowInsetsSides.Bottom).asPaddingValues().calculateBottomPadding()
     // 贴底的导航栏：栏高加系统导航条。
     if (!floating) return 64.dp + nav
-    return 64.dp + if (nav != 0.dp) 8.dp + nav else 36.dp
+    return 58.dp + if (nav != 0.dp) 8.dp + nav else 24.dp
 }
 
 /** 首页：书架、写作、生词本、统计、我的五页，底部是可以按住左右拖动切换的液态玻璃导航栏。 */

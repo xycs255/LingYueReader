@@ -9,8 +9,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.core.view.WindowCompat
 import com.xycs.lingyuereader.ui.App
 import com.xycs.lingyuereader.ui.LingYueTheme
 import com.xycs.lingyuereader.ui.Effects
@@ -18,6 +21,7 @@ import android.provider.Settings
 import com.xycs.lingyuereader.ui.ThemeRevealHost
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.xycs.lingyuereader.data.ThemeMode
 
 class MainActivity : ComponentActivity() {
 
@@ -32,6 +36,22 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val appearance by vm.appearance.collectAsStateWithLifecycle()
+            val stack by vm.stack.collectAsStateWithLifecycle()
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (appearance.mode) {
+                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            // 阅读页按书页本身设置系统栏；其余页面跟随应用外观，包括手动选择的深色模式。
+            SideEffect {
+                if (stack.lastOrNull() !is Screen.Reader) {
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = !dark
+                        isAppearanceLightNavigationBars = !dark
+                    }
+                }
+            }
             LingYueTheme(appearance) { ThemeRevealHost { App(vm) } }
         }
         // 只在首次启动时处理外部文件，旋转屏幕等重建时不再重复导入；

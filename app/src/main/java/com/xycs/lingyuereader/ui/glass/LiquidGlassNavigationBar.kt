@@ -205,7 +205,7 @@ internal fun LiquidGlassNavigationBar(
     val accentColor = MiuixTheme.colorScheme.primary
     val tabContentColor = MiuixTheme.colorScheme.onSurface
     val surfaceContainer = MiuixTheme.colorScheme.surfaceContainer
-    val containerColor = if (isBlurActive) surfaceContainer.copy(alpha = 0.4f) else surfaceContainer
+    val containerColor = if (isBlurActive) surfaceContainer.copy(alpha = 0.88f) else surfaceContainer
 
     val tabsBackdrop = rememberLayerBackdrop()
     val density = LocalDensity.current
@@ -248,7 +248,7 @@ internal fun LiquidGlassNavigationBar(
             valueRange = 0f..(tabsCount - 1).toFloat(),
             visibilityThreshold = 0.001f,
             initialScale = 1f,
-            pressedScale = 78f / 56f,
+            pressedScale = 1.06f,
             canDrag = { position ->
                 position.x in 0f..totalWidthPx
             },
@@ -325,7 +325,7 @@ internal fun LiquidGlassNavigationBar(
     val combinedBackdrop = backdrop?.let { rememberCombinedBackdrop(it, tabsBackdrop) }
 
     val navBarBottomPadding = WindowInsets.navigationBars.only(WindowInsetsSides.Bottom).asPaddingValues().calculateBottomPadding()
-    val bottomPaddingValue = if (navBarBottomPadding != 0.dp) 8.dp + navBarBottomPadding else 36.dp
+    val bottomPaddingValue = if (navBarBottomPadding != 0.dp) 8.dp + navBarBottomPadding else 24.dp
 
     val tabsContent: @Composable RowScope.() -> Unit = {
         val tabScale = LocalIosTabScale.current
@@ -364,7 +364,7 @@ internal fun LiquidGlassNavigationBar(
             ) {
                 BadgedBox(badge = { badge(index)?.invoke() }) {
                     Icon(
-                        modifier = Modifier.size(22.dp),
+                        modifier = Modifier.size(20.dp),
                         imageVector = item.icon,
                         // Decorative: the adjacent label names the item; avoids TalkBack double-read.
                         contentDescription = null,
@@ -372,7 +372,7 @@ internal fun LiquidGlassNavigationBar(
                 }
                 Text(
                     text = item.label,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -401,7 +401,7 @@ internal fun LiquidGlassNavigationBar(
                         .dropShadow(
                             shape = pillShape,
                             shadow = Shadow(
-                                radius = 10.dp,
+                                radius = 6.dp,
                                 color = Color.Black,
                                 // Lighter in light theme to avoid a visible gray fringe.
                                 alpha = if (isDark) 0.2f else 0.1f,
@@ -413,22 +413,21 @@ internal fun LiquidGlassNavigationBar(
                                     backdrop = backdrop,
                                     shape = { pillShape },
                                     effects = {
-                                        // 24dp lens refraction + 16dp press-scale reach, raised before blur() reads it.
-                                        padding = maxOf(padding, 40.dp.toPx())
+                                        padding = maxOf(padding, 24.dp.toPx())
                                         vibrancy()
                                         blur(
                                             4.dp.toPx(),
                                             4.dp.toPx(),
                                         )
                                         lens(
-                                            refractionHeight = 24.dp.toPx(),
-                                            refractionAmount = 24.dp.toPx(),
+                                            refractionHeight = 10.dp.toPx(),
+                                            refractionAmount = 10.dp.toPx(),
                                         )
                                     },
                                     highlight = { baseHighlight.value.copy(alpha = 0.75f) },
                                     layerBlock = {
                                         val width = size.width.coerceAtLeast(1f)
-                                        val s = lerp(1f, 1f + 16.dp.toPx() / width, dampedDrag.pressProgress)
+                                        val s = lerp(1f, 1f + 8.dp.toPx() / width, dampedDrag.pressProgress)
                                         scaleX = s
                                         scaleY = s
                                     },
@@ -447,7 +446,7 @@ internal fun LiquidGlassNavigationBar(
                             },
                         )
                         .then(dampedDrag.modifier)
-                        .height(64.dp)
+                        .height(58.dp)
                         .padding(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     content = tabsContent,
@@ -456,7 +455,7 @@ internal fun LiquidGlassNavigationBar(
 
             if (isBlurActive && backdrop != null) {
                 CompositionLocalProvider(
-                    LocalIosTabScale provides { lerp(1f, 1.2f, dampedDrag.pressProgress) },
+                    LocalIosTabScale provides { lerp(1f, 1.06f, dampedDrag.pressProgress) },
                     LocalContentColor provides accentColor,
                 ) {
                     Row(
@@ -472,14 +471,14 @@ internal fun LiquidGlassNavigationBar(
                                     vibrancy()
                                     blur(4.dp.toPx(), 4.dp.toPx())
                                     lens(
-                                        refractionHeight = 24.dp.toPx(),
-                                        refractionAmount = 24.dp.toPx(),
+                                        refractionHeight = 10.dp.toPx(),
+                                        refractionAmount = 10.dp.toPx(),
                                     )
                                 },
                                 onDrawSurface = { drawRect(containerColor) },
                             )
                             .then(interactiveHighlight.modifier)
-                            .height(56.dp)
+                            .height(50.dp)
                             .padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         content = tabsContent,
@@ -534,7 +533,7 @@ internal fun LiquidGlassNavigationBar(
                                     alpha = dampedDrag.pressProgress,
                                 )
                             }
-                            .height(56.dp)
+                            .height(50.dp)
                             .width(tabWidthDp),
                     )
                 } else {
@@ -547,7 +546,7 @@ internal fun LiquidGlassNavigationBar(
                             }
                             .clip(pillShape)
                             .background(accentColor.copy(alpha = 0.15f), pillShape)
-                            .height(56.dp)
+                            .height(50.dp)
                             .width(tabWidthDp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
@@ -557,7 +556,7 @@ internal fun LiquidGlassNavigationBar(
                                     .clearAndSetSemantics {}
                                     .wrapContentWidth(align = Alignment.Start, unbounded = true)
                                     .requiredWidth(with(density) { (totalWidthPx - 8.dp.toPx()).toDp() })
-                                    .height(56.dp)
+                                    .height(50.dp)
                                     .graphicsLayer {
                                         val progressOffset = dampedDrag.value * tabWidthPx
                                         translationX = if (isLtr) -progressOffset else progressOffset

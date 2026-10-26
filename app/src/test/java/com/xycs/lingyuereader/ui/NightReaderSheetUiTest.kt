@@ -12,6 +12,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -117,7 +118,7 @@ class NightReaderSheetUiTest {
     }
 
     private fun tapOutsideAndWaitForClose(text: String) {
-        compose.onRoot().performTouchInput { click(Offset(width * 0.5f, height * 0.12f)) }
+        compose.onNodeWithContentDescription("关闭目录侧栏").performTouchInput { click(Offset(width * 0.96f, height * 0.5f)) }
         compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isEmpty() }
     }
 
@@ -126,10 +127,7 @@ class NightReaderSheetUiTest {
         openReaderMenu()
         compose.onNodeWithText("目录").performClick()
         waitForText("目录 2")
-        val tabTop = compose.onNodeWithText("目录 2").fetchSemanticsNode().boundsInRoot.top
-        // 目录顶上是书名（小书封旁边）。
-        val title = compose.onAllNodesWithText("测试书").fetchSemanticsNodes()
-            .filter { it.boundsInRoot.bottom <= tabTop }.maxBy { it.boundsInRoot.top }.boundsInRoot
+        val title = compose.onNodeWithText("目录 2").fetchSemanticsNode().boundsInRoot
         val chapter = compose.onNodeWithText("第二章 路上").fetchSemanticsNode().boundsInRoot
         captureAndCheck("night-catalog", title, chapter)
         tapOutsideAndWaitForClose("目录 2")

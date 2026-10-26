@@ -291,8 +291,8 @@ internal fun BlockView(
     val palette = styles.palette
     val gap = styles.gap
     val selected = highlight?.rangeIn(blockIndex, block.displayText?.length ?: 0)
-    val text = remember(block, notes, speaking, selected, styles.settings.indent, palette.accent) {
-        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = 0.38f), styles.settings.indent, palette.accent, palette.secondary)
+    val text = remember(block, notes, speaking, selected, styles.settings.indent, palette.accent, palette.isDark) {
+        blockText(block, notes, speaking, palette.accent.copy(alpha = 0.22f), selected, palette.accent.copy(alpha = if (palette.isDark) 0.28f else 0.24f), styles.settings.indent, palette.accent, palette.secondary)
     }
     val shown = if (text != null && range != null) text.subSequence(range.first, range.last + 1) else text
     val tap by rememberUpdatedState(onTap)
@@ -532,18 +532,18 @@ internal fun SelectionHandles(tracker: SelectionTracker, highlight: Highlight, c
 }
 
 /** 把手圆点的直径；选字操作条也按它让出位置。 */
-internal val HANDLE_DOT = 11.dp
+internal val HANDLE_DOT = 7.dp
 
 /**
  * 一端的把手：一道和这一行一样高的细竖线，加一个小圆点——起点的圆点在行顶上，终点的在行底下（苹果的样子）。
- * 圆点落在行与行之间的空白里，不像水滴形把手那样盖住下一行的字。能按到的范围是以圆点为中心 44dp 见方。
+ * 圆点落在行与行之间的空白里，不像水滴形把手那样盖住下一行的字。能按到的范围是以圆点为中心 48dp 见方。
  */
 @Composable
 private fun SelectionHandle(caret: Rect, isStart: Boolean, color: Color, tracker: SelectionTracker) {
-    val touch = 44.dp
+    val touch = 48.dp
     val current by rememberUpdatedState(caret)
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val bar = 2.dp
+    val bar = 1.5.dp
     // 竖线：贴着光标，和这一行的字一样高。
     Box(
         Modifier

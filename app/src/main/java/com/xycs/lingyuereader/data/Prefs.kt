@@ -156,7 +156,7 @@ data class Appearance(
     val mode: ThemeMode = ThemeMode.SYSTEM,
     /** Monet 取色：Android 12 起从壁纸取色。 */
     val monet: Boolean = false,
-    /** 强调色（ARGB）；0 为默认（开着 Monet 时取壁纸色，否则用 miuix 的蓝）。 */
+    /** 强调色（ARGB）；0 为默认（开着 Monet 时取壁纸色，否则用灵阅的朱砂色）。 */
     val accent: Int = 0,
     val paletteStyle: PaletteStyle = PaletteStyle.TONAL_SPOT,
     /** 顶栏、面板、导航栏的毛玻璃模糊。 */

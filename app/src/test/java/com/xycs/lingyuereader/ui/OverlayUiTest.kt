@@ -4,6 +4,8 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -16,6 +18,7 @@ import com.xycs.lingyuereader.MainActivity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Rule
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.rules.ExternalResource
 import org.junit.rules.RuleChain
@@ -73,11 +76,19 @@ class OverlayUiTest {
     }
 
     @Test
-    fun catalogSheetOpensAndJumps() {
+    fun catalogSidebarSortsAndJumps() {
         openReaderMenu()
         compose.onNodeWithText("目录").performClick()
         waitForText("目录 2")
-        compose.onAllNodesWithText("第二章 路上")[0].performClick()
+        val width = compose.activity.resources.displayMetrics.widthPixels
+        val tabRight = compose.onNodeWithText("目录 2").fetchSemanticsNode().boundsInRoot.right
+        assertTrue("目录应在侧栏内，right=$tabRight width=$width", tabRight < width - 24f)
+        compose.onNodeWithContentDescription("目录排序：正序").performClick()
+        waitForText("倒序")
+        val firstTop = compose.onNode(hasText("第一章 开端") and hasClickAction()).fetchSemanticsNode().boundsInRoot.top
+        val secondTop = compose.onNode(hasText("第二章 路上") and hasClickAction()).fetchSemanticsNode().boundsInRoot.top
+        assertTrue("倒序时第二章应在第一章前", secondTop < firstTop)
+        compose.onNode(hasText("第二章 路上") and hasClickAction()).performClick()
         waitForText("正文二。")
         // 跳过去后页底出现“回到刚才”，点一下回到第一章。
         waitForText("回到刚才 · 第一章 开端")
