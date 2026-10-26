@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
@@ -31,7 +32,11 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.WorkStore
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.saveReferenceAnalysis
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -286,6 +291,48 @@ class WritingAiUiTest {
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
         assertTrue(prompts.isEmpty())
+    }
+
+    @Test
+    fun companionWaitsForAnExplicitReferenceAndRequest() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        openEditor()
+        compose.onNodeWithContentDescription("书灵陪写").performClick()
+        waitForText("先选一章范本并分析")
+        compose.onNodeWithText("选择范本").performClick()
+        waitForText("本章还没有范本分析")
+        compose.onNodeWithText("关闭").performClick()
+
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(3))
+        compose.onNodeWithContentDescription("正文").performTextInput("又")
+        Thread.sleep(4_000)
+        ShadowLooper.idleMainLooper()
+        assertTrue("打字、移动光标和打开陪写都不能自动发送范本", prompts.isEmpty())
+
+        compose.onNodeWithText("选择范本").performClick()
+        compose.onNodeWithText("新增/分析范本").performClick()
+        waitForText("写作范本")
+        val store = WorkStore(writingDir)
+        val reference = store.importReference(workId, "合成范本.txt", "第一章 模拟范本\n门外有人叩门。她先问身份，再把信封压在桌角。")
+        val chapter = reference.chapters.single()
+        val excerpt = store.selectedChapterExcerpt(workId, reference.id, chapter.id)!!
+        store.saveReferenceAnalysis(workId, ReferenceAnalysis.from(excerpt, chapterId, "test-target", "开头先听见叩门声，再让对白试探身份。"))
+        val sourceLabel = "《${reference.title}》 · ${chapter.title}"
+        compose.runOnUiThread { vm.back() }
+        waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
+        if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
+            compose.onNodeWithContentDescription("书灵陪写").performClick()
+        }
+        waitForText("选择范本")
+        compose.onNodeWithText("选择范本").performClick()
+        waitForText(sourceLabel)
+        compose.onNodeWithText(sourceLabel).performClick()
+        waitForText("看看这段怎么写")
+        assertTrue("选中范本也不能自动发请求", prompts.isEmpty())
+
+        compose.onNodeWithText("看看这段怎么写").performClick()
+        waitForText("让他听见门外的脚步声")
+        assertTrue(prompts.single().contains("门外有人叩门"))
     }
 
     @Test

@@ -103,6 +103,7 @@ enum class AiFeature(val label: String) {
     PLAN("细纲与摘要"),
     PACK("整理人物与规则"),
     REFERENCE("范本分析"),
+    COMPANION("范本陪写"),
     ASK("问 AI"),
     TRANSLATE("翻译"),
     READING("阅读的其他 AI"),
