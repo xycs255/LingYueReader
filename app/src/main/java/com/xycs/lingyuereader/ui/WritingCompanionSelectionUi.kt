@@ -13,7 +13,7 @@ import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
 
-/** Select a saved analysis for this chapter; importing and analysis happen on the reference screen. */
+/** Select a saved source range for the AI writer; importing and analysis happen on the reference screen. */
 @Composable
 internal fun WritingCompanionSelectionDialog(
     analyses: List<ReferenceAnalysis>,
@@ -25,13 +25,13 @@ internal fun WritingCompanionSelectionDialog(
     val c = LocalGroupedColors.current
     GlassDialog(
         show = true,
-        title = "选择陪写范本",
-        summary = "选本章已经分析过的范本片段。书灵会参照它的写法给建议。",
+        title = "选择 AI 写作范本",
+        summary = "选本章已分析的片段。AI 只借叙事与对白手法，按你的构思写新正文。",
         onDismissRequest = onDismiss,
     ) {
         if (analyses.isEmpty()) {
             Text(
-                "本章还没有范本分析。先导入范本，选定章节和片段，再分析它的写法。",
+                "本章还没有范本分析。可先导入并分析，也可以不用范本写作。",
                 color = c.secondary,
                 fontSize = 14.sp,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),

@@ -1,92 +1,57 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.xycs.lingyuereader.ai.AiCost
-import com.xycs.lingyuereader.ai.AiUsage
-import com.xycs.lingyuereader.SentRequest
-import com.xycs.lingyuereader.ui.glass.GlassDialog
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
-/** A small suggestion above the keyboard; the actual text caret and manuscript stay untouched. */
+/** The human supplies the scene intent; AI writes a candidate and the human decides whether to accept it. */
 @Composable
 internal fun WritingCompanionPanel(
     source: String?,
     model: String,
-    text: String,
-    loading: Boolean,
-    error: String?,
-    stale: Boolean,
     ready: Boolean,
-    usage: AiUsage?,
-    cost: AiCost?,
-    request: SentRequest?,
-    onAsk: () -> Unit,
-    onStop: () -> Unit,
+    onWriteHere: () -> Unit,
+    onWriteChapter: () -> Unit,
     onSelectReference: () -> Unit,
+    onClearReference: () -> Unit,
     onConfigureAi: () -> Unit,
     onClose: () -> Unit,
 ) {
     val c = LocalGroupedColors.current
-    var details by remember { mutableStateOf(false) }
-    var showSent by remember { mutableStateOf(false) }
     InlinePanel(
-        title = "书灵陪写",
+        title = "书灵写作",
         icon = LingYueIcons.Book,
         status = if (source == null) model else "$model · $source",
         onClose = onClose,
         actions = {
-            when {
-                loading -> PillButton("停止", onStop)
-                source == null -> PillButton("选择范本", onSelectReference, style = PillStyle.Filled)
-                !ready -> PillButton("设置 AI", onConfigureAi, style = PillStyle.Filled)
-                else -> PillButton(if (text.isBlank()) "看看这段怎么写" else "更新建议", onAsk, style = PillStyle.Filled)
-            }
-            if (source != null) PillButton("换范本", onSelectReference)
-            if (text.isNotBlank()) PillButton("展开", { details = true })
-            if (request != null) PillButton("已发送内容", { showSent = true })
+            if (ready) PillButton("交给 AI 写这一段", onWriteHere, style = PillStyle.Filled)
+            else PillButton("设置 AI", onConfigureAi, style = PillStyle.Filled)
+            PillButton("写本章草稿", onWriteChapter)
+            PillButton(if (source == null) "选择范本" else "换范本", onSelectReference)
+            if (source != null) PillButton("不用范本", onClearReference)
         },
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-            val lead = when {
-                error != null -> error
-                stale && text.isNotBlank() -> "正文或光标已变化；这条是先前位置的建议，点“更新建议”按当前位置重新看。"
-                loading && text.isBlank() -> "正在对照范本与光标附近的正文……"
-                source == null -> "先选一章范本并分析，书灵才能依据真实原文给你建议。"
-                !ready -> "设置 AI 服务商后，可以在这里按当前正文得到写法建议。"
-                text.isBlank() -> "光标放在要写的位置后点击。所选范本片段、本章资料和光标附近正文会交给当前 AI；联网模型可能产生费用，建议不会改正文。"
-                else -> text
-            }
-            Text(lead, color = if (error == null) c.label else c.warning, fontSize = 14.sp,
-                lineHeight = 20.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            if (text.isNotBlank()) UsageNote(usage, cost, Modifier.padding(top = 4.dp))
+        Row(Modifier.fillMaxWidth().padding(bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("你的构思", color = c.secondary, fontSize = 12.sp)
+            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
+            Text("AI 写候选稿", color = c.tint, fontSize = 12.sp)
+            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
+            Text("你来审定", color = c.secondary, fontSize = 12.sp)
         }
+        Text(
+            if (source == null) "先说这一段要发生什么。范本可选；AI 写出的文字会先给你审定。"
+            else "范本只借叙事与对白手法；人物、事件与结果依本书构思。AI 写出的文字先给你审定。",
+            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+            modifier = Modifier.padding(bottom = 3.dp),
+        )
     }
-    if (details && text.isNotBlank()) {
-        GlassDialog(show = true, title = "书灵陪写 · $source", summary = model,
-            onDismissRequest = { details = false }) {
-            SelectionContainer {
-                Column(Modifier.fillMaxWidth().heightIn(max = 470.dp).verticalScroll(rememberScrollState())) {
-                    MarkdownText(text)
-                }
-            }
-            UsageNote(usage, cost)
-            DialogOkButton("继续写") { details = false }
-        }
-    }
-    if (showSent) request?.let { SentDialog(it) { showSent = false } }
 }

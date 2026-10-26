@@ -237,9 +237,11 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                     when {
                         reading -> row { LoadingRow("正在准备所选原文……") }
                         previewError != null -> row { ErrorText(previewError!!, Modifier.padding(16.dp)) }
-                        excerpt != null -> row {
+                        excerpt != null -> {
                             val chosen = excerpt!!
-                            NavRow("预览将发送的原文", value = "${chosen.text.length} 字符", subtitle = "${sourceChapter?.title.orEmpty()} · 第 ${chosen.start + 1}—${chosen.end} 字符" + if (chosen.truncated) " · 本次仅选定片段" else "") { showExcerpt = true }
+                            row { ReferenceRangeRuler(chosen.start, chosen.end, chosen.chapterLength, chosen.part,
+                                Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                            row { NavRow("预览将发送的原文", value = "${chosen.text.length} 字符", subtitle = "${sourceChapter?.title.orEmpty()} · 第 ${chosen.start + 1}—${chosen.end} 字符" + if (chosen.truncated) " · 本次仅选定片段" else "") { showExcerpt = true } }
                         }
                     }
                 }

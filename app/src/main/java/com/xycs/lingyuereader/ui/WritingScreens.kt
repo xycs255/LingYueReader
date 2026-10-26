@@ -890,7 +890,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
     var companionAnalyses by remember(workId, chapterId) { mutableStateOf<List<ReferenceAnalysis>>(emptyList()) }
     var companionSelection by remember(workId, chapterId) { mutableStateOf(vm.companionReference(workId, chapterId)) }
-    val companionAll by vm.companionAdvice.state.collectAsStateWithLifecycle()
     val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
     val aiLookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // AI 在编辑器里写的那一段（这一章的才显示）；写的时候正文只读。
@@ -938,14 +937,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         catch (e: Exception) { vm.showMessage("读取范本分析失败：${e.message}") }
     }
     val current = state
-    // 这里只把旧提醒标记为过期。打字、移动光标都不会自行发出付费请求。
-    LaunchedEffect(current, workId, chapterId) {
-        val editor = current ?: return@LaunchedEffect
-        snapshotFlow { editor.text.toString() to editor.selection }.collect { (text, selection) ->
-            val offset = if (selection.collapsed) selection.start else -1
-            vm.companionAdvice.markStale(workId, chapterId, text, offset)
-        }
-    }
     // 自动保存：停笔 800 毫秒存一次。
     if (current != null) {
         LaunchedEffect(current) {
@@ -985,8 +976,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         onDispose {
             latest?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
             vm.writingAi.stopRealtime()
-            if (vm.companionAdvice.state.value?.let { it.workId == workId && it.chapterId == chapterId } == true)
-                vm.companionAdvice.stop()
             // 只停下、收起：作者没看完就离开（或旋转屏幕），不算“不采纳”。
             if (vm.writingAi.state.value?.chapterId == chapterId) vm.writingAi.dismiss()
         }
@@ -1012,7 +1001,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
-    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false) {
+    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -1020,7 +1009,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val text = st.text.toString()
         val at = if (atEnd) text.length else st.selection.max
-        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction)
+        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId)
     }
 
     /** 整理本章进设定包：用编辑框里现在的正文；同一份正文刚整理好（单章或批量里的）、还没写进去的，直接看结果。 */
@@ -1341,9 +1330,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
                 val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
                 val chosenCompanionAnalysis = companionAnalyses.firstOrNull { it.id == companionSelection }
-                val companion = companionAll?.takeIf {
-                    it.workId == workId && it.chapterId == chapterId && it.analysisId == companionSelection
-                }
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
                     inline != null -> EditorPanel.Inline(inline)
@@ -1378,26 +1364,31 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         EditorPanel.Companion -> WritingCompanionPanel(
                             source = chosenCompanionAnalysis?.let { "《${it.referenceTitle}》·${it.chapterTitle}（${it.part.label}）" },
                             model = if (aiConfig.ready) aiConfig.providerLabel else "AI 未设置",
-                            text = companion?.text.orEmpty(),
-                            loading = companion?.loading == true,
-                            error = companion?.error,
-                            stale = companion?.stale == true,
                             ready = aiConfig.ready,
-                            usage = companion?.usage,
-                            cost = companion?.cost,
-                            request = companion?.request,
-                            onAsk = {
+                            onWriteHere = {
                                 when {
-                                    chosenCompanionAnalysis == null -> companionChoosing = true
+                                    companionSelection != null && chosenCompanionAnalysis == null -> {
+                                        vm.showMessage("已选范本不在了，请重新选择")
+                                        companionChoosing = true
+                                    }
                                     !st.selection.collapsed -> vm.showMessage("先点正文，把光标放在想写的地方")
-                                    else -> vm.companionAdvice.ask(workId, chapterId, chosenCompanionAnalysis.id,
-                                        st.text.toString(), st.selection.start, currentManuscript = { st.text.toString() })
+                                    else -> asking = "这一段要发生什么？" to { intent ->
+                                        startInline(InlineMode.CUSTOM, intent, referenceAnalysisId = chosenCompanionAnalysis?.id)
+                                    }
                                 }
                             },
-                            onStop = { vm.companionAdvice.stop() },
+                            onWriteChapter = {
+                                vm.writing.save(workId, chapterId, st.text.toString(), onSaved = {
+                                    vm.open(Screen.ChapterDraft(workId, chapterId))
+                                })
+                            },
                             onSelectReference = { companionChoosing = true },
+                            onClearReference = {
+                                companionSelection = null
+                                vm.clearCompanionReference(workId, chapterId)
+                            },
                             onConfigureAi = { vm.open(Screen.Ai) },
-                            onClose = { companionOpen = false; vm.companionAdvice.stop() },
+                            onClose = { companionOpen = false },
                         )
                         is EditorPanel.Inline -> InlineBar(
                             p.write,
@@ -1407,7 +1398,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 val w = p.write
                                 val done = vm.writingAi.acceptInline(st.text.toString())
                                 if (done == null) {
-                                    vm.showMessage("正文已经改动，没法插进去")
+                                    vm.showMessage(vm.writingAi.inline.value?.error ?: if (w.referenceAnalysisId != null && !w.referenceValidated)
+                                        "这一段未通过范本核验，请重写" else "正文或范本已经变化，请重新生成")
                                 } else {
                                     st.edit {
                                         replace(0, length, done.first)
@@ -1573,11 +1565,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                             formatOpen = false
                                             issuesOpen = false
                                             rulesOpen = false
-                                        } else vm.companionAdvice.stop()
+                                        }
                                     }
                                 }
                             }
-                            .semantics { contentDescription = "书灵陪写" }
+                            .semantics { contentDescription = "书灵写作" }
                             .padding(horizontal = 8.dp, vertical = 8.dp),
                     ) {
                         Icon(LingYueIcons.Book, contentDescription = null,
@@ -1649,14 +1641,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     onSelect = { id ->
                         companionSelection = id
                         vm.chooseCompanionReference(workId, chapterId, id)
-                        vm.companionAdvice.clear()
                         companionOpen = true
                         companionChoosing = false
                     },
                     onCreate = {
                         companionChoosing = false
-                        current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it) }
-                        vm.open(Screen.WritingReference(workId, chapterId))
+                        current?.text?.toString()?.let { text ->
+                            vm.writing.save(workId, chapterId, text, onSaved = {
+                                vm.open(Screen.WritingReference(workId, chapterId))
+                            })
+                        }
                     },
                     onDismiss = { companionChoosing = false },
                 )

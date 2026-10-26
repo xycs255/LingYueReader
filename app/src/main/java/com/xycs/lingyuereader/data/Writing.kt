@@ -382,6 +382,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         cardFile(workId, chapterId).delete()
         reviewFile(workId, chapterId).delete()
         draftFile(workId, chapterId).delete()
+        draftReferenceFile(workId, chapterId).delete()
         return work
     }
 
@@ -571,20 +572,50 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         return File(dir(workId), "$chapterId.draft.txt")
     }
 
+    private fun draftReferenceFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.draft.reference.json")
+    }
+
     /** AI 写的本章草稿（还没放进正文的；离开页面再回来还在）。 */
     @Synchronized
     fun draft(workId: String, chapterId: String): String = draftFile(workId, chapterId).takeIf { it.isFile }?.readText().orEmpty()
 
+    /** A damaged or mismatched provenance file is an adoption blocker, not an absent reference. */
     @Synchronized
-    fun saveDraft(workId: String, chapterId: String, text: String) {
+    fun draftContent(workId: String, chapterId: String): DraftContent {
+        val body = draft(workId, chapterId)
+        if (body.isEmpty()) return DraftContent(body)
+        val file = draftReferenceFile(workId, chapterId)
+        if (!file.isFile) return DraftContent(body,
+            provenanceError = "旧草稿缺少来源记录，无法核验范本，请重新生成后采纳", blocked = true)
+        return try {
+            DraftReferenceCodec.decode(file.readText(), body)
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            DraftContent(body, provenanceError = "草稿的范本来源记录损坏或与正文不一致，请重新生成", blocked = true)
+        }
+    }
+
+    @Synchronized
+    fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null, blocked: Boolean = false) {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val file = draftFile(workId, chapterId)
+        val source = draftReferenceFile(workId, chapterId)
         if (text.isEmpty()) {
-            if (!file.exists()) return
-            check(file.delete()) { "无法删除草稿" }
+            if (!file.exists() && !source.exists()) return
+            check(!file.exists() || file.delete()) { "无法删除草稿" }
+            check(!source.exists() || source.delete()) { "无法删除草稿范本来源" }
         } else {
-            if (file.isFile && file.readText() == text) return
-            check(DurableFiles.write(file, text.toByteArray())) { "无法保存草稿" }
+            val provenance = DraftReferenceCodec.encode(text, reference, blocked).toString()
+            if (file.isFile && source.isFile && file.readText() == text && source.readText() == provenance) return
+            // Always save a source/no-source marker first. A missing or mismatched marker on reopen blocks adoption.
+            check(DurableFiles.write(source, provenance.toByteArray())) {
+                "无法保存草稿范本来源"
+            }
+            if (!file.isFile || file.readText() != text) {
+                check(DurableFiles.write(file, text.toByteArray())) { "无法保存草稿" }
+            }
         }
         // 草稿也是作者的内容：仅改草稿或明确删除草稿时，备份也必须算新版本。
         update(workId) { it }
@@ -1089,6 +1120,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             } != null
             val texts = JSONObject()
             val drafts = JSONObject()
+            val draftSources = JSONObject()
             w.chapters.forEach { c ->
                 val source = chapterFile(w.id, c.id)
                 if (!source.isFile && c.words > 0) skip(source.name, "「${c.title}」的正文文件不见了，备份里这一章是空的")
@@ -1097,7 +1129,23 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 // 空字符串明确表示没有草稿（包括作者点了“不要这版”）；读不出的
                 // 草稿不放这个键，恢复时保留另一台手机上的原稿。
                 val draft = if (draftSource.isFile) component(draftSource, "「${c.title}」的 AI 草稿读不出，没有放进备份") { it } else ""
-                draft?.let { drafts.put(c.id, it) }
+                val sourceFile = draftReferenceFile(w.id, c.id)
+                val provenance = if (draft != null && draft.isNotEmpty() && sourceFile.isFile) {
+                    component(sourceFile, "「${c.title}」的范本来源记录损坏，已保留候选稿但恢复后禁止采纳") { raw ->
+                        DraftReferenceCodec.decode(raw, draft)
+                        JSONObject(raw)
+                    }
+                } else null
+                if (draft != null) {
+                    if (draft.isNotEmpty() && !sourceFile.isFile)
+                        skip(sourceFile.name, "「${c.title}」的草稿来源记录缺失，已保留候选稿但恢复后禁止采纳")
+                    // Keep readable prose while explicitly blocking adoption when the marker was lost or damaged.
+                    val safeProvenance = if (draft.isNotEmpty())
+                        provenance ?: DraftReferenceCodec.encode(draft, null, blocked = true)
+                    else JSONObject.NULL
+                    drafts.put(c.id, draft)
+                    draftSources.put(c.id, safeProvenance)
+                }
             }
             val pack = if (!packReadable) null else JSONArray().apply { pack(w.id).forEach { d ->
                 val source = packFile(w.id, d.id)
@@ -1119,6 +1167,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
             val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)
+                .put("draftSources", draftSources)
             assist?.let { entry.put("assist", it.toJson()) }
             pack?.let { entry.put("pack", it) }
             changes?.let { entry.put("changes", it) }
@@ -1172,6 +1221,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val local: Work?,
         val texts: Map<String, String>,
         val drafts: Map<String, String>?,
+        val draftSources: Map<String, String?>?,
         val cards: Map<String, ChapterCard>?,
         val changes: List<ChangeEntry>?,
         val ledger: List<LedgerEntry>?,
@@ -1205,6 +1255,19 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 raw.getString(id)
             }
         } else null
+        val draftSources = if (o.has("draftSources") && drafts != null) {
+            val raw = o.getJSONObject("draftSources")
+            require(raw.length() == drafts.size) { "备份草稿来源数量不符" }
+            raw.keys().asSequence().associateWith { id ->
+                require(id in drafts) { "备份草稿来源指向未知章节" }
+                val value = raw.get(id)
+                if (value == JSONObject.NULL) null else {
+                    require(value is JSONObject && drafts.getValue(id).isNotEmpty()) { "备份草稿来源格式无效" }
+                    DraftReferenceCodec.decode(value.toString(), drafts.getValue(id))
+                    value.toString()
+                }
+            }
+        } else null // Backups made before this feature, or without a drafts component, preserve local drafts.
         val cards = if (o.has("cards")) {
             val raw = o.getJSONObject("cards")
             raw.keys().asSequence().associateWith { id ->
@@ -1311,7 +1374,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, drafts, cards, changes, ledger, pack, localPack, assist, references)
+        return RestoreWork(incoming, local, texts, drafts, draftSources, cards, changes, ledger, pack, localPack, assist, references)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -1356,7 +1419,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         } else check(destination.mkdirs()) { "无法创建作品暂存区" }
         val incoming = plan.incoming
         plan.local?.chapters?.filter { incoming.chapter(it.id) == null }?.forEach { old ->
-            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt")
+            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt", old.id + ".draft.reference.json")
                 .forEach { name -> check(!File(destination, name).exists() || File(destination, name).delete()) { "无法暂存章节删除" } }
         }
         plan.texts.forEach { (id, body) ->
@@ -1366,6 +1429,10 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
             val file = File(destination, id + ".draft.txt")
             if (body.isEmpty()) check(!file.exists() || file.delete()) { "无法暂存草稿删除" }
             else check(DurableFiles.write(file, body.toByteArray())) { "无法暂存 AI 草稿" }
+            val provenance = File(destination, id + ".draft.reference.json")
+            val source = plan.draftSources?.get(id)
+            if (source == null) check(!provenance.exists() || provenance.delete()) { "无法暂存草稿来源删除" }
+            else check(DurableFiles.write(provenance, source.toByteArray())) { "无法暂存草稿来源" }
         }
         plan.cards?.forEach { (id, card) ->
             check(DurableFiles.write(File(destination, id + ".card.json"), card.toJson().toString().toByteArray())) { "无法暂存细纲卡" }

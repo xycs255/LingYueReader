@@ -294,11 +294,11 @@ class WritingAiUiTest {
     }
 
     @Test
-    fun companionWaitsForAnExplicitReferenceAndRequest() {
+    fun aiWriterUsesAnExplicitReferenceAndWaitsForAuthorAcceptance() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         openEditor()
-        compose.onNodeWithContentDescription("书灵陪写").performClick()
-        waitForText("先选一章范本并分析")
+        compose.onNodeWithContentDescription("书灵写作").performClick()
+        waitForText("先说这一段要发生什么")
         compose.onNodeWithText("选择范本").performClick()
         waitForText("本章还没有范本分析")
         compose.onNodeWithText("关闭").performClick()
@@ -307,7 +307,7 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("正文").performTextInput("又")
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
-        assertTrue("打字、移动光标和打开陪写都不能自动发送范本", prompts.isEmpty())
+        assertTrue("打字、移动光标和打开书灵写作都不能自动发请求", prompts.isEmpty())
 
         compose.onNodeWithText("选择范本").performClick()
         compose.onNodeWithText("新增/分析范本").performClick()
@@ -321,18 +321,30 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.back() }
         waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
         if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
-            compose.onNodeWithContentDescription("书灵陪写").performClick()
+            compose.onNodeWithContentDescription("书灵写作").performClick()
         }
         waitForText("选择范本")
         compose.onNodeWithText("选择范本").performClick()
         waitForText(sourceLabel)
         compose.onNodeWithText(sourceLabel).performClick()
-        waitForText("看看这段怎么写")
+        waitForText("交给 AI 写这一段")
         assertTrue("选中范本也不能自动发请求", prompts.isEmpty())
 
-        compose.onNodeWithText("看看这段怎么写").performClick()
-        waitForText("让他听见门外的脚步声")
+        compose.onNodeWithText("交给 AI 写这一段").performClick()
+        waitForText("这一段要发生什么？")
+        assertTrue("只有作者给出构思并提交才请求模型", prompts.isEmpty())
+        val intent = "来人递出军令，守门人先试探身份"
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(intent)
+        compose.onNodeWithText("好").performClick()
+        waitFor { vm.writingAi.inline.value?.let { !it.loading && it.text.isNotBlank() } == true }
+        val candidate = vm.writingAi.inline.value!!
+        assertTrue(prompts.single().contains(intent))
         assertTrue(prompts.single().contains("门外有人叩门"))
+        assertEquals("作者采纳前，候选正文不写入章节", candidate.base, store.text(workId, chapterId))
+
+        compose.onNodeWithText("采纳").performClick()
+        val accepted = candidate.base.substring(0, candidate.at) + candidate.text + candidate.base.substring(candidate.at)
+        waitFor { store.text(workId, chapterId) == accepted }
     }
 
     @Test

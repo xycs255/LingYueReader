@@ -43,6 +43,8 @@ data class ReferenceExcerpt(
     val chapterFingerprint: String,
     val fingerprint: String,
     val truncated: Boolean = false,
+    /** The normalized chapter's UTF-16 length, in the same coordinate space as [start] and [end]. */
+    val chapterLength: Int,
 )
 
 /** 只保存分析，不再复制范本原文；应用表示作者要复用技法建议，不是确认故事事实。 */
@@ -156,7 +158,7 @@ object WritingReferences {
         require(selected.isNotBlank()) { "范本片段为空或长度不足以包含完整字符，请扩大选择范围" }
         val signature = excerptFingerprint(reference.id, chapter.id, chapter.fingerprint, part, range.first, range.second, selected)
         return ReferenceExcerpt(reference.id, reference.title, chapter.id, chapter.title, part, range.first, range.second,
-            selected, chapter.fingerprint, signature, range.first != 0 || range.second != text.length)
+            selected, chapter.fingerprint, signature, range.first != 0 || range.second != text.length, text.length)
     }
 
     private fun safeStart(text: String, offset: Int): Int =

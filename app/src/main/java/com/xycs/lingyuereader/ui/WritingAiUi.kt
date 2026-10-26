@@ -406,7 +406,9 @@ internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit,
             if (inline.loading) {
                 PillButton("停止", onStop)
             } else {
-                PillButton("采纳", onAccept, style = PillStyle.Filled, enabled = inline.text.isNotBlank() && inline.error == null)
+                PillButton("采纳", onAccept, style = PillStyle.Filled,
+                    enabled = inline.text.isNotBlank() && inline.error == null &&
+                        (inline.referenceAnalysisId == null || inline.referenceValidated))
                 PillButton("重写", onRetry)
             }
             PillButton("撤回", onDiscard)
@@ -427,7 +429,8 @@ internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit,
                 )
                 else -> Column(line) {
                     Text(
-                        "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: ""),
+                        "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: "") +
+                            (if (inline.referenceAnalysisId != null && !inline.referenceValidated) "；范本核验未完成，请重写" else ""),
                         color = c.label,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
