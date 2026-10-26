@@ -525,8 +525,8 @@ internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
                     PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer { translationX = -widthPx * amount })
                 }
                 PageMode.COVER -> {
-                    PreviewPaper(0, false, paper, ink)
-                    PreviewPaper(1, false, paper, ink, Modifier.graphicsLayer { translationX = widthPx * (1f - amount) })
+                    PreviewPaper(1, false, paper, ink)
+                    PreviewPaper(0, false, paper, ink, Modifier.graphicsLayer { translationX = -widthPx * amount })
                 }
                 PageMode.CURL -> {
                     PreviewPaper(1, false, paper, ink)
@@ -606,7 +606,7 @@ private fun PageModeChoice(mode: PageMode, selected: Boolean, modifier: Modifier
 private fun PageMode.previewMeaning(): String = when (this) {
     PageMode.SCROLL -> "正文向上移动，接着阅读"
     PageMode.SLIDE -> "旧页向左移出，新页从右进入"
-    PageMode.COVER -> "新页从右盖住旧页"
+    PageMode.COVER -> "旧页向左滑走，露出下一页"
     PageMode.CURL -> "纸角翻起，露出下一页"
     PageMode.NONE -> "点按后立即换页"
     PageMode.VERTICAL -> "竖排文字向右翻到下一页"

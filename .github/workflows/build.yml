@@ -102,6 +102,12 @@ jobs:
           test -s app/build/outputs/ui-check/page-mode-preview.png
           test -s app/build/outputs/ui-check/page-cover-mid.png
           test -s app/build/outputs/ui-check/page-curl-middle.png
+          test -s app/build/outputs/ui-check/page-curl-portrait-mid.png
+          test -s app/build/outputs/ui-check/page-slide-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-cover-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-back-mid.png
+          test -s app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
       - uses: actions/upload-artifact@v4
         with:
           name: LingYueReader-motion-ui
@@ -110,4 +116,10 @@ jobs:
             app/build/outputs/ui-check/page-mode-preview.png
             app/build/outputs/ui-check/page-cover-mid.png
             app/build/outputs/ui-check/page-curl-middle.png
+            app/build/outputs/ui-check/page-curl-portrait-mid.png
+            app/build/outputs/ui-check/page-slide-landscape-mid.png
+            app/build/outputs/ui-check/page-cover-landscape-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-back-mid.png
+            app/build/outputs/ui-check/page-curl-landscape-back-twice-mid.png
           if-no-files-found: error

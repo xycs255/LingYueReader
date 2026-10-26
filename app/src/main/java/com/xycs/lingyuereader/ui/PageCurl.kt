@@ -380,8 +380,8 @@ private fun DrawScope.drawFlatCurl(g: CurlGeometry, paper: Color, left: Float, b
                 drawRect(paper)
                 withTransform({ scale(-1f, 1f, pivot = Offset(left, 0f)) }) { drawImage(back) }
             } else {
-                drawPage()
-                drawRect(paper.copy(alpha = 0.86f))
+                // 图像尚未准备好时只露出素纸，避免把当前右页的字反印到下一面。
+                drawRect(paper)
             }
             // 靠折痕处弯着，暗一些；往外渐亮。
             drawRect(
