@@ -4,8 +4,8 @@ import android.content.Context
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
-import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -18,6 +18,8 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.onLast
 import androidx.lifecycle.ViewModelProvider
 import com.xycs.lingyuereader.AppViewModel
 import androidx.test.core.app.ApplicationProvider
@@ -54,7 +56,7 @@ class WritingUiTest {
             File(files, "books/index.json").writeText("[]")
             writingDir.deleteRecursively()
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
-            if (name.methodName.startsWith("preview") || name.methodName.startsWith("chapters")) {
+            if (name.methodName.startsWith("preview") || name.methodName.startsWith("chapters") || name.methodName.startsWith("editorTools")) {
                 val store = WorkStore(writingDir)
                 val w = store.create("长夜", "某某")
                 store.renameChapter(w.id, w.chapters[0].id, "第一章 雪夜")
@@ -74,6 +76,18 @@ class WritingUiTest {
         compose.waitUntil(timeout) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    private fun chapterRow(title: String) = compose.onNode(
+        hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick),
+    )
+
+    private fun scrollToChapter(title: String) {
+        compose.onNode(hasScrollToIndexAction() and SemanticsMatcher("non-empty scroll viewport") {
+            it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f
+        }).performScrollToNode(
+            hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick),
+        )
+    }
+
     private fun openWritingTab() {
         compose.waitUntil(10_000) { compose.onAllNodesWithText("写作").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("写作").performClick()
@@ -88,13 +102,16 @@ class WritingUiTest {
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("长夜")
         compose.onNodeWithText("新建").performClick()
         // 进了作品页：一卷“正文”，一个空的第 1 章。
-        waitForText("新的一章")
-        compose.onAllNodesWithText("第1章")[0].performClick()
+        waitForText("作品进度")
+        scrollToChapter("第1章")
+        chapterRow("第1章").performClick()
 
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("正文").performTextInput("他推开门，风雪灌进来。")
         // 停笔后自动保存。
         waitForText("11 字 · 已保存")
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        compose.onNodeWithText("快捷标点").performClick()
         compose.onNodeWithContentDescription("插入「」").performClick()
         waitForText("13 字")
 
@@ -121,8 +138,9 @@ class WritingUiTest {
         openWritingTab()
         waitForText("长夜")
         compose.onNodeWithText("长夜").performClick()
-        waitForText("第二章 天亮")
-        compose.onAllNodesWithText("第二章 天亮")[0].performClick()
+        waitForText("作品进度")
+        scrollToChapter("第二章 天亮")
+        chapterRow("第二章 天亮").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("更多").performClick()
         compose.onNodeWithText("预览本章").performScrollTo().performClick()
@@ -159,6 +177,38 @@ class WritingUiTest {
     }
 
     @Test
+    @Config(sdk = [36], qualifiers = "w320dp-h700dp")
+    fun editorToolsStayReachableOnASmallPhone() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val work = WorkStore(writingDir).get(seededWork!!)!!
+        compose.runOnUiThread { vm.open(com.xycs.lingyuereader.Screen.Editor(work.id, work.chapters[0].id)) }
+        // 正文使用 TextFieldState；等待编辑框就绪，不依赖文本是否合并进读屏树。
+        compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
+
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        waitForText("写作工具")
+        compose.onNodeWithText("查").performClick()
+        waitForText("三道审稿")
+        compose.onNodeWithText("整理").performClick()
+        waitForText("整理入账")
+        compose.onNodeWithText("更多").performClick()
+        waitForText("全部工具")
+        compose.onNodeWithText("全部工具").performClick()
+        // 旧菜单较长；小屏里目标项可能尚未进入弹层的可见语义树。
+        waitForText("AI 写本章")
+        val referenceItem = hasText("从范本找写法")
+        runCatching {
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(referenceItem)
+        }
+        for (attempt in 0..8) {
+            if (compose.onAllNodesWithText("从范本找写法").fetchSemanticsNodes().isNotEmpty()) break
+            compose.onAllNodes(hasScrollAction()).onLast().performTouchInput { swipeUp() }
+        }
+        compose.onNodeWithText("从范本找写法").performScrollTo().performClick()
+        waitForText("写作范本")
+    }
+
+    @Test
     fun chaptersAddedDeletedAndMovedShowUpInTheRightPlace() {
         val store = WorkStore(writingDir)
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -166,9 +216,10 @@ class WritingUiTest {
         openWritingTab()
         waitForText("长夜")
         compose.onNodeWithText("长夜").performClick()
-        waitForText("第二章 天亮")
+        waitForText("作品进度")
+        scrollToChapter("第二章 天亮")
         // 章节那一行（能长按的那个；“继续写”那行的右边也写着章名）。
-        fun row(title: String) = compose.onNode(hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick))
+        fun row(title: String) = chapterRow(title)
         fun top(title: String) = row(title).fetchSemanticsNode().boundsInRoot.top
         fun shown(title: String) = compose.onAllNodes(hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)).fetchSemanticsNodes().isNotEmpty()
 
@@ -177,7 +228,7 @@ class WritingUiTest {
         compose.waitUntil(10_000) { store.get(w.id)!!.chapters.size == 3 }
         // 作品页上面的入口多，新的一格可能在屏幕下面：滚过去再看。
         compose.waitUntil(10_000) {
-            runCatching { compose.onNode(hasScrollAction() and hasAnyDescendant(hasText("第一章 雪夜"))).performScrollToNode(hasText("第3章") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)) }.isSuccess
+            runCatching { scrollToChapter("第3章") }.isSuccess
         }
         compose.waitUntil(10_000) { shown("第3章") }
         assertTrue(top("第一章 雪夜") < top("第二章 天亮") && top("第二章 天亮") < top("第3章"))

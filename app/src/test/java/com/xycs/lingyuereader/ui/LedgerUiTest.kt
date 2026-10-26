@@ -9,7 +9,9 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
@@ -85,6 +87,11 @@ class LedgerUiTest {
 
     private fun open(screen: Screen) = compose.runOnUiThread { vm.open(screen) }
 
+    private fun showAllRecords() {
+        waitForText("全部记录")
+        compose.onNodeWithText("全部记录").performClick()
+    }
+
     /** 林月在渡口（第 12 章起）、沈默第 15 章才知道杜娘是卧底、顾长风的约（计划第 11 章收）、老周的船沉了（第 3 章）。 */
     private fun seedLedger() {
         store.applyLedger(
@@ -122,6 +129,7 @@ class LedgerUiTest {
         val e = store.ledger(workId).single()
         assertEquals(Triple(LedgerKind.STATE, "杜娘", "在城南茶馆"), Triple(e.kind, e.subject, e.text))
         assertEquals(LedgerOrigin.MANUAL, e.origin)
+        showAllRecords()
         waitForOne("在城南茶馆")
         waitForText("人物状态 · 杜娘")
     }
@@ -130,12 +138,13 @@ class LedgerUiTest {
     fun allEntriesAreGroupedByKind() {
         seedLedger()
         open(Screen.WorkLedger(workId))
+        showAllRecords()
         waitForOne("在渡口，左臂伤未愈")
         assertEquals(1, count("人物状态 · 林月"))
         assertEquals(1, count("发生的事"))
-        assertEquals(1, count("知情"))
+        assertEquals(2, count("知情")) // 记录组和顶部分段标签各一个
         // 组的顺序照类别：人物状态在发生的事前面，发生的事在知情前面。
-        fun top(text: String) = compose.onNodeWithText(text).fetchSemanticsNode().boundsInRoot.top
+        fun top(text: String) = compose.onAllNodesWithText(text).onLast().fetchSemanticsNode().boundsInRoot.top
         assertTrue(top("人物状态 · 林月") < top("发生的事"))
         assertTrue(top("发生的事") < top("知情"))
         // 副文字：谁、哪方面、第几章起；来源的标签。
@@ -146,7 +155,7 @@ class LedgerUiTest {
         // 伏笔在最后一组，可能在屏幕外面：先滚过去。
         compose.onNode(hasScrollAction() and hasAnyDescendant(hasText("林月 · 位置", substring = true))).performScrollToNode(hasText("第 8 章埋，计划第 11 章收", substring = true))
         waitForText("第 8 章埋，计划第 11 章收")
-        assertEquals(1, count("伏笔"))
+        assertEquals(2, count("伏笔")) // 记录组和顶部分段标签各一个
     }
 
     @Test
@@ -161,7 +170,7 @@ class LedgerUiTest {
         waitForText("第 12 章")
         waitForOne("还不知道的事")
         // 沈默第 15 章才知道：第 12 章不算知情，列在“还不知道”里。
-        assertEquals(0, count("知情"))
+        assertEquals(1, count("知情")) // 只有顶部分段标签，尚无知情记录组
         assertEquals(1, count("杜娘是卧底"))
         // 顾长风的约计划第 11 章收，到第 12 章还开着：过期没收。
         assertEquals(1, count("过期没收的伏笔"))
@@ -172,20 +181,21 @@ class LedgerUiTest {
         compose.onNodeWithText("看到第几章").performClick()
         waitForText("第15章 偷听")
         compose.onNodeWithText("第15章 偷听").performClick()
-        waitFor { count("还不知道的事") == 0 && count("知情") == 1 }
+        waitFor { count("还不知道的事") == 0 && count("知情") == 2 }
         waitForOne("杜娘是卧底")
 
         // 回到“全部”。
         compose.onNodeWithText("看到第几章").performClick()
         waitForText("列出所有条目")
         compose.onNodeWithText("列出所有条目").performClick()
-        waitFor { count("知情") == 1 && count("伏笔") == 1 && count("过期没收的伏笔") == 0 }
+        waitFor { count("知情") == 2 && count("伏笔") == 2 && count("过期没收的伏笔") == 0 }
     }
 
     @Test
     fun editingAnEntrySavesIt() {
         seedLedger()
         open(Screen.WorkLedger(workId))
+        showAllRecords()
         waitForOne("在渡口，左臂伤未愈")
         compose.onNodeWithText("在渡口，左臂伤未愈").performClick()
         waitForText("改一条")
@@ -202,6 +212,7 @@ class LedgerUiTest {
     fun deletingAsksFirst() {
         seedLedger()
         open(Screen.WorkLedger(workId))
+        showAllRecords()
         waitForOne("老周的船沉了")
         compose.onNodeWithText("老周的船沉了").performClick()
         waitForText("改一条")
@@ -221,6 +232,7 @@ class LedgerUiTest {
         val gone = store.ledger(workId).first { it.text == "老周的船沉了" }
         store.applyLedger(workId, listOf(LedgerOp.Remove(gone.id)), "手动删除")
         open(Screen.WorkLedger(workId))
+        showAllRecords()
         waitForOne("在渡口，左臂伤未愈")
         compose.onAllNodesWithContentDescription("更多").onFirst().performClick()
         waitForText("历史版本")
@@ -235,5 +247,79 @@ class LedgerUiTest {
         waitFor { store.ledger(workId).size == 4 }
         waitForText("已换回")
         waitFor { count("老周的船沉了") == 1 && count("换回这个版本") == 0 }
+    }
+
+    @Test
+    fun graphicalPersonStateKeepsEarlierChapterAndCanBeUndone() {
+        seedLedger()
+        open(Screen.WorkLedger(workId))
+        waitForText("位置 · 在渡口")
+        compose.onNodeWithText("位置 · 在渡口", substring = true).performClick()
+        waitForText("本章状态")
+        compose.onNode(hasSetTextAction() and hasText("在渡口，左臂伤未愈"))
+            .performTextReplacement("在石桥，伤已痊愈")
+        compose.onNode(hasSetTextAction() and hasText("12")).performTextReplacement("15")
+        compose.onNodeWithText("保存状态").performClick()
+        waitFor {
+            store.ledger(workId).count { it.kind == LedgerKind.STATE && it.subject == "林月" } == 2
+        }
+        val states = store.ledger(workId).filter { it.kind == LedgerKind.STATE && it.subject == "林月" }
+        assertTrue(states.any { it.from == 12 && it.text == "在渡口，左臂伤未愈" })
+        assertTrue(states.any { it.from == 15 && it.text == "在石桥，伤已痊愈" && it.origin == LedgerOrigin.MANUAL })
+        waitForText("撤销上一步")
+        compose.onNodeWithText("撤销上一步 · 手动登记人物状态").performClick()
+        waitFor {
+            store.ledger(workId).count { it.kind == LedgerKind.STATE && it.subject == "林月" } == 1
+        }
+        assertEquals("在渡口，左臂伤未愈", store.ledger(workId).first { it.kind == LedgerKind.STATE }.text)
+    }
+
+    @Test
+    fun knowledgeMatrixRequiresSourceBeforeSaving() {
+        seedLedger()
+        open(Screen.WorkLedger(workId))
+        waitForText("知情")
+        compose.onNodeWithText("知情").performClick()
+        waitForText("谁知道什么")
+        compose.onNodeWithText("尚未知").performClick()
+        waitForText("消息来源")
+        // The fact is known by 沈默; registering it for 林月 needs both chapter and source.
+        compose.onAllNodes(hasSetTextAction())[0].performTextReplacement("12")
+        assertEquals(4, store.ledger(workId).size)
+        compose.onNodeWithText("登记知情").assertIsNotEnabled()
+        compose.onAllNodes(hasSetTextAction())[1].performTextReplacement("杜娘亲口告知")
+        compose.onNodeWithText("登记知情").performClick()
+        waitFor { store.ledger(workId).any { it.kind == LedgerKind.KNOW && it.subject == "林月" && it.via == "杜娘亲口告知" && it.from == 12 } }
+    }
+
+    @Test
+    fun futureKnowledgeCellOpensExistingRecordInsteadOfDuplicateRegistration() {
+        seedLedger()
+        open(Screen.WorkLedger(workId, ch12))
+        waitForText("第 12 章")
+        compose.onNodeWithText("知情").performClick()
+        waitForText("第15章后知")
+        compose.onNodeWithText("第15章后知").performClick()
+        waitForText("改一条")
+        assertEquals(0, count("登记知情"))
+        assertEquals(4, store.ledger(workId).size)
+    }
+
+    @Test
+    fun personFilterAlsoAppliesAfterSwitchingToPromiseGraph() {
+        seedLedger()
+        store.applyLedger(
+            workId,
+            listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "林月要交信", subject = "林月", from = 12))),
+            "手动添加",
+        )
+        open(Screen.WorkLedger(workId))
+        waitForText("人物")
+        compose.onAllNodesWithText("人物").onFirst().performClick()
+        waitForText("林月")
+        compose.onAllNodesWithText("林月").onLast().performClick()
+        compose.onNodeWithText("伏笔").performClick()
+        waitForText("林月要交信")
+        waitFor { count("顾长风说三日后再来") == 0 }
     }
 }

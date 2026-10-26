@@ -55,6 +55,7 @@ class WritingDraftUiTest {
     private lateinit var server: HttpServer
     private val asked: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
     @Volatile private var authorWritesSummary = false
+    @Volatile private var validWorkflowReview = false
     private val release = java.util.concurrent.CountDownLatch(1)
 
     private val seed = object : ExternalResource() {
@@ -86,6 +87,7 @@ class WritingDraftUiTest {
                     }
                     val answer = when {
                         "只返回一个 JSON 对象" in user -> """{"nodes":[{"kind":"信息","label":"声响引题","quote":"夜里有人叩门"},{"kind":"动作","label":"靠近灯盏","quote":"移近灯盏"}],"dialogue":null}"""
+                        validWorkflowReview && "【当前阶段：审读】" in user -> """{"summary":["对白语气需作者最终确认"],"missing":[],"issues":[]}"""
                         "请写出这一章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
                         "请从最后一句接着往下写" in user -> "门外的人没有回答。"
                         "概括这一章" in user -> "沈默进城，在杜娘的茶馆落脚。"
@@ -158,6 +160,10 @@ class WritingDraftUiTest {
         waitForText("AI 写作范本")
         compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
         waitFor { vm.companionReference(workId, c2) == analysis.id }
+        waitForText("写法图与原文范围")
+        assertTrue("范本细节应先收起，让写本章和候选稿更靠前",
+            compose.onAllNodesWithText("生成写法图（会发送一次 AI 请求）").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("展开写法图与原文范围").performScrollTo().performClick()
         waitFor { compose.onAllNodesWithContentDescription("范本开头，选中第", substring = true).fetchSemanticsNodes().isNotEmpty() }
         assertTrue("选范本与看范围不能自行发起 AI 请求", asked.isEmpty())
 
@@ -177,6 +183,7 @@ class WritingDraftUiTest {
         compose.onNodeWithText("写本章").performScrollTo().performClick()
         waitFor { asked.any { (system, user) -> "夜里有人叩门" in system + user } }
         waitForText("杜娘把门打开")
+        waitForText("来源：范本片段已核验 · 本章任务资料")
         assertEquals("AI 只应在作者点击写本章后写一版", 1, asked.count { (_, user) -> "请写出这一章" in user })
         assertEquals("候选稿不能自动进入正文", "旧稿一句。", store.text(workId, c2))
     }
@@ -204,6 +211,8 @@ class WritingDraftUiTest {
         waitForText("杜娘把门打开，雪灌了进来。")
         // 章名和“本章完”去掉了；草稿存下来了。
         waitFor { store.draft(workId, c2) == "杜娘把门打开，雪灌了进来。\n“谁？”她问。" }
+        waitForText("来源：本章任务资料 · 未使用范本")
+        waitForText("审读：未启用自动审读，请自行通读")
         val (system, user) = asked.first { "请写出这一章" in it.second }
         assertTrue("篇幅不少于 10 字" in user)
         assertTrue("作者这次的要求：多写对白" in user)
@@ -227,6 +236,21 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c2).isEmpty() }
         // 回到编辑器，看到的是新正文。
         waitForText("门外的人没有回答。")
+    }
+
+    @Test
+    fun workflowPassShowsReviewStatusBesideAdoptionWhileEvidenceStaysExpandable() {
+        validWorkflowReview = true
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, workflow = true) }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.assessment?.passed == true } == true }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读：已通过，上方可展开证据")
+        waitForText("放进正文")
+        assertTrue("完整审读证据仍可按需展开",
+            compose.onAllNodesWithText("对白语气需作者最终确认", substring = true).fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("展开审读证据与建议").performScrollTo().performClick()
+        waitForText("对白语气需作者最终确认")
     }
 
     @Test

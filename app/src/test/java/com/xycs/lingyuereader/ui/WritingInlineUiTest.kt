@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -164,6 +166,18 @@ class WritingInlineUiTest {
         Thread.sleep(1_200)
         ShadowLooper.idleMainLooper()
         assertEquals(before, store.stats().on(LocalDate.now()))
+    }
+
+    @Test
+    fun pendingInlineShowsAPassiveContextStatusUntilTheAuthorDecides() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
+        waitForText("沈默推开茶馆的门")
+        compose.runOnUiThread { vm.writingAi.writeInline(workId, chapterId, text, text.length, InlineMode.SCENE) }
+        waitForText("AI 写了")
+        waitFor { compose.onAllNodesWithContentDescription("当前状态：核对续写结果", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("当前状态：核对续写结果", substring = true).assertIsNotEnabled()
+        assertEquals(text, WorkStore(writingDir).text(workId, chapterId))
     }
 
     @Test
