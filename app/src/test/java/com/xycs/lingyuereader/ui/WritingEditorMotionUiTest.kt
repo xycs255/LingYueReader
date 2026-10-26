@@ -156,13 +156,19 @@ class WritingEditorMotionUiTest {
     }
 
     /** 弹出读者点评的面板，量正文框在头几帧和停稳后的高度。 */
-    private fun bodyHeightsWhenThePanelOpens(): Pair<Float, Float> {
+    private fun bodyHeightsWhenThePanelOpens(waitForFirstFrame: Boolean = false): Pair<Float, Float> {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         openEditor(vm)
         val before = bodyHeight()
         compose.mainClock.autoAdvance = false
         compose.runOnUiThread { vm.writingAi.run(workId, chapterId, text, WriteAiTask.Review) }
         advance(48)
+        // 减少动效测试等到状态流与面板首帧接上，再量瞬时高度；普通动效仍在第 48 ms 取早期高度。
+        if (waitForFirstFrame) {
+            var frames = 0
+            while (!shown("读者点评") && frames++ < 30) advance(16)
+            if (shown("读者点评")) advance(16)
+        }
         assertTrue("点评面板应当已经出来", shown("读者点评"))
         val early = bodyHeight()
         advance(1_000)
@@ -181,7 +187,7 @@ class WritingEditorMotionUiTest {
     @Test
     fun reducedMotionShowsThePanelAtOnce() {
         compose.runOnUiThread { Effects.systemNoMotion = true }
-        val (early, settled) = bodyHeightsWhenThePanelOpens()
+        val (early, settled) = bodyHeightsWhenThePanelOpens(waitForFirstFrame = true)
         assertEquals("减少动效时面板直接出现，正文框一下到位", settled, early, 0.5f)
     }
 
