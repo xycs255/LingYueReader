@@ -118,6 +118,61 @@ class WritingOutlineTest {
     }
 
     @Test
+    fun fencedMarkdownExamplesAreNotChapterOutlinesOrFacts() {
+        val markdown = """
+            # 第一卷细纲
+
+            ### 第一章 真章
+            事实：开端。
+
+            ```markdown
+            ## 第二卷
+            ### 第二章 示例章节
+            事实：只用于展示格式。
+            | 章 | 事实 |
+            |---|---|
+            | 第八章 | 示例表格 |
+            ```
+
+            事实：代码块之后仍属第一章。
+
+            ~~~text
+            第九章 示例段落：不应进入细纲。
+            ~~~
+
+            ### 第三章 真结尾
+            事实：真实的下一章。
+        """.trimIndent()
+        val txt = "第四章 原有写法：中文 TXT 细纲仍可识别。"
+        val entries = ChapterOutlines.parse(listOf("细纲.md" to markdown, "细纲.txt" to txt))
+
+        assertEquals(listOf(1, 3, 4), entries.map { it.from })
+        assertEquals(listOf(1, 1, null), entries.map { it.volume })
+        assertEquals("事实：开端。\n事实：代码块之后仍属第一章。", entries[0].text)
+        assertEquals("真实的下一章。", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 1, "第三章 真结尾")).facts)
+        assertTrue(entries.none { "示例" in it.text || "示例" in it.title })
+    }
+
+    @Test
+    fun separatorLinesAndUnclosedFencesNeverHideChapters() {
+        // TXT 导入的细纲用 ~~~~~~ 隔章：中间写着章号，不是代码块。
+        val tildes = "第一章 开端：林月守渡口。\n~~~~~~\n第二章 夜归：沈默回来。\n~~~~~~\n第三章 对岸：渡船沉了。\n~~~~~~\n第四章 尾声：天亮。"
+        assertEquals(listOf(1, 2, 3, 4), ChapterOutlines.parse(listOf("细纲" to tildes)).map { it.from })
+        val headed = "## 第一章\n事实：林月守渡口。\n```\n## 第二章\n事实：沈默回来。\n```\n## 第三章\n事实：渡船沉了。"
+        assertEquals(listOf(1, 2, 3), ChapterOutlines.parse(listOf("细纲" to headed)).map { it.from })
+
+        // 没闭合的围栏读到文末也不算围栏，后面的章照常认。
+        val unclosed = "## 第一章\n事实：林月守渡口。\n```\n## 第二章\n事实：沈默回来。\n## 第三章\n事实：渡船沉了。"
+        val entries = ChapterOutlines.parse(listOf("细纲" to unclosed))
+        assertEquals(listOf(1, 2, 3), entries.map { it.from })
+        assertEquals("渡船沉了。", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 1, "第三章")).facts)
+
+        // 行内的三个反引号不开围栏。
+        val inline = "## 第一章\n事实：用```代码```示意。\n## 第二章\n事实：沈默回来。"
+        assertEquals(listOf(1, 2), ChapterOutlines.parse(listOf("细纲" to inline)).map { it.from })
+    }
+
+    @Test
     fun explicitOtherVolumeNeverSuppliesNamedExactOrGroupFacts() {
         val sameName = listOf(
             OutlineEntry(3, 3, "夜渡", "事实：第一卷渡口", "第一卷细纲", volume = 1),

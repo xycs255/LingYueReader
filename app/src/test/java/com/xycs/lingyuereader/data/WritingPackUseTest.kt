@@ -70,7 +70,7 @@ class WritingPackUseTest {
 
     @Test
     fun packUnitsCarryTheVolumeLeadAndRangesAreNotExpanded() {
-        val units = PackUnits.split(outline)
+        val units = PackUnits.split(outline, documentTitle = "全书总纲")
         assertTrue(units.any { it.path == listOf("四、分卷速查", "第一卷《渡口》") && "第1章《夜渡》" in it.text })
         assertTrue(units.any { it.path.lastOrNull() == "第七卷《归乡》" && "老周已经不在了" in it.text })
         assertEquals(listOf(12..12, 14..14, 20..20, 1..40), PackRanking.refs("第12、14、20章接续；第一至四十章"))

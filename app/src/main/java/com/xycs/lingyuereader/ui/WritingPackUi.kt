@@ -9,6 +9,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -181,8 +182,8 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                 item {
                     if (shown != null) {
                         ImportPreview(shown, existing = docs.orEmpty().map { it.title }.toSet(), onEdit = { editingItem = it }) {
-                            preview = null
                             vm.writing.importPack(workId, shown) { r ->
+                                preview = null
                                 vm.showMessage(
                                     buildString {
                                         append("已导入")
@@ -287,18 +288,21 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
 @Composable
 private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, onEdit: (Int) -> Unit, onImport: () -> Unit) {
     val c = LocalGroupedColors.current
-    val count = items.count { it.include }
+    val count = items.count { it.include && it.text.isNotBlank() }
     // 导入后的标题：和前面导入的文档重名的加编号（导入时也按这个算）。
     val titles = remember(items, existing) { PackImport.docTitles(items, existing) }
+    fun excerpt(text: String): String = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+        .take(2).joinToString(" · ").take(140).ifBlank { "原文为空，请核对后再导入" }
     GroupedSection(
         header = "${items.size} 个文件",
         footer = "按文件名自动归类，点一行可以改。同名的文档会被替换，旧的内容存进历史版本；这次导入的文件之间重名的加编号，都留着。" +
             "“正文”会按章名拆开，接在最后一卷后面，重名的章同样加编号。",
     ) {
         items.forEachIndexed { i, item ->
+            val blank = item.text.isBlank()
             row {
                 GroupedRow(onClick = { onEdit(i) }) {
-                    Checkbox(state = ToggleableState(item.include), onClick = { onEdit(i) })
+                    Checkbox(state = ToggleableState(item.include && !blank), enabled = !blank, onClick = { onEdit(i) })
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text(
                             item.title,
@@ -317,6 +321,28 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                             },
                             color = c.secondary,
                             fontSize = 13.sp,
+                        )
+                        Text(
+                            "来源：${item.fileName.replace('\\', '/')}",
+                            color = c.secondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "原文：${excerpt(item.text)}",
+                            color = if (blank || item.garbled) c.warning else c.secondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = 12.sp)
+                        if (item.garbled) Text(
+                            "包含无法识别的字符，请核对原文件编码",
+                            color = c.warning,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
@@ -362,6 +388,8 @@ private fun PackDocFields(
 /** 改一个待导入文件：导不导、当设定（选类型、优先级、常用）还是当正文。 */
 @Composable
 private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave: (PackImportItem) -> Unit) {
+    val blank = item.text.isBlank()
+    var title by remember { mutableStateOf(item.title) }
     var include by remember { mutableStateOf(item.include) }
     var chapters by remember { mutableStateOf(item.asChapters) }
     var kind by remember { mutableStateOf(item.kind) }
@@ -370,7 +398,16 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
     GlassDialog(show = true, title = item.title, onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SegmentedControl(listOf(true to "导入", false to "不导入"), include) { include = it }
+            TextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(item.text.lineSequence().take(6).joinToString("\n").take(500).ifBlank { "原文为空，请核对后再导入" },
+                    color = if (item.text.isBlank() || item.garbled) c.warning else c.label,
+                    fontSize = 13.sp, lineHeight = 19.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = 12.sp)
+            }
+            if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = 13.sp)
+            else SegmentedControl(listOf(true to "导入", false to "不导入"), include) { include = it }
             SegmentedControl(listOf(false to "当设定", true to "当正文"), chapters) { chapters = it }
             if (chapters) {
                 Text("当正文：按章名拆成章节，接在最后一卷后面。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
@@ -392,9 +429,10 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
         DialogButtons(
             onDismiss = onDismiss,
             onConfirm = {
-                onSave(item.copy(include = include, asChapters = chapters, kind = kind, priority = priority, always = always))
+                onSave(item.copy(title = title.trim(), include = include && !blank, asChapters = chapters, kind = kind, priority = priority, always = always))
             },
             confirmText = "好",
+            confirmEnabled = title.isNotBlank(),
         )
     }
 }

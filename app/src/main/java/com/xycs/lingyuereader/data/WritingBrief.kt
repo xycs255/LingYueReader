@@ -114,6 +114,7 @@ data class ChapterBrief(
 
 /** 从设定包的文档里认出人物、察觉、伏笔，再按章挑资料。 */
 object ChapterBriefs {
+    private fun fencedLines(lines: List<String>): BooleanArray = MarkdownFences.mask(lines)
     const val LIMIT = 12_000
 
     // ---------- 人物 ----------
@@ -123,6 +124,8 @@ object ChapterBriefs {
         "人物", "主角", "配角", "姓名", "名字", "出身", "性格", "长处", "短处", "外貌", "经历", "关系", "动机", "目标", "弱点", "口头禅",
         "说话", "结局", "下场", "背景", "身份", "定位", "年龄", "备注", "注", "说明", "例", "例如", "想要", "害怕", "标志物", "怎么变",
         "怎么说话", "总规则", "原则", "要点", "注意", "补记", "附", "附注", "处境", "事业", "后续", "作用", "用法", "改动", "变更",
+        "人物档案", "人物设定", "人物关系", "核心人物", "主要人物", "次要人物", "角色档案", "角色设定", "角色关系",
+        "察觉表", "知情表", "人物知情", "知情状态", "故事账本",
     )
     private val nameChars = Regex("^[\\p{IsHan}·]{1,6}$")
     private val aliasPattern = Regex("(?:^|[，、（(\\s；;])(?:字|小名|乳名|又名|别名|外号|人称|绰号)[：:]?[“「]?(\\p{IsHan}{2,3})")
@@ -165,7 +168,7 @@ object ChapterBriefs {
         // 列表项里加粗的不一定是人名（“**出身：**”“**锋芒与越线：**”这类小标签）：带“与、的、及、和、之”的不算，
         // 名字后面带括号注（“林月（原创）”）或者在表格、标题里也出现过的一定算。
         val bullets = mutableListOf<Triple<String, String, Boolean>>()
-        for ((_, text) in docs) {
+        for ((documentTitle, text) in docs) {
             MdTable.parse(text).forEach { t ->
                 val col = t.column("人物", "角色", "姓名", "名字")
                 if (col < 0) return@forEach
@@ -182,8 +185,10 @@ object ChapterBriefs {
                 }
             }
             val lines = text.lines()
+            val fenced = fencedLines(lines)
             var i = 0
             while (i < lines.size) {
+                if (fenced[i]) { i++; continue }
                 val line = lines[i]
                 val bold = Regex("^(?:[-*]\\s+)?\\*\\*(.+?)\\*\\*").find(line.trim())
                 val top = !line.startsWith(" ") && !line.startsWith("\t")
@@ -192,7 +197,7 @@ object ChapterBriefs {
                     // 连同下面缩进的子项。
                     val block = StringBuilder(line.trim().removePrefix("- ").removePrefix("* "))
                     var j = i + 1
-                    while (j < lines.size && (lines[j].startsWith(" ") || lines[j].startsWith("\t")) && lines[j].isNotBlank()) {
+                    while (j < lines.size && !fenced[j] && (lines[j].startsWith(" ") || lines[j].startsWith("\t")) && lines[j].isNotBlank()) {
                         block.append('\n').append(lines[j].trim())
                         j++
                     }
@@ -207,9 +212,13 @@ object ChapterBriefs {
                 }
                 i++
             }
+            // 封面和资料分类的一级标题（“# 长夜人物”“# 反派”）不是人物。
+            val headingLines = text.removePrefix("\uFEFF").lines()
+            val cover = PackCover.line(headingLines, fenced, documentTitle)
             PackSections.split(text).forEach { s ->
                 val name = s.title.let { t -> cleanName(t)?.takeIf { t.replace(Regex("[（(].*"), "").trim().replace("*", "") == it } }
-                if (name != null && !s.text.trimStart().startsWith("|")) add(name, s.text)
+                val person = PackCover.mayBePerson(headingLines, fenced, s.line, cover)
+                if (name != null && person && !s.text.trimStart().startsWith("|")) add(name, s.text)
             }
         }
         val confirmed = found.keys.toSet()
@@ -273,14 +282,19 @@ object ChapterBriefs {
     fun knowledge(docs: List<Pair<String, String>>, people: Collection<String>): List<KnowledgeItem> {
         val out = mutableListOf<KnowledgeItem>()
         fun names(text: String) = people.filter { it.length >= 2 && it in text }.toSet()
-        for ((_, text) in docs) {
+        for ((documentTitle, text) in docs) {
             val sections = PackSections.split(text, chunk = Int.MAX_VALUE)
             val tables = MdTable.parse(text)
             val lines = text.lines()
+            val fenced = fencedLines(lines)
             tables.forEach { t ->
                 val firstLine = t.lines.firstOrNull() ?: return@forEach
                 val section = sections.lastOrNull { it.line <= firstLine }
-                val owners = section?.path.orEmpty().mapNotNull { cleanName(it) }.toSet()
+                val coverTitle = documentTitle.replace(Regex("\\.(?:md|markdown|txt)$", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("[《》「」\\s]"), "")
+                val owners = section?.path.orEmpty().filter {
+                    it.replace(Regex("[《》「」\\s]"), "") != coverTitle && !PackCover.looksLikeCategory(it)
+                }.mapNotNull { cleanName(it) }.toSet()
                 val timeCol = t.column("章", "卷", "时间", "从")
                 val secretCols = t.header.indices.filter { it != timeCol && secretColumn.containsMatchIn(t.header[it]) }.toSet()
                 val whoCol = t.header.indices.firstOrNull { it != timeCol && it !in secretCols && ("人物" in t.header[it] || "谁" in t.header[it]) } ?: -1
@@ -311,7 +325,7 @@ object ChapterBriefs {
             val inTable = tables.flatMap { it.lines }.toSet()
             lines.forEachIndexed { i, raw ->
                 val line = raw.trim()
-                if (i in inTable || line.startsWith("|") || line.startsWith("#") || !Regex("^(?:[-*]|\\d+[.、])\\s*").containsMatchIn(line)) return@forEachIndexed
+                if (fenced[i] || i in inTable || line.startsWith("|") || line.startsWith("#") || !Regex("^(?:[-*]|\\d+[.、])\\s*").containsMatchIn(line)) return@forEachIndexed
                 val chapter = ChapterRefs.find(line).minOrNull()
                 val volume = volumeRef.find(line)?.let { volumeOf(it.value) }
                 if (chapter == null && volume == null) return@forEachIndexed
@@ -356,9 +370,11 @@ object ChapterBriefs {
                 }
             }
             val inTable = tables.flatMap { it.lines }.toSet()
-            text.lines().forEachIndexed { i, raw ->
+            val lines = text.lines()
+            val fenced = fencedLines(lines)
+            lines.forEachIndexed { i, raw ->
                 val line = raw.trim()
-                if (i in inTable || !Regex("^[-*]\\s+").containsMatchIn(line)) return@forEachIndexed
+                if (fenced[i] || i in inTable || !Regex("^[-*]\\s+").containsMatchIn(line)) return@forEachIndexed
                 val refs = ChapterRefs.find(line)
                 if (refs.isEmpty()) return@forEachIndexed
                 val body = line.replace(Regex("^[-*]\\s+"), "").replace("**", "")
@@ -374,9 +390,9 @@ object ChapterBriefs {
         val lines = text.lines()
         if (f.line !in lines.indices) return text
         val mark = "已回收" + (chapter?.let { "（第${it}章）" } ?: "")
-        return if (lines[f.line].trim().startsWith("|")) {
+        val table = MdTable.parse(text).firstOrNull { f.line in it.lines }
+        return if (table != null) {
             if (f.statusColumn >= 0) return MdTable.setCell(text, f.line, f.statusColumn, mark)
-            val table = MdTable.parse(text).firstOrNull { f.line in it.lines } ?: return text
             // 只补这一行的话，多出的那格在表头之外，读的时候读不到：表头和分隔行也补上。
             val col = table.header.size
             val head = table.lines.first() - 2
@@ -555,7 +571,7 @@ object ChapterBriefs {
         val skipKeys = skip.map { it.replace(Regex("\\s"), "").take(24) }.filter { it.length >= 4 }
         // 账本导出的那份资料和上面的快照重复，账本不空时不再挑。
         val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds && (ledger.isEmpty() || d.title != LEDGER_EXPORT_TITLE) }.flatMap { (d, t) ->
-            PackUnits.split(t).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }.map { d to it }
+            PackUnits.split(t, documentTitle = d.title).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }.map { d to it }
         }
         val grams = pool.map { (_, u) -> PackRanking.bigrams(u.text) }
         val lexicon = PackRanking.Lexicon(grams)

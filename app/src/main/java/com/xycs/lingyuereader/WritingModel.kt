@@ -535,13 +535,49 @@ class WritingModel(
 
     /** 读选中的文件：zip 按设定包（或一包文本）读，文本文件按文件名认类型。 */
     suspend fun parseImport(files: List<Pair<String, () -> java.io.InputStream>>): List<PackImportItem> = withContext(Dispatchers.IO) {
-        files.flatMap { (name, open) ->
-            when {
-                name.endsWith(".zip", ignoreCase = true) -> PackImport.readZip(open)
-                PackImport.isText(name) -> listOf(PackImport.classify(name, com.xycs.lingyuereader.data.TextDecoder.decode(open().use { it.readBytes() })))
+        require(files.size <= PackImport.MAX_IMPORT_SOURCES) { "一次最多导入 ${PackImport.MAX_IMPORT_SOURCES} 个源文件" }
+        val items = ArrayList<PackImportItem>()
+        var storedBytes = 0L
+        var expandedBytes = 0L
+        files.forEach { (name, open) ->
+            if (!name.endsWith(".zip", ignoreCase = true) && !PackImport.isText(name)) return@forEach
+            val remaining = PackImport.MAX_IMPORT_BYTES - storedBytes
+            val left = PackImport.MAX_IMPORT_FILES - items.size
+            require(remaining > 0 && left > 0) { "设定包超过 ${PackImport.MAX_IMPORT_FILES} 份或 ${PackImport.MAX_IMPORT_BYTES / (1024 * 1024)} MB 导入上限" }
+            val remainingArchive = PackImport.MAX_ARCHIVE_EXPANDED_BYTES - expandedBytes
+            require(remainingArchive > 0) { "这批文件解压后超过 ${PackImport.MAX_ARCHIVE_EXPANDED_BYTES / (1024 * 1024)} MB 上限" }
+            val zip = name.endsWith(".zip", ignoreCase = true)
+            val parsed = when {
+                zip -> try {
+                    PackImport.readZipMeasured(open, remaining.toInt(), left, remainingArchive.toInt()).let { (inside, used) ->
+                        expandedBytes += used
+                        inside
+                    }
+                } catch (error: IllegalArgumentException) {
+                    if (error.message?.startsWith("ZIP 解压后超过") == true) {
+                        throw IllegalArgumentException("这批文件解压后超过 ${PackImport.MAX_ARCHIVE_EXPANDED_BYTES / (1024 * 1024)} MB 上限", error)
+                    }
+                    throw error
+                }
+                PackImport.isText(name) -> listOf(PackImport.classify(name, open().use {
+                    PackImport.readText(name, it, minOf(PackImport.MAX_TEXT_BYTES, remaining.toInt(), remainingArchive.toInt()))
+                }))
                 else -> emptyList()
             }
+            parsed.forEach { item ->
+                val utf8Bytes = item.text.toByteArray(Charsets.UTF_8).size
+                storedBytes += utf8Bytes
+                if (!zip) expandedBytes += utf8Bytes
+                require(storedBytes <= PackImport.MAX_IMPORT_BYTES && items.size < PackImport.MAX_IMPORT_FILES) {
+                    "设定包超过 ${PackImport.MAX_IMPORT_FILES} 份或 ${PackImport.MAX_IMPORT_BYTES / (1024 * 1024)} MB 导入上限"
+                }
+                require(expandedBytes <= PackImport.MAX_ARCHIVE_EXPANDED_BYTES) {
+                    "这批文件解压后超过 ${PackImport.MAX_ARCHIVE_EXPANDED_BYTES / (1024 * 1024)} MB 上限"
+                }
+                items += item
+            }
         }
+        items
     }
 
     fun importPack(workId: String, items: List<PackImportItem>, then: (PackImportResult) -> Unit) {

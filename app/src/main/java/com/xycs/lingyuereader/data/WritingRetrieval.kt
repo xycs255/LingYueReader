@@ -16,7 +16,7 @@ object PackUnits {
     private val lead = Regex("^\\*\\*([^*\\n]{2,40}?)[：:]?\\*\\*")
     private val item = Regex("^(?:[-*+•]\\s+|\\d{1,3}[.、)）]\\s*)")
 
-    fun split(text: String, max: Int = 900): List<PackUnit> {
+    fun split(text: String, max: Int = 900, documentTitle: String? = null): List<PackUnit> {
         val out = mutableListOf<PackUnit>()
         val headings = ArrayList<Pair<Int, String>>()
         var leadTitle: String? = null
@@ -50,7 +50,21 @@ object PackUnits {
             if (piece.isNotEmpty()) buf.append(piece).append('\n')
         }
         val lines = text.removePrefix("\uFEFF").lines()
+        // 只有封面一级标题（见 [PackCover]）不进标题链；“# 赵云 / ## 动机”这样的单人卡片要留着“赵云”。
+        val fenced = MarkdownFences.mask(lines)
+        val documentHeading = PackCover.line(lines, fenced, documentTitle)
+        var skippingCode = false
         lines.forEachIndexed { i, raw ->
+            if (fenced[i]) {
+                if (!skippingCode) {
+                    flush()
+                    tableHead = null
+                    leadTitle = null
+                }
+                skippingCode = true
+                return@forEachIndexed
+            }
+            skippingCode = false
             val line = raw.trimEnd()
             val trimmed = line.trim()
             val h = heading.matchEntire(trimmed)
@@ -60,7 +74,7 @@ object PackUnits {
                 leadTitle = null
                 val level = h.groupValues[1].length
                 while (headings.isNotEmpty() && headings.last().first >= level) headings.removeAt(headings.lastIndex)
-                if (level >= 2) headings += level to h.groupValues[2].replace("*", "").trim()
+                if (level >= 2 || i != documentHeading) headings += level to h.groupValues[2].replace("*", "").trim()
                 return@forEachIndexed
             }
             if (trimmed.isEmpty()) {

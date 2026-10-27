@@ -73,7 +73,7 @@ object PackKnowledge {
                 out.append("\n《").append(d.title).append("》（").append(d.kind.label).append("，").append(t.length).append(" 字")
                 if (d.always) out.append("，是知识库文档，模型上下文放不下改为按需查")
                 out.append("，来源 ").append(ReviewEvidence.ref("P", d.id, t)).append("）")
-                val heads = PackOutline.sections(t).map { it.title }.distinct().take(MAX_SECTIONS)
+                val heads = PackOutline.sections(t, d.title).map { it.path.joinToString(" › ") }.distinct().take(MAX_SECTIONS)
                 if (heads.isNotEmpty()) out.append("小节：").append(heads.joinToString("；"))
                 out.append('\n')
             }
@@ -82,22 +82,29 @@ object PackKnowledge {
     }
 }
 
-/** 文档里的小节：标题（各级“#”标题，和顶格粗体起头的行，如“**第一卷《渡口》**”）和它管的行。 */
+/** 文档里的小节：Markdown 标题与顶格粗体起头的行，以及各自管的行。 */
 object PackOutline {
     data class Section(val level: Int, val title: String, val path: List<String>, val start: Int, val end: Int)
 
-    private val heading = Regex("^(#{1,6})\\s+(.+?)\\s*#*$")
+    private val heading = Regex("^ {0,3}(#{1,6})[ \\t]+(.+?)\\s*#*$")
     private val lead = Regex("^\\*\\*([^*\\n]{2,40}?)[：:]?\\*\\*")
     private val item = Regex("^(?:[-*+•]\\s+|\\d{1,3}[.、)）]\\s*)")
+    private val keyChars = Regex("[《》「」\\s›>]")
+    private fun key(value: String) = value.replace(keyChars, "")
 
-    fun sections(text: String): List<Section> {
-        val lines = text.lines()
+    fun sections(text: String, documentTitle: String? = null): List<Section> {
+        val lines = text.removePrefix("\uFEFF").lines()
         val marks = mutableListOf<Pair<Int, Pair<Int, String>>>()
+        val fenced = MarkdownFences.mask(lines)
+        // 封面一级标题（见 [PackCover]）不算一节；别的一级标题管着卷、人物，要留在目录里。
+        val cover = PackCover.line(lines, fenced, documentTitle)
         lines.forEachIndexed { i, raw ->
+            if (fenced[i]) return@forEachIndexed
             val t = raw.trim()
-            heading.matchEntire(t)?.let { m ->
+            heading.matchEntire(raw.trimEnd())?.let { m ->
                 val level = m.groupValues[1].length
-                if (level >= 2) marks += i to (level to m.groupValues[2].replace("*", "").trim())
+                val title = m.groupValues[2].replace("*", "").trim()
+                if (title.isNotEmpty() && i != cover) marks += i to (level to title)
                 return@forEachIndexed
             }
             if (raw.isNotEmpty() && raw[0] != ' ' && raw[0] != '\t' && !item.containsMatchIn(t)) {
@@ -115,15 +122,17 @@ object PackOutline {
     }
 
     /** 读一节：标题对上（或含有）[name] 的第一节，连同它下面的小节。 */
-    fun read(text: String, name: String): String? {
-        val key = name.replace(Regex("[《》「」\\s]"), "")
-        if (key.isEmpty()) return null
-        val all = sections(text)
-        val s = all.firstOrNull { it.title.replace(Regex("[《》「」\\s]"), "") == key }
-            ?: all.firstOrNull { key in it.title.replace(Regex("[《》「」\\s]"), "") }
-            ?: all.firstOrNull { key in it.path.joinToString("").replace(Regex("[《》「」\\s]"), "") }
+    fun read(text: String, name: String, documentTitle: String? = null): String? {
+        val wanted = key(name)
+        if (wanted.isEmpty()) return null
+        val all = sections(text, documentTitle)
+        // Resolve an explicit path before a repeated leaf title such as “第一章”.
+        val s = all.firstOrNull { key(it.path.joinToString(" › ")) == wanted }
+            ?: all.firstOrNull { key(it.title) == wanted }
+            ?: all.firstOrNull { wanted in key(it.path.joinToString(" › ")) }
+            ?: all.firstOrNull { wanted in key(it.title) }
             ?: return null
-        return text.lines().subList(s.start, s.end).joinToString("\n").trim()
+        return text.removePrefix("\uFEFF").lines().subList(s.start, s.end).joinToString("\n").trim()
     }
 }
 
@@ -159,9 +168,10 @@ class PackTools(
     private fun clean(s: String) = s.replace(Regex("[《》「」“”\\s]"), "")
 
     private fun findDoc(title: String): Pair<PackDoc, String>? {
-        val key = clean(title).removeSuffix(".md").removeSuffix(".txt")
+        val key = clean(title).replace(Regex("\\.(?:md|markdown|txt)$", RegexOption.IGNORE_CASE), "")
         if (key.isEmpty()) return null
-        return docs.firstOrNull { clean(it.first.title) == key } ?: docs.firstOrNull { key in clean(it.first.title) || clean(it.first.title) in key }
+        fun normalized(name: String) = clean(name).replace(Regex("\\.(?:md|markdown|txt)$", RegexOption.IGNORE_CASE), "")
+        return docs.firstOrNull { normalized(it.first.title) == key } ?: docs.firstOrNull { key in normalized(it.first.title) || normalized(it.first.title) in key }
     }
 
     private fun page(text: String, offset: Int, max: Int): String {
@@ -174,10 +184,10 @@ class PackTools(
     private fun readDoc(title: String, section: String, offset: Int): String {
         val (d, t) = findDoc(title) ?: return "设定包里没有《$title》。有这些：" + docs.joinToString("、") { "《${it.first.title}》" }
         if (section.isNotBlank()) {
-            val s = PackOutline.read(t, section)
+            val s = PackOutline.read(t, section, d.title)
             lookups += "读《${d.title}》 › $section" + if (s == null) "（没找到这一节）" else ""
             return s?.let { page(it, offset, PAGE) + "\n[来源 ${ReviewEvidence.ref("P", d.id, t)}]" }
-                ?: "《${d.title}》里没有叫“$section”的小节。小节有：" + PackOutline.sections(t).joinToString("；") { it.title }.take(2_000)
+                ?: "《${d.title}》里没有叫“$section”的小节。小节有：" + PackOutline.sections(t, d.title).joinToString("；") { it.path.joinToString(" › ") }.take(2_000)
         }
         lookups += "读《${d.title}》" + if (offset > 0) "（从第 $offset 字起）" else ""
         return page(t, offset, PAGE) + "\n[来源 ${ReviewEvidence.ref("P", d.id, t)}]"
@@ -190,7 +200,7 @@ class PackTools(
         data class Hit(val where: String, val text: String, val score: Int)
         val hits = mutableListOf<Hit>()
         docs.forEach { (d, t) ->
-            val sections = PackOutline.sections(t)
+            val sections = PackOutline.sections(t, d.title)
             val sourceRef = ReviewEvidence.ref("P", d.id, t)
             paragraphs(t).forEach { (line, p) ->
                 val n = words.count { it in p }
@@ -219,7 +229,13 @@ class PackTools(
         val out = mutableListOf<Pair<Int, String>>()
         val buf = StringBuilder()
         var start = 0
-        text.lines().forEachIndexed { i, raw ->
+        val lines = text.lines()
+        val fenced = MarkdownFences.mask(lines)
+        lines.forEachIndexed { i, raw ->
+            if (fenced[i]) {
+                if (buf.isNotEmpty()) { out += start to buf.toString().trim(); buf.setLength(0) }
+                return@forEachIndexed
+            }
             val t = raw.trim()
             val boundary = t.isEmpty() || t.startsWith("#") || t.startsWith("- ") || t.startsWith("* ") || t.startsWith("|") || Regex("^\\d{1,3}[.、]").containsMatchIn(t)
             if (boundary && buf.isNotEmpty()) {
