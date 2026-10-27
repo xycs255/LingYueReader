@@ -44,6 +44,7 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferenceExcerpt
 import com.xycs.lingyuereader.data.ReferencePart
@@ -167,6 +168,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
     val reviewRequired = draft?.workflow == true || task?.project == true || reviewTask?.project == true
     val text = draft?.text.orEmpty()
+    // 本章细纲卡的节拍：有就逐拍写（见 WritingAi.writeBeats），这里只读地列出来。
+    val beatList = remember(card) { card?.let(::beats).orEmpty() }
     val counterpart = draft?.alternateText ?: draft?.initialText
     val counterpartLabel = if (draft?.alternateText != null) "对照修订稿" else "创作初稿"
     val loading = draft?.loading == true
@@ -312,6 +315,25 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     row { NavRow(if (card?.isEmpty == true) "先写细纲卡" else "编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                 }
+                if (beatList.isNotEmpty()) {
+                    val written = draft?.beats?.takeIf { it.total == beatList.size && text.isNotBlank() }?.written ?: 0
+                    GroupedSection(
+                        header = "节拍",
+                        footer = "本章有节拍：写本章时一拍一拍地写，每拍写完存一次候选稿。中途停下或出错，“接着写”从下一拍开始；" +
+                            "各拍写完再照常审读。节拍在细纲卡里改。",
+                    ) {
+                        beatList.forEach { b ->
+                            row {
+                                InfoRow(
+                                    "${b.index}. ${b.text}",
+                                    listOfNotNull(if (b.index <= written) "已写进候选稿" else null, b.length?.let { "约 $it 字" })
+                                        .joinToString(" · ").ifEmpty { "篇幅按全章平均分" },
+                                )
+                            }
+                        }
+                        row { NavRow("去改节拍") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
+                    }
+                }
                 GroupedSection(
                     header = if (text.isBlank()) "开始创作" else "继续处理",
                     footer = if (text.isBlank() && !loading) "AI 先写一版候选稿。你通读并审定后，才会进入正文。" else null,
@@ -363,7 +385,9 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                     if (text.isNotBlank() && !loading) {
-                        row { ActionRow("接着写", enabled = canWrite) { startDraft(more = true) } }
+                        // 逐拍写到一半：从下一拍接着写。
+                        val nextBeat = draft?.beats?.takeIf { it.total == beatList.size && it.written < it.total }?.written?.plus(1)
+                        row { ActionRow(nextBeat?.let { "接着写第 $it 拍" } ?: "接着写", enabled = canWrite) { startDraft(more = true) } }
                         row { ActionRow("审读并修订此稿", enabled = canReview) { startDraft(reviewOnly = true) } }
                     }
                     if (sent != null && sent?.label in setOf("写本章", "接着写", "本稿审读", "本稿修订")) {
@@ -443,7 +467,10 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     GroupedSection(header = "AI 正文草稿") {
                         row {
                             Column {
-                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits, draft?.takeIf { it.workflow }?.stage?.let { stage ->
+                                val writingBeat = draft?.beatWriting?.takeIf { loading && (!draft.workflow || draft.stage == DraftStage.CREATING) }
+                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits,
+                                    // 逐拍写时说写到第几拍。
+                                    writingBeat?.let { "正在写第 $it / ${beatList.size} 拍" } ?: draft?.takeIf { it.workflow }?.stage?.let { stage ->
                                     // 和“本稿审读”同一个判断：资料或要求变了，不再显示“可供采纳”。
                                     if (stage == DraftStage.READY && !loading && !reviewCurrent) STALE_REVIEW else stage.label
                                 }))

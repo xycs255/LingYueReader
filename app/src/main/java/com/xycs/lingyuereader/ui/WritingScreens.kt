@@ -92,7 +92,9 @@ import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ReferenceAnalysis
@@ -857,6 +859,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     val inlineAll by vm.writingAi.inline.collectAsStateWithLifecycle()
     val inline = inlineAll?.takeIf { it.workId == workId && it.chapterId == chapterId }
     var inlineDialog by remember { mutableStateOf(false) }
+    // 本章细纲卡：菜单里的“写这一拍…”要知道有没有节拍、哪几拍写过。进来读一次，每次打开菜单再读（细纲卡页改过、刚采纳过一拍都跟得上）。
+    var beatCard by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
+    var beatDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(workId, chapterId, menu) {
+        try { beatCard = vm.writing.cards(workId, chapterId).first.card }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { }
+    }
     val realtime by vm.writingAi.realtime.collectAsStateWithLifecycle()
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
@@ -965,7 +975,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
-    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null) {
+    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null, beat: Int? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -973,7 +983,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val text = st.text.toString()
         val at = if (atEnd) text.length else st.selection.max
-        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId)
+        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat)
     }
 
     /** 预览、审稿、草稿页要使用这一刻的编辑框，而不是等 800ms 自动保存。 */
@@ -1086,6 +1096,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
                                         // AI 写本章：在正文末尾接着写到本章结尾，写的字先显示，采纳才进正文。
                                         add("AI 写本章" to { startInline(InlineMode.TO_END, atEnd = true) })
+                                        // 细纲卡有节拍时：从光标处只写其中一拍。
+                                        if (beatCard?.let { beats(it).isNotEmpty() } == true) add("写这一拍…" to {
+                                            if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else beatDialog = true
+                                        })
                                         add("AI 写一版草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
                                         add("整理本章进设定包" to { startSync() })
@@ -1828,6 +1842,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         startSync()
                     },
                 )
+            }
+            if (beatDialog) {
+                beatCard?.let { card ->
+                    BeatPickDialog(card, onDismiss = { beatDialog = false }) { n ->
+                        beatDialog = false
+                        startInline(InlineMode.BEAT, beat = n)
+                    }
+                }
             }
             if (inlineDialog) {
                 InlineModeDialog(onDismiss = { inlineDialog = false }) { mode ->
