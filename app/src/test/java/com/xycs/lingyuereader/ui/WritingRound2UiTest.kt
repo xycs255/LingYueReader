@@ -154,6 +154,9 @@ class WritingRound2UiTest {
         // 审稿中和结果之间是淡入淡出的：过渡途中新旧两份都在，等只剩一份再点。
         waitFor { compose.onAllNodesWithText("林月这时还不知道").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
+        // The issue row click opens a separate dialog. Its action is composed after the row
+        // click, so wait for that exact option before asking Compose to click it.
+        waitFor { compose.onAllNodesWithText("按这条让 AI 改").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("按这条让 AI 改").performClick()
         // 采纳按钮在 AI 回答之前就在面板上：等请求发出、回答回来再点。
         waitFor { asked.any { "审稿意见" in it } }
