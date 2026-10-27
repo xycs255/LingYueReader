@@ -159,16 +159,16 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
         adding = true
     }
 
-    fun saveGraph(before: LedgerEntry?, after: LedgerEntry, label: String) {
-        val op = if (before == null) LedgerOp.Add(after) else LedgerOp.Update(after)
-        vm.writing.editLedger(workId, listOf(op), label) { added ->
+    // 改一条都带着界面上看到的旧样子：账本里那一条已经被整理、审稿页或别处改过时，存储层拒绝，不拿旧的覆盖。
+    fun saveGraph(before: LedgerEntry?, after: LedgerEntry, label: String, failed: () -> Unit = {}) {
+        val op = if (before == null) LedgerOp.Add(after) else LedgerOp.Update(after, expected = before)
+        vm.writing.editLedger(workId, listOf(op), label, failed) { added ->
+            val saved = vm.writing.ledgers.value[workId]?.firstOrNull { it.id == after.id }
             if (before == null && added == 0) vm.showMessage("账本里已有同样的一条")
-            else if (
-                vm.writing.ledgers.value[workId]?.firstOrNull { it.id == after.id }?.copy(updatedAt = 0) !=
-                after.copy(updatedAt = 0)
-            ) vm.showMessage("条目已变化，刚才的改动没有写入")
+            else if (saved == null || saved.copy(updatedAt = 0) != after.copy(updatedAt = 0)) vm.showMessage("条目已变化，刚才的改动没有写入")
             else {
-                graphUndo = LedgerGraphUndo(before, after, label)
+                // 撤销时拿刚写进去的这一条（连同写入时间）去比对：之后又被改过就不撤。
+                graphUndo = LedgerGraphUndo(before, saved, label)
                 vm.showMessage("已保存；可在账本页撤销上一步")
             }
         }
@@ -180,7 +180,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
             graphUndo = null
             vm.showMessage("这条记录已有其他改动，请从历史版本核对")
         } else {
-            vm.writing.editLedger(workId, listOf(op), "撤销" + change.label) {
+            vm.writing.editLedger(workId, listOf(op), "撤销" + change.label, failed = { if (graphUndo == change) graphUndo = null }) {
                 if (graphUndo == change) graphUndo = null
                 vm.showMessage("已撤销上一步")
             }
@@ -321,7 +321,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                         )
                                         LedgerVisualTab.PROMISES -> ledgerPromiseGraph(
                                             list, view.chapter, chapters.orEmpty(), view.person,
-                                            onPayoff = { e, payoff -> saveGraph(e, e.copy(payoff = payoff), "调整伏笔计划") },
+                                            onPayoff = { e, payoff, failed -> saveGraph(e, e.copy(payoff = payoff), "调整伏笔计划", failed) },
                                             onOpen = open,
                                         )
                                         LedgerVisualTab.KNOWLEDGE -> ledgerKnowledgeGraph(
@@ -376,7 +376,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                         if (n == 0) vm.showMessage("账本里已经有一样的一条")
                     }
                 } else {
-                    vm.writing.editLedger(workId, listOf(LedgerOp.Update(changed)), "手动修改")
+                    vm.writing.editLedger(workId, listOf(LedgerOp.Update(changed, expected = e)), "手动修改")
                 }
             }
         }
@@ -391,7 +391,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                     onDismiss = { deleting = null },
                     onConfirm = {
                         deleting = null
-                        vm.writing.editLedger(workId, listOf(LedgerOp.Remove(e.id)), "手动删除")
+                        vm.writing.editLedger(workId, listOf(LedgerOp.Remove(e.id, expected = e)), "手动删除")
                     },
                     confirmText = "删除",
                     destructive = true,

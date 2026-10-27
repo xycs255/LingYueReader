@@ -73,11 +73,11 @@ data class LedgerEntry(
 
     /**
      * 用来认重复：类别、谁、哪一方面、内容（去掉空白和标点差异）。人物状态、时间还要算上从第几章起：
-     * 先“在渡口”、去了京城、后来又“在渡口”，是新的一条。
+     * 先“在渡口”、去了京城、后来又“在渡口”，是新的一条。只有作者知道的另算：“林远不知道这件事”和“林远知道了这件事”是两条。
      */
     val key: String
         get() = kind.name + "|" + subject.trim() + "|" + aspect.trim() + "|" + ChapterSyncs.normalize(text) +
-            if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else ""
+            (if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else "") + if (secret) "|secret" else ""
 
     /** “第 12 章起”“第 3 章埋，计划第 9 章收”这类说明。 */
     val whenLabel: String
@@ -203,12 +203,19 @@ data class LedgerEntry(
 sealed interface LedgerOp {
     /** 加一条；和已有的重复（[LedgerEntry.key] 相同）时不加。 */
     data class Add(val entry: LedgerEntry) : LedgerOp
-    /** 换掉 [entry].id 那一条。 */
-    data class Update(val entry: LedgerEntry) : LedgerOp
+    /**
+     * 换掉 [entry].id 那一条。[expected] 是改之前看到的那一条（界面上的、撤销时刚写进去的）：
+     * 账本里那一条已经不是这个样子（别处改过、删了）就整批拒绝（[LedgerConflict]），不拿旧的覆盖后来的修改。
+     */
+    data class Update(val entry: LedgerEntry, val expected: LedgerEntry? = null) : LedgerOp
     /** 伏笔收了：第 [chapter] 章（不知道哪章为空）。 */
     data class Close(val id: String, val chapter: Int?, val quote: String = "", val chapterId: String = "") : LedgerOp
-    data class Remove(val id: String) : LedgerOp
+    /** 删掉一条；[expected] 同 [Update]。 */
+    data class Remove(val id: String, val expected: LedgerEntry? = null) : LedgerOp
 }
+
+/** 要改、要删的那一条已经被改过（或删了）：这一批都不写，界面刷新后再改。 */
+class LedgerConflict(val id: String) : IllegalStateException("这条已经被改过，请刷新后再改")
 
 /** 账本的一个历史版本：改之前的样子、什么时候、因为什么改的。 */
 data class LedgerVersion(val at: Long, val label: String, val count: Int)
@@ -236,7 +243,8 @@ object StoryLedger {
 
     /**
      * 把一批改动用在 [entries] 上，返回新的账本和实际加了几条（重复的不加）。[now] 记进改到的条目。
-     * 找不到 id 的改动跳过（作者在别处删了那一条）。
+     * 找不到 id 的改动跳过（作者在别处删了那一条）；带着改之前样子的改动（[LedgerOp.Update.expected]、[LedgerOp.Remove.expected]）
+     * 对不上账本里现在的那一条时抛 [LedgerConflict]，整批不算。
      */
     fun apply(entries: List<LedgerEntry>, ops: List<LedgerOp>, now: Long): Pair<List<LedgerEntry>, Int> {
         val out = entries.toMutableList()
@@ -253,6 +261,7 @@ object StoryLedger {
                 }
                 is LedgerOp.Update -> {
                     val i = out.indexOfFirst { it.id == op.entry.id }
+                    if (op.expected != null && out.getOrNull(i) != op.expected) throw LedgerConflict(op.entry.id)
                     if (i >= 0 && op.entry.text.isNotBlank()) {
                         keys -= out[i].key
                         out[i] = op.entry.copy(text = op.entry.text.trim(), subject = op.entry.subject.trim(), aspect = op.entry.aspect.trim(), updatedAt = now)
@@ -268,6 +277,7 @@ object StoryLedger {
                 }
                 is LedgerOp.Remove -> {
                     val i = out.indexOfFirst { it.id == op.id }
+                    if (op.expected != null && out.getOrNull(i) != op.expected) throw LedgerConflict(op.id)
                     if (i >= 0) keys -= out.removeAt(i).key
                 }
             }
@@ -296,7 +306,8 @@ object StoryLedger {
         // 时间：这一章写了的；没写就用前面最近的一条。
         val times = entries.filter { it.kind == LedgerKind.TIME && it.reached(chapter, volume) }
         val time = times.filter { it.from == chapter }.ifEmpty { listOfNotNull(times.maxByOrNull { it.from ?: -1 }) }
-        val secrets = entries.filter { it.secret && it.reached(chapter, volume) && concerns(it) }
+        // 只有作者知道的到了“第几章止”（人物在那一章得知了）就不再是秘密。
+        val secrets = entries.filter { it.secret && it.validAt(chapter, volume) && concerns(it) }
         return LedgerSnapshot(chapter, states, events, known, notYet, open, due, overdue, time, secrets)
     }
 }

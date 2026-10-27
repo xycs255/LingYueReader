@@ -396,8 +396,8 @@ class WorkStore(
             }
         }
         write(repaired.copy(updatedAt = maxOf(clock(), old.updatedAt + 1)))
-        // Keep an explicit restore guard: an archive with a misleading/future timestamp
-        // cannot silently replace the prose that was recovered after a crash.
+        // 留一个修复标记：时间写错（写成将来）的备份恢复时，修复出来的正文、设定、账本先存进历史版本，
+        // 候选稿保留本机的，不会被悄悄换掉。恢复成功后标记随旧目录换掉（见 stageRestoreWork）。
         val guard = recoveredSave(workId)
         if (guard.exists()) {
             // The guard means at least one local component was recovered. Keep it even if
@@ -695,18 +695,20 @@ class WorkStore(
         return added
     }
 
+    /** 把账本 [entries] 存成 [folder] 里的一个历史版本（[label] 说明之后为什么改），只留最近 [LEDGER_KEEP] 版。 */
+    private fun archiveLedger(folder: File, entries: List<LedgerEntry>, label: String) {
+        folder.mkdirs()
+        val taken = folder.listFiles().orEmpty().mapNotNull { it.name.removeSuffix(".json").toLongOrNull() }.toSet()
+        var at = clock()
+        while (at in taken) at++
+        val old = StoryLedger.toJson(entries).put("label", label)
+        check(DurableFiles.write(File(folder, "$at.json"), old.toString().toByteArray())) { "无法保存账本的历史版本" }
+        folder.listFiles().orEmpty().filter { it.name.removeSuffix(".json").toLongOrNull() != null }
+            .sortedByDescending { it.name.removeSuffix(".json").toLong() }.drop(LEDGER_KEEP).forEach { it.delete() }
+    }
+
     private fun saveLedger(workId: String, before: List<LedgerEntry>, after: List<LedgerEntry>, label: String) {
-        if (File(dir(workId), LEDGER).isFile) {
-            val folder = ledgerHistoryDir(workId)
-            folder.mkdirs()
-            val taken = folder.listFiles().orEmpty().mapNotNull { it.name.removeSuffix(".json").toLongOrNull() }.toSet()
-            var at = clock()
-            while (at in taken) at++
-            val old = StoryLedger.toJson(before).put("label", label)
-            check(DurableFiles.write(File(folder, "$at.json"), old.toString().toByteArray())) { "无法保存账本的历史版本" }
-            folder.listFiles().orEmpty().filter { it.name.removeSuffix(".json").toLongOrNull() != null }
-                .sortedByDescending { it.name.removeSuffix(".json").toLong() }.drop(LEDGER_KEEP).forEach { it.delete() }
-        }
+        if (File(dir(workId), LEDGER).isFile) archiveLedger(ledgerHistoryDir(workId), before, label)
         val bytes = StoryLedger.toJson(after).toString().toByteArray()
         beginSave(workId, "ledger", workId, bytes)
         check(DurableFiles.write(File(dir(workId), LEDGER), bytes)) { "无法保存故事账本" }
@@ -1672,10 +1674,13 @@ class WorkStore(
 
         val localDir = dir(incoming.id)
         if (localDir.exists()) require(localDir.isDirectory) { "本机作品路径无效" }
-        if (pendingSave(incoming.id).exists() || recoveredSave(incoming.id).exists()) {
+        if (pendingSave(incoming.id).exists()) {
             skipped += WritingSkip(incoming.title, "", "本机有中断后保留的写作内容；为避免覆盖，已跳过这部作品")
             return null
         }
+        // 中断后修复过的作品：正文、设定文档、账本恢复前照常存进历史版本，候选稿和备份不同的保留本机的；
+        // 恢复成功后这个标记随旧作品目录一起换掉，不会让这部作品以后每次恢复都被跳过。
+        val recovered = recoveredSave(incoming.id).exists()
         // Do not use get(): a damaged local work must never be mistaken for an absent one.
         // 本机的作品信息或设定索引读不出：这一部原样不动（坏文件另存一份），报告出来，不让整份恢复失败。
         fun <T> readLocal(file: File, parse: (String) -> T): T? = try {
@@ -1780,6 +1785,20 @@ class WorkStore(
                 skipped += WritingSkip(incoming.title, "$id.draft.txt", "备份候选稿与本机不同，且本机有创作初稿；保留本机草稿与初稿")
             }
         }
+        // 候选稿不进历史版本：中断后修复的作品，本机候选稿和备份不同就保留本机的。
+        if (recovered && local != null && drafts != null) drafts.forEach { (id, incomingBody) ->
+            val file = draftFile(incoming.id, id)
+            if (id in omittedDrafts || !file.exists()) return@forEach
+            val localBody = runCatching { file.readText() }.getOrNull()
+            if (localBody == null) {
+                skipped += WritingSkip(incoming.title, "$id.draft.txt", "本机中断后修复的候选稿读不出，无法留底；整部作品暂不恢复")
+                return null
+            }
+            if (localBody != incomingBody) {
+                omittedDrafts += id
+                skipped += WritingSkip(incoming.title, "$id.draft.txt", "本机候选稿是中断后修复的，和备份里的不同；保留本机草稿")
+            }
+        }
         return RestoreWork(incoming, local, texts, drafts?.filterKeys { it !in omittedDrafts },
             draftSources?.filterKeys { it !in omittedDrafts }, draftRevisions?.filterKeys { it !in omittedDrafts }, cards, changes, ledger,
             pack, localPack, assist, references)
@@ -1859,7 +1878,16 @@ class WorkStore(
             check(DurableFiles.write(File(destination, changesFile), value.toString().toByteArray())) { "无法暂存变更登记" }
         }
         plan.ledger?.let { entries ->
-            check(DurableFiles.write(File(destination, LEDGER), StoryLedger.toJson(entries).toString().toByteArray())) { "无法暂存故事账本" }
+            val target = File(destination, LEDGER)
+            // 本机账本和备份里的不同：先存进账本的历史版本（照正文、设定文档恢复前留底），恢复后在“历史版本”里找得回来。
+            // 账本历史在作品目录里，要写进暂存的这一份，才会随恢复一起换上去。
+            if (target.isFile) {
+                val raw = target.readBytes()
+                val local = runCatching { StoryLedger.parse(raw.toString(Charsets.UTF_8)) }.getOrNull()
+                if (local == null) check(DurableFiles.keptDamaged(target, raw)) { "本机故事账本损坏，且无法保存原件" }
+                else if (local != entries) archiveLedger(File(destination, LEDGER_HISTORY), local, "从备份恢复")
+            }
+            check(DurableFiles.write(target, StoryLedger.toJson(entries).toString().toByteArray())) { "无法暂存故事账本" }
         }
         plan.pack?.let { docs ->
             val folder = File(destination, PACK)
@@ -1874,6 +1902,9 @@ class WorkStore(
         plan.assist?.let {
             check(DurableFiles.write(File(destination, ASSIST), it.toJson().toString().toByteArray())) { "无法暂存设定" }
         }
+        // 中断修复的标记只留在换下来的旧目录里：提交后恢复的作品不再带着它；回滚时旧目录连同标记一起换回来。
+        val guard = File(destination, RECOVERED_SAVE)
+        check(!guard.exists() || guard.delete()) { "无法清理中断修复标记" }
         plan.references?.let { WritingReferenceBackup.stage(it, File(destination, WritingReferences.DIRECTORY), incoming.chapters.map { chapter -> chapter.id }.toSet()) }
         val metadata = incoming.copy(previewBookId = plan.local?.previewBookId ?: incoming.previewBookId)
         check(DurableFiles.write(File(destination, WORK), metadata.toJson().toString().toByteArray())) { "无法暂存作品信息" }

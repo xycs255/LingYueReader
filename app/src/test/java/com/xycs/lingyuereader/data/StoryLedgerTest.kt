@@ -268,4 +268,71 @@ class StoryLedgerTest {
         assertTrue(runCatching { store.restoreBackup(backup.toString()) }.isFailure)
         assertEquals(before, store.ledger(work.id))
     }
+
+    @Test
+    fun updateAndRemoveWithAStaleExpectedEntryAreRejectedAsAWholeBatch() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("渡口")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(promise("顾长风说三日后再来", 8, payoff = 11)), LedgerOp.Add(state("林月", "位置", "在渡口", 12))), "导入")
+        // 界面读到的样子：伏笔还开着。
+        val seen = s.ledger(w.id)
+        val p = seen.first { it.kind == LedgerKind.PROMISE }
+        val a = seen.first { it.kind == LedgerKind.STATE }
+        // 之后整理把伏笔收了。
+        s.applyLedger(w.id, listOf(LedgerOp.Close(p.id, 14, "顾长风推门进来")), "整理第 14 章")
+        val versions = s.ledgerVersions(w.id).size
+        val closed = s.ledger(w.id)
+        // 拿旧样子改计划收章：拒绝，整批（连同另一条没过期的）都不写，也不存历史版本。
+        val stale = runCatching {
+            s.applyLedger(w.id, listOf(LedgerOp.Update(a.copy(text = "在石桥"), expected = a), LedgerOp.Update(p.copy(payoff = 15), expected = p)), "调整伏笔计划")
+        }.exceptionOrNull()
+        assertTrue(stale is LedgerConflict)
+        assertEquals("这条已经被改过，请刷新后再改", stale!!.message)
+        assertEquals(closed, s.ledger(w.id))
+        assertTrue(s.ledger(w.id).first { it.id == p.id }.done)
+        assertEquals(versions, s.ledgerVersions(w.id).size)
+        assertTrue(runCatching { s.applyLedger(w.id, listOf(LedgerOp.Remove(p.id, expected = p)), "手动删除") }.exceptionOrNull() is LedgerConflict)
+        assertEquals(closed, s.ledger(w.id))
+        // 刷新以后拿到的样子：写得进去。
+        val fresh = s.ledger(w.id).first { it.id == p.id }
+        s.applyLedger(w.id, listOf(LedgerOp.Update(fresh.copy(text = "顾长风说三日后必来"), expected = fresh)), "手动修改")
+        assertEquals("顾长风说三日后必来", s.ledger(w.id).first { it.id == p.id }.text)
+        assertTrue(s.ledger(w.id).first { it.id == p.id }.done)
+        // 删掉了的也算变了。
+        assertTrue(runCatching { StoryLedger.apply(emptyList(), listOf(LedgerOp.Update(fresh, expected = fresh)), 1) }.exceptionOrNull() is LedgerConflict)
+    }
+
+    @Test
+    fun anAuthorOnlyTruthStopsBeingSecretAtItsUntilChapter() {
+        val truth = LedgerEntry(id = "t", kind = LedgerKind.KNOW, text = "赵四是朝廷的密探", subject = "林远", secret = true, until = 30)
+        assertEquals(listOf(truth), StoryLedger.snapshot(listOf(truth), 29).secrets)
+        assertTrue(StoryLedger.snapshot(listOf(truth), 30).secrets.isEmpty())
+    }
+
+    @Test
+    fun restoringABackupKeepsTheLocalLedgerInHistory() {
+        val root = tmp.newFolder()
+        val s = WorkStore(root)
+        val w = s.create("渡口")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(state("林月", "位置", "在渡口", 1))), "导入")
+        val backup = JSONObject(String(s.backup()!!))
+        // 备份以后本机又记了一条。
+        s.applyLedger(w.id, listOf(LedgerOp.Add(know("沈默", "杜娘是卧底", 15))), "手动添加")
+        val local = s.ledger(w.id)
+        backup.getJSONArray("works").getJSONObject(0).put("updatedAt", s.get(w.id)!!.updatedAt + 1_000_000)
+        assertEquals(1, s.restoreBackup(backup.toString()))
+        assertEquals(listOf("在渡口"), s.ledger(w.id).map { it.text })
+        // 恢复前的本机账本在“历史版本”里，可以换回来。
+        val kept = s.ledgerVersions(w.id).first()
+        assertEquals("从备份恢复", kept.label)
+        assertEquals(local, s.ledgerVersion(w.id, kept.at))
+        assertTrue(s.restoreLedger(w.id, kept.at))
+        assertEquals(local.map { it.text }, s.ledger(w.id).map { it.text })
+        // 本机和备份一样时不多存一版。
+        val same = String(s.backup()!!)
+        val versions = s.ledgerVersions(w.id).size
+        val again = JSONObject(same).apply { getJSONArray("works").getJSONObject(0).put("updatedAt", s.get(w.id)!!.updatedAt + 1_000_000) }
+        assertEquals(1, s.restoreBackup(again.toString()))
+        assertEquals(versions, s.ledgerVersions(w.id).size)
+    }
 }
