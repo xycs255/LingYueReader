@@ -145,7 +145,9 @@ object AiToolWire {
                             }
                         }
                     }
-                    when (choice.optString("finish_reason").takeIf { !choice.isNull("finish_reason") }) {
+                    val finishReason = choice.optString("finish_reason").takeIf { !choice.isNull("finish_reason") }
+                    AiWire.requireUninterruptedOpenAi(finishReason.orEmpty())
+                    when (finishReason) {
                         "length" -> truncated = true
                         "content_filter" -> refused = true
                     }
@@ -187,6 +189,7 @@ object AiToolWire {
             when (protocol) {
                 AiProtocol.OPENAI -> {
                     val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return
+                    AiWire.requireUninterruptedOpenAi(choice.optString("finish_reason"))
                     val msg = choice.optJSONObject("message") ?: return
                     val calls = msg.optJSONArray("tool_calls")
                     if (calls != null) for (i in 0 until calls.length()) calls.optJSONObject(i)?.put("index", i)

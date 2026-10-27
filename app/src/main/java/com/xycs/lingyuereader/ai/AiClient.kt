@@ -85,17 +85,25 @@ object AiWire {
         return host in setOf("api.openai.com", "api.deepseek.com", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com")
     }
 
-    fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true): String {
+    fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true,
+             maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false): String {
         val list = JSONArray()
         val o = JSONObject().put("model", c.model.trim()).put("stream", stream)
         when (c.protocol) {
             AiProtocol.OPENAI -> {
                 if (stream && streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
+                if (maxTokens != null) o.put("max_tokens", maxTokens)
+                val officialDeepSeek = runCatching { java.net.URI(c.baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }
+                    .getOrDefault(false)
+                if (disableOfficialDeepSeekThinking && officialDeepSeek &&
+                    c.model.trim().lowercase() in setOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH)) {
+                    o.put("thinking", JSONObject().put("type", "disabled"))
+                }
                 if (system.isNotEmpty()) list.put(JSONObject().put("role", "system").put("content", system))
                 messages.forEach { list.put(JSONObject().put("role", it.role).put("content", it.content)) }
             }
             AiProtocol.ANTHROPIC -> {
-                o.put("max_tokens", MAX_TOKENS)
+                o.put("max_tokens", maxTokens ?: MAX_TOKENS)
                 if (system.isNotEmpty()) o.put("system", system)
                 messages.forEach { list.put(JSONObject().put("role", it.role).put("content", it.content)) }
                 if (supportsEffort(c.model)) o.put("output_config", JSONObject().put("effort", "low"))
@@ -124,6 +132,7 @@ object AiWire {
                 if (choice == null) return Delta(usage = usage)
                 val text = choice.optJSONObject("delta")?.optStringOrEmpty("content") ?: ""
                 val finish = choice.optStringOrEmpty("finish_reason")
+                requireUninterruptedOpenAi(finish)
                 Delta(text, refused = finish == "content_filter", truncated = finish == "length", usage = usage)
             }
             AiProtocol.ANTHROPIC -> when (o.optString("type")) {
@@ -139,6 +148,14 @@ object AiWire {
                 else -> Delta()
             }
             AiProtocol.DEVICE -> Delta()
+        }
+    }
+
+    /** A partial answer after a provider interruption is not a complete writing candidate. */
+    fun requireUninterruptedOpenAi(finishReason: String) {
+        when (finishReason) {
+            "aborted" -> throw AiException("服务商中断了回答，本次内容不完整，请重试")
+            "insufficient_system_resource" -> throw AiException("服务商资源不足，中断了回答，本次内容不完整，请稍后重试")
         }
     }
 
@@ -167,7 +184,10 @@ object AiWire {
         val o = runCatching { JSONObject(body) }.getOrNull() ?: throw AiException("看不懂服务商的回复")
         o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").take(160)}") }
         return when (protocol) {
-            AiProtocol.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optStringOrEmpty("content").orEmpty()
+            AiProtocol.OPENAI -> o.optJSONArray("choices")?.optJSONObject(0)?.let { choice ->
+                requireUninterruptedOpenAi(choice.optStringOrEmpty("finish_reason"))
+                choice.optJSONObject("message")?.optStringOrEmpty("content").orEmpty()
+            }.orEmpty()
             AiProtocol.ANTHROPIC -> {
                 val content = o.optJSONArray("content") ?: JSONArray()
                 (0 until content.length()).mapNotNull { i -> content.optJSONObject(i)?.takeIf { it.optString("type") == "text" }?.optString("text") }.joinToString("")
@@ -260,6 +280,23 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
      * 回答到了长度上限被截断时：[whole] 为真（要完整 JSON 的整理、翻译）就报错，否则末尾加一句说明。
      */
     suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
+        streamWithOptions(config, system, messages, whole, onText)
+
+    /** Connection checks are real, billable requests: bound their output and disable official V4 thinking. */
+    internal suspend fun testConnection(config: AiConfig): String = streamWithOptions(
+        config, "", listOf(AiMessage("user", "请只回复“好”。")), maxTokens = 32,
+        disableOfficialDeepSeekThinking = true,
+    )
+
+    private suspend fun streamWithOptions(
+        config: AiConfig,
+        system: String,
+        messages: List<AiMessage>,
+        whole: Boolean = false,
+        onText: (String) -> Unit = {},
+        maxTokens: Int? = null,
+        disableOfficialDeepSeekThinking: Boolean = false,
+    ): String =
         if (config.onDevice) {
             val llm = device ?: throw AiException("这台手机用不了本机模型（要 64 位的手机）")
             llm.generate(config.model, system, messages, onText).also { if (it.isBlank()) throw AiException("本机模型没有回答") }
@@ -283,7 +320,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 conn.readTimeout = 90_000
                 conn.doOutput = true
                 AiWire.headers(config).forEach { (k, v) -> conn.setRequestProperty(k, v) }
-                conn.outputStream.use { it.write(AiWire.body(config, system, messages).toByteArray(Charsets.UTF_8)) }
+                conn.outputStream.use { it.write(AiWire.body(config, system, messages,
+                    maxTokens = maxTokens, disableOfficialDeepSeekThinking = disableOfficialDeepSeekThinking).toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
                 redirected(conn, code)?.let { throw AiException(it) }
                 if (code !in 200..299) {
@@ -296,9 +334,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     if (type.contains("json") && !type.contains("event-stream")) {
                         val body = reader.readText()
+                        usage = AiWire.wholeUsage(config.protocol, body)
                         val text = AiWire.whole(config.protocol, body)
                         truncated = AiWire.wholeTruncated(config.protocol, body)
-                        usage = AiWire.wholeUsage(config.protocol, body)
                         out.append(text)
                         onText(text)
                         return@use
@@ -364,10 +402,16 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         whole: Boolean = false,
         maxTokens: Int? = null,
         cacheExtra: Int = 0,
+        /** A project task must not pretend it consulted the pack after the model rejects tools. */
+        requireTools: Boolean = false,
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
-        if (config.onDevice || config.protocol == AiProtocol.DEVICE) return stream(config, system, listOf(AiMessage("user", prompt)), whole, onText)
+        if (requireTools && tools.isEmpty()) throw AiException("本次任务需要设定包查阅工具，但没有可用工具")
+        if (config.onDevice || config.protocol == AiProtocol.DEVICE) {
+            if (requireTools) throw AiException("本机模型不支持设定包查阅工具，无法完成本次任务")
+            return stream(config, system, listOf(AiMessage("user", prompt)), whole, onText)
+        }
         var useTools = tools
         retry@ while (true) {
             val turns = JSONArray().put(AiToolWire.user(config, prompt))
@@ -397,6 +441,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 }
             } catch (e: AiException) {
                 if (useTools.isNotEmpty() && round == 0 && AiToolWire.unsupported(e.message)) {
+                    if (requireTools) throw AiException("当前模型不支持设定包查阅工具，本次任务没有继续生成；请改用支持工具调用的模型")
                     useTools = emptyList()
                     continue@retry
                 }

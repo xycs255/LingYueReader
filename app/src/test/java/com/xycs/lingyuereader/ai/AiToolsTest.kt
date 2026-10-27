@@ -7,6 +7,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.net.InetSocketAddress
@@ -39,6 +40,27 @@ class AiToolsTest {
     private fun openAi() = AiConfig(enabled = true, preset = AiPresets.CUSTOM, baseUrl = "$base/v1", model = "deepseek-chat").withKey("sk-1")
     private fun anthropic() = openAi().copy(protocol = AiProtocol.ANTHROPIC, model = "claude-opus-5-5")
     private val tool = AiTool("read_chapter", "读一章", JSONObject().put("type", "object"))
+
+    @Test
+    fun interruptedToolStreamCannotReturnPartialAnswerOrRetryWithoutTools() = runBlocking<Unit> {
+        replies += 200 to """
+            data: {"choices":[{"delta":{"content":"未完成的正文"}}]}
+
+            data: {"choices":[{"delta":{},"finish_reason":"aborted"}]}
+
+            data: [DONE]
+
+        """.trimIndent()
+        try {
+            AiClient().converse(openAi().copy(model = AiPresets.DEEPSEEK_V4_PRO), "设定包", "写一章", listOf(tool),
+                run = { fail("中断时不应调用工具"); "" }, whole = true, requireTools = true)
+            fail("中断的部分正文不能作为完整回答")
+        } catch (e: AiException) {
+            assertTrue(e.message!!.contains("中断"))
+        }
+        assertEquals(1, requests.size)
+        assertTrue(requests.single().has("tools"))
+    }
 
     @Test
     fun openAiCompatibleModelsLookThingsUpThenAnswer() = runBlocking<Unit> {
@@ -91,6 +113,47 @@ class AiToolsTest {
         assertEquals("第三十四章：院里杀了两只羊。", result.getString("content"))
         // 每轮的系统提示一样：服务商能按相同开头缓存。
         assertEquals(first.getJSONArray("messages").getJSONObject(0).toString(), msgs.getJSONObject(0).toString())
+    }
+
+    @Test
+    fun deepSeekV4ProKeepsThinkingWithToolCallButOnlyShowsAnswer() = runBlocking<Unit> {
+        replies += 200 to """
+            data: {"choices":[{"delta":{"reasoning_content":"先核对"}}]}
+
+            data: {"choices":[{"delta":{"reasoning_content":"上一章。","tool_calls":[{"index":0,"id":"call_v4","type":"function","function":{"name":"read_chapter","arguments":"{\"chapter\":"}}]}}]}
+
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"34\"}"}}]},"finish_reason":"tool_calls"}]}
+
+            data: [DONE]
+
+        """.trimIndent()
+        replies += 200 to """
+            data: {"choices":[{"delta":{"reasoning_content":"已经核对。"}}]}
+
+            data: {"choices":[{"delta":{"content":"雪停了。"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+        """.trimIndent()
+        val config = openAi().copy(model = "deepseek-v4-pro")
+        var shown = ""
+        val answer = AiClient().converse(config, "设定包", "继续写", listOf(tool),
+            run = { call ->
+                assertEquals("read_chapter", call.name)
+                assertEquals("34", call.arguments.getString("chapter"))
+                "上一章正文"
+            },
+            onLookup = { shown = "" }, onText = { shown += it },
+        )
+        assertEquals("雪停了。", answer)
+        assertEquals(answer, shown)
+        assertEquals("deepseek-v4-pro", requests[0].getString("model"))
+        val next = requests[1].getJSONArray("messages")
+        val assistant = next.getJSONObject(2)
+        assertEquals("先核对上一章。", assistant.getString("reasoning_content"))
+        assertTrue(assistant.isNull("content"))
+        assertEquals("call_v4", assistant.getJSONArray("tool_calls").getJSONObject(0).getString("id"))
+        assertEquals("上一章正文", next.getJSONObject(3).getString("content"))
     }
 
     @Test

@@ -21,7 +21,9 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.URL
 import java.nio.file.Files
 
 /** 连本机的假服务：看请求发得对不对、流式回答能不能一段段收到、出错时说什么。 */
@@ -52,6 +54,32 @@ class AiClientTest {
     private val base get() = "http://127.0.0.1:${server.address.port}"
     private fun openAi() = AiConfig(enabled = true, preset = AiPresets.CUSTOM, baseUrl = "$base/v1", model = "m").withKey("sk-1")
     private fun anthropic() = openAi().copy(protocol = AiProtocol.ANTHROPIC, model = "claude-opus-5-5")
+
+    @Test
+    fun connectionTestSendsBoundedNonThinkingRequestToOfficialDeepSeekV4() = runBlocking<Unit> {
+        reply = Triple(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"好\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val client = AiClient { requested ->
+                assertEquals("api.deepseek.com", requested.host)
+                URL("$base/chat/completions").openConnection() as HttpURLConnection
+            }
+            val assistant = AiAssistant(scope, null, client, bookFile = { _, _ -> null })
+            val config = AiConfig(enabled = true).withKey("sk-existing")
+            listOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH).forEach { model ->
+                assertTrue(assistant.test(config.copy(model = model)).contains("连接正常"))
+                val (headers, body) = requests.last()
+                assertEquals("Bearer sk-existing", headers["authorization"])
+                assertEquals(model, body.getString("model"))
+                assertEquals(32, body.getInt("max_tokens"))
+                assertEquals("disabled", body.getJSONObject("thinking").getString("type"))
+                assertEquals("请只回复“好”。", body.getJSONArray("messages").getJSONObject(0).getString("content"))
+            }
+            assertEquals(2, requests.size)
+        } finally {
+            scope.cancel()
+        }
+    }
 
     @Test
     fun streamsOpenAiAnswersPieceByPiece() = runBlocking<Unit> {
@@ -114,6 +142,27 @@ class AiClientTest {
     fun readsNonStreamingReplies() = runBlocking<Unit> {
         reply = Triple(200, "application/json", """{"choices":[{"message":{"content":"整段"}}]}""")
         assertEquals("整段", AiClient().stream(openAi(), "", listOf(AiMessage("user", "问"))))
+    }
+
+    @Test
+    fun interruptedOpenAiStreamAndJsonNeverReturnPartialWriting() = runBlocking<Unit> {
+        reply = Triple(200, "text/event-stream", """
+            data: {"choices":[{"delta":{"content":"半章正文"}}]}
+
+            data: {"choices":[{"delta":{},"finish_reason":"insufficient_system_resource"}]}
+
+            data: [DONE]
+
+        """.trimIndent())
+        val streamed = runCatching { AiClient().stream(openAi(), "", listOf(AiMessage("user", "写")), whole = true) }
+        assertTrue(streamed.exceptionOrNull() is AiException)
+        assertTrue(streamed.exceptionOrNull()!!.message!!.contains("资源不足"))
+
+        reply = Triple(200, "application/json", """{"choices":[{"message":{"content":"半章正文"},"finish_reason":"aborted"}]}""")
+        val whole = runCatching { AiClient().stream(openAi(), "", listOf(AiMessage("user", "写")), whole = true) }
+        assertTrue(whole.exceptionOrNull() is AiException)
+        assertTrue(whole.exceptionOrNull()!!.message!!.contains("中断"))
+        assertEquals(2, requests.size)
     }
 
     @Test

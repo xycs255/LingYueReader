@@ -36,11 +36,13 @@ class AiWireTest {
     @Test
     fun openAiBodyPutsTheSystemPromptFirst() {
         val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "问"))))
-        assertEquals("deepseek-chat", o.getString("model"))
+        assertEquals(AiPresets.DEEPSEEK_V4_PRO, o.getString("model"))
         assertTrue(o.getBoolean("stream"))
         val m = o.getJSONArray("messages")
         assertEquals("system", m.getJSONObject(0).getString("role"))
         assertEquals("问", m.getJSONObject(1).getString("content"))
+        val flash = JSONObject(AiWire.body(deepseek.copy(model = AiPresets.DEEPSEEK_FLASH), "系统", listOf(AiMessage("user", "问"))))
+        assertEquals(AiPresets.DEEPSEEK_FLASH, flash.getString("model"))
     }
 
     @Test

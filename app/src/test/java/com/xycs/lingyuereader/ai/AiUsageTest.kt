@@ -75,6 +75,26 @@ class AiUsageTest {
     }
 
     @Test
+    fun deepSeekV4ProCountsCachedUsageWithoutShowingThinking() = runBlocking {
+        replies += sse(
+            """{"choices":[{"delta":{"reasoning_content":"先核对资料"}}]}""",
+            """{"choices":[{"delta":{"content":"雪停了。"},"finish_reason":"stop"}]}""",
+            """{"choices":[],"usage":{"prompt_tokens":1000,"prompt_cache_hit_tokens":900,"prompt_cache_miss_tokens":100,"completion_tokens":100}}""",
+            "[DONE]",
+        )
+        val config = AiConfig(enabled = true, preset = "deepseek", protocol = AiProtocol.OPENAI,
+            baseUrl = "$base/v1", model = "deepseek-v4-pro").withKey("sk")
+        val meter = AiMeter(AiFeature.DRAFT, "work")
+        val answer = withContext(meter) { AiClient().stream(config, "本章资料", listOf(AiMessage("user", "写"))) }
+        assertEquals("雪停了。", answer)
+        assertEquals("deepseek-v4-pro", bodies.single().getString("model"))
+        assertEquals(AiUsage(1000, 900, 100, requests = 1), meter.usage)
+        assertFalse(meter.usage.estimated)
+        // 高峰参考价：100 未命中 × 9 + 900 命中 × 0.30 + 100 输出 × 27，按百万 token 计。
+        assertEquals(0.00387, meter.cost.cny, 1e-12)
+    }
+
+    @Test
     fun nonStreamJsonAndKimiStyleUsage() = runBlocking {
         replies += "application/json" to """{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":50,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":32}}}"""
         val meter = AiMeter(AiFeature.TEST)
@@ -167,8 +187,13 @@ class AiUsageTest {
     @Test
     fun pricing() {
         val deepseek = AiConfig(enabled = true).withPreset(AiPresets.of("deepseek"))
-        // deepseek-chat 价格页上没有：不估。
-        assertNull(AiPricing.reference(deepseek))
+        val pro = AiPricing.reference(deepseek)!!
+        assertEquals("2026-10-25", pro.date)
+        assertEquals(9.0, pro.price.input, 0.0)
+        assertEquals(0.30, pro.price.cached, 0.0)
+        assertEquals(27.0, pro.price.output, 0.0)
+        // 旧 deepseek-chat 在价格页上没有：继续不估。
+        assertNull(AiPricing.reference(deepseek.copy(model = "deepseek-chat")))
         val flash = AiPricing.reference(deepseek.copy(model = "deepseek-flash"))!!
         assertEquals("2026-10-25", flash.date)
         val u = AiUsage(1_000_000, 900_000, 100_000, requests = 1)
@@ -182,9 +207,11 @@ class AiUsageTest {
         // 作者填的优先。
         val mine = AiPrice(1.0, 0.1, 2.0)
         assertEquals(mine, AiPricing.price(claude.copy(prices = mapOf("claude" to mine))))
-        // 通义千问、Kimi、自定义：没有内置价。
+        // 仍指向 DeepSeek 官方地址的“自定义”保留该模型的参考价；其他自定义地址不内置价。
         assertNull(AiPricing.reference(deepseek.withPreset(AiPresets.of("qwen"))))
-        assertNull(AiPricing.reference(deepseek.withPreset(AiPresets.of(AiPresets.CUSTOM))))
+        val custom = deepseek.withPreset(AiPresets.of(AiPresets.CUSTOM))
+        assertEquals(pro.price, AiPricing.reference(custom)?.price)
+        assertNull(AiPricing.reference(custom.copy(baseUrl = "https://custom.example/v1")))
         // 币种：折成人民币。
         assertEquals(7.1 + 1.0, AiCost(cny = 1.0, usd = 1.0).inCny(7.1), 1e-9)
         assertEquals("¥0.003", AiPricing.money(AiCost(cny = 0.003)))

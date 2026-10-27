@@ -128,7 +128,7 @@ fun AiScreen(vm: AppViewModel) {
                                         AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务"
                                         AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等"
                                         AiPresets.DEVICE -> if (DeviceModels.supported) "在这台手机上算，不联网" else "这台手机用不了（要 64 位的手机）"
-                                        else -> p.model
+                                        else -> if (config.preset == p.id) config.model.ifBlank { "尚未选择模型" } else p.model
                                     },
                                     enabled = p.id != AiPresets.DEVICE || DeviceModels.supported,
                                 ) {
@@ -141,6 +141,38 @@ fun AiScreen(vm: AppViewModel) {
                     val custom = config.preset == AiPresets.CUSTOM
                     val editableUrl = custom || config.preset == AiPresets.LOCAL
                     val preset = AiPresets.of(config.preset)
+                    if (config.preset == AiPresets.DEEPSEEK) {
+                        GroupedSection(
+                            header = "DeepSeek V4 系列",
+                            footer = "Pro 适合长篇创作，Flash 适合较快、较省的日常辅助。选择型号会更改下方模型名，费用由 DeepSeek 收取。" +
+                                "模型公布的上下文容量为 1M token；灵阅目前仍按 128K token 估算写作资料预算，不能据此保证整份项目包都已送入模型。",
+                        ) {
+                            row {
+                                CheckRow("V4 Pro", config.model == AiPresets.DEEPSEEK_V4_PRO,
+                                    subtitle = AiPresets.DEEPSEEK_V4_PRO) {
+                                    update(config.copy(model = AiPresets.DEEPSEEK_V4_PRO))
+                                    result = null
+                                }
+                            }
+                            row {
+                                CheckRow("V4.1 Flash", config.model == AiPresets.DEEPSEEK_FLASH,
+                                    subtitle = AiPresets.DEEPSEEK_FLASH) {
+                                    update(config.copy(model = AiPresets.DEEPSEEK_FLASH))
+                                    result = null
+                                }
+                            }
+                            if (config.retiredOfficialDeepSeek) {
+                                if (config.stoppedOfficialDeepSeek) {
+                                    row { ErrorText("当前保存的 ${config.model} 已停用。灵阅保留原选择和密钥，请手动选 V4 Pro 或 V4.1 Flash；切换后按新型号计费。",
+                                        Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                                } else {
+                                    row { Text("旧名 ${config.model} 已退役，官方目前仍暂时转到 V4.1 Flash。建议手动选新型号；灵阅没有自动更改你的模型或密钥。",
+                                        color = c.secondary, fontSize = 13.sp,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                                }
+                            }
+                        }
+                    }
                     // 选不选本机模型换的是一整组（本机模型 / 接口）：一组收起、一组展开，下面的卡片平滑挪过去，不一下跳开。
                     AnimatedVisibility(config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
                         Column { DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) } }
@@ -228,6 +260,9 @@ fun AiScreen(vm: AppViewModel) {
                                 }
                             }
                         }
+                        row { Text("会发送一条真实的短请求，服务商可能收费；仅验证连接，不验证长篇上下文或工具调用。",
+                            color = c.secondary, fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                         result?.takeIf { !it.first }?.let { (_, e) -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                     }
                     PriceSection(vm, config)
