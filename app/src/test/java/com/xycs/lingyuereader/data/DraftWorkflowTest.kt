@@ -156,10 +156,47 @@ class DraftWorkflowTest {
     }
 
     @Test fun invalidOrFabricatedReviewNeverPasses() {
-        for (answer in listOf("写得很好", "{}", """{"summary":[],"missing":[]}""", issue("正文里不存在的句子。"))) {
+        for (answer in listOf("写得很好", "{}", """{"summary":[],"missing":[]}""")) {
             try { DraftChecks.parse(answer, clean, task.fingerprint); fail("错误报告应拒绝：$answer") }
             catch (_: IllegalArgumentException) { }
         }
+        // 编造的原句不作废整份，但这份审读不能通过。
+        val fabricated = DraftChecks.parse(issue("正文里不存在的句子。"), clean, task.fingerprint)
+        assertFalse(fabricated.passed)
+        assertTrue(fabricated.findings.none { it.required })
+    }
+
+    @Test fun oneMismatchedQuoteDropsOnlyThatSuggestionOrMarksTheRequiredItemUnverified() = runBlocking {
+        val text = "林月推开渡口的木门，说：“沈默，你来晚了。”\n老周在船头收起缆绳。"
+        fun item(quote: String, required: Boolean, problem: String) =
+            """{"kind":"CRAFT","quote":"$quote","problem":"$problem","basis":"写作规范：对白保持自然语气","fix":"由作者决定","required":$required}"""
+        // 全角半角、空白不同的原句仍算对得上；改写过的建议原句对不上只丢掉这一条。
+        val suggestions = """{"summary":["对白可以更松"],"missing":[],"issues":[""" +
+            item("林月推开渡口的木门,说:“沈默,你来晚了。”", false, "可以多一点停顿") + "," +
+            item("杜娘在岸边喊了一声。", false, "这句原文并不存在") + "]}"
+        val kept = DraftChecks.parse(suggestions, text, task.fingerprint)
+        assertTrue(kept.passed)
+        assertEquals(listOf("可以多一点停顿"), kept.findings.map { it.problem })
+        assertTrue(kept.findings.single().quoteLocated)
+
+        // 必改项原句对不上：保留并标“依据未核实”，列进缺项，审读不通过，也不交给修订。
+        val required = """{"summary":[],"missing":[],"issues":[""" +
+            item("顾长风拔刀砍断了缆绳。", true, "缆绳不该被砍断") + "," +
+            item("老周在船头收起缆绳。", false, "动作可以更具体") + "]}"
+        val report = DraftChecks.parse(required, text, task.fingerprint)
+        assertFalse(report.passed)
+        assertEquals(2, report.findings.size)
+        val unverified = report.findings.first()
+        assertFalse(unverified.quoteLocated)
+        assertFalse("对不上原句的必改项不能当作已核实的依据", unverified.required)
+        assertTrue(unverified.render().startsWith("依据未核实"))
+        assertTrue(report.missing.single().contains("缆绳不该被砍断"))
+        assertTrue(report.findings.none { it.required })
+        var revised = false
+        val result = DraftWorkflow.run(task, RuleSet(), initial = text, create = { text }, review = { required },
+            revise = { _, _ -> revised = true; text })
+        assertFalse(revised)
+        assertEquals(DraftStage.NEEDS_REVIEW, result.stage)
     }
 
     @Test fun localHardRulesStillFailWhenTheModelSaysEverythingIsFine() = runBlocking {

@@ -158,6 +158,14 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             .onSuccess { task = it; taskError = null }
             .onFailure { taskError = it.message ?: "本章任务读取失败" }
     }
+    // 审读绑定审读时的要求：界面上新改的要求只用于下一次写，不让当前稿的审读失效。
+    var reviewTask by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
+    LaunchedEffect(workId, chapterId, draft?.assessment, draft?.taskInstruction, draft?.taskTargetLength, task) {
+        reviewTask = runCatching { vm.writingAi.reviewTask(workId, chapterId) }.getOrNull()
+    }
+    val reviewCurrent = draft?.assessment?.let { report -> reviewTask?.fingerprint == report.materials } == true
+    // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
+    val reviewRequired = draft?.workflow == true || task?.project == true || reviewTask?.project == true
     val text = draft?.text.orEmpty()
     val counterpart = draft?.alternateText ?: draft?.initialText
     val counterpartLabel = if (draft?.alternateText != null) "对照修订稿" else "创作初稿"
@@ -428,14 +436,17 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }
                 // AI 正文与人的审定分开：候选稿不会自动进入正文。
                 AnimatedVisibility(
-                    visible = text.isNotBlank() || loading || draft?.error != null,
+                    visible = text.isNotBlank() || loading || draft?.error != null || draft?.notice != null,
                     enter = Effects.enter(expandVertically(Motion.standard(Motion.MEDIUM), expandFrom = Alignment.Top) + fadeIn(Motion.standard(Motion.SHORT))),
                     exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
                 ) {
                     GroupedSection(header = "AI 正文草稿") {
                         row {
                             Column {
-                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits, draft?.takeIf { it.workflow }?.stage?.label))
+                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits, draft?.takeIf { it.workflow }?.stage?.let { stage ->
+                                    // 和“本稿审读”同一个判断：资料或要求变了，不再显示“可供采纳”。
+                                    if (stage == DraftStage.READY && !loading && !reviewCurrent) STALE_REVIEW else stage.label
+                                }))
                                 if (!loading) UsageNote(draft?.usage, draft?.cost, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
                             }
                         }
@@ -447,6 +458,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                         draft?.error?.let { e -> row { ErrorText((if (draft.workflow) "本次流程未完成：" else "没写成：") + e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                         draft?.revisionWarning?.let { warning -> row { ErrorText(warning, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
+                        draft?.notice?.takeIf { !loading }?.let { notice -> row { Text(notice, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
                         if (text.isNotBlank()) {
                             if (counterpart != null) row {
                                 SegmentedControl(listOf(DraftVersionView.CURRENT to "当前稿",
@@ -465,7 +478,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     GroupedSection(header = "本稿审读", footer = "结果只对应这一版稿件与项目资料。改稿或资料变化后要重新审读；流程通过不代表作者已定稿。") {
                         row {
                             NavRow(if (reviewExpanded) "收起审读证据与建议" else "展开审读证据与建议",
-                                value = if (draft.stage == DraftStage.READY && report.passed && task?.fingerprint == report.materials) "可供审定" else "待核对") {
+                                value = if (draft.stage == DraftStage.READY && report.passed && reviewCurrent) "可供审定" else "待核对") {
                                 reviewExpanded = !reviewExpanded
                             }
                         }
@@ -481,7 +494,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
                 if (text.isNotBlank() && !loading) {
-                    val reviewed = draft?.workflow != true || (draft.stage == DraftStage.READY && draft.assessment?.passed == true && task?.fingerprint == draft.assessment.materials)
+                    val reviewed = !reviewRequired || (draft?.stage == DraftStage.READY && draft.assessment?.passed == true && reviewCurrent)
                     val sourceChecked = draft?.referenceProvenanceBlocked == false
                     val sourceSummary = when {
                         !sourceChecked -> "来源：范本片段待核验"
@@ -490,7 +503,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         else -> "来源：本章任务资料 · 未使用范本"
                     }
                     val reviewSummary = when {
-                        draft?.workflow != true -> "审读：未启用自动审读，请自行通读"
+                        !reviewRequired -> "审读：未启用自动审读，请自行通读"
+                        draft?.workflow != true && !reviewed -> "审读：项目章要先审读本稿才能采纳"
                         reviewed -> "审读：已通过，上方可展开证据"
                         else -> "审读：未通过或已失效"
                     }
@@ -504,7 +518,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         row { ActionRow("放进正文", enabled = !locked && !revisionWriteBlocked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
                         if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
-                        if (!reviewed && draft.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
+                        if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
                         row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
                         if (draft?.initialText != null && draft.alternateText == null && text != draft.initialText)
                             row { ActionRow("恢复创作初稿", enabled = !locked && !revisionWriteBlocked) {
@@ -586,7 +600,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             fun place(replace: Boolean) {
                 placing = false
                 scope.launch {
-                    val blocked = vm.writingAi.draftBlocked(workId, chapterId, instruction, targetLength)
+                    val blocked = vm.writingAi.draftBlocked(workId, chapterId)
                     if (blocked != null) { vm.showMessage(blocked); return@launch }
                     vm.writing.applyDraft(workId, chapterId, text, replace) {
                         vm.writingAi.clearDraft(workId, chapterId)
@@ -639,6 +653,9 @@ private fun DraftIdeaTile(label: String, value: String, modifier: Modifier = Mod
             modifier = Modifier.padding(top = 3.dp))
     }
 }
+
+/** 审读通过，但资料或要求已经变了：状态标签不再显示“可供采纳”。 */
+private const val STALE_REVIEW = "审读已过时"
 
 /** 离底多远以内才跟着滚（像素，约一屏多）：再远说明作者往上翻着看，不拽回去。 */
 private const val FOLLOW_LIMIT = 1600

@@ -194,12 +194,19 @@ class ChapterWritingTaskTest {
             previous = next
         }
         change { it.copy(style = "保留普通生活对白。") }
-        change { it.copy(accepted = listOf(StyleExample("润色", "他说完。", "他说到这里停了停。", 1))) }
-        change { it.copy(declined = listOf(StyleExample("改稿", "他进门。", "真正的强者从不回头。", 2))) }
         change { it.copy(sampleLimit = 800) }
         change { it.copy(sampleFallback = false) }
         change { it.copy(sampleSkip = listOf("sample-a")) }
         change { it.copy(sampleShift = mapOf("DIALOGUE" to 1)) }
+    }
+
+    @Test fun acceptingOrDecliningAPolishElsewhereDoesNotInvalidateReviews() {
+        val s = WorkStore(tmp.newFolder()); val w = s.create("渡口"); val c = w.chapters[0].id
+        s.saveCard(w.id, c, ChapterCard(facts = "林月在渡口等沈默。"))
+        val first = s.writingTask(w.id, c)!!.fingerprint
+        s.updateAssist(w.id) { it.copy(accepted = listOf(StyleExample("润色", "她说完。", "她说到这里停了停。", 1))) }
+        s.updateAssist(w.id) { it.copy(declined = listOf(StyleExample("改稿", "她进门。", "真正的强者从不回头。", 2))) }
+        assertEquals(first, s.writingTask(w.id, c)!!.fingerprint)
     }
 
     @Test fun changingTheLedgerOutsideTheRenderedBudgetStillInvalidatesTheTaskFingerprint() {

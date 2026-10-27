@@ -442,6 +442,8 @@ object WritePrompts {
             .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("~~~") }
             .filterIndexed { i, l -> !(i == 0 && (l.startsWith("#") || ChapterTitles.isTxtChapterTitle(l))) }
             .filterNot { Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$").matches(it) }
+            // 兜底：连接层给问答加的拒答、中途停止提示不是正文（整稿请求遇到拒答本该已经报错）。
+            .filterNot { it == "模型拒绝回答这个问题。" || it == "（模型中途停止了回答。）" }
         return lines.joinToString("\n")
     }
 
