@@ -129,6 +129,12 @@ class ThemeContrastTest {
         }
         // 颜色之外每类还有自己的形状。
         assertEquals(SuggestKind.entries.size, SuggestKind.entries.map { suggestShape(it.name) }.toSet().size)
+        // 正文里的划线也按类分线形：四类互不相同，和标签形状一一对应。
+        assertEquals(SuggestKind.entries.size, SuggestKind.entries.map { suggestLine(it.name) }.toSet().size)
+        assertEquals(
+            listOf(SuggestLine.WAVY, SuggestLine.DOUBLE, SuggestLine.DASHED, SuggestLine.DOTTED),
+            listOf(SuggestKind.TYPO, SuggestKind.CANON, SuggestKind.STYLE, SuggestKind.VOICE).map { suggestLine(it.name) },
+        )
     }
 
     @Test

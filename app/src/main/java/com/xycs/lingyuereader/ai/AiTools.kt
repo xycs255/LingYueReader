@@ -273,7 +273,23 @@ object AiToolWire {
         else -> results.map { (call, out) -> JSONObject().put("role", "tool").put("tool_call_id", call.id).put("content", out) }
     }
 
-    /** 服务商（或模型）不支持工具调用时的报错：认出来就去掉工具重发。 */
-    fun unsupported(message: String?): Boolean =
-        message != null && Regex("(?i)tool|function.?call|does not support").containsMatchIn(message)
+    /**
+     * 服务商（或模型）明确说不支持工具调用的报错（4xx 回包原文）：tools、function calling、tool_choice 不被支持。
+     * 只认这几种说法；“max_tokens is not supported” 这类参数不兼容、别的含 tool 字样的报错都不算，照原样报出。
+     */
+    fun unsupported(message: String?): Boolean = message != null && TOOLS_UNSUPPORTED.any { it.containsMatchIn(message) }
+
+    /** 工具相关的字眼：tools、tool use / tool calls / tool calling、tool_choice、function calling、functions。 */
+    private const val TOOL_WORD = """(?:tools?|tool[ _-]?(?:use|calls?|calling|choice)|function[ _-]?call(?:s|ing)?|functions)"""
+    private val TOOLS_UNSUPPORTED = listOf(
+        // “model does not support tools”“doesn't support function calling”
+        Regex("""(?i)\b(?:does|do)\s*(?:not|n't)\s+support\s+$TOOL_WORD\b"""),
+        // “tools are not supported”“tool_choice none not supported”“function calling is unsupported”
+        Regex("""(?i)\b$TOOL_WORD\b[^.;\n]{0,40}?\b(?:(?:is|are)\s+)?(?:not\s+supported|unsupported|not\s+enabled)\b"""),
+        // “unsupported parameter: 'tools'”
+        Regex("""(?i)\b(?:unsupported|unrecognized|unknown)\s+(?:parameter|field|argument)s?\s*:?\s*['"`]?(?:tools|tool_choice|functions)\b"""),
+        // 有的兼容服务：“"auto" tool choice requires --enable-auto-tool-choice”
+        Regex("""(?i)tool[ _-]?choice\s+requires\b"""),
+        Regex("""不支持\s*(?:工具|函数调用|function|tool)"""),
+    )
 }

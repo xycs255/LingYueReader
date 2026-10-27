@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.ChapterSyncResult
 import com.xycs.lingyuereader.Jump
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.SyncSession
@@ -168,6 +169,7 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
         if (dropped > 0) add("有 $dropped 条在正文里找不到 AI 给的原句，没有列出（防止编造）。")
         if (known > 0) add("有 $known 条设定包或账本里已经有了，没再列。")
         if (session.results.any { it.error != null }) add("没整理全的章只展示提议供核对；重新整理成功后才能勾选写入。")
+        if (session.results.any { it.noTools }) add(ChapterSyncResult.NO_TOOLS_NOTE + "；勾选前请对照设定包看一遍。")
         add("勾上的才会写进去；写设定包之前原来的文字先存一个历史版本，每写一条在变更登记里记一笔；记进账本的一章一批，账本也存历史版本。")
     }.joinToString("")
     GroupedSection(footer = footer) {
@@ -188,7 +190,12 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
                         Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                     )
                 } else {
-                    TwoLine(r.title, "第 ${r.number} 章 · " + (if (r.parts > 1) "分 ${r.parts} 段整理 · " else "") + if (r.items.isEmpty()) "没有要整理的" else "${r.items.size} 条提议")
+                    TwoLine(
+                        r.title,
+                        "第 ${r.number} 章 · " + (if (r.parts > 1) "分 ${r.parts} 段整理 · " else "") +
+                            (if (r.items.isEmpty()) "没有要整理的" else "${r.items.size} 条提议") +
+                            (if (r.noTools) "\n" + ChapterSyncResult.NO_TOOLS_NOTE else ""),
+                    )
                 }
             }
         }

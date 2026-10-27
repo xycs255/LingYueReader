@@ -57,11 +57,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -71,7 +74,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextIndent
@@ -1165,8 +1167,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     // 按“哪条建议”“哪条规则的第几处”认，不按位置：正文一改位置就变，淡入淡出不能跟着乱。
                     val nth = HashMap<String, Int>()
                     val ruleBack = c.warning.copy(alpha = 0.2f)
-                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack, underline = false) } +
-                        issueSpans.map { (r, i) -> TextMark(i, r.first, r.last + 1, suggestColor(i.kind, c).copy(alpha = 0.14f), underline = true) }
+                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack) } +
+                        issueSpans.map { (r, i) ->
+                            val color = suggestColor(i.kind, c)
+                            TextMark(i, r.first, r.last + 1, color.copy(alpha = 0.14f), line = suggestLine(i.kind), lineColor = color)
+                        }
                 }
                 val markFades = remember(current) { MarkFades(effects) }
                 SideEffect { markFades.update(marks) }
@@ -1275,7 +1280,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             scrollState = textScroll,
                             onTextLayout = { result -> textLayout = result() },
                             decorator = { inner ->
-                                Box(Modifier.onGloballyPositioned { textCoordinates = it }) {
+                                Box(
+                                    Modifier
+                                        .onGloballyPositioned { textCoordinates = it }
+                                        // 写作建议的划线（按类分线形）：照排版结果画在正文底下，滚动在绘制时再算，不重组、不重排。
+                                        // AI 写的字插在正文里显示时位置对不上，先不画（底色那边同样不叠）。
+                                        .drawBehind {
+                                            if (inlineNow?.text.isNullOrEmpty()) drawMarkLines(markFades, textLayout, textScroll.value.toFloat())
+                                        },
+                                ) {
                                     if (current.text.isEmpty()) {
                                         Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp)
                                     }
@@ -1881,13 +1894,47 @@ private fun RealtimeLine(realtime: RealtimeState, onClick: () -> Unit) {
     }
 }
 
-/** 正文里的一处标记：[key] 认的是哪条建议、哪条规则的第几处，不是位置（正文一改位置就变）。 */
-private data class TextMark(val key: Any, val start: Int, val end: Int, val color: Color, val underline: Boolean) {
-    fun style(alpha: Float) = SpanStyle(
-        background = color.copy(alpha = color.alpha * alpha),
-        // 划线没法单独调透明度：淡到一半再画上，和底色一起出来、一起走。
-        textDecoration = if (underline && alpha >= 0.5f) TextDecoration.Underline else null,
-    )
+/**
+ * 正文里的一处标记：[key] 认的是哪条建议、哪条规则的第几处，不是位置（正文一改位置就变）。
+ * [color] 是底色；写作建议另有划线 [line]（按类分线形，颜色 [lineColor]），由 [drawMarkLines] 画，不走文字样式。
+ */
+private data class TextMark(
+    val key: Any,
+    val start: Int,
+    val end: Int,
+    val color: Color,
+    val line: SuggestLine? = null,
+    val lineColor: Color = Color.Unspecified,
+) {
+    fun style(alpha: Float) = SpanStyle(background = color.copy(alpha = color.alpha * alpha))
+}
+
+/**
+ * 按排版结果 [layout] 给带划线的标记画线：每个折行一段，画在基线下方；只画看得见的那几行。
+ * [scroll] 是正文现在滚了多少。透明度跟着底色一起淡入淡出（减少动效时直接是 1）。
+ */
+private fun DrawScope.drawMarkLines(fades: MarkFades, layout: TextLayoutResult?, scroll: Float) {
+    if (layout == null) return
+    val length = layout.layoutInput.text.length
+    val below = 3.dp.toPx()
+    clipRect {
+        fades.forEach { m, alpha ->
+            val line = m.line ?: return@forEach
+            if (alpha <= 0f || m.start !in 0 until m.end || m.end > length) return@forEach
+            val color = m.lineColor.copy(alpha = m.lineColor.alpha * alpha)
+            for (l in layout.getLineForOffset(m.start)..layout.getLineForOffset(m.end - 1)) {
+                if (layout.getLineBottom(l) - scroll < 0f) continue
+                if (layout.getLineTop(l) - scroll > size.height) break
+                val visibleEnd = layout.getLineEnd(l, visibleEnd = true)
+                val from = maxOf(m.start, layout.getLineStart(l))
+                val to = minOf(m.end, visibleEnd)
+                if (to <= from) continue
+                val x1 = layout.getHorizontalPosition(from, usePrimaryDirection = true)
+                val x2 = if (to >= visibleEnd) layout.getLineRight(l) else layout.getHorizontalPosition(to, usePrimaryDirection = true)
+                drawSuggestLine(line, color, minOf(x1, x2), maxOf(x1, x2), layout.getLineBaseline(l) - scroll + below)
+            }
+        }
+    }
 }
 
 /**

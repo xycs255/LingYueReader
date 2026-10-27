@@ -22,7 +22,13 @@ import kotlin.coroutines.coroutineContext
 data class AiMessage(val role: String, val content: String)
 
 /** 出错时给读者看的话（已经是中文、不含密钥）。 */
-class AiException(message: String) : Exception(message)
+open class AiException(message: String) : Exception(message)
+
+/**
+ * 服务商在开始回答之前（HTTP 4xx、没有正文流）明确说不支持工具调用：tools、function calling、tool_choice 不被支持。
+ * 只有这一种报错会让带工具的对话去掉工具重发；参数不兼容等别的错误、回答流中途的报错都照原样抛出。
+ */
+class AiToolsUnsupportedException(message: String) : AiException(message)
 
 /**
  * 两种接口的请求和回包格式。只管拼字符串、解析字符串，不联网，方便测试。
@@ -430,7 +436,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     /**
      * 带工具的对话：AI 可以先用工具查（交给 [run] 执行，拿结果）再答，最多查 [maxRounds] 轮，到了上限要求它直接作答。
      * 回答一段段到时调 [onText]；AI 决定去查时调 [onLookup]（这一轮之前说的话不是回答，调用方清掉重来）。
-     * 返回最后一轮的回答。服务商或模型不支持工具调用时，去掉工具重发一次。
+     * 返回最后一轮的回答。服务商或模型在第一轮就以 4xx 明确拒绝工具时（[AiToolsUnsupportedException]），去掉工具重发一次并调 [onToolsDropped]；
+     * [requireTools] 为真时不重发、直接报错。别的错误（参数不兼容、流中途报错等）原样抛出，不重发，免得重复计费。
      * [system] 的前 [cachePrefix] 个字每次都一样（设定包），Anthropic 上标成可缓存。
      */
     suspend fun converse(
@@ -446,6 +453,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         cacheExtra: Int = 0,
         /** A project task must not pretend it consulted the pack after the model rejects tools. */
         requireTools: Boolean = false,
+        /** 模型不支持工具、这次去掉工具重发了：调用方据此提示“没能查设定包”。 */
+        onToolsDropped: () -> Unit = {},
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
@@ -485,13 +494,12 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     }
                     AiToolWire.results(config, results).forEach { turns.put(it) }
                 }
-            } catch (e: AiException) {
-                if (useTools.isNotEmpty() && round == 0 && AiToolWire.unsupported(e.message)) {
-                    if (requireTools) throw AiException("当前模型不支持设定包查阅工具，本次任务没有继续生成；请改用支持工具调用的模型")
-                    useTools = emptyList()
-                    continue@retry
-                }
-                throw e
+            } catch (e: AiToolsUnsupportedException) {
+                if (useTools.isEmpty() || round != 0) throw e
+                if (requireTools) throw AiException("当前模型不支持设定包查阅工具，本次任务没有继续生成；请改用支持工具调用的模型")
+                useTools = emptyList()
+                onToolsDropped()
+                continue@retry
             }
         }
     }
@@ -520,6 +528,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
             redirected(conn, code)?.let { throw AiException(it) }
             if (code !in 200..299) {
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                // 还没开始回答就被拒：只有明确说不支持工具的 4xx 才算，交给 converse 去掉工具重发。
+                if (code in 400..499 && AiToolWire.unsupported(err)) throw AiToolsUnsupportedException(AiWire.error(code, err))
                 throw AiException(AiWire.error(code, err))
             }
             val type = conn.contentType.orEmpty()
