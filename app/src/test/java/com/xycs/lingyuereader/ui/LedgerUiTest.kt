@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -76,6 +77,14 @@ class LedgerUiTest {
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
+    }
+
+    private fun waitForStage(stage: String, condition: () -> Boolean) {
+        try {
+            waitFor(condition = condition)
+        } catch (failure: Throwable) {
+            throw AssertionError("账本界面等待阶段：$stage", failure)
+        }
     }
 
     private fun count(text: String, substring: Boolean = false) = compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().size
@@ -253,22 +262,28 @@ class LedgerUiTest {
     fun graphicalPersonStateKeepsEarlierChapterAndCanBeUndone() {
         seedLedger()
         open(Screen.WorkLedger(workId))
-        waitForText("位置 · 在渡口")
+        waitForStage("人物状态卡加载") { count("位置 · 在渡口", substring = true) > 0 }
         compose.onNodeWithText("位置 · 在渡口", substring = true).performClick()
-        waitForText("本章状态")
+        waitForStage("快捷状态弹窗显示") { count("本章状态", substring = true) > 0 }
         compose.onNode(hasSetTextAction() and hasText("在渡口，左臂伤未愈"))
             .performTextReplacement("在石桥，伤已痊愈")
         compose.onNode(hasSetTextAction() and hasText("12")).performTextReplacement("15")
+        waitForStage("第15章可保存") {
+            runCatching { compose.onNodeWithText("保存状态").assertIsEnabled(); true }.getOrDefault(false)
+        }
         compose.onNodeWithText("保存状态").performClick()
-        waitFor {
+        waitForStage("新状态写入磁盘") {
             store.ledger(workId).count { it.kind == LedgerKind.STATE && it.subject == "林月" } == 2
         }
         val states = store.ledger(workId).filter { it.kind == LedgerKind.STATE && it.subject == "林月" }
         assertTrue(states.any { it.from == 12 && it.text == "在渡口，左臂伤未愈" })
         assertTrue(states.any { it.from == 15 && it.text == "在石桥，伤已痊愈" && it.origin == LedgerOrigin.MANUAL })
-        waitForText("撤销上一步")
+        waitForStage("ViewModel 刷新与撤销入口显示") {
+            vm.writing.ledgers.value[workId]?.count { it.kind == LedgerKind.STATE && it.subject == "林月" } == 2 &&
+                count("撤销上一步 · 手动登记人物状态") == 1
+        }
         compose.onNodeWithText("撤销上一步 · 手动登记人物状态").performClick()
-        waitFor {
+        waitForStage("撤销写入磁盘") {
             store.ledger(workId).count { it.kind == LedgerKind.STATE && it.subject == "林月" } == 1
         }
         assertEquals("在渡口，左臂伤未愈", store.ledger(workId).first { it.kind == LedgerKind.STATE }.text)
