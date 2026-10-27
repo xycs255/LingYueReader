@@ -27,7 +27,7 @@ class WritingCommitRecoveryTest {
         getJSONArray("works").getJSONObject(0).put("updatedAt", laterThan + 1_000_000)
     }.toString()
 
-    @Test fun chapterCommitIsRepairedOnceAndOlderBackupCannotReplaceNewText() {
+    @Test fun chapterCommitIsRepairedOnceAndFutureStampedBackupKeepsRecoveredTextInHistory() {
         val root = tmp.newFolder()
         val store = WorkStore(root)
         val work = store.create("长夜")
@@ -49,8 +49,11 @@ class WritingCommitRecoveryTest {
         assertEquals(WordCount.of(body), reopened.stats().on(day))
         reopened.saveText(work.id, chapter, body, day)
         assertEquals(WordCount.of(body), reopened.stats().on(day))
-        assertEquals(0, reopened.restoreBackupReport(futureBackup(backup, reopened.get(work.id)!!.updatedAt)).restored)
-        assertEquals(body, reopened.text(work.id, chapter))
+        // 时间写成将来的旧备份：照常恢复，修复出来的正文先存进历史版本，找得回来。
+        assertEquals(1, reopened.restoreBackupReport(futureBackup(backup, reopened.get(work.id)!!.updatedAt)).restored)
+        assertEquals("", reopened.text(work.id, chapter))
+        assertEquals(body, reopened.snapshotText(work.id, chapter, reopened.history(work.id, chapter).first().at))
+        assertFalse(File(root, "works/${work.id}/.recovered-save.json").exists())
     }
 
     @Test fun chapterCommitBeforeStatsIsCountedOnceAfterRestart() {
@@ -89,13 +92,14 @@ class WritingCommitRecoveryTest {
 
         val reopened = WorkStore(root)
         val report = reopened.restoreBackupReport(futureBackup(backup, reopened.get(work.id)!!.updatedAt))
-        assertEquals(0, report.restored)
-        assertTrue(report.skipped.any { it.reason.contains("中断后保留") })
+        // 候选稿不进历史版本：和备份不同就保留本机修复出来的这份，作品其余部分照常恢复。
+        assertEquals(1, report.restored)
+        assertTrue(report.skipped.any { it.reason.contains("中断后修复") })
         assertEquals("新候选稿。", reopened.draft(work.id, chapter))
         assertFalse(reopened.draftContent(work.id, chapter).blocked)
     }
 
-    @Test fun unrelatedLaterEditDoesNotRemoveRecoveredProseGuard() {
+    @Test fun unrelatedLaterEditKeepsGuardUntilARestoreArchivesRecoveredProse() {
         val root = tmp.newFolder()
         val store = WorkStore(root)
         val work = store.create("长夜")
@@ -110,9 +114,38 @@ class WritingCommitRecoveryTest {
         val guarded = File(root, "works/${work.id}/.recovered-save.json")
         assertTrue(guarded.isFile)
         val report = WorkStore(root).restoreBackupReport(futureBackup(oldBackup, reopened.get(work.id)!!.updatedAt))
-        assertEquals(0, report.restored)
-        assertTrue(report.skipped.any { it.reason.contains("中断后保留") })
-        assertEquals("恢复后的正文", WorkStore(root).text(work.id, chapter))
+        assertEquals(1, report.restored)
+        assertTrue(report.skipped.none { it.reason.contains("中断后保留") })
+        val after = WorkStore(root)
+        assertEquals("恢复后的正文", after.snapshotText(work.id, chapter, after.history(work.id, chapter).first().at))
+        // 后来另存的候选稿备份里没有：原样留着。
+        assertEquals("另一份候选稿", after.draft(work.id, chapter))
+        // 标记随旧目录换掉：以后再恢复不会每次都被跳过。
+        assertFalse(guarded.exists())
+        val again = after.restoreBackupReport(futureBackup(oldBackup, after.get(work.id)!!.updatedAt + 2_000_000))
+        assertEquals(1, again.restored)
+        assertTrue(again.skipped.none { it.reason.contains("中断") })
+    }
+
+    @Test fun guardSurvivesARestoreThatDiesDuringTheSwap() {
+        val root = tmp.newFolder()
+        val store = WorkStore(root)
+        val work = store.create("长夜")
+        val chapter = work.chapters.single().id
+        val oldBackup = String(store.backup()!!)
+        val obstacle = blockMetadata(root, work.id)
+        assertTrue(runCatching { store.saveText(work.id, chapter, "恢复后的正文") }.isFailure)
+        assertTrue(obstacle.delete())
+        val reopened = WorkStore(root)
+        val guarded = File(root, "works/${work.id}/.recovered-save.json")
+        assertTrue(guarded.isFile)
+
+        // 换上恢复的作品以后、提交之前进程没了：下次启动回滚，旧目录连同标记一起回来。
+        val dying = WorkStore(root) { if (it == work.id) throw SimulatedProcessDeath() }
+        assertTrue(runCatching { dying.restoreBackupReport(futureBackup(oldBackup, reopened.get(work.id)!!.updatedAt)) }.isFailure)
+        val restarted = WorkStore(root)
+        assertTrue(guarded.isFile)
+        assertEquals("恢复后的正文", restarted.text(work.id, chapter))
     }
 
     @Test fun draftSourceWriteFailureKeepsPreviousCandidateAndReference() {

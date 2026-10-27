@@ -242,7 +242,11 @@ private fun SyncItemRow(
                     item.group == SyncGroup.STATE -> entry?.aspect?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                     else -> ""
                 }
-                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") + item.where + extra, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+                Text(
+                    (if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") +
+                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + item.where + extra,
+                    color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp,
+                )
             }
             if (item.writable && !selectable) Tag("待重整", c.warning, Modifier.padding(start = 8.dp))
             else if (!item.writable) Tag(if (item.fixText) "改正文" else "只提示", c.warning, Modifier.padding(start = 8.dp))
@@ -264,6 +268,12 @@ private fun SyncItemRow(
                         val says = if (item.place == SyncPlace.LEDGER) "账本" else "设定包${item.docTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }.orEmpty()}"
                         if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                         if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    item.maybeSame?.let { same ->
+                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    item.reveals?.let { secret ->
+                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                     }
                     val closes = item.closes
                     if (closes != null) {

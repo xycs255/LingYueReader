@@ -345,7 +345,7 @@ class WritingReferencesTest {
         val excerpt = source.selectedChapterExcerpt(work.id, reference.id, reference.chapters.last().id)!!
         source.saveReferenceAnalysis(work.id, ReferenceAnalysis.from(excerpt, work.chapters.single().id, "target-v1", "预算不足时随原文一起省略的分析。"))
         val skipped = mutableListOf<Pair<String, String>>()
-        val snapshot = WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 256) { title, reason -> skipped += title to reason }!!
+        val snapshot = WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 256, targetChapterIds = work.chapters.map { it.id }.toSet()) { title, reason -> skipped += title to reason }!!
         assertFalse(snapshot.getBoolean("complete"))
         assertEquals(0, snapshot.getJSONArray("items").length())
         assertEquals(0, snapshot.getJSONArray("analyses").length())
@@ -360,15 +360,107 @@ class WritingReferencesTest {
         assertEquals(beforeReferences, destination.references(work.id))
         assertEquals(beforeAnalyses, destination.referenceAnalyses(work.id))
         assertTrue(destination.referenceText(work.id, reference.id, reference.chapters.last().id)!!.contains("范本乙独有标记"))
-        assertNull(WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 255) { _, _ -> })
+        assertNull(WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 255, targetChapterIds = work.chapters.map { it.id }.toSet()) { _, _ -> })
         // 先检查实际文件体积：异常增大的文件应按预算省略，不读入后再因指纹错误失败。
         val oversizedFile = File(File(source.referenceRoot(work.id), reference.id), "${reference.chapters.last().id}.txt")
         java.io.RandomAccessFile(oversizedFile, "rw").use { it.setLength(20_000) }
         val oversizedSkipped = mutableListOf<String>()
-        val oversized = WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 10_000) { _, reason -> oversizedSkipped += reason }!!
+        val oversized = WritingReferenceBackup.snapshot(source.referenceRoot(work.id), budget = 10_000, targetChapterIds = work.chapters.map { it.id }.toSet()) { _, reason -> oversizedSkipped += reason }!!
         assertFalse(oversized.getBoolean("complete"))
         assertEquals(0, oversized.getJSONArray("items").length())
         assertTrue(oversizedSkipped.single().contains("预算"))
         assertFalse(oversizedSkipped.single().contains("读不出"))
+    }
+
+    @Test fun deletingAChapterDropsItsAnalysesAndTheBackupStillRestores() {
+        val (_, source, work) = fixture()
+        val kept = work.chapters.single().id
+        val volume = work.volumes.single().id
+        val (_, removed) = source.addChapter(work.id, volume, "第二章 渡口")!!
+        val reference = importedReference(source, work)
+        val excerpt = source.selectedChapterExcerpt(work.id, reference.id, reference.chapters.last().id)!!
+        val keptAnalysis = ReferenceAnalysis.from(excerpt, kept, "target-v1", "林月这一章借鉴的开场延迟。")
+        source.saveReferenceAnalysis(work.id, keptAnalysis)
+        source.saveReferenceAnalysis(work.id, ReferenceAnalysis.from(excerpt, removed.id, "target-v1", "沈默那一章的分析，删章后应一起清掉。"))
+        source.deleteChapter(work.id, removed.id)
+        assertEquals(listOf(keptAnalysis.id), source.referenceAnalyses(work.id).map { it.id })
+        val report = source.backupReport()!!
+        assertTrue(report.skipped.isEmpty())
+        val destination = WorkStore(tmp.newFolder())
+        destination.validateBackup(String(report.bytes))
+        val restored = destination.restoreBackupReport(String(report.bytes))
+        assertEquals(1, restored.restored)
+        assertEquals(listOf(keptAnalysis.id), destination.referenceAnalyses(work.id).map { it.id })
+    }
+
+    @Test fun deletingAVolumeDropsAnalysesOfEveryChapterInIt() {
+        val (_, store, work) = fixture()
+        val second = store.addVolume(work.id, "第二卷")!!.volumes.last().id
+        val (_, chapter) = store.addChapter(work.id, second, "第一章 夜渡")!!
+        val reference = importedReference(store, work)
+        val excerpt = store.selectedChapterExcerpt(work.id, reference.id, reference.chapters.last().id)!!
+        store.saveReferenceAnalysis(work.id, ReferenceAnalysis.from(excerpt, chapter.id, "target-v1", "老周撑船那一章的分析。"))
+        store.deleteVolume(work.id, second)
+        assertTrue(store.referenceAnalyses(work.id).isEmpty())
+    }
+
+    @Test fun orphanAnalysesFromOlderVersionsAreSkippedInBackupAndRestore() {
+        val (_, source, work) = fixture()
+        val target = work.chapters.single().id
+        val reference = importedReference(source, work)
+        val excerpt = source.selectedChapterExcerpt(work.id, reference.id, reference.chapters.last().id)!!
+        val live = ReferenceAnalysis.from(excerpt, target, "target-v1", "仍然有效的分析。")
+        source.saveReferenceAnalysis(work.id, live)
+        // 旧版本删章不清分析：直接写出一条指向不存在章节的孤儿分析。
+        val orphan = ReferenceAnalysis.from(excerpt, "gone-chapter", "target-v1", "指向已删章的孤儿分析。")
+        WritingReferences.writeAnalyses(source.referenceRoot(work.id), listOf(orphan, live))
+        val report = source.backupReport()!!
+        assertTrue(report.skipped.any { it.reason.contains("已删除") })
+        val component = JSONObject(String(report.bytes)).getJSONArray("works").getJSONObject(0).getJSONObject("references")
+        assertEquals(1, component.getJSONArray("analyses").length())
+
+        // 旧版本做出的备份里已经带着孤儿分析：跳过这一条并报告，其余照常恢复。
+        val archive = JSONObject(String(report.bytes))
+        archive.getJSONArray("works").getJSONObject(0).getJSONObject("references").getJSONArray("analyses")
+            .put(WritingReferences.analysisToJson(orphan))
+        val destination = WorkStore(tmp.newFolder())
+        destination.validateBackup(archive.toString())
+        val restored = destination.restoreBackupReport(archive.toString())
+        assertEquals(1, restored.restored)
+        assertTrue(restored.skipped.any { it.reason.contains("这条分析没有恢复") })
+        assertEquals(listOf(live.id), destination.referenceAnalyses(work.id).map { it.id })
+    }
+
+    @Test fun analysisRoomIsCheckedBeforeRequestsAndOrphansDoNotUseIt() {
+        val (_, store, work) = fixture()
+        val target = work.chapters.single().id
+        val reference = importedReference(store, work)
+        val excerpt = store.selectedChapterExcerpt(work.id, reference.id, reference.chapters.last().id)!!
+        val root = store.referenceRoot(work.id)
+        val full = (1..WritingReferences.MAX_ANALYSES).map { ReferenceAnalysis.from(excerpt, target, "target-v1", "渡口第 $it 份分析。") }
+        WritingReferences.writeAnalyses(root, full)
+        val error = runCatching { store.requireReferenceAnalysisRoom(work.id) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error!!.message!!.contains("先删几条旧分析"))
+        // 孤儿分析不占条数；下次保存时顺手清掉。
+        val orphans = full.take(10).map { it.copy(targetChapterId = "gone-chapter") }
+        WritingReferences.writeAnalyses(root, orphans + full.drop(10))
+        store.requireReferenceAnalysisRoom(work.id)
+        store.saveReferenceAnalysis(work.id, ReferenceAnalysis.from(excerpt, target, "target-v1", "新的一份分析。"))
+        assertEquals(91, store.referenceAnalyses(work.id).size)
+        assertTrue(store.referenceAnalyses(work.id).none { it.targetChapterId == "gone-chapter" })
+    }
+
+    @Test fun interruptedImportStagingDirectoriesAreCleanedUp() {
+        val (_, store, work) = fixture()
+        val root = store.referenceRoot(work.id)
+        val stale = File(root, ".import-stale").apply { mkdirs() }
+        File(stale, "c1.txt").writeText("中断时留下的半份范本。")
+        store.references(work.id)
+        assertFalse(stale.exists())
+        val again = File(root, ".import-again").apply { mkdirs() }
+        importedReference(store, work)
+        assertFalse(again.exists())
+        assertEquals(1, store.references(work.id).size)
     }
 }

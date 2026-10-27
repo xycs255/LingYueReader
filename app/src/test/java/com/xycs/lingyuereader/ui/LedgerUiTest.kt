@@ -224,6 +224,28 @@ class LedgerUiTest {
     }
 
     @Test
+    fun editingAnEntryChangedElsewhereIsRejectedAndThePageRefreshes() {
+        seedLedger()
+        open(Screen.WorkLedger(workId))
+        showAllRecords()
+        waitForStage("编辑前原条目唯一") { count("在渡口，左臂伤未愈") == 1 }
+        // 页面读过账本以后，整理在别处把这一条改了；页面上还是旧的。
+        val old = store.ledger(workId).first { it.kind == LedgerKind.STATE }
+        store.applyLedger(workId, listOf(LedgerOp.Update(old.copy(text = "在京城"))), "整理第 13 章")
+        compose.onNodeWithText("在渡口，左臂伤未愈").performClick()
+        waitForStage("编辑弹窗显示") { count("改一条", substring = true) > 0 }
+        compose.onNode(hasSetTextAction() and hasText("在渡口，左臂伤未愈")).performTextReplacement("在石桥，左臂伤未愈")
+        waitForStage("编辑保存按钮启用") {
+            runCatching { compose.onNodeWithText("保存").assertIsEnabled(); true }.getOrDefault(false)
+        }
+        compose.onNodeWithText("保存").performClick()
+        waitForStage("提示条目已被改过") { count("这条已经被改过，请刷新后再改", substring = true) > 0 }
+        // 整理改的没有被旧条目覆盖，页面换成了账本现在的样子。
+        assertEquals("在京城", store.ledger(workId).first { it.kind == LedgerKind.STATE }.text)
+        waitForStage("页面刷新") { count("在京城") == 1 && count("在渡口，左臂伤未愈") == 0 }
+    }
+
+    @Test
     fun deletingAsksFirst() {
         seedLedger()
         open(Screen.WorkLedger(workId))

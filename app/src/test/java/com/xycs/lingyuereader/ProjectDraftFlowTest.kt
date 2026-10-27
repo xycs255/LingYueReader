@@ -69,6 +69,8 @@ class ProjectDraftFlowTest {
     private val reviewEntered = CountDownLatch(1)
     private val releaseReview = CountDownLatch(1)
     @Volatile private var holdReview = false
+    /** 只在第几次审读时卡住（0 表示不按轮次卡）。 */
+    @Volatile private var holdReviewRound = 0
     @Volatile private var reviewMode = ReviewMode.ISSUE_THEN_PASS
     @Volatile private var failCreate = false
     @Volatile private var streamFenceOnly = false
@@ -80,7 +82,7 @@ class ProjectDraftFlowTest {
     @Volatile private var createEntered = CountDownLatch(1)
     @Volatile private var releaseFirstToken = CountDownLatch(1)
 
-    private enum class ReviewMode { ISSUE_THEN_PASS, PASS, MALFORMED }
+    private enum class ReviewMode { ISSUE_THEN_PASS, PASS, MALFORMED, ISSUE_THEN_MALFORMED }
     private data class Request(val phase: String, val system: String, val user: String) {
         val all: String get() = "$system\n$user"
     }
@@ -150,12 +152,13 @@ class ProjectDraftFlowTest {
                     "REVISE" -> revised
                     "REVIEW" -> {
                         val round = reviews.incrementAndGet()
-                        if (holdReview) {
+                        if (holdReview || round == holdReviewRound) {
                             reviewEntered.countDown()
                             check(releaseReview.await(15, TimeUnit.SECONDS)) { "测试没有放行审读响应" }
                         }
                         when {
                             reviewMode == ReviewMode.MALFORMED -> "这份稿子很好，可以直接使用。"
+                            reviewMode == ReviewMode.ISSUE_THEN_MALFORMED -> if (round == 1) finding() else "这份稿子很好，可以直接使用。"
                             reviewMode == ReviewMode.ISSUE_THEN_PASS && round == 1 -> finding()
                             else -> pass
                         }
@@ -409,7 +412,9 @@ class ProjectDraftFlowTest {
             vm.writingAi.writeDraft(workId, chapterId, "再写一版", workflow = workflow)
             assertEquals("请求开始时仍须看得到旧候选稿", old, vm.writingAi.drafts.value[workId to chapterId]?.text)
             val failed = completed(vm)
-            assertTrue(failed.error.orEmpty().contains("定稿"))
+            // 本次失败的原因只作提示，不挂到旧稿上挡采纳。
+            assertTrue(failed.notice.orEmpty().contains("定稿"))
+            assertNull(failed.error)
             assertEquals(old, failed.text)
             assertEquals(old, store.draft(workId, chapterId))
             assertTrue(chapterId in store.assist(workId).draftWorkflows)
@@ -431,8 +436,9 @@ class ProjectDraftFlowTest {
         vm.writingAi.writeDraft(workId, chapterId, "按旧设定重写", workflow = true, targetLength = "10—100字")
         assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
         val failed = completed(vm)
-        assertEquals(DraftStage.ERROR, failed.stage)
-        assertNotNull(failed.error)
+        assertEquals("旧稿保留自己的阶段", DraftStage.IDLE, failed.stage)
+        assertNull(failed.error)
+        assertNotNull(failed.notice)
         assertEquals(old, failed.text)
         assertEquals(old, store.draft(workId, chapterId))
         assertCounts(create = 1, review = 0, revise = 0)
@@ -450,11 +456,11 @@ class ProjectDraftFlowTest {
             waitUntil("旧稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
             vm.writingAi.writeDraft(workId, chapterId, workflow = workflow, targetLength = "10—100字")
             val failed = completed(vm)
-            assertNotNull(failed.error)
+            assertNull(failed.error)
+            assertNotNull(failed.notice)
             assertEquals(old, failed.text)
             assertEquals(old, store.draft(workId, chapterId))
             assertTrue(chapterId in store.assist(workId).draftWorkflows)
-            if (workflow) assertEquals(DraftStage.ERROR, failed.stage)
         }
         assertCounts(create = 2, review = 0, revise = 0)
     }
@@ -681,5 +687,134 @@ class ProjectDraftFlowTest {
         assertEquals("原修订稿", vm.writingAi.drafts.value.getValue(workId to chapterId).text)
         assertEquals("原修订稿", store.draft(workId, chapterId))
         assertEquals("保留的原件", File(sidecar, "unreadable").readText())
+    }
+
+    @Test
+    fun reviseThisDraftKeepsTheAuthorsEditAsTheVersionToSwitchBackTo() {
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        val first = completed(vm)
+        assertEquals(revised, first.text)
+        assertEquals(candidate, first.initialText)
+        // 作者手改修订后的稿子（保留审读引用的原句），再点“审读并修订此稿”，审读又给出必改项。
+        val edited = candidate + "林月在门外喊了一声，沈默没有应。"
+        vm.writingAi.updateDraftText(workId, chapterId, edited)
+        waitUntil("手改稿尚未保存") { store.draft(workId, chapterId) == edited }
+        reviews.set(0)
+        vm.writingAi.reviewDraft(workId, chapterId, targetLength = "10—100字")
+        val state = completed(vm)
+        assertEquals(state.error, DraftStage.READY, state.stage)
+        assertEquals(revised, state.text)
+        assertEquals("修订前必须把作者手改的这一版留底", edited, state.initialText)
+        assertEquals(edited, store.draftContent(workId, chapterId).revision?.initialText)
+        vm.writingAi.restoreInitialDraft(workId, chapterId)
+        waitUntil("手改稿没能换回") { store.draft(workId, chapterId) == edited }
+        assertEquals(revised, vm.writingAi.drafts.value.getValue(workId to chapterId).alternateText)
+        assertTrue("修订请求针对的是手改稿", edited in asked.last { it.phase == "REVISE" }.user)
+    }
+
+    @Test
+    fun aSavedRevisionSurvivesAFailedOrStoppedReReview() {
+        for (stop in listOf(false, true)) {
+            store.saveDraft(workId, chapterId, candidate)
+            store.setDraftWorkflow(workId, chapterId, true)
+            reviews.set(0)
+            reviewMode = if (stop) ReviewMode.ISSUE_THEN_PASS else ReviewMode.ISSUE_THEN_MALFORMED
+            holdReviewRound = if (stop) 2 else 0
+            val vm = model()
+            vm.writingAi.loadDraft(workId, chapterId)
+            waitUntil("旧候选稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == candidate }
+            vm.writingAi.reviewDraft(workId, chapterId, targetLength = "10—100字")
+            val state = if (stop) {
+                waitUntil("复审请求尚未到达") { reviewEntered.count == 0L }
+                vm.writingAi.stopDraft(workId, chapterId)
+                completed(vm)
+            } else completed(vm)
+            assertEquals("已付费的修订稿不能被回滚", revised, state.text)
+            assertEquals(candidate, state.initialText)
+            assertNull(state.assessment)
+            if (stop) {
+                assertEquals(DraftStage.STOPPED, state.stage)
+                assertEquals(WritingAi.REVISION_SAVED, state.notice)
+            } else {
+                assertEquals(DraftStage.ERROR, state.stage)
+                assertTrue(state.error.orEmpty(), state.error.orEmpty().startsWith(WritingAi.REVISION_SAVED))
+            }
+            waitUntil("修订稿没有留在磁盘上") { store.draft(workId, chapterId) == revised }
+            assertEquals(candidate, store.draftContent(workId, chapterId).revision?.initialText)
+            assertNotNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+            releaseReview.countDown()
+            vm.writingAi.forget()
+        }
+    }
+
+    @Test
+    fun aFailedOrStoppedRewriteRestoresTheOldCandidateWithItsPassingReview() {
+        reviewMode = ReviewMode.PASS
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        val ready = completed(vm)
+        assertEquals(DraftStage.READY, ready.stage)
+        assertNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+        streamFenceOnly = true
+        failCreate = true
+        for (workflow in listOf(true, false)) {
+            vm.writingAi.writeDraft(workId, chapterId, "林月先开口", workflow = workflow, targetLength = "10—100字")
+            val failed = completed(vm)
+            assertEquals(candidate, failed.text)
+            assertEquals(DraftStage.READY, failed.stage)
+            assertEquals(ready.assessment, failed.assessment)
+            assertNull("本次的请求错误不能挡住旧稿采纳", failed.error)
+            assertTrue(failed.notice.orEmpty(), failed.notice.orEmpty().contains("已保留上一版"))
+            assertEquals("林月先开口", failed.instruction)
+            assertNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+        }
+        failCreate = false
+        holdBeforeFence = true
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        waitUntil("创作请求尚未进入假服务商") { createEntered.count == 0L }
+        vm.writingAi.stopDraft(workId, chapterId)
+        releaseFirstToken.countDown()
+        val stopped = completed(vm)
+        assertEquals(candidate, stopped.text)
+        assertEquals(DraftStage.READY, stopped.stage)
+        assertEquals(ready.assessment, stopped.assessment)
+        assertNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+        waitUntil("停止后旧稿未落盘") { store.draft(workId, chapterId) == candidate }
+    }
+
+    @Test
+    fun aNewDirectionForTheNextRewriteDoesNotInvalidateTheCurrentReview() {
+        reviewMode = ReviewMode.PASS
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, "保留借灯前的犹豫", workflow = true, targetLength = "10—100字")
+        val ready = completed(vm)
+        assertEquals(DraftStage.READY, ready.stage)
+        vm.writingAi.saveDraftIntent(workId, chapterId, "下次让林月先开口", "约300字", true)
+        waitUntil("新方向未保存") { store.draftIntent(workId, chapterId)?.instruction == "下次让林月先开口" }
+        assertNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+        assertEquals(ready.assessment!!.materials, runBlocking { vm.writingAi.reviewTask(workId, chapterId) }!!.fingerprint)
+        // 真正的资料变化仍让审读失效。
+        store.savePackText(workId, reviewTemplateId, "$reviewMarker\n新版本补充：另核渡口一带的灯火。")
+        assertTrue(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) }.orEmpty().contains("过时"))
+    }
+
+    @Test
+    fun aProjectChapterNeedsReviewWhetherOrNotTheWorkflowSwitchIsOn() {
+        reviewMode = ReviewMode.PASS
+        streamFenceOnly = true
+        streamFirstText = "林月推门进来，把灯笼挂在渡口的柱子上。"
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = false, targetLength = "10—100字")
+        val written = completed(vm)
+        assertEquals(streamFirstText, written.text)
+        assertFalse(written.workflow)
+        assertNull("旧审读不能挂在新稿下面", written.assessment)
+        val before = runBlocking { vm.writingAi.draftBlocked(workId, chapterId) }
+        assertNotNull("关掉开关写的项目章也要先审读", before)
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        waitUntil("重启后没有读到候选稿") { restarted.writingAi.drafts.value.containsKey(workId to chapterId) }
+        assertEquals("重启前后判定一致", before, runBlocking { restarted.writingAi.draftBlocked(workId, chapterId) })
     }
 }

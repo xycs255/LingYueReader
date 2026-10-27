@@ -124,8 +124,8 @@ class WritingReferenceImportTest {
     }
 
     @Test fun sourceLimitsAreAvailableBeforeReadingUnsupportedOrOversizedFiles() {
-        assertEquals(128L * 1024 * 1024, WritingReferenceImport.byteLimit("大书.TXT"))
-        assertEquals(256L * 1024 * 1024, WritingReferenceImport.byteLimit("大书.epub"))
+        assertEquals(32L * 1024 * 1024, WritingReferenceImport.byteLimit("大书.TXT"))
+        assertEquals(64L * 1024 * 1024, WritingReferenceImport.byteLimit("大书.epub"))
         assertTrue(runCatching { WritingReferenceImport.byteLimit("漫画.pdf") }.exceptionOrNull() is IllegalArgumentException)
         assertTrue(runCatching { WritingReferenceImport.parse("范本.epub", "不是压缩文件") }.exceptionOrNull() is IllegalArgumentException)
         val tooLarge = tmp.newFile("large.txt")
@@ -133,7 +133,85 @@ class WritingReferenceImportTest {
         assertTrue(runCatching { WritingReferenceImport.parse("large.txt", tooLarge) }.exceptionOrNull() is IllegalArgumentException)
     }
 
-    private fun epub(vararg files: Pair<String, String>, order: List<String> = files.map { it.first }): ByteArray {
+    @Test fun volumeLinesKeepInlineChapterTitlesAndOrdinaryBodySentences() {
+        val book = WritingReferenceImport.parse("书.txt",
+            "第一卷 风起 第一章 少年\n林月在渡口等船。\n第二章 远行\n沈默背着包袱上船。\n第一部手机是老周送的。\n后来他们没再见面。")
+        assertEquals(listOf("第一章 少年", "第二章 远行"), book.chapters.map { it.title })
+        assertEquals(listOf(1, 2), book.chapters.map { it.number })
+        assertEquals("林月在渡口等船。", body(book.chapters[0]))
+        assertEquals("沈默背着包袱上船。\n第一部手机是老周送的。\n后来他们没再见面。", body(book.chapters[1]))
+        // 卷名独占一行时仍只作分组；部、集、篇后直接接字、或带句读的行都是正文。
+        val grouped = WritingReferenceImport.parse("书.txt", """
+            第一章 渡口
+            老周撑船过来。
+            第二部 归途
+            第二章 夜雨
+            第三篇论文写的是渡口的来历
+            第二集里，林月终于开口了。
+            第二卷第三章 晨光
+            天亮了。
+        """.trimIndent())
+        assertEquals(listOf("第一章 渡口", "第二章 夜雨", "第三章 晨光"), grouped.chapters.map { it.title })
+        assertEquals("第三篇论文写的是渡口的来历\n第二集里，林月终于开口了。", body(grouped.chapters[1]))
+    }
+
+    @Test fun fileImportsStreamTextAndMatchByteImports() {
+        // 一处控制字符不到全文百分之一，照常读入并去掉；末尾的 Ctrl-Z 填充不算损坏。
+        val text = "第一章 旧信\n信纸是白的，墨迹\u0007还没有干。\n" + "林月在渡口等了一夜，老周的船始终没有来。".repeat(8) +
+            "\n第二章 远路\n他把信收进衣内。\u001A\u001A"
+        listOf(
+            text.toByteArray(Charsets.UTF_8),
+            text.toByteArray(Charset.forName("GB18030")),
+            byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + text.toByteArray(Charsets.UTF_16LE),
+        ).forEachIndexed { i, bytes ->
+            val file = tmp.newFile("stream-$i.txt").apply { writeBytes(bytes) }
+            val streamed = WritingReferenceImport.parse("范本.txt", file)
+            val whole = WritingReferenceImport.parse("范本.txt", bytes)
+            assertEquals(whole.chapters.map { it.title }, streamed.chapters.map { it.title })
+            assertEquals(whole.chapters.map(::body), streamed.chapters.map(::body))
+            assertTrue(body(streamed.chapters.first()).startsWith("信纸是白的，墨迹还没有干。\n"))
+            assertEquals("他把信收进衣内。", body(streamed.chapters.last()))
+        }
+        // 坏得太多的不是文本，流式读取也要拒绝。
+        val binary = tmp.newFile("binary.txt").apply { writeBytes(ByteArray(4096) { (it % 7 + 1).toByte() }) }
+        assertTrue(runCatching { WritingReferenceImport.parse("范本.txt", binary) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test fun epubFileImportOnlyInflatesTextEntriesAndOversizedFilesAreRejectedBeforeReading() {
+        val epub = epub(
+            "a.xhtml" to "<html><body><h1>第一章 渡口</h1><p>林月在渡口等船。</p><img src=\"images/a.png\"/></body></html>",
+            image = ByteArray(8192) { (it * 31 % 251).toByte() },
+        )
+        // 把图片的压缩数据弄坏：整包解压会读到它而失败，按条目读取根本不碰它。
+        val name = "images/a.png".toByteArray()
+        val at = (0..epub.size - name.size).first { i -> name.indices.all { epub[i + it] == name[it] } } + name.size
+        for (i in at until at + 64) epub[i] = (epub[i].toInt() xor 0x5A).toByte()
+        assertTrue(runCatching { WritingReferenceImport.parse("插图.epub", epub) }.isFailure)
+        val file = tmp.newFile("插图.epub").apply { writeBytes(epub) }
+        val book = WritingReferenceImport.parse("插图.epub", file)
+        assertEquals(listOf("第一章 渡口"), book.chapters.map { it.title })
+        assertEquals("林月在渡口等船。", body(book.chapters.single()).trim())
+        val notZip = tmp.newFile("坏.epub").apply { writeText("不是压缩文件") }
+        assertTrue(runCatching { WritingReferenceImport.parse("坏.epub", notZip) }.exceptionOrNull() is IllegalArgumentException)
+        val tooLarge = tmp.newFile("large.epub")
+        java.io.RandomAccessFile(tooLarge, "rw").use { it.setLength(WritingReferenceImport.MAX_EPUB_BYTES + 1) }
+        val error = runCatching { WritingReferenceImport.parse("large.epub", tooLarge) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error!!.message!!.contains("64 MB"))
+    }
+
+    @Test fun pickedFilesAreCopiedWithABoundInsteadOfBufferedInMemory() {
+        val limit = 4096L
+        val ok = tmp.newFile("ok.tmp")
+        WritingReferenceImport.copyBounded(ByteArray(4096) { 1 }.inputStream(), ok, limit)
+        assertEquals(4096L, ok.length())
+        val over = tmp.newFile("over.tmp")
+        val error = runCatching { WritingReferenceImport.copyBounded(ByteArray(4097) { 1 }.inputStream(), over, limit) }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(over.length() <= limit)
+    }
+
+    private fun epub(vararg files: Pair<String, String>, order: List<String> = files.map { it.first }, image: ByteArray? = null): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             fun put(name: String, text: String) {
@@ -145,6 +223,11 @@ class WritingReferenceImportTest {
             val names = (files.map { it.first } + order).distinct()
             put("book.opf", """<package><metadata><dc:title>合成范本</dc:title><dc:creator>测试作者</dc:creator></metadata><manifest>${names.mapIndexed { i, name -> """<item id="c$i" href="$name" media-type="application/xhtml+xml"/>""" }.joinToString("")}</manifest><spine>${order.joinToString("") { name -> """<itemref idref="c${names.indexOf(name)}"/>""" }}</spine></package>""")
             files.forEach { (name, html) -> put(name, html) }
+            image?.let {
+                zip.putNextEntry(ZipEntry("images/a.png"))
+                zip.write(it)
+                zip.closeEntry()
+            }
         }
         return out.toByteArray()
     }
