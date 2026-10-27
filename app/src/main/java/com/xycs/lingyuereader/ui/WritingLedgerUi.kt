@@ -8,10 +8,10 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,10 +26,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,7 +41,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +57,7 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -506,13 +506,39 @@ private fun LedgerRow(e: LedgerEntry, onClick: (() -> Unit)?) {
     }
 }
 
-/** 选看到第几章：“全部”和作品的各章（章号按设定算）。几百章也不卡：一章一行懒加载，打开时滚到选中的那章。 */
+/** 章多到一屏放不下时，选章对话框上方才出“快速定位”滑条。 */
+private const val CHAPTER_PICK_QUICK = 6
+
+/**
+ * 选看到第几章：“全部”和作品的各章（章号按设定算）。几百章也不卡：一章一行懒加载，打开时滚到选中的那章。
+ * 章多时上方一条“快速定位”滑条：拖到第几章，列表就滚到那一章（只是滚过去，点了那一行才算选上）；列表滚动时滑条跟着走。
+ */
 @Composable
 private fun ChapterPickDialog(chapters: List<LedgerChapter>, selected: String?, onDismiss: () -> Unit, onPick: (String?) -> Unit) {
     val options = listOf<Pair<String?, String>>(null to "全部") + chapters.map { it.id to it.title }
     GlassDialog(show = true, title = "看到第几章", summary = "选了某一章，只看到这一章为止的状态。", onDismissRequest = onDismiss) {
         val state = rememberLazyListState(initialFirstVisibleItemIndex = options.indexOfFirst { it.first == selected }.coerceAtLeast(0))
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), state = state) {
+        if (chapters.size > CHAPTER_PICK_QUICK) {
+            val scope = rememberCoroutineScope()
+            // 拖动途中用手指的位置；松手后跟着列表顶上那一章（第 0 行是“全部”，按第 1 章算）。
+            var dragging by remember { mutableStateOf<Float?>(null) }
+            val top by remember { derivedStateOf { state.firstVisibleItemIndex.coerceIn(1, chapters.size) } }
+            val at = dragging?.roundToInt()?.coerceIn(1, chapters.size) ?: top
+            LabeledSliderRow(
+                title = "快速定位",
+                value = dragging ?: top.toFloat(),
+                valueText = "第 ${chapters[at - 1].no} 章",
+                valueRange = 1f..chapters.size.toFloat(),
+                onValueChangeFinished = { dragging = null },
+            ) { v ->
+                dragging = v
+                val target = v.roundToInt().coerceIn(1, chapters.size)
+                // 拖到第 1 章时滚到最顶上，“全部”也露出来。
+                scope.launch { state.scrollToItem(if (target == 1) 0 else target) }
+            }
+        }
+        // 有滑条时列表矮一点，整个对话框的高矮不变。
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = if (chapters.size > CHAPTER_PICK_QUICK) 340.dp else 420.dp), state = state) {
             items(options, key = { it.first ?: "" }) { (id, label) ->
                 val no = chapters.firstOrNull { it.id == id }?.no
                 Box(Modifier.clip(RoundedCornerShape(12.dp))) {
@@ -523,24 +549,11 @@ private fun ChapterPickDialog(chapters: List<LedgerChapter>, selected: String?, 
     }
 }
 
-/** 填章号的框：只收数字，空着是“不写”。 */
-@Composable
-private fun NumberField(value: String, label: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
-    TextField(
-        value = value,
-        onValueChange = { v -> onChange(v.filter { it.isDigit() }.take(5)) },
-        label = label,
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = modifier,
-    )
-}
-
-/** 一排常用的选项（胶囊按钮），点了填进框里；放不下左右滑。 */
+/** 一排常用的选项（胶囊按钮），点了填进框里；放不下换行，不切掉最后一个。 */
 @Composable
 private fun Choices(options: List<String>, onPick: (String) -> Unit) {
     if (options.isEmpty()) return
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         options.forEach { PillButton(it, onClick = { onPick(it) }) }
     }
 }
@@ -562,11 +575,11 @@ private fun LedgerEntryDialog(
     var subject by remember { mutableStateOf(initial.subject) }
     var aspect by remember { mutableStateOf(initial.aspect) }
     var text by remember { mutableStateOf(initial.text) }
-    var from by remember { mutableStateOf(initial.from?.toString().orEmpty()) }
-    var until by remember { mutableStateOf(initial.until?.toString().orEmpty()) }
-    var payoff by remember { mutableStateOf(initial.payoff?.toString().orEmpty()) }
+    var from by remember { mutableStateOf(initial.from) }
+    var until by remember { mutableStateOf(initial.until) }
+    var payoff by remember { mutableStateOf(initial.payoff) }
     var done by remember { mutableStateOf(initial.done) }
-    var closed by remember { mutableStateOf(initial.closed?.toString().orEmpty()) }
+    var closed by remember { mutableStateOf(initial.closed) }
     var via by remember { mutableStateOf(initial.via) }
     var secret by remember { mutableStateOf(initial.secret) }
 
@@ -578,11 +591,11 @@ private fun LedgerEntryDialog(
             text = text.trim(),
             subject = if (kind == LedgerKind.TIME) "" else subject.trim(),
             aspect = if (kind == LedgerKind.STATE) aspect.trim() else "",
-            from = from.toIntOrNull(),
-            until = if (ends) until.toIntOrNull() else null,
-            payoff = if (promise) payoff.toIntOrNull() else null,
+            from = from,
+            until = if (ends) until else null,
+            payoff = if (promise) payoff else null,
             done = promise && done,
-            closed = if (promise && done) closed.toIntOrNull() else null,
+            closed = if (promise && done) closed else null,
             via = if (kind == LedgerKind.KNOW) via.trim() else "",
             secret = kind != LedgerKind.TIME && secret,
         )
@@ -603,28 +616,28 @@ private fun LedgerEntryDialog(
                 Choices(LEDGER_ASPECTS.filter { it != aspect.trim() }) { aspect = it }
             }
             TextField(value = text, onValueChange = { text = it }, label = "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                NumberField(
-                    from,
-                    when (kind) {
-                        LedgerKind.PROMISE -> "第几章埋"
-                        LedgerKind.TIME -> "第几章"
-                        else -> "从第几章起"
-                    },
-                    Modifier.weight(1f),
-                ) { from = it }
+            // 章号用步进器：－ ＋ 一章章调，点数字直接输入；空着是“不填”。计划收章、写到哪章止可以超过现有的章。
+            Column {
+                val fromTitle = when (kind) {
+                    LedgerKind.PROMISE -> "第几章埋"
+                    LedgerKind.TIME -> "第几章"
+                    else -> "从第几章起"
+                }
+                ChapterStepperRow(fromTitle, from, chapters = emptyList()) { from = it }
                 when (kind) {
-                    LedgerKind.STATE, LedgerKind.EVENT, LedgerKind.KNOW -> NumberField(until, "到第几章止", Modifier.weight(1f)) { until = it }
-                    LedgerKind.PROMISE -> NumberField(payoff, "计划第几章收", Modifier.weight(1f)) { payoff = it }
+                    LedgerKind.STATE, LedgerKind.EVENT, LedgerKind.KNOW ->
+                        ChapterStepperRow("到第几章止", until, chapters = emptyList(), start = from ?: 1) { until = it }
+                    LedgerKind.PROMISE ->
+                        ChapterStepperRow("计划第几章收", payoff, chapters = emptyList(), start = (from ?: 0) + 1) { payoff = it }
                     LedgerKind.TIME -> Unit
                 }
             }
-            if (initial.from == null && initial.volume != null && from.isEmpty()) {
+            if (initial.from == null && initial.volume != null && from == null) {
                 Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
             }
             if (kind == LedgerKind.PROMISE) {
                 Box(Modifier.clip(RoundedCornerShape(12.dp))) { ToggleRow("已经收了", done) { done = it } }
-                if (done) NumberField(closed, "第几章收的（不知道可不填）", Modifier.fillMaxWidth()) { closed = it }
+                if (done) ChapterStepperRow("第几章收的", closed, chapters = emptyList(), start = payoff ?: from ?: 1) { closed = it }
             }
             if (kind == LedgerKind.KNOW) {
                 TextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())

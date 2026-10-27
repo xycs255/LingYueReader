@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -232,6 +234,14 @@ internal fun ledgerRows(s: LedgerSnapshot): List<LedgerRow> {
 /** 审稿问题对话框里的动作。 */
 private enum class IssueAction { JUMP, AI_FIX }
 
+/** 还没审过时每关的一行说明（一行放得下）；审过以后组下仍写完整的 [ReviewGate.hint]。 */
+private val ReviewGate.brief: String
+    get() = when (this) {
+        ReviewGate.FACT -> "对照设定、细纲卡和上一章，核事实与承接"
+        ReviewGate.CRAFT -> "只按你的写作规范：对白、旁白、场面"
+        ReviewGate.RULES -> "对照检查规则，在本机算"
+    }
+
 /** 一道审稿的结果写成一句：右边的小标签和颜色。 */
 private data class GateStatus(val text: String, val kind: GateStatusKind)
 
@@ -291,13 +301,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
         item {
             // 配色要在 WritingPage 提供的配色里面读，不能在外面先读好。
             val c = LocalGroupedColors.current
-            GroupedSection(
-                footer = buildString {
-                    append("次序：先核事实、因果、视角和承接，再按你的写作规范审写法，最后对照检查规则。")
-                    if (!aiConfig.ready) append("没有设置 AI 时只审规则关。")
-                    if (review != null && savedHash != null && review.textHash != savedHash && running == null) append("\n正文在审稿后改过，结果可能对不上了。")
-                },
-            ) {
+            GroupedSection {
                 row {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp)
@@ -315,15 +319,29 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                 }
-                row {
-                    if (running != null) ActionRow("停止", destructive = true) { vm.writingAi.stopReview(workId, chapterId) }
-                    else ActionRow(if (review == null) "开始审稿" else "重新审稿") { start() }
-                }
                 if (sent != null && sent?.label in setOf("事实关", "写法关")) {
                     row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" }) { showSent = true } }
                 }
             }
-            ReviewGate.entries.forEachIndexed { i, gate ->
+            // 一页唯一的主按钮，和卡片左右对齐；审着时换成红色的“停止”。
+            Box(Modifier.padding(horizontal = 12.dp).padding(bottom = 4.dp)) {
+                if (running != null) PrimaryButton("停止", onClick = { vm.writingAi.stopReview(workId, chapterId) }, destructive = true)
+                else PrimaryButton(if (review == null) "开始审稿" else "重新审稿", onClick = { start() })
+            }
+            val notes = listOfNotNull(
+                "没有设置 AI 时只审规则关。".takeIf { !aiConfig.ready },
+                "正文在审稿后改过，结果可能对不上了。".takeIf { review != null && savedHash != null && review.textHash != savedHash && running == null },
+            )
+            if (notes.isNotEmpty()) GroupedListFooter(notes.joinToString("\n"), Modifier.padding(top = 4.dp))
+            else Spacer(Modifier.height(12.dp))
+            if (review == null && running == null) {
+                // 还没审过：三关各一行，标题一行、说明一行，按审的先后排，不铺三段长说明。
+                GroupedSection(header = "依次审三关") {
+                    ReviewGate.entries.forEachIndexed { i, gate ->
+                        row { InfoRow("${"一二三"[i]}、${gate.label}", gate.brief, subtitleMaxLines = 1) }
+                    }
+                }
+            } else ReviewGate.entries.forEachIndexed { i, gate ->
                 val result = review?.gate(gate)
                 val open = result?.issues.orEmpty().count { it.open }
                 val status = when {

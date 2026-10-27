@@ -1,10 +1,10 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,10 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +28,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.LedgerChapter
@@ -107,9 +104,15 @@ internal fun ledgerPayoffToSave(entry: LedgerEntry, dragging: Float?, start: Int
     return dragging.roundToInt().coerceIn(start, end).takeIf { it != entry.payoff }
 }
 
+/** 人物 / 伏笔 / 知情 / 全部记录：左右和下面的卡片一样缩进 12dp，不贴屏幕边。 */
 @Composable
 internal fun LedgerVisualTabs(selected: LedgerVisualTab, onSelect: (LedgerVisualTab) -> Unit) {
-    SegmentedControl(LedgerVisualTab.entries.map { it to it.title }, selected, onSelect = onSelect)
+    SegmentedControl(
+        LedgerVisualTab.entries.map { it to it.title },
+        selected,
+        Modifier.padding(horizontal = 12.dp).padding(bottom = 4.dp),
+        onSelect = onSelect,
+    )
 }
 
 @Composable
@@ -151,11 +154,12 @@ internal fun LazyListScope.ledgerPeopleGraph(
                     Text(current.size.toString() + " 个状态方面", color = c.secondary, fontSize = 12.sp)
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 方面多时换行，不横着溢出、也不切掉最后一个；胶囊能点的范围 48dp，行与行之间不再另加间距。
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 aspects.forEach { aspect ->
                     val latest = current.firstOrNull { it.aspect == aspect }
                     PillButton(
-                        aspect + " · " + (latest?.text?.take(8) ?: "添加"),
+                        aspect + " · " + (latest?.text?.let { if (it.length > 8) it.take(8) + "…" else it } ?: "添加"),
                         onClick = { onState(LedgerQuickState(who, aspect, latest)) },
                         modifier = Modifier.semantics {
                             contentDescription = who + "的" + aspect + "，" + (latest?.text ?: "尚未记录") + "，点按修改"
@@ -307,7 +311,8 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                         color = c.secondary, fontSize = 12.sp,
                     )
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 一人一格、对齐成一行；人多放不下时左右滑，还有没露出来的那一边渐隐。
+                FadingScrollRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     people.forEach { who ->
                         val (known, existing) = ledgerGraphCell(f, who, chapter)
                         val cellLabel = when {
@@ -342,6 +347,35 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
     }
 }
 
+/**
+ * 对话框里填章号的一行：左边名字，右边步进器（[NumberStepper]）。[chapters] 不空时上限是作品现有的最后一章；
+ * [optional] 时可以“不填”，按 ＋ 从 [start] 开始。
+ */
+@Composable
+internal fun ChapterStepperRow(
+    title: String,
+    value: Int?,
+    chapters: List<LedgerChapter>,
+    optional: Boolean = true,
+    start: Int? = null,
+    max: Int? = null,
+    onChange: (Int?) -> Unit,
+) {
+    val last = max ?: chapters.maxOfOrNull { it.no }?.coerceAtLeast(1) ?: STEPPER_MAX
+    val first = chapters.minOfOrNull { it.no }?.coerceIn(1, last) ?: 1
+    LabeledRow(title) {
+        NumberStepper(
+            value,
+            onChange,
+            title,
+            range = 1..last,
+            optional = optional,
+            start = (start ?: first).coerceIn(1, last),
+            emptyText = if (optional) "不填" else "未填",
+        )
+    }
+}
+
 @Composable
 internal fun LedgerQuickStateDialog(
     target: LedgerQuickState,
@@ -352,18 +386,14 @@ internal fun LedgerQuickStateDialog(
 ) {
     val current = target.current
     var value by remember(target) { mutableStateOf(current?.text.orEmpty()) }
-    var from by remember(target) { mutableStateOf((chapter?.no ?: current?.from)?.toString().orEmpty()) }
+    var number by remember(target) { mutableStateOf(chapter?.no ?: current?.from) }
     var quote by remember(target) { mutableStateOf(if (current?.from == chapter?.no) current?.quote.orEmpty() else "") }
-    val number = from.toIntOrNull()
-    val validChapter = number != null && number > 0 && chapters.any { it.no == number }
+    val validChapter = number != null && number!! > 0 && chapters.any { it.no == number }
     GlassDialog(show = true, title = target.subject + " · " + target.aspect, summary = "按章登记新状态；之前章节保留原来的状态。", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             TextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
-            TextField(
-                value = from, onValueChange = { from = it.filter(Char::isDigit).take(5) }, label = "从第几章生效",
-                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
-            )
+            ChapterStepperRow("从第几章生效", number, chapters, optional = false) { number = it }
             TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
             Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = 12.sp)
             if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)
@@ -391,18 +421,14 @@ internal fun LedgerQuickKnowledgeDialog(
     onDismiss: () -> Unit,
     onSave: (LedgerEntry) -> Unit,
 ) {
-    var from by remember(target) { mutableStateOf(chapter?.no?.toString().orEmpty()) }
+    var number by remember(target) { mutableStateOf(chapter?.no) }
     var via by remember(target) { mutableStateOf("") }
     var quote by remember(target) { mutableStateOf("") }
-    val number = from.toIntOrNull()
-    val validChapter = number != null && number > 0 && chapters.any { it.no == number }
+    val validChapter = number != null && number!! > 0 && chapters.any { it.no == number }
     GlassDialog(show = true, title = target.subject + "得知了什么", summary = target.fact.text, onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(
-                value = from, onValueChange = { from = it.filter(Char::isDigit).take(5) }, label = "从第几章得知",
-                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(),
-            )
+            ChapterStepperRow("从第几章得知", number, chapters, optional = false) { number = it }
             TextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
             TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
             if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)

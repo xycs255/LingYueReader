@@ -8,6 +8,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -20,10 +21,13 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sun.net.httpserver.HttpServer
+import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.Appearance
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.LedgerEntry
@@ -65,8 +69,12 @@ class WritingDetailSnapshotTest {
         /** 方法名里带 “Ai” 的测试把写作 AI 配好（指向本地假服务器），其余保持未配置。 */
         private var withAi = false
 
+        /** 方法名以 “ink” 开头的测试用深色（暖墨）主题。 */
+        private var ink = false
+
         override fun apply(base: Statement, description: Description): Statement {
             withAi = description.methodName.orEmpty().contains("Ai")
+            ink = description.methodName.orEmpty().startsWith("ink")
             return super.apply(base, description)
         }
 
@@ -113,7 +121,7 @@ class WritingDetailSnapshotTest {
                     .putString("baseUrl", "http://127.0.0.1:${server!!.address.port}/v1").putString("model", "test-model")
             }
             ai.commit()
-            Prefs(context).saveAppearance(Appearance(mode = ThemeMode.LIGHT, blur = false, liquidGlass = false))
+            Prefs(context).saveAppearance(Appearance(mode = if (ink) ThemeMode.DARK else ThemeMode.LIGHT, blur = false, liquidGlass = false))
         }
 
         override fun after() {
@@ -122,11 +130,15 @@ class WritingDetailSnapshotTest {
         }
     }
     private val compose = createAndroidComposeRule<MainActivity>()
+    private val vm get() = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+    private var workId = ""
+    private var chapterThree = ""
     @get:Rule val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
     /** 作品《长夜》：30 章、几章正文与细纲卡、设定包几份文档、账本里的人物、伏笔和知情。 */
     private fun seedWork(store: WorkStore) {
         val work = store.create("长夜", "沈青禾")
+        workId = work.id
         val volume = work.volumes[0].id
         val names = listOf(
             "雪夜", "渡口", "夜渡", "客栈", "旧账", "沉船", "玉佩", "茶馆", "约定", "离岸",
@@ -136,6 +148,7 @@ class WritingDetailSnapshotTest {
         store.renameChapter(work.id, work.chapters[0].id, "第1章 ${names[0]}")
         val ids = mutableListOf(work.chapters[0].id)
         names.drop(1).forEachIndexed { i, name -> ids += store.addChapter(work.id, volume, "第${i + 2}章 $name")!!.second.id }
+        chapterThree = ids[2]
         store.saveText(work.id, ids[0], "林月推开门，风雪灌进来。")
         store.saveText(work.id, ids[1], "渡口的灯还亮着，老周蹲在船头抽烟。")
         store.saveText(work.id, ids[2], "林月把半块玉佩攥在手心。\n\n“今晚还有船吗？”她问。\n\n老周没抬头：“封航了，明天也未必有。”")
@@ -334,6 +347,7 @@ class WritingDetailSnapshotTest {
         compose.onNodeWithContentDescription("三道审稿").performClick()
         waitForText("还没有审过")
         waitForText("开始审稿")
+        waitForText("依次审三关")
         capture("detail-review")
     }
 
@@ -365,14 +379,26 @@ class WritingDetailSnapshotTest {
         waitForText("列出所有条目")
         waitForText("第3章 夜渡")
         capture("detail-ledger-chapter-pick")
+        // 快速定位：拖到第 20 章，列表滚过去；拖回第 1 章，“全部”又露出来。
+        waitForDescription("快速定位")
+        compose.onNodeWithContentDescription("快速定位").performSemanticsAction(SemanticsActions.SetProgress) { it(20f) }
+        waitForText("第20章 归途")
+        waitForGone("第3章 夜渡")
+        capture("detail-ledger-chapter-quick")
+        compose.onNodeWithContentDescription("快速定位").performSemanticsAction(SemanticsActions.SetProgress) { it(1f) }
+        waitForText("列出所有条目")
         compose.onNodeWithText("列出所有条目").performClick()
         waitForGone("列出所有条目")
 
-        // 点开一条：编辑对话框。
+        // 点开一条：编辑对话框。章号是步进器（第 8 章起，止章不填）。
         compose.onNodeWithText("茶馆老板娘").performScrollTo().performClick()
         waitForText("改一条")
         waitForText("删除这一条")
         capture("detail-ledger-edit")
+        compose.onNodeWithContentDescription("到第几章止加一").performScrollTo()
+        compose.onNode(hasSetTextAction() and hasText("8")).assertExists()
+        waitForText("不填")
+        capture("detail-ledger-edit-steppers")
     }
 
     @Test
@@ -382,8 +408,54 @@ class WritingDetailSnapshotTest {
         scrollWorkListTo(hasText("调整章节顺序"))
         compose.onNodeWithText("调整章节顺序").performClick()
         waitForText("完成调整")
-        waitForText("用章下方按钮移动")
+        waitForText("用每章右侧的箭头上移、下移")
+        waitForDescription("下移第1章 雪夜")
         capture("detail-work-tree-reorder")
+    }
+
+    /** 深色（暖墨）下再拍一遍这次改过的几处：规划树调整顺序、账本人物与知情、编辑对话框、三道审稿、生词本。 */
+    @Test
+    fun inkLedgerTreeReviewAndVocabulary() {
+        openWork()
+        scrollWorkListTo(hasText("调整章节顺序"))
+        compose.onNodeWithText("调整章节顺序").performClick()
+        waitForDescription("下移第1章 雪夜")
+        capture("ink-detail-work-tree-reorder")
+        compose.onNodeWithText("完成调整").performClick()
+        waitForText("调整章节顺序")
+
+        compose.runOnUiThread { vm.open(Screen.WorkLedger(workId)) }
+        waitForText("人物状态 · 点方面直接调整")
+        waitForText("身体 · 左臂刀伤未愈")
+        capture("ink-detail-ledger-people")
+        compose.onNodeWithText("知情").performClick()
+        waitForText("谁知道什么 · 点格子核对")
+        capture("ink-detail-ledger-know")
+        compose.onNodeWithText("全部记录").performClick()
+        waitForText("人物状态 · 杜娘")
+        compose.onNodeWithText("茶馆老板娘").performScrollTo().performClick()
+        waitForText("改一条")
+        compose.onNodeWithContentDescription("到第几章止加一").performScrollTo()
+        capture("ink-detail-ledger-edit-steppers")
+        compose.onNodeWithText("取消").performClick()
+        waitForGone("改一条")
+
+        compose.runOnUiThread { vm.open(Screen.ChapterReview(workId, chapterThree)) }
+        waitForText("还没有审过")
+        waitForText("依次审三关")
+        capture("ink-detail-review")
+        // 一层层返回：审稿 → 账本 → 作品页 → 写作首页，再点底栏的生词本。
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForGone("依次审三关")
+        waitForText("看到第几章")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForText("作品进度")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForGone("作品进度")
+        compose.onNodeWithText("生词本").performClick()
+        waitForText("学习中 3")
+        waitForText("复习 3")
+        capture("ink-detail-vocabulary-cards")
     }
 
     @Test
@@ -394,6 +466,7 @@ class WritingDetailSnapshotTest {
         waitForText("学习中 3")
         waitForText("已掌握 1")
         waitForText("fēng háng")
+        waitForText("复习 3")
         capture("detail-vocabulary-cards")
     }
 }

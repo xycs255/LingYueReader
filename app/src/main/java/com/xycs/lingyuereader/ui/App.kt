@@ -677,6 +677,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                 )
             }
             Box {
+                // 看着是 18dp 的小“⋯”，能点的范围是整整 48dp（测试里量过），不用对准那几个点。
                 Box(
                     Modifier
                         .size(48.dp)
@@ -740,7 +741,8 @@ private fun ShelfRow(entry: BookEntry, vm: AppViewModel, modifier: Modifier = Mo
                 )
             }
             Box {
-                IconButton(onClick = { menu = true }) {
+                // 能点的范围 48dp（miuix 的图标按钮默认只有 40dp），图形大小不变。
+                IconButton(onClick = { menu = true }, modifier = Modifier.size(48.dp)) {
                     Icon(LingYueIcons.More, contentDescription = "操作", tint = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 }
                 BookMenu(entry, vm, menu, dialogs) { menu = false }
