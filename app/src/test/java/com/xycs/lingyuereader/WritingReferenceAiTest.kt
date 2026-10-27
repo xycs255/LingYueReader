@@ -7,9 +7,11 @@ import com.xycs.lingyuereader.ai.AiFeature
 import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.AiUsageEvent
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferencePart
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WritingReference
+import com.xycs.lingyuereader.data.WritingReferences
 import com.xycs.lingyuereader.data.importReference
 import com.xycs.lingyuereader.data.referenceAnalyses
 import com.xycs.lingyuereader.data.referenceText
@@ -315,5 +317,59 @@ class WritingReferenceAiTest {
         val error = runCatching { ReferenceAnalysisPrompts.checkShortQuotes(output, source) }.exceptionOrNull()
         assertNotNull(error)
         assertTrue(error!!.message!!.contains("短引总量"))
+    }
+
+    @Test fun fullAnalysisStorageStopsBeforeTheRequestIsSent() = runBlocking {
+        val excerpt = store.selectedChapterExcerpt(workId, reference.id, reference.chapters.first().id)!!
+        WritingReferences.writeAnalyses(store.referenceRoot(workId), (1..WritingReferences.MAX_ANALYSES).map {
+            ReferenceAnalysis.from(excerpt, chapterId, "target-v1", "渡口第 $it 份旧分析。")
+        })
+        service.analyze(workId, chapterId, reference.id, reference.chapters.first().id, ReferencePart.OPENING)
+        finished()
+        assertTrue(requests.isEmpty())
+        assertTrue(usage.isEmpty())
+        assertTrue(service.state.value!!.error!!.contains("先删几条旧分析"))
+    }
+
+    @Test fun answersThatCannotBeSavedStayVisibleForTheAuthor() = runBlocking {
+        val line = "范本开头标记：送信人停在门前，手里捏着一张湿纸。"
+        // 十二处互不相同的 13 字短引合计 156 字，超过提示词写明的合计上限。
+        answer = (0..11).joinToString("\n") { "证据$it：“${line.substring(it, it + 13)}”。" }
+        service.analyze(workId, chapterId, reference.id, reference.chapters.first().id, ReferencePart.OPENING)
+        finished()
+        val state = service.state.value!!
+        assertTrue(state.error!!.contains("短引总量"))
+        assertEquals(answer, state.text)
+        assertTrue(state.note!!.contains("没有保存"))
+        assertNull(state.analysis)
+        assertTrue(store.referenceAnalyses(workId, chapterId).isEmpty())
+    }
+
+    @Test fun promptLimitsMatchTheQuotationCheck() {
+        val prompt = ReferenceAnalysisPrompts.SYSTEM
+        assertTrue("${ReferenceQuotes.MAX_RUN}字" in prompt && "${ReferenceQuotes.MAX_TOTAL}字" in prompt)
+        val source = (1..8).joinToString("") { "林月第${it}次走到渡口，看见老周仍在船头补网。" }
+        // 照提示词写：每处不超过上限，合计正好到上限，同一句重复引用只算一次。
+        val quotes = (0 until 4).map { source.substring(it * 30, it * 30 + 30) }
+        assertEquals(ReferenceQuotes.MAX_TOTAL, quotes.sumOf { it.length })
+        val compliant = quotes.joinToString("\n") { "这里的证据是“$it”。" } + "\n再看一次“${quotes.first()}”。"
+        ReferenceAnalysisPrompts.checkShortQuotes(compliant, source)
+        val tooLong = "证据：“${source.substring(0, ReferenceQuotes.MAX_RUN + 1)}”。"
+        assertTrue(runCatching { ReferenceAnalysisPrompts.checkShortQuotes(tooLong, source) }.isFailure)
+    }
+
+    @Test fun proseCheckCountsOnlyLongCopiedRunsNotCommonDialogue() {
+        val common = listOf("我知道了。", "你说什么？", "走吧。", "怎么了？", "没事。", "好。")
+        val source = common.joinToString("") { "“$it”他说。" } + "渡口的雾一直没有散，老周把船系在石柱上，坐在船头慢慢地抽着旱烟，等天亮。"
+        // 二十多句常用对白碰巧都在范本里出现过，也不算抄。
+        val prose = (1..25).joinToString("\n") { "“${common[it % common.size]}”林月对沈默说。" }
+        ReferenceQuotes.checkProse(prose, source)
+        val copied = "开头是新的。" + source.takeLast(40) + "结尾也是新的。"
+        assertTrue(runCatching { ReferenceQuotes.checkProse(copied, source) }.exceptionOrNull()!!.message!!.contains("连续照抄"))
+        // 每段都不到单段上限，但拼起来抄了很多。
+        val longSource = (1..20).joinToString("") { "第${it}段：林月在渡口等了很久才看见沈默的船。" }
+        val stitched = (1..12).joinToString("新写的连接句。") { "第${it}段：林月在渡口等了很久" }
+        assertTrue(ReferenceQuotes.copiedChars(stitched.replace(Regex("\\s+"), ""), longSource) > ReferenceQuotes.MAX_COPIED)
+        assertTrue(runCatching { ReferenceQuotes.checkProse(stitched, longSource) }.exceptionOrNull()!!.message!!.contains("合计"))
     }
 }

@@ -192,6 +192,7 @@ object WritingReferences {
         val title = content.title?.trim()?.takeIf { it.isNotEmpty() } ?: BookParser.titleOf(sourceName)
         val author = content.author.orEmpty()
         val signature = referenceFingerprint(title, author, chapters)
+        cleanStaleImports(root)
         val existing = list(root, strict = true)
         existing.firstOrNull { it.fingerprint == signature }?.let { return it }
         require(existing.size < MAX_REFERENCES) { "每部作品最多导入 $MAX_REFERENCES 部范本，请先移除不用的范本" }
@@ -204,6 +205,18 @@ object WritingReferences {
             check(stage.renameTo(folder(root, id))) { "无法保存范本" }
         } finally { if (stage.exists()) stage.deleteRecursively() }
         return reference
+    }
+
+    /** 导入写盘时进程被杀会留下 .import-* 暂存目录；调用方持有 WorkStore 锁，此时不会有正在进行的导入。 */
+    internal fun cleanStaleImports(root: File) {
+        root.listFiles().orEmpty().filter { it.isDirectory && it.name.startsWith(".import-") }.forEach { it.deleteRecursively() }
+    }
+
+    /** 删章时去掉指向这一章的分析；分析文件读不出就不动它，备份和恢复另会跳过孤儿分析。 */
+    internal fun forgetTarget(root: File, targetChapterId: String) {
+        val values = analyses(root)
+        if (values.none { it.targetChapterId == targetChapterId }) return
+        writeAnalyses(root, values.filterNot { it.targetChapterId == targetChapterId })
     }
 
     internal fun analyses(root: File, strict: Boolean = false): List<ReferenceAnalysis> {
@@ -318,7 +331,10 @@ object WritingReferences {
 }
 
 fun WorkStore.references(workId: String): List<WritingReference> = synchronized(this) {
-    if (get(workId) == null) emptyList() else WritingReferences.list(referenceRoot(workId))
+    if (get(workId) == null) emptyList() else referenceRoot(workId).let { root ->
+        WritingReferences.cleanStaleImports(root)
+        WritingReferences.list(root)
+    }
 }
 
 fun WorkStore.importReference(workId: String, fileName: String, text: String): WritingReference =
@@ -362,10 +378,21 @@ fun WorkStore.saveReferenceAnalysis(workId: String, analysis: ReferenceAnalysis)
     WritingReferences.analysisFromJson(WritingReferences.analysisToJson(analysis))
     val root = referenceRoot(workId)
     require(WritingReferences.sourceCurrent(root, analysis)) { "范本片段已变化或不在了，请重新分析" }
-    val values = WritingReferences.analyses(root, strict = true).filterNot { it.id == analysis.id }
+    // 顺手去掉旧版本删章留下的孤儿分析，它们看不见、删不掉，却占着条数上限。
+    val chapters = get(workId)?.chapters.orEmpty().map { it.id }.toSet()
+    val values = WritingReferences.analyses(root, strict = true).filter { it.id != analysis.id && it.targetChapterId in chapters }
     WritingReferences.writeAnalyses(root, listOf(analysis) + values)
     update(workId) { it }
     analysis
+}
+
+/** 发分析请求之前调用：已存满时直接提示，不先扣费、保存时才失败。 */
+fun WorkStore.requireReferenceAnalysisRoom(workId: String): Unit = synchronized(this) {
+    val chapters = get(workId)?.chapters.orEmpty().map { it.id }.toSet()
+    val kept = WritingReferences.analyses(referenceRoot(workId), strict = true).count { it.targetChapterId in chapters }
+    require(kept < WritingReferences.MAX_ANALYSES) {
+        "范本分析已存满 ${WritingReferences.MAX_ANALYSES} 份，请先删几条旧分析再分析；这次没有发请求"
+    }
 }
 
 fun WorkStore.setReferenceAnalysisApplied(workId: String, id: String, applied: Boolean): Boolean = synchronized(this) {

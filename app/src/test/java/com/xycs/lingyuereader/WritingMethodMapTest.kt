@@ -133,6 +133,35 @@ class WritingMethodMapTest {
         assertEquals(90L, service.state.value!!.usage?.input)
     }
 
+    @Test fun compliantQuotesAreNotRejectedByTheAnalysisQuotationTotal() = runBlocking {
+        val narrative = listOf(
+            "林月站在渡口的石阶上，看着河水一点点漫过最下面那一级台阶，远处亮着船灯。",
+            "老周把船撑到岸边，竹篙在水里点了三下，船身稳稳地停在石阶旁边不再晃动。",
+            "沈默背着包袱从堤上跑下来，鞋上全是泥，喘着气把一封信塞进林月的手心里。",
+            "林月没有拆信，只是把它压在掌心，抬头看了一眼对岸那排已经熄灭的窗户。",
+            "老周不再多问，解开缆绳，船慢慢离开石阶，林月回头时沈默已经走回堤上去了。",
+        )
+        val first = "今晚风大，船只能过一趟，你们谁先走谁留下，现在就定下来吧。"
+        val second = "让她先走，信里写的事情只有她能办，我留在渡口等下一趟船过来。"
+        val text = listOf(narrative[0], narrative[1], narrative[2], "“$first”老周说。", "“$second”沈默答。", narrative[3], narrative[4])
+        val book = store.importReference(workId, "渡口范本.txt", "第一章 渡口\n" + text.joinToString("\n"))
+        val excerpt = store.selectedChapterExcerpt(workId, book.id, book.chapters.single().id, ReferencePart.OPENING, maxChars = 2_000)!!
+        val long = store.saveReferenceAnalysis(workId, ReferenceAnalysis.from(excerpt, chapterId, "old-target", "渡口一章的分析"))
+        // 四个节点和三处对白引文都是提示词允许的 24 字，合计 168 字，超过分析的短引合计上限也照样可用。
+        answer = JSONObject().put("nodes", JSONArray().apply {
+            listOf(0, 1, 2, 3).forEach { i -> put(JSONObject().put("kind", "动作").put("label", "节点$i").put("quote", narrative[i].take(24))) }
+        }).put("dialogue", JSONObject().put("topic", "谁先过河")
+            .put("first", JSONObject().put("speaker", "老周").put("quote", first.take(24)).put("intent", "逼两人做决定"))
+            .put("second", JSONObject().put("speaker", "沈默").put("quote", second.take(24)).put("intent", "把机会让给林月"))
+            .put("outcome", "林月独自上船").put("outcomeQuote", narrative[4].take(24))).toString()
+        service.generate(workId, chapterId, long.id)
+        finished()
+        val s = service.state.value!!
+        assertNull(s.error)
+        assertEquals(4, s.nodes.size)
+        assertNotNull(s.dialogue)
+    }
+
     @Test fun invalidQuotesAndAbsentRealSpeechAreOmittedInsteadOfDrawn() = runBlocking {
         answer = JSONObject().put("nodes", JSONArray()
             .put(JSONObject().put("kind", "动作").put("label", "真节点").put("quote", "旅人停在门前"))

@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.data
 
 import java.io.File
+import java.io.InputStream
 
 /**
  * 独立范本的正文解析。范本不经过设定包分类，也不转成当前作品的章节或已发生事实。
@@ -8,35 +9,71 @@ import java.io.File
  * 阅读器为排版自动生成的“第几节”不能充当范本的真实章界；这里保留长章，找不到章界时明确标记原文。
  */
 object WritingReferenceImport {
-    const val MAX_TEXT_BYTES = 128L * 1024 * 1024
-    const val MAX_EPUB_BYTES = 256L * 1024 * 1024
+    /**
+     * TXT 解析时，逐行读出的段落和导入时拼出的各章正文各占一份 UTF-16 文字：32 MB 的 GB18030 中文约
+     * 1600 万字、两份约 64 MB；纯 ASCII 的最坏情况约 128 MB，仍在常见 256 MB 堆以内。文件按行流式解码，
+     * 不再同时持有原始字节和整本解码结果。一千万字的长篇 GBK 也只有约 20 MB。
+     */
+    const val MAX_TEXT_BYTES = 32L * 1024 * 1024
+    /**
+     * EPUB 从临时文件按条目随用随读，只解压正文用到的文本条目，图片不解压；体积大多是插图，
+     * 常驻内存的只有正文文字。64 MB 能放下常见的带插图轻小说，也限制了临时文件和解压检查的耗时。
+     */
+    const val MAX_EPUB_BYTES = 64L * 1024 * 1024
+    const val TOO_LARGE = "范本文件太大，手机内存不够解析，请先拆分后导入"
     const val UNSPLIT_TITLE = "未分章原文（未识别章节边界）"
     private const val NUMBER = "0-9０-９零〇一二两三四五六七八九十百千万"
     private val chineseChapter = Regex("""^第\s*([$NUMBER]+)\s*([章回])(?:\s*[:：、.．·—\-]\s*|\s*)(.*)$""")
     private val englishChapter = Regex("""^Chapter\s+([0-9０-９]+)(?:\s*[:：.．—\-]\s*|\s*)(.*)$""", RegexOption.IGNORE_CASE)
     private val namedChapter = Regex("""^(?:序章|序言|前言|楔子|引子|尾声|终章|后记|番外)(?:\s*[:：、.．·—\-]\s*|\s+)?[^。！？!?，,；;]{0,45}$""")
-    private val volume = Regex("""^第\s*[$NUMBER]+\s*[卷部集篇](?:\s*[:：、.．·—\-]\s*|\s*).{0,45}$""")
+    private val volumeHead = Regex("""^第\s*[$NUMBER]+\s*(卷|部分?|集|篇)""")
+    private val inlineChapter = Regex("""第\s*[$NUMBER]+\s*[章回]|Chapter\s+[0-9０-９]""", RegexOption.IGNORE_CASE)
     private val contents = Regex("""^(?:目\s*录|总目录|章节目录|Contents|Table\s+of\s+Contents)\s*[:：]?$""", RegexOption.IGNORE_CASE)
     private val bodyStart = Regex("""^(?:正文|正文开始|正文卷)\s*[:：]?$""")
     private val pageSuffix = Regex("""(?:\.{2,}|…{2,}|·{3,}|\s{2,})\s*\d+\s*$""")
 
     fun parse(fileName: String, text: String): BookContent {
         require(extension(fileName) in setOf("txt", "text")) { "范本目前支持 TXT 和 EPUB；EPUB 请从文件导入" }
-        require(utf8WithinLimit(text, MAX_TEXT_BYTES)) { "范本 TXT 过大，无法安全导入（上限 128 MB）" }
-        return parseText(fileName, text)
+        require(utf8WithinLimit(text, MAX_TEXT_BYTES)) { "范本 TXT 过大，无法安全导入（上限 ${MAX_TEXT_BYTES / 1024 / 1024} MB）" }
+        return parseText(fileName, text.lineSequence())
     }
 
     fun parse(fileName: String, bytes: ByteArray): BookContent {
         val ext = extension(fileName)
         val limit = byteLimit(fileName)
         require(bytes.size.toLong() <= limit) { "范本文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）" }
-        return if (ext == "epub") parseEpub(fileName, bytes) else parseText(fileName, TextDecoder.decode(bytes))
+        return if (ext == "epub") parseEpub(EpubParser.parse(bytes, sourceTitle(fileName)))
+        else parseText(fileName, TextDecoder.decode(bytes).lineSequence())
     }
 
+    /**
+     * 选文件导入走这里：超过上限的在读取之前就拒绝；TXT 按行流式解码，EPUB 只解压用到的文本条目。
+     * 内存仍然不够时给出“文件太大”，不让 App 闪退。
+     */
     fun parse(fileName: String, file: File): BookContent {
         val limit = byteLimit(fileName)
         require(file.length() <= limit) { "范本文件过大，无法安全导入（上限 ${limit / 1024 / 1024} MB）" }
-        return parse(fileName, file.readBytes())
+        return try {
+            if (extension(fileName) == "epub") parseEpub(EpubParser.parse(file, sourceTitle(fileName)))
+            else TextDecoder.readLines(file) { lines -> parseText(fileName, lines) }
+        } catch (_: OutOfMemoryError) {
+            throw IllegalArgumentException(TOO_LARGE)
+        }
+    }
+
+    /** 选文件时把文档复制成临时文件：边读边写，超过上限立即停下，不在内存里攒整份文件。 */
+    fun copyBounded(input: InputStream, target: File, limit: Long) {
+        target.outputStream().use { output ->
+            val buffer = ByteArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                require(total <= limit) { "范本文件过大，请先拆分后导入（上限 ${limit / 1024 / 1024} MB）" }
+                output.write(buffer, 0, count)
+            }
+        }
     }
 
     /** 供选文件时做有界读取；不认识的格式不先读入内存。 */
@@ -70,7 +107,23 @@ object WritingReferenceImport {
 
     private fun chapter(title: String, blocks: List<Block>): Chapter = Chapter(title, blocks, chapterNumber(title), ChapterTitles.partOf(title))
 
-    private fun parseText(fileName: String, text: String): BookContent {
+    /**
+     * 卷、部、集、篇只是分组。返回 null 表示这行不是卷名；否则返回同一行里的章标题（没有则为空串）。
+     * 卷名行要像标题：不长、没有句读；“第一部手机……”“第三篇论文……”这类正文句子照常当正文。
+     */
+    private fun volumeLine(line: String): String? {
+        val head = volumeHead.find(line) ?: return null
+        if (line.length > 80 || line.any { it in "。，,；;“”「」『』！？!?…" }) return null
+        val rest = line.substring(head.range.last + 1)
+        // 部、集、篇后面直接接字多半是正文（“第一部手机”）；卷名后面要有分隔或直接结束。
+        val inline = inlineChapter.find(rest)
+        if (head.groupValues[1] != "卷" && rest.isNotEmpty() && rest.first() !in " \t　:：、.．·—-" && inline?.range?.first != 0) return null
+        val chapter = inline?.let { rest.substring(it.range.first).trim() }?.takeIf(::isChapterTitle)
+        if (chapter == null && rest.trim().length > 45) return null
+        return chapter.orEmpty()
+    }
+
+    private fun parseText(fileName: String, lines: Sequence<String>): BookContent {
         val chapters = mutableListOf<Chapter>()
         var title: String? = null
         var blocks = mutableListOf<Block>()
@@ -86,7 +139,7 @@ object WritingReferenceImport {
             blocks = mutableListOf()
         }
 
-        for (raw in text.lineSequence()) {
+        for (raw in lines) {
             val line = raw.trim().trim('\uFEFF', '　').trim()
             if (line.isEmpty()) continue
             if (contents.matches(line)) {
@@ -102,9 +155,12 @@ object WritingReferenceImport {
                 inContents = false
                 continue
             }
-            if (volume.matches(line)) {
+            val volumeChapter = volumeLine(line)
+            if (volumeChapter != null) {
                 flush()
-                title = null
+                // “第一卷 风起 第一章 少年”：卷名只作分组，同一行的章标题保留。
+                title = volumeChapter.takeIf { it.isNotEmpty() }?.replace(Regex("""[\s　]+"""), " ")
+                if (title != null) sawBoundary = true
                 continue
             }
             if (isChapterTitle(line)) {
@@ -131,8 +187,7 @@ object WritingReferenceImport {
         return BookContent(sourceTitle(fileName), BookParser.authorOf(fileName), fixed)
     }
 
-    private fun parseEpub(fileName: String, bytes: ByteArray): BookContent {
-        val book = EpubParser.parse(bytes, sourceTitle(fileName))
+    private fun parseEpub(book: BookContent): BookContent {
         // 阅读器会为缺失的 spine 文件生成提示页。它不能成为用于分析的“范本原文”。
         require(book.chapters.none { c -> c.blocks.any { b ->
             b is Block.Para && !b.prose && b.text.startsWith("这一章的文件（") && b.text.contains("在 EPUB 里缺失")

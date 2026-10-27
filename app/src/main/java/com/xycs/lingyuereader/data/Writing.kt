@@ -586,6 +586,8 @@ class WorkStore(
         draftFile(workId, chapterId).delete()
         draftReferenceFile(workId, chapterId).delete()
         draftRevisionFile(workId, chapterId).delete()
+        // 指向这章的范本分析一起清掉；清不掉也不挡删章，备份和恢复会跳过这类孤儿分析。
+        runCatching { WritingReferences.forgetTarget(File(dir(workId), WritingReferences.DIRECTORY), chapterId) }
         return work
     }
 
@@ -1534,7 +1536,8 @@ class WorkStore(
             (WritingReferenceBackup.MAX_WRITING_JSON_BYTES - originalBytes - 1024 * 1024).coerceAtLeast(0))
         all.forEachIndexed { i, work ->
             try {
-                val snapshot = WritingReferenceBackup.snapshot(File(dir(work.id), WritingReferences.DIRECTORY), referenceBudget) { title, reason ->
+                val snapshot = WritingReferenceBackup.snapshot(File(dir(work.id), WritingReferences.DIRECTORY), referenceBudget,
+                    work.chapters.map { it.id }.toSet()) { title, reason ->
                     skipped += WritingSkip(work.title, "${WritingReferences.DIRECTORY}/$title", reason)
                 }
                 if (snapshot != null) {
@@ -1663,7 +1666,9 @@ class WorkStore(
             }
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
-        val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) else null
+        val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) { title, reason ->
+            skipped += WritingSkip(incoming.title, "${WritingReferences.DIRECTORY}/$title", reason)
+        } else null
 
         val localDir = dir(incoming.id)
         if (localDir.exists()) require(localDir.isDirectory) { "本机作品路径无效" }

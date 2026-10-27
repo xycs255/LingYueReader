@@ -16,7 +16,8 @@ internal object WritingReferenceBackup {
     /** 与 Library 的 BACKUP_DATA_FILE / MAX_BACKUP_JSON_BYTES 一致。 */
     const val MAX_WRITING_JSON_BYTES = 64L * 1024 * 1024
 
-    fun snapshot(root: File, budget: Long, skipped: (String, String) -> Unit): JSONObject? {
+    /** [targetChapterIds] 是作品现有的章；指向已删章的孤儿分析不进备份，否则这份备份恢复不了。 */
+    fun snapshot(root: File, budget: Long, targetChapterIds: Set<String>, skipped: (String, String) -> Unit): JSONObject? {
         val references = WritingReferences.list(root, strict = true)
         val analyses = WritingReferences.analyses(root, strict = true)
         if (budget < JSON_OVERHEAD) {
@@ -59,6 +60,10 @@ internal object WritingReferenceBackup {
         }
         val savedAnalyses = JSONArray()
         for (analysis in analyses) {
+            if (analysis.targetChapterId !in targetChapterIds) {
+                skipped("${analysis.referenceTitle} · ${analysis.chapterTitle}", "范本分析对应的写作章已删除，分析未放进备份")
+                continue
+            }
             val (reference, texts) = saved[analysis.referenceId] ?: continue
             val chapter = reference.chapters.firstOrNull { it.id == analysis.chapterId }
             if (chapter == null || !WritingReferences.sourceMatches(reference, chapter, texts.getValue(chapter.id), analysis)) {
@@ -79,8 +84,11 @@ internal object WritingReferenceBackup {
         return JSONObject().put("complete", complete).put("items", items).put("analyses", savedAnalyses)
     }
 
-    /** 在任何作品暂存/替换以前验证路径、计数、文字体积、索引以及原文/分析指纹。 */
-    fun parse(value: JSONObject, targetChapterIds: Set<String>): ReferenceArchive {
+    /**
+     * 在任何作品暂存/替换以前验证路径、计数、文字体积、索引以及原文/分析指纹。
+     * 旧备份里可能有指向已删章的孤儿分析：跳过这条并记进 [skipped]，不让整份恢复失败。
+     */
+    fun parse(value: JSONObject, targetChapterIds: Set<String>, skipped: (String, String) -> Unit = { _, _ -> }): ReferenceArchive {
         require(value.toString().toByteArray().size <= WritingReferences.MAX_BACKUP_BYTES) { "备份范本超过安全上限" }
         require(value.opt("complete") is Boolean) { "备份范本完整标记无效" }
         val raw = value.getJSONArray("items")
@@ -107,9 +115,12 @@ internal object WritingReferenceBackup {
         val byId = items.associateBy { it.first.id }
         val rawAnalyses = value.getJSONArray("analyses")
         require(rawAnalyses.length() <= WritingReferences.MAX_ANALYSES) { "备份范本分析数量过多" }
-        val analyses = (0 until rawAnalyses.length()).map { index ->
+        val analyses = (0 until rawAnalyses.length()).mapNotNull { index ->
             val analysis = WritingReferences.analysisFromJson(rawAnalyses.getJSONObject(index))
-            require(analysis.targetChapterId in targetChapterIds) { "备份范本分析引用未知写作章" }
+            if (analysis.targetChapterId !in targetChapterIds) {
+                skipped("${analysis.referenceTitle} · ${analysis.chapterTitle}", "范本分析对应的写作章已不在备份里，这条分析没有恢复")
+                return@mapNotNull null
+            }
             val (reference, texts) = requireNotNull(byId[analysis.referenceId]) { "备份范本分析引用未知范本" }
             val chapter = requireNotNull(reference.chapters.firstOrNull { it.id == analysis.chapterId }) { "备份范本分析引用未知范本章" }
             require(WritingReferences.sourceMatches(reference, chapter, texts.getValue(chapter.id), analysis)) { "备份范本分析的原文指纹不符" }
