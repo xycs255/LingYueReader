@@ -146,14 +146,30 @@ data class WorkAssist(
     val draftWorkflows: Set<String> = emptySet(),
     /** 上次写这一章时的作者要求和目标篇幅，重启后仍可继续按同一任务写。 */
     val draftIntents: Map<String, DraftIntent> = emptyMap(),
+    /** 查 AI 腔：编辑器里按内置清单（[AiCliche]）在本机标出套话，生成正文时带上去 AI 腔的写法要求。 */
+    val aiCliche: Boolean = true,
+    /** 我的黑名单：作者不想再看到的说法（最旧的在前，最多 [KEEP_BANNED] 条）。本机全文禁用，生成时也告诉 AI 别用。 */
+    val banned: List<String> = emptyList(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
+
+    /** 把 [phrase] 加进黑名单：已有的挪到最后（最近加的），超过上限丢最旧的。 */
+    fun ban(phrase: String): WorkAssist = copy(banned = cleanBanned(banned.filter { it != phrase.trim() } + phrase))
+
+    /** 从黑名单里去掉 [phrase]。 */
+    fun unban(phrase: String): WorkAssist = copy(banned = banned - phrase)
 
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
         const val KEEP_REJECTED = 10
+        /** 黑名单最多记这么多条。 */
+        const val KEEP_BANNED = 200
+
+        /** 黑名单整理：去掉两头空白和空的、去重（留后加的那个位置），超过 [KEEP_BANNED] 条丢最旧的。 */
+        fun cleanBanned(list: List<String>): List<String> =
+            list.map { it.trim() }.filter { it.isNotEmpty() }.asReversed().distinct().asReversed().takeLast(KEEP_BANNED)
         val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
         val KNOWLEDGE_LIMITS = listOf(0, 30_000, 60_000, 100_000, 150_000, 300_000)
         val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
@@ -2082,6 +2098,8 @@ class WorkStore(
             .put("sampleSkip", JSONArray(sampleSkip))
             .put("sampleShift", JSONObject().apply { sampleShift.forEach { (k, v) -> put(k, v) } })
             .put("draftWorkflows", JSONArray(draftWorkflows.sorted()))
+            .put("aiCliche", aiCliche)
+            .put("banned", JSONArray(banned))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2144,6 +2162,9 @@ class WorkStore(
                         DraftIntent(instruction, targetLength, choice)
                     }
                 } else emptyMap(),
+                // 旧数据没有这两项：默认查 AI 腔、黑名单空着。
+                aiCliche = optBoolean("aiCliche", true),
+                banned = WorkAssist.cleanBanned(optJSONArray("banned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
             )
         }
 

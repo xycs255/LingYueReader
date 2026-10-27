@@ -11,6 +11,7 @@ package com.xycs.lingyuereader.data
  * - `对白占比：20%-40%`
  *
  * 词里的“……”代表一句之内中间的任意几个字，“某人”“某某”代表一个称呼（几个字，不带标点）；
+ * 带逗号、顿号的说法用引号括起来（`禁用：“他知道，”`），引号里的不拆开；
  * 词后面加“（除外：大概在今天）”时，落在除外的说法里面的不算。
  * 规则前面加“对白”只查引号里的话，加“叙述”或“旁白”只查引号外面的。
  */
@@ -136,16 +137,22 @@ object CheckRules {
         }
     }
 
-    /** 词用顿号、逗号、分号隔开；括号里的“除外”不拆开。 */
+    /**
+     * 词用顿号、逗号、分号隔开；括号里的“除外”不拆开。引号（“”「」『』）里的也不拆开：
+     * 要查带逗号的说法（“他知道，”）时把它用引号括起来。
+     */
     private fun terms(value: String): List<RuleTerm> {
         val parts = mutableListOf<String>()
         val cur = StringBuilder()
         var depth = 0
+        var quoted = 0
         for (ch in value) {
             when {
                 ch == '（' || ch == '(' -> { depth++; cur.append(ch) }
                 ch == '）' || ch == ')' -> { depth = (depth - 1).coerceAtLeast(0); cur.append(ch) }
-                depth == 0 && ch in "、，,；;" -> { parts += cur.toString(); cur.setLength(0) }
+                ch == '“' || ch == '「' || ch == '『' -> { quoted++; cur.append(ch) }
+                ch == '”' || ch == '」' || ch == '』' -> { quoted = (quoted - 1).coerceAtLeast(0); cur.append(ch) }
+                depth == 0 && quoted == 0 && ch in "、，,；;" -> { parts += cur.toString(); cur.setLength(0) }
                 else -> cur.append(ch)
             }
         }
