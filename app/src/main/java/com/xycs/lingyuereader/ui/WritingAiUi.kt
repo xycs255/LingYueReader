@@ -39,8 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
@@ -381,16 +381,39 @@ internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<Int
     (start until start + i.wrong.length) to i
 }
 
+/** 口吻类建议的基准色：紫，离红（删除）、橙（提醒）都远；和强调色撞了再转开。 */
+private val VoiceLight = Color(0xFF7B4FA6)
+private val VoiceDark = Color(0xFFB89BE0)
+
 /**
- * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、
- * 口吻取强调色和删除色的中间。都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。
+ * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、口吻用紫。
+ * 删除色、提醒色在配色里已经和强调色转开了（[distinctFrom]），口吻再和这三种转开，两两色差都 ≥ [SEMANTIC_MIN_DELTA]。
+ * 都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。颜色之外还有 [suggestShape] 和文字标签。
  */
-internal fun suggestColor(kind: String, c: GroupedColors): Color = when (SuggestKind.of(kind)) {
-    SuggestKind.TYPO -> c.destructive
-    SuggestKind.CANON -> c.warning
-    SuggestKind.STYLE -> c.tint
-    SuggestKind.VOICE -> lerp(c.tint, c.destructive, 0.5f)
-}.readableOn(listOf(c.cell, c.background))
+internal fun suggestColor(kind: String, c: GroupedColors): Color {
+    val cards = listOf(c.cell, c.background)
+    return when (SuggestKind.of(kind)) {
+        SuggestKind.TYPO -> c.destructive
+        SuggestKind.CANON -> c.warning
+        SuggestKind.STYLE -> c.tint
+        SuggestKind.VOICE -> (if (c.dark) VoiceDark else VoiceLight).distinctFrom(listOf(c.tint, c.destructive, c.warning), cards)
+    }.readableOn(cards)
+}
+
+/** 各类建议的形状：标签上颜色之外再带一个形状，色弱、灰阶的墨水屏上也分得出是哪类。 */
+internal fun suggestShape(kind: String): String = when (SuggestKind.of(kind)) {
+    SuggestKind.TYPO -> "●"
+    SuggestKind.CANON -> "▲"
+    SuggestKind.STYLE -> "■"
+    SuggestKind.VOICE -> "◆"
+}
+
+/** 一类建议的标签：形状 + 名字，用这类的颜色；读屏只念“某类建议”，不念形状。 */
+@Composable
+internal fun SuggestTag(kind: String, c: GroupedColors, modifier: Modifier = Modifier) {
+    val k = SuggestKind.of(kind)
+    Tag("${suggestShape(kind)} ${k.label}", suggestColor(kind, c), modifier.clearAndSetSemantics { contentDescription = "${k.label}类建议" })
+}
 
 /**
  * AI 在编辑器里写：键盘上方一条——在写（或在查设定）时能停，写完能采纳、重写、撤回。
@@ -488,7 +511,7 @@ internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () ->
         AnimatedContent(issue, transitionSpec = { Motion.fadeThrough() using null }, label = "suggestion") { shown ->
             Column(Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Tag(SuggestKind.of(shown.kind).label, suggestColor(shown.kind, c))
+                    SuggestTag(shown.kind, c)
                     Text(
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(shown.wrong) }

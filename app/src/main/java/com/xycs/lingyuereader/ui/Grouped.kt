@@ -141,7 +141,13 @@ internal data class GroupedColors(
     val success: Color,
     val switchOn: Color,
     val dark: Boolean,
-)
+) {
+    /** 分段控件选中格上的字：强调色，在 [segment] 上不够 4.5:1 时往黑或白里调到够（很浅的自选强调色、Monet 下也一样）。 */
+    val segmentLabel: Color = tint.readableOn(listOf(segment))
+
+    /** 分段控件没选中的字：次要色，在底槽 [fill] 上同样调到够 4.5:1。 */
+    val segmentIdle: Color = secondary.readableOn(listOf(fill))
+}
 
 /** 提醒、成功的基准色：浅色底用深一些的橙和绿，深色底用亮一些的；实际取值再按卡片底调到够对比度。 */
 private val WarningLight = Color(0xFFA85500)
@@ -149,25 +155,40 @@ private val WarningDark = Color(0xFFFF9F0A)
 private val SuccessLight = Color(0xFF15803D)
 private val SuccessDark = Color(0xFF30D158)
 
-private fun Colors.grouped(tint: Color, dark: Boolean) = GroupedColors(
-    background = surface,
-    cell = surfaceContainer,
-    pressed = secondaryContainer,
-    separator = dividerLine,
-    label = onSurface,
-    secondary = onSurfaceVariantSummary,
-    tertiary = onSurfaceVariantActions,
-    fill = secondaryContainer,
-    segment = if (dark) secondary else surfaceContainer,
-    tint = tint,
-    // miuix 自己配的 onPrimary 保留品牌对比；很浅的自选强调色则在黑白里挑可读字色。
-    onTint = if (tint == primary && contrastRatio(onPrimary, tint) >= 3f) onPrimary else contentColorOn(tint),
-    destructive = error,
-    warning = (if (dark) WarningDark else WarningLight).readableOn(listOf(surfaceContainer, surface)),
-    success = (if (dark) SuccessDark else SuccessLight).readableOn(listOf(surfaceContainer, surface)),
-    switchOn = tint,
-    dark = dark,
-)
+/**
+ * 删除色、提醒色：和强调色太像（朱砂和正红、琥珀和橙）时转开一点色相，提醒色还要和删除色分开，
+ * 免得删除键像主操作、几类写作建议分不出来（见 [distinctFrom]）。提醒色再调到在 [cards] 上读得清。
+ */
+private fun semanticColors(red: Color, orange: Color, tint: Color, cards: List<Color>): Pair<Color, Color> {
+    val destructive = red.distinctFrom(listOf(tint), cards)
+    return destructive to orange.distinctFrom(listOf(tint, destructive), cards).readableOn(cards)
+}
+
+internal fun Colors.grouped(tint: Color, dark: Boolean): GroupedColors {
+    val cards = listOf(surfaceContainer, surface)
+    val (destructive, warning) = semanticColors(error, if (dark) WarningDark else WarningLight, tint, cards)
+    return GroupedColors(
+        background = surface,
+        cell = surfaceContainer,
+        pressed = secondaryContainer,
+        separator = dividerLine,
+        label = onSurface,
+        secondary = onSurfaceVariantSummary,
+        tertiary = onSurfaceVariantActions,
+        fill = secondaryContainer,
+        // 选中格比底槽亮一档：浅色是卡片白，深色往字色提一点。不用深色的 secondary——纸色方案里它是开关关着时的浅米色轨道，
+        // 拿来垫强调色字只有 1.1:1；Monet 深色的 secondary 也是浅色。
+        segment = if (dark) lerp(secondaryContainer, onSurface, 0.08f) else surfaceContainer,
+        tint = tint,
+        // miuix 自己配的 onPrimary 保留品牌对比；很浅的自选强调色则在黑白里挑可读字色。
+        onTint = if (tint == primary && contrastRatio(onPrimary, tint) >= 3f) onPrimary else contentColorOn(tint),
+        destructive = destructive,
+        warning = warning,
+        success = (if (dark) SuccessDark else SuccessLight).readableOn(cards),
+        switchOn = tint,
+        dark = dark,
+    )
+}
 
 /** 不在 Compose 里时（比如给面板定底色）用默认纸色方案。[elevated] 保留给浮在页面上的面板，配色相同。 */
 @Suppress("UNUSED_PARAMETER")
@@ -185,6 +206,7 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
     return if (dark) {
         val sheet = up(bg, 0.05f)
         val cell = up(bg, 0.10f)
+        val (destructive, warning) = semanticColors(Color(0xFFF15B4F), WarningDark, tint, listOf(cell, sheet))
         GroupedColors(
             background = sheet,
             cell = cell,
@@ -199,8 +221,8 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
             tint = tint,
             // 书页的强调色有深有浅（朱砂配白字，琥珀、灰蓝配深字），按对比度挑。
             onTint = contentColorOn(tint),
-            destructive = Color(0xFFF15B4F),
-            warning = WarningDark.readableOn(listOf(cell, sheet)),
+            destructive = destructive,
+            warning = warning,
             success = SuccessDark.readableOn(listOf(cell, sheet)),
             switchOn = tint,
             dark = true,
@@ -208,6 +230,8 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
     } else {
         val sheet = up(bg, 0.45f)
         val cell = up(bg, 0.88f)
+        // 纸白、宣黄、竹青的面板底各不相同，提醒色调到在卡片和面板底上都够 4.5:1。
+        val (destructive, warning) = semanticColors(Color(0xFFD9412F), WarningLight, tint, listOf(cell, sheet))
         GroupedColors(
             background = sheet,
             cell = cell,
@@ -220,9 +244,8 @@ internal fun readerGroupedColors(palette: ReaderPalette, tint: Color): GroupedCo
             segment = cell,
             tint = tint,
             onTint = contentColorOn(tint),
-            destructive = Color(0xFFD9412F),
-            // 纸白、宣黄、竹青的面板底各不相同，调到在卡片和面板底上都够 4.5:1。
-            warning = WarningLight.readableOn(listOf(cell, sheet)),
+            destructive = destructive,
+            warning = warning,
             success = SuccessLight.readableOn(listOf(cell, sheet)),
             switchOn = tint,
             dark = false,
@@ -685,7 +708,7 @@ internal fun LingYueSlider(
     )
 }
 
-/** 分段控件（miuix 的带轮廓标签栏样子）：浅灰底槽，选中的那格是白块、强调色字；两到五个选项。 */
+/** 分段控件（miuix 的带轮廓标签栏样子）：浅灰底槽，选中的那格是白块（深色是亮一档的深块）、强调色字；两到五个选项。 */
 @Composable
 internal fun <T> SegmentedControl(
     options: List<Pair<T, String>>,
@@ -714,7 +737,7 @@ internal fun <T> SegmentedControl(
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, (value, label) ->
                 val source = remember { MutableInteractionSource() }
-                val color by animateColorAsState(if (i == index) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "segmentText")
+                val color by animateColorAsState(if (i == index) c.segmentLabel else c.segmentIdle, Motion.standard(Motion.SHORT), label = "segmentText")
                 Box(
                     Modifier
                         .weight(1f)
