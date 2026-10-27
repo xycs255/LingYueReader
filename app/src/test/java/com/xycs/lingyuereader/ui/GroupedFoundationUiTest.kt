@@ -7,13 +7,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -287,6 +292,68 @@ class GroupedFoundationUiTest {
             height()
         }
         assertEquals(first - 56f, height(), 0.5f)
+    }
+
+    /** 步进器：加减一、到上限 ＋ 变灰、在下限再按 － 回到“不填”、从“不填”按 ＋ 从起点开始、直接输入超出范围收到边上。 */
+    @Test
+    fun numberStepperStepsClampsAndCanBeLeftEmpty() {
+        val value = mutableStateOf<Int?>(null)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    NumberStepper(value.value, { value.value = it }, "计划第几章收", range = 1..3, start = 2)
+                }
+            }
+        }
+        // 不填：中间写“不填”，－ 不能点。
+        compose.onNodeWithText("不填").assertExists()
+        compose.onNodeWithContentDescription("计划第几章收减一").assertIsNotEnabled()
+        val plus = compose.onNodeWithContentDescription("计划第几章收加一")
+        val bounds = plus.getUnclippedBoundsInRoot()
+        assertTrue("步进器的钮触控区至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+
+        // 从“不填”按 ＋：从起点 2 开始；再按一次到上限 3，＋ 变灰。
+        plus.performClick()
+        assertEquals(2, value.value)
+        plus.performClick()
+        assertEquals(3, value.value)
+        plus.assertIsNotEnabled()
+
+        // 减到下限 1，再按 － 回到“不填”。
+        compose.onNodeWithContentDescription("计划第几章收减一").performClick()
+        compose.onNodeWithContentDescription("计划第几章收减一").performClick()
+        assertEquals(1, value.value)
+        compose.onNodeWithContentDescription("计划第几章收改为不填").performClick()
+        assertEquals(null, value.value)
+        compose.onNodeWithText("不填").assertExists()
+
+        // 直接输入：超出上限收到 3，删空就是“不填”。
+        val field = compose.onNode(hasSetTextAction())
+        field.performTextReplacement("25")
+        assertEquals(3, value.value)
+        field.assertTextEquals("3")
+        field.performTextReplacement("")
+        assertEquals(null, value.value)
+    }
+
+    /** 不能空的步进器：最小值上 － 变灰，删空输入框不会把值清掉。 */
+    @Test
+    fun requiredNumberStepperNeverBecomesEmpty() {
+        val value = mutableStateOf<Int?>(1)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    NumberStepper(value.value, { value.value = it }, "从第几章生效", range = 1..30, optional = false)
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("从第几章生效减一").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("从第几章生效加一").performClick()
+        assertEquals(2, value.value)
+        compose.onNode(hasSetTextAction()).performTextReplacement("")
+        assertEquals(2, value.value)
+        compose.onNode(hasSetTextAction()).performTextReplacement("12")
+        assertEquals(12, value.value)
     }
 
     /** 截图里接近 [color] 的像素占多少。 */

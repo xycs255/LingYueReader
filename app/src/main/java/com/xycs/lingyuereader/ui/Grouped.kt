@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -41,6 +42,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -55,15 +59,23 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
@@ -77,7 +89,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -855,6 +870,158 @@ internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
         control()
     }
 }
+
+/** 只显示的一行：名字，下面一行灰色说明（[subtitleMaxLines] 限行），左边可带行首图标；不能点。 */
+@Composable
+internal fun InfoRow(
+    title: String,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    iconBackground: Color = Color.Unspecified,
+    subtitleMaxLines: Int = Int.MAX_VALUE,
+) {
+    val c = LocalGroupedColors.current
+    GroupedRow {
+        if (icon != null) RowIcon(icon, iconBackground)
+        RowTitle(title, c.label, true, subtitle, subtitleMaxLines)
+    }
+}
+
+/** 章号这类步进器的默认上限：五位数，和以前只收五位数字的章号输入框一样。 */
+internal const val STEPPER_MAX = 99_999
+
+/**
+ * 步进器（－ 数字 ＋）：章号这类小整数。两边是 32dp 的圆底灰钮（能点的范围 48dp），中间的数字点一下就能直接输入（数字键盘）。
+ * - [value] 为空是“不填”（只有 [optional] 时才有）：中间是第三级灰色的 [emptyText]，－ 不能点，按 ＋ 从 [start] 开始；
+ * - 在最小值上再按 －，回到“不填”；把输入框删空也一样；
+ * - 输入超出 [range] 的数收到边上；到了上限 ＋ 变灰；
+ * - 不能空的（[optional] 为假）删空后离开输入框，恢复原来的值。
+ * [label] 是读屏念的名字（“从第几章起”），两边的钮念成“从第几章起减一”“从第几章起加一”。
+ */
+@Composable
+internal fun NumberStepper(
+    value: Int?,
+    onValueChange: (Int?) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    range: IntRange = 1..STEPPER_MAX,
+    optional: Boolean = true,
+    start: Int = range.first,
+    emptyText: String = "不填",
+) {
+    val c = LocalGroupedColors.current
+    val focus = LocalFocusManager.current
+    val latest by rememberUpdatedState(value)
+    // 输入框里的字跟着外面的值走；删空了、还没填完时先留着自己的。
+    var text by remember(value) { mutableStateOf(value?.toString().orEmpty()) }
+    val atMin = value != null && value <= range.first
+    val canMinus = value != null && (!atMin || optional)
+    val canPlus = value == null || value < range.last
+    Row(modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+        StepperButton(LingYueIcons.Remove, if (atMin && optional) "${label}改为$emptyText" else "${label}减一", canMinus) {
+            onValueChange(if (value == null || value <= range.first) null else value - 1)
+        }
+        BasicTextField(
+            value = text,
+            onValueChange = { raw ->
+                val digits = raw.filter(Char::isDigit).take(9)
+                if (digits.isEmpty()) {
+                    text = ""
+                    if (optional && value != null) onValueChange(null)
+                } else {
+                    val n = digits.toLong().coerceIn(range.first.toLong(), range.last.toLong()).toInt()
+                    text = n.toString()
+                    if (n != value) onValueChange(n)
+                }
+            },
+            singleLine = true,
+            textStyle = TextStyle(color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
+            cursorBrush = SolidColor(c.tint),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
+            modifier = Modifier
+                .width(60.dp)
+                .onFocusChanged { if (!it.isFocused) text = latest?.toString().orEmpty() }
+                .semantics {
+                    contentDescription = label
+                    stateDescription = value?.toString() ?: emptyText
+                },
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.Center) {
+                    if (text.isEmpty()) Text(emptyText, color = c.tertiary, fontSize = 15.sp, maxLines = 1)
+                    inner()
+                }
+            },
+        )
+        StepperButton(LingYueIcons.Add, "${label}加一", canPlus) {
+            onValueChange(if (value == null) start.coerceIn(range) else value + 1)
+        }
+    }
+}
+
+/** 步进器两边的钮：看着 32dp 的圆底，能点 48dp；按下缩一点，不能点时图形变成第三级灰。 */
+@Composable
+private fun StepperButton(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val tint by animateColorAsState(if (enabled) c.label else c.tertiary, Motion.standard(Motion.SHORT), label = "stepper")
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.pressScale(source, 0.9f).size(32.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * 放不下时左右滑的一排：哪一边还有没露出来的，哪一边的边缘就渐隐（[fade] 宽），提示能滑；全放得下时两边都不渐隐。
+ * 胶囊少、能换行的用 FlowRow；要一格格对齐、人多时一行排不下的（知情格）才用它。
+ */
+@Composable
+internal fun FadingScrollRow(
+    modifier: Modifier = Modifier,
+    state: ScrollState = rememberScrollState(),
+    fade: Dp = 28.dp,
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
+    verticalAlignment: Alignment.Vertical = Alignment.Top,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier.horizontalFadingEdges(state, fade).horizontalScroll(state),
+        horizontalArrangement = horizontalArrangement,
+        verticalAlignment = verticalAlignment,
+        content = content,
+    )
+}
+
+/** 横向滚动内容的边缘渐隐：在绘制阶段用 DstIn 把边上一段渐渐抹透明，不改布局；滚到头的那一边不抹。 */
+internal fun Modifier.horizontalFadingEdges(state: ScrollState, fade: Dp): Modifier =
+    graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val w = fade.toPx().coerceAtMost(size.width / 2)
+            if (state.canScrollBackward) {
+                drawRect(
+                    Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = w),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+            if (state.canScrollForward) {
+                drawRect(
+                    Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = size.width - w, endX = size.width),
+                    topLeft = Offset(size.width - w, 0f),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+        }
 
 // ---------- 按钮、标签 ----------
 

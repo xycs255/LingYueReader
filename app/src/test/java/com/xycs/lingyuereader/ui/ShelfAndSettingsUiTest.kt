@@ -8,11 +8,15 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -113,6 +117,22 @@ class ShelfAndSettingsUiTest {
         compose.waitUntil(5_000) { Effects.noMotion }
         compose.waitForIdle()
         assertTrue("减少动效时列表和网格应当直接换", !gridStillShownAfterSwitchingToList())
+    }
+
+    /** 书名下的“⋯”看着小，能点的范围网格和列表里都至少 48dp，点了出菜单。 */
+    @Test
+    fun shelfMoreButtonsKeepFullTouchTargets() {
+        waitForText("渡口夜话")
+        fun assertTarget(where: String) {
+            val bounds = compose.onNodeWithContentDescription("操作").getUnclippedBoundsInRoot()
+            assertTrue("$where 的“⋯”触控区至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+        }
+        assertTarget("网格")
+        compose.runOnUiThread { vm.updateShelfPrefs { it.copy(list = true) } }
+        compose.waitUntil(5_000) { count("未读 · 1 章") == 1 && compose.onAllNodesWithContentDescription("操作").fetchSemanticsNodes().size == 1 }
+        assertTarget("列表")
+        compose.onNodeWithContentDescription("操作").performClick()
+        waitForText("详情")
     }
 
     @Test

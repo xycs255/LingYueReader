@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -121,11 +122,25 @@ class WritingProjectTreeUiTest {
         compose.onNodeWithText(first.title).assertExists()
 
         compose.onNodeWithText("调整章节顺序").performClick()
+        compose.onNodeWithText("完成调整").assertExists()
         val down = compose.onNodeWithContentDescription("下移${first.title}")
         val bounds = down.getUnclippedBoundsInRoot()
         assertTrue(bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+        // 紧凑箭头在章这一行的右侧，和章名同一行，不在章下面另起一排。
+        val row = compose.onNode(hasText(first.title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)).getUnclippedBoundsInRoot()
+        assertTrue("箭头和章名在同一行", bounds.top >= row.top && bounds.bottom <= row.bottom)
         down.performClick()
         assertEquals(first.id to 1, move)
+        // 到头的方向不能点：第一章不能再上移，最后一章不能再下移。
+        compose.onNodeWithContentDescription("上移${first.title}").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("下移${second.title}").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("上移${second.title}").performClick()
+        assertEquals(second.id to -1, move)
+        // 调整模式里不显示细纲卡按钮，完成后回来。
+        compose.onNodeWithContentDescription("展开${first.title}细纲卡").assertDoesNotExist()
+        compose.onNodeWithText("完成调整").performClick()
+        compose.onNodeWithContentDescription("展开${first.title}细纲卡").assertExists()
+        compose.onNodeWithContentDescription("下移${first.title}").assertDoesNotExist()
     }
 
     private fun actions(
