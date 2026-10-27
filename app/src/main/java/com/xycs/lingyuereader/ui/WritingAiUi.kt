@@ -38,7 +38,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -406,6 +412,61 @@ internal fun suggestShape(kind: String): String = when (SuggestKind.of(kind)) {
     SuggestKind.CANON -> "▲"
     SuggestKind.STYLE -> "■"
     SuggestKind.VOICE -> "◆"
+}
+
+/** 正文里一类建议的划线线形：颜色之外再分线形，色弱、灰阶的墨水屏上也分得出（静止的线，减少动效时也一样）。 */
+internal enum class SuggestLine(val label: String) {
+    WAVY("波浪线"),
+    DOUBLE("双线"),
+    DASHED("虚线"),
+    DOTTED("点线"),
+}
+
+/** 各类建议在正文里的划线：错字波浪线、设定双线、规范虚线、口吻点线（和标签上的 ●▲■◆ 一一对应）。 */
+internal fun suggestLine(kind: String): SuggestLine = when (SuggestKind.of(kind)) {
+    SuggestKind.TYPO -> SuggestLine.WAVY
+    SuggestKind.CANON -> SuggestLine.DOUBLE
+    SuggestKind.STYLE -> SuggestLine.DASHED
+    SuggestKind.VOICE -> SuggestLine.DOTTED
+}
+
+/** 在 [y]（基线下方）从 [fromX] 到 [toX] 按 [line] 画一道划线；线宽、间距按 dp 算，各密度下看起来一样。 */
+internal fun DrawScope.drawSuggestLine(line: SuggestLine, color: Color, fromX: Float, toX: Float, y: Float) {
+    if (toX <= fromX) return
+    val stroke = 1.5.dp.toPx()
+    when (line) {
+        SuggestLine.WAVY -> {
+            // 半个波长 3dp、上下各 1.5dp：一眼看得出是波浪，不像粗线。
+            val half = 3.dp.toPx()
+            val amp = 1.5.dp.toPx()
+            val path = Path().apply {
+                moveTo(fromX, y)
+                var x = fromX
+                var up = true
+                while (x < toX) {
+                    val next = minOf(x + half, toX)
+                    quadraticTo((x + next) / 2f, if (up) y - amp * 2f else y + amp * 2f, next, y)
+                    x = next
+                    up = !up
+                }
+            }
+            drawPath(path, color, style = Stroke(width = 1.2.dp.toPx()))
+        }
+        SuggestLine.DOUBLE -> {
+            val w = 1.dp.toPx()
+            drawLine(color, Offset(fromX, y - 1.5.dp.toPx()), Offset(toX, y - 1.5.dp.toPx()), strokeWidth = w)
+            drawLine(color, Offset(fromX, y + 1.5.dp.toPx()), Offset(toX, y + 1.5.dp.toPx()), strokeWidth = w)
+        }
+        SuggestLine.DASHED -> drawLine(
+            color, Offset(fromX, y), Offset(toX, y), strokeWidth = stroke,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 3.dp.toPx())),
+        )
+        // 圆头、长度近乎为零的“段”就是一颗颗圆点。
+        SuggestLine.DOTTED -> drawLine(
+            color, Offset(fromX + stroke, y), Offset(toX, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.01f, 4.dp.toPx())),
+        )
+    }
 }
 
 /** 一类建议的标签：形状 + 名字，用这类的颜色；读屏只念“某类建议”，不念形状。 */

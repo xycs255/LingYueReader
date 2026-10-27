@@ -56,6 +56,9 @@ class WritingSyncUiTest {
     /** 请求正文里含这几个字的回 500（模拟分段整理时有一段没成）。 */
     @Volatile
     private var failWhen: String? = null
+    /** 为真时带工具的请求回 400“不支持工具”（模拟局域网上不支持工具的模型）。 */
+    @Volatile
+    private var rejectTools = false
     private val text = "渡口起了雾。\n杜娘把茶碗推给林月，说老周昨夜里走了。\n顾长风在门外喊她“月丫头”。\n林月这才知道沈默是朝廷的卧底。"
 
     /** 模型的回答；账本那个测试换成带账本几组的。 */
@@ -85,6 +88,13 @@ class WritingSyncUiTest {
                 createContext("/v1/chat/completions") { ex ->
                     val body = JSONObject(ex.requestBody.readBytes().decodeToString())
                     bodies += body
+                    if (rejectTools && body.has("tools")) {
+                        val err = JSONObject().put("error", JSONObject().put("message", "registry.local/渡口:7b does not support tools")).toString().toByteArray()
+                        ex.responseHeaders.add("Content-Type", "application/json")
+                        ex.sendResponseHeaders(400, err.size.toLong())
+                        runCatching { ex.responseBody.use { it.write(err) } }
+                        return@createContext
+                    }
                     val fail = failWhen
                     if (fail != null && fail in lastMessage(body)) {
                         val err = JSONObject().put("error", JSONObject().put("message", "服务器忙")).toString().toByteArray()
@@ -405,5 +415,25 @@ class WritingSyncUiTest {
         press("写进设定包和账本（3 条）")
         waitFor { "杜娘" in store.packText(workId, people.id) }
         waitFor { store.assist(workId).synced.containsKey(chapterId) }
+    }
+
+    @Test
+    fun aModelWithoutToolsStillSyncsAndSaysThePackWasNotConsulted() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        rejectTools = true
+        compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncChapter(workId, chapterId) }
+        waitFor { vm.writingAi.sync.value?.results?.singleOrNull() != null && vm.writingAi.sync.value?.running == null }
+        val result = vm.writingAi.sync.value!!.results.single()
+        // 先带工具被拒，再不带工具重发一次；整理成功，记下“没查设定包”。
+        assertEquals(null, result.error)
+        assertTrue(result.noTools)
+        assertTrue(result.items.isNotEmpty())
+        assertEquals(2, bodies.size)
+        assertTrue(bodies[0].has("tools"))
+        assertFalse(bodies[1].has("tools"))
+        // 设定包整份在系统提示里。
+        assertTrue("药铺掌柜的女儿" in bodies[1].getJSONArray("messages").getJSONObject(0).getString("content"))
+        assertTrue(seen("这次没能查设定包"))
+        assertTrue(seen("结果可能漏掉冲突"))
     }
 }

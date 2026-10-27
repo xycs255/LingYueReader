@@ -106,7 +106,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (slow: RegexTooSlowException) {
-            tooSlow = if (slow.busy) "上一个正则还在跑（太慢），请先改写它，等它停下再试。" else "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
+            tooSlow = slowNote(slow) ?: "正则太慢，在这本书上跑不完，请改写分章或净化规则。"
             null
         } catch (failed: Exception) {
             null
@@ -202,7 +202,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                                 val preview = rememberPreview(r, source.orEmpty())
                                 RuleRow(
                                     rule = r,
-                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { if ((it as? RegexTooSlowException)?.busy == true) "上一个正则还在跑" else "正则太慢" }) ?: "统计中……",
+                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { (it as? RegexTooSlowException)?.let(::slowLabel) ?: "正则太慢" }) ?: "统计中……",
                                     samples = preview?.getOrNull()?.second.orEmpty(),
                                     onToggle = { on -> rules = rules.toMutableList().also { it[i] = r.copy(enabled = on) } },
                                     onDelete = { rules = rules.filterIndexed { j, _ -> j != i } },
@@ -222,8 +222,8 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                         footer = when {
                             error != null -> "正则有误：$error"
                             draftHeld -> "这个正则$draftRisk。先没统计，请改写；确定没问题可以仍然试一下。"
-                            draftSlow && (draftPreview?.exceptionOrNull() as? RegexTooSlowException)?.busy == true ->
-                                "上一个正则还在跑（太慢），请先改写它，等它停下再试。"
+                            draftSlow && (draftPreview?.exceptionOrNull() as? RegexTooSlowException)?.let(::slowNote) != null ->
+                                slowNote(draftPreview?.exceptionOrNull() as RegexTooSlowException)
                             draftSlow -> "正则太慢，在这本书上跑不完。请改写，避免 (\\w+\\s?)+ 这类套在一起的重复。"
                             pattern.isNotEmpty() -> (draftPreview?.getOrNull()?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
                                 draftPreview?.getOrNull()?.second.orEmpty().joinToString("") { "\n$it" }
@@ -320,3 +320,17 @@ private val RulesSaver = Saver<List<ReplaceRule>, String>(
     save = { TextRules(it).toJson().toString() },
     restore = { TextRules.fromJson(JSONObject(it)).replace },
 )
+
+/** 规则行上的短说明：停用了的、后台卡满了的、只是太慢的。 */
+private fun slowLabel(e: RegexTooSlowException): String = when {
+    e.busy -> "暂时不能统计"
+    e.disabled -> "太慢，已停用"
+    else -> "正则太慢"
+}
+
+/** 停用、卡满这两种的完整说明；只是太慢的为 null（各处自己说）。 */
+private fun slowNote(e: RegexTooSlowException): String? = when {
+    e.busy -> "后台已有 ${TextRules.MAX_STUCK} 条太慢的正则停不下来，暂时不能再试别的正则，重启应用后恢复。"
+    e.disabled -> "这条规则太慢，已停用（它在后台还没停下，不再重跑）。请改写它，避免 (\\w+\\s?)+ 这类套在一起的重复。"
+    else -> null
+}

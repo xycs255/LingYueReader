@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.data
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
@@ -21,10 +22,17 @@ data class ReplaceRule(
 
 /**
  * 用户写的正则在这段文字上跑得太久（多半是嵌套的重复，如 `(\w+\s?)+$`，在长行上反复回溯），已放弃。
- * [busy] 为真：上一个太慢的正则（[pattern]）放弃以后还在后台跑，没等它停下就不再跑新的正则。
+ * [disabled] 为真：这条正则超时后线程停不下来（Android 上的 ICU 本地匹配），已按写法停用，再用直接报这个、不再起线程。
+ * [busy] 为真：后台停不下来的正则已经有 [TextRules.MAX_STUCK] 条，暂时不再跑新的正则（[pattern] 是这次要跑的），重启应用后恢复。
  */
-class RegexTooSlowException(val pattern: String, val busy: Boolean = false) :
-    RuntimeException(if (busy) "上一个正则还在跑（太慢），请先改写它：$pattern" else "正则太慢，请改写：$pattern")
+class RegexTooSlowException(val pattern: String, val busy: Boolean = false, val disabled: Boolean = false) :
+    RuntimeException(
+        when {
+            busy -> "后台有好几条太慢的正则停不下来，暂时不能再跑正则，重启应用后恢复：$pattern"
+            disabled -> "这条规则太慢，已停用，请改写：$pattern"
+            else -> "正则太慢，请改写：$pattern"
+        },
+    )
 
 /** 分章规则的预设。 */
 data class TocPreset(val label: String, val pattern: String)
@@ -166,67 +174,138 @@ data class TextRules(
         /** 跑正则的线程：太慢的那次停不下来时只能丢下它，不能占着协程的线程池。 */
         private val regexThreads = Executors.newCachedThreadPool { task -> Thread(task, "regex-guard").apply { isDaemon = true } }
 
+        /** 停不下来的正则线程最多几条：到了这个数，新的正则直接拒绝（busy），重启应用后恢复。 */
+        const val MAX_STUCK = 2
+
         /**
-         * 跑着的那一次正则：[state] 0 还没开始、1 在跑、2 跑完（或没开始就取消了）。
-         * 同一时间只跑一次（[gate]），跑完才放开；调用方不等了（超时、取消）而它还在跑，就记成 [abandoned]。
+         * 跑正则的通道，共 [MAX_STUCK] 条：每次正则占一条，线程真跑完才放开。停不下来的线程一直占着自己那条，
+         * 所以卡住的线程最多 [MAX_STUCK] 条；只卡住一条时，别的书、别的规则照常走剩下的通道。
+         */
+        private val lanes = Semaphore(MAX_STUCK)
+
+        /** 现在停不下来的线程有几条（它们跑完会减回去）。 */
+        private val stuckCount = AtomicInteger(0)
+
+        /** 现在停不下来的线程有几条（测试用）。 */
+        internal val stuckNow: Int get() = stuckCount.get()
+
+        /**
+         * 一次正则：[state] 0 还没开始、1 在跑、2 跑完（或没开始就取消了）；[stuck] 是过了期限还停不下来、已经算进 [stuckCount]。
+         * 调用方不等了（超时、取消）而它还在跑，就放进 [abandoned]，等它跑完或被认定停不下来。
          */
         private class Run(val pattern: String, val deadline: Long) {
-            val state = AtomicInteger(0)
-            val running: Boolean get() = state.get() == 1
+            private var state = 0
+            private var stuck = false
+            val done = CountDownLatch(1)
+
+            val running: Boolean @Synchronized get() = state == 1
+
+            /** 线程开始跑：还没被取消才跑。 */
+            @Synchronized
+            fun begin(): Boolean = (state == 0).also { if (it) state = 1 }
+
+            /** 调用方不等了而它还没开始：直接作废，返回真（由调用方放开通道）。 */
+            @Synchronized
+            fun cancelBeforeStart(): Boolean = (state == 0).also {
+                if (it) {
+                    state = 2
+                    done.countDown()
+                }
+            }
+
+            /** 线程跑完（正常、出错、终于停下）。 */
+            @Synchronized
+            fun finish() {
+                state = 2
+                if (stuck) stuckCount.decrementAndGet()
+                done.countDown()
+            }
+
+            /** 认定它停不下来：还在跑、之前没认定过时记一笔，返回真。 */
+            @Synchronized
+            fun markStuck(): Boolean = (state == 1 && !stuck).also {
+                if (it) {
+                    stuck = true
+                    stuckCount.incrementAndGet()
+                }
+            }
         }
 
-        /** 同一时间只让一个正则在跑：Android 上超时的那次停不下来，它跑完之前不再起新的线程，停不下来的线程最多这一条。 */
-        private val gate = Semaphore(1)
-
-        /** 调用方已经不等了、可能还在跑的那一次。 */
-        @Volatile
-        private var abandoned: Run? = null
+        /** 调用方已经不等了、可能还在跑的那几次。 */
+        private val abandoned = HashSet<Run>()
 
         /** 过了期限多久还没停，才算停不下来（JVM 上读文字的那一层很快就让它停下）。 */
-        private const val GRACE_NANOS = 100_000_000L
+        private const val GRACE_NANOS = 300_000_000L
 
         /** 已经超时过的“正则 + 文字”，不再重跑（每重跑一次，可能又多一条停不下来的线程）。 */
         private val slow = object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?) = size > 64
         }
 
+        /** 停不下来过的正则（按写法记）：再用直接报“这条规则太慢，已停用”，不再起线程；别的正则不受影响。 */
+        private val disabled = object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?) = size > 64
+        }
+
+        /** 这条正则是否因为停不下来被停用了。 */
+        fun isDisabled(pattern: String): Boolean = synchronized(disabled) { disabled.containsKey(pattern) }
+
+        /** 认定 [run] 停不下来：记进 [stuckCount]，停用它的写法。 */
+        private fun markStuck(run: Run): Boolean {
+            synchronized(abandoned) { abandoned.remove(run) }
+            if (!run.markStuck()) return false
+            synchronized(disabled) { disabled[run.pattern] = Unit }
+            return true
+        }
+
+        /** 看一遍不等了的那几次：过了期限加宽限还在跑的，认定停不下来。 */
+        private fun sweep() {
+            val now = System.nanoTime()
+            val overdue = synchronized(abandoned) { abandoned.filter { now - it.deadline > GRACE_NANOS } }
+            overdue.forEach { if (it.running) markStuck(it) else synchronized(abandoned) { abandoned.remove(it) } }
+        }
+
         /**
          * 限时跑一次正则操作，超时抛 [RegexTooSlowException]；调用的线程被中断（协程取消）时抛 InterruptedException。
          * [block] 拿 timed(文字) 去匹配：包了一层到点就抛异常的 CharSequence，正则引擎逐字读文字时（JVM）能马上停下。
-         * Android 的正则引擎（ICU）先把文字复制成 String、在本地代码里匹配，读不到这一层，
-         * 所以另起线程跑、调用方只等到期限为止；那条线程停不下来，只能丢下它。
-         * 丢下的线程全局最多一条：同一时间只跑一次，上一次过了期限还停不下来时，新的请求直接抛 busy 的
-         * [RegexTooSlowException]，不再起线程；它跑完以后才恢复。期限 [limit] 默认按 [text] 的字数放宽（[limitFor]）。
+         * Android 的正则引擎（ICU）先把文字复制成 String、在本地代码里匹配，读不到这一层，也不响应中断，
+         * 所以另起线程跑、调用方只等到期限为止；那条线程停不下来，只能丢下它，让它在后台自己跑完。
+         * 丢下以后过了宽限还停不下来的，只停用这一条正则（按写法记，再用直接报 disabled），别的正则、别的书照常能跑；
+         * 停不下来的线程同时最多 [MAX_STUCK] 条（每条占着一个通道），到了上限新的请求抛 busy，不再起线程。
+         * 期限 [limit] 默认按 [text] 的字数放宽（[limitFor]）。
          */
         internal fun <T> guarded(pattern: String, text: String, limit: Long = limitFor(text.length), block: ((CharSequence) -> CharSequence) -> T): T {
             val key = "${pattern.length}:$pattern|${text.length}:${text.hashCode()}"
-            if (synchronized(slow) { slow.containsKey(key) }) throw RegexTooSlowException(pattern)
-            while (!gate.tryAcquire(20, TimeUnit.MILLISECONDS)) {
-                val stuck = abandoned
-                if (stuck != null && stuck.running && System.nanoTime() - stuck.deadline > GRACE_NANOS) throw RegexTooSlowException(stuck.pattern, busy = true)
+            while (true) {
+                sweep()
+                if (isDisabled(pattern)) throw RegexTooSlowException(pattern, disabled = true)
+                if (synchronized(slow) { slow.containsKey(key) }) throw RegexTooSlowException(pattern)
+                if (stuckCount.get() >= MAX_STUCK) throw RegexTooSlowException(pattern, busy = true)
+                if (lanes.tryAcquire(20, TimeUnit.MILLISECONDS)) break
             }
             val deadline = System.nanoTime() + limit * 1_000_000
             val run = Run(pattern, deadline)
             val task = try {
                 regexThreads.submit(
                     Callable {
-                        if (!run.state.compareAndSet(0, 1)) return@Callable null
+                        if (!run.begin()) return@Callable null
                         try {
                             block { chars -> TimedChars(chars, deadline, pattern) }
                         } finally {
-                            run.state.set(2)
-                            gate.release()
+                            run.finish()
+                            synchronized(abandoned) { abandoned.remove(run) }
+                            lanes.release()
                         }
                     },
                 )
             } catch (rejected: Exception) {
-                gate.release()
+                lanes.release()
                 throw rejected
             }
-            // 调用方不等了：还没开始的，自己放开；已经在跑的，记下来，等它跑完再放开。
+            // 调用方不等了：还没开始的，自己放开通道；已经在跑的，记下来，等它跑完再放开。
             fun giveUp() {
                 task.cancel(true)
-                if (run.state.compareAndSet(0, 2)) gate.release() else abandoned = run
+                if (run.cancelBeforeStart()) lanes.release() else synchronized(abandoned) { if (run.running) abandoned += run }
             }
             try {
                 @Suppress("UNCHECKED_CAST")
@@ -234,6 +313,8 @@ data class TextRules(
             } catch (timeout: TimeoutException) {
                 giveUp()
                 synchronized(slow) { slow[key] = Unit }
+                // JVM 上读文字那一层很快让它停下；过了宽限还停不下来（Android 的 ICU），停用这一条正则。
+                if (!run.done.await(GRACE_NANOS, TimeUnit.NANOSECONDS) && markStuck(run)) throw RegexTooSlowException(pattern, disabled = true)
                 throw RegexTooSlowException(pattern)
             } catch (failed: ExecutionException) {
                 val cause = failed.cause ?: failed

@@ -841,6 +841,8 @@ class WritingAi(
         requireTools: Boolean = false,
         stable: String? = null,
         meter: AiMeter = AiMeter(featureOf(label), workId),
+        /** 模型不支持工具、这次没带工具就答了（只有 [requireTools] 为假时会发生）。 */
+        onToolsDropped: () -> Unit = {},
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
@@ -879,6 +881,7 @@ class WritingAi(
                 maxTokens = maxTokens,
                 maxRounds = maxRounds,
                 requireTools = requireTools,
+                onToolsDropped = onToolsDropped,
                 onLookup = { onReset() },
                 onText = onText,
             ) }
@@ -2036,13 +2039,16 @@ class WritingAi(
         var dropped = 0
         var answered = 0
         var failed: Pair<Int, Exception>? = null
+        var noTools = false
         parts.forEachIndexed { i, part ->
             try {
                 val before = parts.getOrNull(i - 1)?.takeLast(WritePrompts.SYNC_OVERLAP).orEmpty()
+                // 不要求工具：设定包的常用部分整份在系统提示里，本章资料也带着，模型不支持工具时去掉工具照样能整理；
+                // 只是没法按需查，结果页提示“没能查设定包”，由作者勾选前核对。
                 val answer = askWithPack(
                     "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text),
                     whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
-                    requireTools = true, meter = meter,
+                    meter = meter, onToolsDropped = { noTools = true },
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
                 val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names)
@@ -2061,7 +2067,7 @@ class WritingAi(
         val (docs, entries) = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } to store.ledger(workId) }
         val planned = PackSync.plan(merged, docs, entries)
         return base.copy(
-            items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size,
+            items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size, noTools = noTools,
             error = failed?.let { (i, e) -> "第 $i 段（共 ${parts.size} 段）没整理成：${e.message ?: "请求失败"}；这一章先不记为已整理" },
         )
     }
@@ -2336,7 +2342,14 @@ data class ChapterSyncResult(
     val parts: Int = 1,
     /** Session-only SHA-256 of exact source text; old normalized SyncMark hashes remain unchanged. */
     val sourceDigest: String = "",
-)
+    /** 模型不支持工具，这次没带工具整理：没能按需查设定包，结果可能漏掉冲突。 */
+    val noTools: Boolean = false,
+) {
+    companion object {
+        /** 没带工具整理时结果页的提示。 */
+        const val NO_TOOLS_NOTE = "这次没能查设定包（模型不支持工具调用），结果可能漏掉冲突"
+    }
+}
 
 /**
  * 一次整理（一章，或批量的几章）：[running] 是正在整理的章名（整理完是 null）；

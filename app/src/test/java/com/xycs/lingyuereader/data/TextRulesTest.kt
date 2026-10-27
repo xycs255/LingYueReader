@@ -109,40 +109,84 @@ class TextRulesTest {
         assertEquals(TextRules(listOf(ReplaceRule("a", "b", true, false)), "x"), TextRules.fromJson(json))
     }
 
+    /** 不理会中断的空转：代替 Android 上 ICU 本地代码里停不下来的匹配。 */
+    private fun spinUntil(release: AtomicBoolean): Int {
+        while (!release.get()) LockSupport.parkNanos(1_000_000)
+        return 1
+    }
+
+    /** 等上一个测试丢下的线程都跑完，免得占着名额。 */
+    private fun awaitNoStuck() {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (TextRules.stuckNow > 0 && System.nanoTime() < deadline) Thread.sleep(10)
+        assertEquals(0, TextRules.stuckNow)
+    }
+
     @Test
-    fun onlyOneRunawayRegexThreadAtATime() {
+    fun aStuckRegexDisablesOnlyItself() {
         val saved = TextRules.timeoutMillis
         TextRules.timeoutMillis = 100
         val release = AtomicBoolean(false)
+        val stuck = """(沈默\s?)+$"""
+        awaitNoStuck()
         try {
-            // 第一个：超时后还停不下来（Android 上本地代码里的正则就是这样；这里用不理会中断的空转代替）。
-            val first = runCatching {
-                TextRules.guarded("""(林月\s?)+$""", "第一段") { while (!release.get()) LockSupport.parkNanos(1_000_000); 1 }
-            }.exceptionOrNull()
-            assertTrue("应当报太慢：$first", first is RegexTooSlowException && !first.busy)
-            // 第二个：直接报“上一个正则还在跑”，不起线程（块没跑）。
+            // 超时后还停不下来：只停用这一条。
+            val first = runCatching { TextRules.guarded(stuck, "沈默在渡口") { spinUntil(release) } }.exceptionOrNull()
+            assertTrue("应当报已停用：$first", first is RegexTooSlowException && first.disabled && !first.busy)
+            assertTrue(first!!.message!!.contains("这条规则太慢，已停用"))
+            assertTrue(TextRules.isDisabled(stuck))
+            // 别的正则照常能跑：别的书的分章、净化、规则预览都不受影响。
+            assertEquals(2, TextRules.guarded("""第.+章""", "第二章 渡口") { 2 })
+            assertEquals(3, TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel).first)
+            assertEquals("林月到了渡口", TextRules(listOf(ReplaceRule("""\s+""", regex = true))).clean("林月 到了 渡口"))
+            assertTrue(TextRules(toc = """^第.+章""").titleMatcher()("第三章 渡口"))
+            // 同一条再用（换一段文字也一样）：直接报已停用，不起线程（块没跑）。
             val ran = AtomicBoolean(false)
-            val second = runCatching { TextRules.guarded("""第.+章""", "第二段") { ran.set(true); 2 } }.exceptionOrNull()
-            assertTrue("应当报上一个还在跑：$second", second is RegexTooSlowException && second.busy)
-            assertEquals("""(林月\s?)+$""", (second as RegexTooSlowException).pattern)
-            assertTrue(second.message!!.contains("上一个正则还在跑"))
+            val again = runCatching { TextRules.guarded(stuck, "林月在渡口等船") { ran.set(true); 3 } }.exceptionOrNull()
+            assertTrue("应当直接报已停用：$again", again is RegexTooSlowException && again.disabled && !again.busy)
             assertFalse(ran.get())
-            // 分章、净化也一样报，不起线程。
-            assertTrue(runCatching { TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel) }.exceptionOrNull().let { it is RegexTooSlowException && it.busy })
-            // 第一个跑完以后恢复。
+            assertTrue(runCatching { TextRules(listOf(ReplaceRule(stuck, regex = true))).clean("沈默") }.exceptionOrNull().let { it is RegexTooSlowException && it.disabled })
+        } finally {
             release.set(true)
-            // 超时任务所在的线程需要一点时间退出；只等它释放锁，不放宽“卡住时拒绝新任务”的断言。
+            TextRules.timeoutMillis = saved
+        }
+        awaitNoStuck()
+    }
+
+    @Test
+    fun stuckRegexThreadsAreCapped() {
+        val saved = TextRules.timeoutMillis
+        TextRules.timeoutMillis = 100
+        val release = AtomicBoolean(false)
+        awaitNoStuck()
+        try {
+            // 停不下来的线程到上限（两条）。
+            val stuck = listOf("""(林月\s?)+$""", """(渡口\s?)+$""")
+            assertEquals(2, TextRules.MAX_STUCK)
+            stuck.forEach { p ->
+                val e = runCatching { TextRules.guarded(p, "渡口起了雾") { spinUntil(release) } }.exceptionOrNull()
+                assertTrue("应当报已停用：$e", e is RegexTooSlowException && e.disabled)
+            }
+            // 再来新的正则：直接拒绝，不起第三条线程。
+            val ran = AtomicBoolean(false)
+            val busy = runCatching { TextRules.guarded("""第.+节""", "第一节") { ran.set(true); 2 } }.exceptionOrNull()
+            assertTrue("应当报卡满了：$busy", busy is RegexTooSlowException && busy.busy)
+            assertTrue(busy!!.message!!.contains("重启应用后恢复"))
+            assertFalse(ran.get())
+            // 卡住的线程跑完以后恢复；那两条仍是停用的。
+            release.set(true)
             val deadline = System.nanoTime() + 5_000_000_000L
             var recovered: Int? = null
             while (recovered == null && System.nanoTime() < deadline) {
                 try {
-                    recovered = TextRules.guarded("""第.+章""", "第二段", limit = 1_000) { 2 }
-                } catch (busy: RegexTooSlowException) {
-                    if (!busy.busy || busy.pattern != """(林月\s?)+$""") throw busy
+                    recovered = TextRules.guarded("""第.+节""", "第一节", limit = 1_000) { 2 }
+                } catch (e: RegexTooSlowException) {
+                    if (!e.busy) throw e
                     Thread.sleep(10)
                 }
             }
             assertEquals(2, recovered)
+            stuck.forEach { assertTrue(TextRules.isDisabled(it)) }
             TextRules.timeoutMillis = saved
             assertEquals(3, TextRules.preview(ReplaceRule("""【[^】]+】""", regex = true), novel).first)
         } finally {
@@ -185,7 +229,8 @@ class TextRulesTest {
         val whole = (System.nanoTime() - started) / 1_000_000
         val saved = TextRules.timeoutMillis
         // 期限设成整本耗时的四分之一：整本一次限时会判太慢，按批限时（每批约整本的一百五十分之一）不会。
-        TextRules.timeoutMillis = maxOf(whole / 4, 200)
+        // 下限给 1 秒：机器忙时（全量测试、GC）单批偶尔会被拖慢几百毫秒，下限太低会误判。
+        TextRules.timeoutMillis = maxOf(whole / 4, 1_000)
         try {
             val matcher = TextRules(toc = toc).titleMatcher(text)
             assertTrue(matcher("第300章 渡口"))

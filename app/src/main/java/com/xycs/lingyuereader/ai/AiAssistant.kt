@@ -125,9 +125,10 @@ class AiAssistant(
         maxRounds: Int = 6,
         cacheExtra: Int = 0,
         requireTools: Boolean = false,
+        onToolsDropped: () -> Unit = {},
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
-    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, requireTools = requireTools, onLookup = onLookup, onText = onText)
+    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, requireTools = requireTools, onToolsDropped = onToolsDropped, onLookup = onLookup, onText = onText)
 
     /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
     /** 合成一句。[sp] 给定时按它合成（听书开始时的设置，和缓存键一致），否则按当前设置。 */
