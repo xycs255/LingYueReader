@@ -164,7 +164,7 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
     warnings += ProjectSources.sourceWarnings(rawDocs)
     if (volume != catalogVolume) warnings += "作品目录与细纲的卷次不同，本次按目标细纲定位第 $volume 卷；请核对卷章归属。"
     if (project && card.facts.isBlank()) blocking += "本章尚无明确的事实与结果，请补齐细纲卡或导入现行目标章细纲。"
-    val manual = this.card(workId, chapterId).let { !it.isEmpty && it.auto == 0 }
+    val manual = this.card(workId, chapterId).let { !it.outlineEmpty && it.auto == 0 }
     if (project && found.isNotEmpty() && found.none { it.single } && !manual) {
         blocking += "目前只有第 ${found.first().from}—${found.first().to} 章章组，请先在细纲卡划定本章的起止与结果。"
     }

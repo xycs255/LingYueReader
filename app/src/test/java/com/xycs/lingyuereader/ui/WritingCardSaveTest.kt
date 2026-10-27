@@ -118,4 +118,20 @@ class WritingCardSaveTest {
         assertEquals("作者指定视角", afterFailure.pov)
         assertEquals(displayed.auto, afterFailure.auto)
     }
+
+    @Test
+    fun beatsMergeLikeOtherFieldsAndAnAcceptedBeatIsNotLost() {
+        val base = ChapterCard(facts = "沈默到渡口", beats = "沈默赶到渡口\n杜娘开门")
+        // 这一页没动节拍和勾，编辑器那边刚采纳了第 2 拍：用盘上的勾。
+        val latest = base.copy(beatsDone = listOf(2))
+        val merged = mergeCard(base, base.copy(facts = "沈默到渡口，船不见了"), latest)
+        assertEquals("沈默到渡口，船不见了", merged.facts)
+        assertEquals(listOf(2), merged.beatsDone)
+        // 这一页勾了第 1 拍：用这一页的。
+        assertEquals(listOf(1), mergeCard(base, base.copy(beatsDone = listOf(1)), latest).beatsDone)
+        // 这一页把节拍改成三拍，盘上的勾是按两拍记的：对不上，清空。
+        val threeBeats = mergeCard(base, base.copy(beats = "沈默赶到渡口\n船不见了\n杜娘开门"), latest)
+        assertEquals("沈默赶到渡口\n船不见了\n杜娘开门", threeBeats.beats)
+        assertTrue(threeBeats.beatsDone.isEmpty())
+    }
 }

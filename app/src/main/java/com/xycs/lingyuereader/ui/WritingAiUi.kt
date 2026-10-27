@@ -78,6 +78,9 @@ import com.xycs.lingyuereader.InlineWrite
 import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.data.BibleEntry
+import com.xycs.lingyuereader.data.Beats
+import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.BibleKind
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
@@ -589,8 +592,33 @@ internal fun UsageNote(usage: com.xycs.lingyuereader.ai.AiUsage?, cost: com.xycs
 @Composable
 internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Unit) {
     GlassDialog(show = true, title = "AI 接着写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
-        DialogOptionList(InlineMode.entries.map { it to it.label }, onPick = onPick)
+        // “写这一拍…”要先挑拍，从编辑器菜单进，不放在这里。
+        DialogOptionList(InlineMode.entries.filter { it != InlineMode.BEAT }.map { it to it.label }, onPick = onPick)
         TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+    }
+}
+
+/**
+ * 挑写哪一拍：列出细纲卡的各拍（序号和文字，最多两行），写过的打勾、淡一点；默认选第一拍没写的。
+ * 选好从光标处只写这一拍，写的字先显示，采纳后这一拍记成已写。
+ */
+@Composable
+internal fun BeatPickDialog(card: ChapterCard, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
+    val list = beats(card)
+    val done = card.beatsDone.toSet()
+    var chosen by remember(card) { mutableStateOf(Beats.firstUndone(card) ?: 1) }
+    GlassDialog(show = true, title = "写这一拍", summary = "从光标处只写细纲卡里的这一拍，写到它收住就停；采纳后记成已写", onDismissRequest = onDismiss) {
+        Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+            list.forEach { b ->
+                MarkedOptionRow(
+                    "${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""),
+                    selected = b.index == chosen,
+                    done = b.index in done,
+                    doneLabel = "已写",
+                ) { chosen = b.index }
+            }
+        }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onPick(chosen) }, confirmText = "写第 $chosen 拍")
     }
 }
 

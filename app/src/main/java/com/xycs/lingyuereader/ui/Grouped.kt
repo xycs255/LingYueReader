@@ -102,7 +102,9 @@ import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
+import androidx.compose.ui.state.ToggleableState
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -550,6 +552,91 @@ internal fun CheckRow(
         val titleColor by animateColorAsState(if (selected) c.tint else c.label, Motion.standard(Motion.SHORT), label = "checkTitle")
         RowTitle(title, titleColor, enabled, subtitle)
         // 勾从小弹出来，取消时淡掉。
+        AnimatedVisibility(
+            visible = selected,
+            enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.6f) + fadeIn(Motion.standard(Motion.SHORT))),
+            exit = Effects.exit(fadeOut(Motion.exit())),
+        ) {
+            Icon(LingYueIcons.Check, contentDescription = null, tint = c.tint, modifier = Modifier.padding(start = 12.dp).size(20.dp))
+        }
+    }
+}
+
+/**
+ * 勾选框一行：左边 miuix 勾选框，右边名字（最多 [titleMaxLines] 行）和一行灰色说明，整行都能点。
+ * 勾上的名字淡一点（第三级灰），像清单里做完的事。可以各自勾、不互斥的清单用它（细纲卡的节拍“已写”）；单选用 [CheckRow]。
+ */
+@Composable
+internal fun CheckboxRow(
+    title: String,
+    checked: Boolean,
+    subtitle: String? = null,
+    titleMaxLines: Int = Int.MAX_VALUE,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .background(pressHighlight(pressed))
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, interactionSource = source, indication = null, onValueChange = onChange)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 勾选框只是样子：点按和读屏都交给整行。
+        Box(Modifier.clearAndSetSemantics {}) { Checkbox(state = ToggleableState(checked), onClick = { onChange(!checked) }, enabled = enabled) }
+        Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = if (checked || !enabled) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis)
+            if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp)
+        }
+    }
+}
+
+/**
+ * 对话框里挑一项、项带“做过了”标记（“写这一拍”挑节拍）：名字最多 [titleMaxLines] 行；
+ * 做过的（[done]）左边一个成功色小勾、名字淡一点，读屏念 [doneLabel]；选中的名字变强调色、右边打勾，同 [CheckRow]。
+ */
+@Composable
+internal fun MarkedOptionRow(
+    title: String,
+    selected: Boolean,
+    done: Boolean,
+    doneLabel: String,
+    titleMaxLines: Int = 2,
+    onClick: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(pressHighlight(pressed))
+            .selectable(selected = selected, interactionSource = source, indication = null, role = Role.RadioButton, onClick = onClick)
+            .semantics { if (done) stateDescription = doneLabel }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            if (done) Icon(LingYueIcons.Check, contentDescription = null, tint = c.success, modifier = Modifier.size(16.dp))
+        }
+        val titleColor by animateColorAsState(
+            when {
+                selected -> c.tint
+                done -> c.tertiary
+                else -> c.label
+            },
+            Motion.standard(Motion.SHORT), label = "markedTitle",
+        )
+        Text(title, color = titleColor, fontSize = 15.sp, lineHeight = 21.sp, maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(start = 8.dp))
         AnimatedVisibility(
             visible = selected,
             enter = Effects.enter(scaleIn(Motion.pop(), initialScale = 0.6f) + fadeIn(Motion.standard(Motion.SHORT))),
