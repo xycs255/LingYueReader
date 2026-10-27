@@ -148,7 +148,9 @@ internal fun editTarget(text: String, selection: TextRange, action: WriteAction,
     val end = selection.max.coerceIn(0, text.length)
     if (action == WriteAction.CONTINUE) {
         if (text.substring(0, start).isBlank()) return null
-        return WriteAiTask.Edit(action, "", start, start, instruction)
+        // A continuation has no original span to relocate after an edit. Keep the whole
+        // source snapshot so acceptance cannot silently insert at a stale absolute offset.
+        return WriteAiTask.Edit(action, "", start, start, instruction, continuationBase = text)
     }
     if (end > start) {
         val picked = text.substring(start, end)
@@ -171,12 +173,16 @@ private const val EDIT_NEAR = 1_000
 /**
  * 采纳：把 [result] 换进正文。位置上的文字还是原文就按位置换；正文改过了（等结果时作者在前面加了字），
  * 只在原位置附近找原文：找到一处才换，几处一样的不换（可能在几页之前，换错了不容易发现）。
- * 续写插在光标处，光标在一段中间或段末时另起一段。
+ * 续写只在正文仍与生成时一致时插在光标处；任何变化都需重新生成，以免误插到旧坐标。
+ * 光标在一段中间或段末时另起一段。
  */
 internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: String): EditApply {
     val text = state.text.toString()
     if (task.action == WriteAction.CONTINUE) {
-        val at = task.start.coerceIn(0, text.length)
+        if (task.continuationBase != text || task.start !in 0..text.length || task.end != task.start) {
+            return EditApply.MISSING
+        }
+        val at = task.start
         val needBreak = at > 0 && text[at - 1] != '\n'
         val needAfter = at < text.length && text[at] != '\n'
         val insert = (if (needBreak) "\n" else "") + result + (if (needAfter) "\n" else "")

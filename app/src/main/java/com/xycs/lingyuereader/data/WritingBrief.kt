@@ -691,10 +691,10 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     val entries = outlineEntries(workId)
     val planned = plannedCard(workId, chapterId, entries)
     val card = planned.card.let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
-    val own = ChapterOutlines.match(entries, number, work.volumeNumber(chapterId), work.chapter(chapterId)?.title.orEmpty(), planned.card.plan.isNotBlank())
-    // 第几卷：细纲里写这一章的段落在哪一卷；没有就看前面最近一章在哪一卷。
+    val own = chapterOutlineEntries(work, chapterId, entries)
+    // Only this chapter's matched outline can override the catalog volume. A nearby earlier
+    // outline may belong to another volume and cannot establish the current chapter's scope.
     val volume = own.firstNotNullOfOrNull { it.volume }
-        ?: entries.filter { it.volume != null && it.from <= number }.maxByOrNull { it.from }?.volume
         ?: work.volumeNumber(chapterId)
     // 前情：写了摘要的章用摘要；最近几章没写摘要的，用它的细纲卡（从细纲提取的也算）。
     val index = work.chapters.indexOfFirst { it.id == chapterId }

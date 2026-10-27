@@ -12,6 +12,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -270,6 +272,42 @@ class WritingDraftUiTest {
         compose.waitForIdle()
         compose.onNode(hasSetTextAction() and hasText("保留人物的犹豫和改口")).assertExists()
         compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
+    }
+
+    @Test
+    fun reviewSwitchRestoresAnExplicitChoiceBeforeAnyCandidateExists() {
+        val store = WorkStore(writingDir)
+        store.setDraftIntent(workId, c2, "先让杜娘开门", "约200字", false)
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("先让杜娘开门")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约200字")).assertExists()
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOff()
+        compose.onNodeWithText("创作后审读、修订").performClick()
+        compose.onNodeWithText("创作后审读、修订").assertIsOn()
+        waitFor { store.draftIntent(workId, c2)?.workflowChoice == true }
+        assertEquals("", store.draft(workId, c2))
+    }
+
+    @Test
+    fun editingRequestWhileProjectTaskLoadsDoesNotSaveItsReviewDefaultAsAnExplicitChoice() {
+        val store = WorkStore(writingDir)
+        store.addPackDoc(workId, PackKind.INSTRUCTION, "完整正文创作提示词", "只输出本章完整正文。")
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("这一章想怎么写")
+        compose.onAllNodes(hasSetTextAction())[0].performTextInput("多留一点悬念")
+        waitFor { store.draftIntent(workId, c2)?.instruction == "多留一点悬念" }
+        assertEquals("没有手动切换时，项目审读默认值不能写成显式选择", null,
+            store.draftIntent(workId, c2)?.workflowChoice)
+        waitForText("本章写作任务")
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOn()
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOn()
+        assertEquals(null, store.draftIntent(workId, c2)?.workflowChoice)
     }
 
     @Test

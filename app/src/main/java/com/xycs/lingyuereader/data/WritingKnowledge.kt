@@ -328,7 +328,7 @@ fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo
     val entries = outlineEntries(workId)
     val number = chapterNo(work, chapterId)
     val chapter = work.chapter(chapterId)
-    val own = ChapterOutlines.match(entries, number, work.volumeNumber(chapterId), chapter?.title.orEmpty(), card(workId, chapterId).plan.isNotBlank())
+    val own = chapterOutlineEntries(work, chapterId, entries)
     val out = StringBuilder()
     out.append("【这一章】").append(chapter?.title.orEmpty())
     if (number != null) out.append("（按设定算第 ").append(number).append(" 章")

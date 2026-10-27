@@ -118,6 +118,97 @@ class WritingOutlineTest {
     }
 
     @Test
+    fun explicitOtherVolumeNeverSuppliesNamedExactOrGroupFacts() {
+        val sameName = listOf(
+            OutlineEntry(3, 3, "夜渡", "事实：第一卷渡口", "第一卷细纲", volume = 1),
+            OutlineEntry(3, 3, "夜渡", "事实：第二卷渡口", "第二卷细纲", volume = 2),
+        )
+        assertEquals(
+            "第一卷渡口",
+            ChapterOutlines.card(ChapterOutlines.match(sameName, 3, 1, "第三章 夜渡")).facts,
+        )
+        assertEquals(
+            "第二卷渡口",
+            ChapterOutlines.card(ChapterOutlines.match(sameName, 3, 2, "第三章 夜渡")).facts,
+        )
+
+        val otherVolumeOnly = listOf(
+            OutlineEntry(3, 3, "夜渡", "事实：第二卷渡口", "第二卷细纲", volume = 2),
+            OutlineEntry(4, 6, "围城", "事实：第二卷围城", "第二卷细纲", volume = 2),
+        )
+        assertTrue(ChapterOutlines.match(otherVolumeOnly, 3, 1, "第三章 夜渡").isEmpty())
+        assertTrue(ChapterOutlines.match(otherVolumeOnly, 3, 1, "第三章", byNumberOnly = true).isEmpty())
+        assertTrue(ChapterOutlines.match(otherVolumeOnly, 5, 1, "第五章").isEmpty())
+
+        // A document without an explicit volume still supplies a chapter in either volume.
+        val unscoped = OutlineEntry(3, 3, "", "事实：共同线索", "总纲")
+        assertEquals("共同线索", ChapterOutlines.card(ChapterOutlines.match(listOf(unscoped), 3, 1, "第三章")).facts)
+        assertEquals("共同线索", ChapterOutlines.card(ChapterOutlines.match(listOf(unscoped), 3, 2, "第三章")).facts)
+    }
+
+    @Test
+    fun tablesInOneDocumentInheritTheirOwnVolumeHeading() {
+        val outline = """
+            ## 第一卷
+
+            | 章 | 事实 |
+            | --- | --- |
+            | 第3章 | 林月守渡口 |
+
+            ## 第二卷
+
+            | 章 | 事实 |
+            | --- | --- |
+            | 第3章 | 沈默过河 |
+        """.trimIndent()
+        val entries = ChapterOutlines.parse(listOf("多卷细纲" to outline))
+        assertEquals(listOf(1, 2), entries.map { it.volume })
+        assertEquals("林月守渡口", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 1, "第三章")).facts)
+        assertEquals("沈默过河", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 2, "第三章")).facts)
+    }
+
+    @Test
+    fun uniqueTargetVolumeIsInferredOnlyForAnUnsplitDefaultCatalog() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("桥北")
+        val chapterId = w.chapters.single().id
+        s.renameChapter(w.id, chapterId, "第十章 河桥")
+        s.addPackDoc(w.id, PackKind.VOLUME, "第二卷细纲", "# 第二卷\n### 第十章 河桥\n事实：陈青在桥边等待旧友。")
+
+        // Direct outline matching remains strict; the WorkStore knows this catalog is unsplit.
+        assertTrue(ChapterOutlines.match(s.outlineEntries(w.id), 10, 1, "第十章 河桥").isEmpty())
+        assertEquals("陈青在桥边等待旧友。", s.plannedCard(w.id, chapterId).card.facts)
+        assertEquals(2, s.writingTask(w.id, chapterId)!!.volume)
+        assertEquals(2, s.brief(w.id, chapterId)!!.volume)
+        assertTrue("《第二卷细纲》第 10 章「河桥」" in s.chapterHints(w.id, chapterId, ""))
+    }
+
+    @Test
+    fun ambiguousOrExplicitCatalogVolumesDoNotInferAnotherVolume() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("桥北")
+        val chapterId = w.chapters.single().id
+        s.renameChapter(w.id, chapterId, "第十章 河桥")
+        s.addPackDoc(w.id, PackKind.VOLUME, "第二卷细纲", "# 第二卷\n### 第十章 河桥\n事实：第二卷的事。")
+        s.addPackDoc(w.id, PackKind.VOLUME, "第三卷细纲", "# 第三卷\n### 第十章 河桥\n事实：第三卷的事。")
+
+        assertTrue(s.chapterOutlineEntries(s.get(w.id)!!, chapterId, s.outlineEntries(w.id)).isEmpty())
+        assertTrue(s.plannedCard(w.id, chapterId).card.facts.isBlank())
+        assertEquals(1, s.writingTask(w.id, chapterId)!!.volume)
+        assertEquals(1, s.brief(w.id, chapterId)!!.volume)
+
+        val explicit = s.create("江南")
+        val explicitChapter = explicit.chapters.single().id
+        s.renameChapter(explicit.id, explicitChapter, "第十章 河桥")
+        s.renameVolume(explicit.id, explicit.volumes.single().id, "第一卷")
+        s.addPackDoc(explicit.id, PackKind.VOLUME, "第二卷细纲", "# 第二卷\n### 第十章 河桥\n事实：第二卷的事。")
+        s.addPackDoc(explicit.id, PackKind.VOLUME, "第二卷前章", "# 第二卷\n### 第九章 旧桥\n事实：旧桥上的事。")
+        assertTrue(s.chapterOutlineEntries(s.get(explicit.id)!!, explicitChapter, s.outlineEntries(explicit.id)).isEmpty())
+        assertEquals(1, s.writingTask(explicit.id, explicitChapter)!!.volume)
+        assertEquals(1, s.brief(explicit.id, explicitChapter)!!.volume)
+    }
+
+    @Test
     fun cardsFollowTheOutlineUntilTheAuthorEditsThem() {
         val s = WorkStore(tmp.newFolder())
         val w = s.create("长夜")

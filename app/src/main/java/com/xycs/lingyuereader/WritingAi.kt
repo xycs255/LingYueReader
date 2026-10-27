@@ -87,6 +87,7 @@ sealed interface WriteAiTask {
         val end: Int,
         val instruction: String = "",
         val reviewFix: ReviewFix? = null,
+        val continuationBase: String? = null,
     ) : WriteAiTask {
         override val title: String get() = if (action == WriteAction.CUSTOM) "按要求改" else action.label
     }
@@ -1160,24 +1161,52 @@ class WritingAi(
         _drafts.update { m -> m[key]?.let { m + (key to transform(it)) } ?: m }
     }
 
+    /** Keep the prior candidate's source paired with its bytes until replacement prose exists. */
+    private fun DraftState.restoreDraftSource(before: DraftState?): DraftState = copy(
+        referenceAnalysisId = before?.referenceAnalysisId,
+        referenceFingerprint = before?.referenceFingerprint,
+        referenceChapterLength = before?.referenceChapterLength,
+        referenceValidated = before?.referenceValidated == true,
+        referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
+    )
+
     /** 打开草稿页：读上次没放进正文的草稿（这一章已经有状态，比如正在写，就不动）。 */
     fun loadDraft(workId: String, chapterId: String) {
         val key = workId to chapterId
         if (key in _drafts.value) return
         scope.launch {
-            val (saved, required) = withContext(draftDisk) {
+            val (saved, required, intent) = withContext(draftDisk) {
                 val saved = runCatching { store.draftContent(workId, chapterId) }
                     .getOrElse { DraftContent("", provenanceError = "草稿读取失败：${it.message ?: "来源不明"}") }
-                val required = saved.text.isNotBlank() && (chapterId in store.assist(workId).draftWorkflows || store.writingTask(workId, chapterId)?.project == true)
-                saved to required
+                val assist = store.assist(workId)
+                val required = saved.text.isNotBlank() && (chapterId in assist.draftWorkflows || store.writingTask(workId, chapterId)?.project == true)
+                Triple(saved, required, assist.draftIntents[chapterId])
             }
             _drafts.update { m -> if (key in m) m else m + (key to DraftState(workId, chapterId, saved.text,
-                workflow = required, error = saved.provenanceError,
+                workflow = required, instruction = intent?.instruction.orEmpty(), targetLength = intent?.targetLength.orEmpty(),
+                workflowChoice = intent?.workflowChoice,
+                error = saved.provenanceError,
                 referenceAnalysisId = saved.reference?.analysisId,
                 referenceFingerprint = saved.reference?.sourceFingerprint,
                 referenceChapterLength = saved.reference?.chapterLength,
                 referenceValidated = saved.reference?.verified == true,
                 referenceProvenanceBlocked = saved.blocked)) }
+        }
+    }
+
+    /** Save author choices even when no candidate has been generated yet. */
+    fun saveDraftIntent(workId: String, chapterId: String, instruction: String, targetLength: String, workflowChoice: Boolean?) {
+        val key = workId to chapterId
+        _drafts.update { drafts -> drafts[key]?.let { drafts + (key to it.copy(
+            instruction = instruction, targetLength = targetLength, workflowChoice = workflowChoice)) } ?: drafts }
+        scope.launch {
+            try {
+                withContext(draftDisk) { store.setDraftIntent(workId, chapterId, instruction, targetLength, workflowChoice) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("写作要求保存失败：${e.message ?: "写入出错"}")
+            }
         }
     }
 
@@ -1232,12 +1261,18 @@ class WritingAi(
         val previousCandidate = before?.text.orEmpty()
         val start = previousCandidate.takeIf { more }.orEmpty()
         val prefix = if (start.isEmpty()) "" else start.trimEnd() + "\n"
-        _drafts.update { it + (key to DraftState(workId, chapterId, prefix, loading = true, instruction = instruction,
-            targetLength = targetLength, referenceAnalysisId = referenceAnalysisId)) }
+        // Keep the saved candidate visible until this request actually produces replacement text.
+        _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, previousCandidate)).copy(
+            loading = true, error = null, instruction = instruction, targetLength = targetLength,
+            workflowChoice = workflow)) }
         var written = ""
+        var newCandidateGenerated = false
         val meter = AiMeter(AiFeature.DRAFT, workId)
         draftJobs[key] = scope.launch {
             try {
+                withContext(draftDisk) {
+                    if (draftRuns[key] == run) store.setDraftIntent(workId, chapterId, instruction, targetLength, workflow)
+                }
                 if (more && before?.referenceProvenanceBlocked == true)
                     throw RejectedReferenceWriting(before.error ?: "旧草稿来源无法核验，请从头重新生成")
                 if (more && previousCandidate.isNotBlank() && before?.referenceAnalysisId != referenceAnalysisId)
@@ -1253,8 +1288,6 @@ class WritingAi(
                         throw RejectedReferenceWriting("原候选稿的范本来源未核验或已变化，请从头重写")
                     ReferenceWriting.verifyProse(previous.text, reference)
                 }
-                if (reference != null) updateDraft(key, run) { it.copy(referenceFingerprint = reference.excerpt.fingerprint,
-                    referenceChapterLength = reference.excerpt.chapterLength) }
                 val taskSnapshot = writingTask(workId, chapterId, instruction, targetLength)
                 if (taskSnapshot?.project == true) check(taskSnapshot.blocking.isEmpty()) { taskSnapshot.blocking.joinToString("；") }
                 val (pack, previous, rules, length) = withContext(Dispatchers.IO) {
@@ -1279,18 +1312,36 @@ class WritingAi(
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
                     onReset = {
                         written = ""
-                        updateDraft(key, run) { it.copy(text = prefix) }
+                        newCandidateGenerated = false
+                        updateDraft(key, run) { it.copy(text = previousCandidate,
+                            workflow = before?.workflow == true).restoreDraftSource(before) }
                     },
                 ) { piece ->
                     written += piece
-                    updateDraft(key, run) { it.copy(text = prefix + written) }
+                    val partial = WritePrompts.cleanDraft(written)
+                    newCandidateGenerated = partial.isNotBlank()
+                    updateDraft(key, run) {
+                        if (!newCandidateGenerated) it.copy(text = previousCandidate,
+                            workflow = before?.workflow == true).restoreDraftSource(before)
+                        else it.copy(text = prefix + partial, workflow = false, referenceAnalysisId = referenceAnalysisId,
+                            referenceFingerprint = reference?.excerpt?.fingerprint,
+                            referenceChapterLength = reference?.excerpt?.chapterLength,
+                            referenceValidated = false, referenceProvenanceBlocked = false)
+                    }
                 }
-                val text = prefix + WritePrompts.cleanDraft(answer)
+                val cleaned = WritePrompts.cleanDraft(answer)
+                check(cleaned.isNotBlank()) { "AI 没有返回正文" }
+                newCandidateGenerated = true
+                val text = prefix + cleaned
                 if (reference != null) {
                     ReferenceWriting.verifyProse(text, reference)
                     withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 }
-                updateDraft(key, run) { it.copy(text = text, loading = false, referenceValidated = reference != null,
+                updateDraft(key, run) { it.copy(text = text, loading = false, referenceAnalysisId = referenceAnalysisId,
+                    workflow = false,
+                    referenceFingerprint = reference?.excerpt?.fingerprint,
+                    referenceChapterLength = reference?.excerpt?.chapterLength,
+                    referenceValidated = reference != null, referenceProvenanceBlocked = false,
                     usage = meter.usage, cost = meter.cost) }
                 persistDraft(key, run, text, workflow = false)
                 log(workId, chapterId, if (prefix.isEmpty()) "写本章" else "接着写", instruction, text.removePrefix(prefix), meter)
@@ -1298,25 +1349,42 @@ class WritingAi(
                 // 被取消（应用退出之类）：已经写出来的留着，存成草稿，可以接着写。
                 // 被顶掉的（新的一次、“不要这版”，或者点了停止、[stopDraft] 已经存过）不管。
                 if (draftRuns[key] == run) {
-                    val partial = prefix + WritePrompts.cleanDraft(written)
-                    updateDraft(key, run) { it.copy(text = partial, loading = false) }
-                    if (partial.isNotBlank()) withContext(NonCancellable) { runCatching { persistDraft(key, run, partial, workflow = false) } }
+                    val cleaned = WritePrompts.cleanDraft(written)
+                    val partial = if (cleaned.isNotBlank()) prefix + cleaned else previousCandidate
+                    updateDraft(key, run) { state ->
+                        (if (cleaned.isNotBlank()) state.copy(text = partial, workflow = false)
+                        else state.copy(text = partial, workflow = before?.workflow == true).restoreDraftSource(before))
+                            .copy(loading = false)
+                    }
+                    if (partial.isNotBlank()) withContext(NonCancellable) {
+                        runCatching { persistDraft(key, run, partial, workflow = cleaned.isBlank() && before?.workflow == true) }
+                    }
                 }
                 throw e
             } catch (e: RejectedReferenceWriting) {
                 updateDraft(key, run) { it.copy(text = previousCandidate, loading = false, error = e.message,
+                    workflow = before?.workflow == true,
                     referenceAnalysisId = before?.referenceAnalysisId,
                     referenceFingerprint = before?.referenceFingerprint,
                     referenceChapterLength = before?.referenceChapterLength,
                     referenceValidated = before?.referenceValidated == true,
                     referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
                     usage = meter.usage.takeIf { usage -> !usage.isEmpty }, cost = meter.cost) }
-                persistDraft(key, run, previousCandidate, workflow = false)
+                persistDraft(key, run, previousCandidate, workflow = before?.workflow == true)
             } catch (e: Exception) {
-                updateDraft(key, run) { it.copy(loading = false, error = e.message ?: "请求失败") }
+                updateDraft(key, run) { it.copy(
+                    text = if (newCandidateGenerated) it.text else previousCandidate,
+                    workflow = newCandidateGenerated.not() && before?.workflow == true,
+                    loading = false, error = e.message ?: "请求失败",
+                    referenceAnalysisId = if (newCandidateGenerated) it.referenceAnalysisId else before?.referenceAnalysisId,
+                    referenceFingerprint = if (newCandidateGenerated) it.referenceFingerprint else before?.referenceFingerprint,
+                    referenceChapterLength = if (newCandidateGenerated) it.referenceChapterLength else before?.referenceChapterLength,
+                    referenceValidated = if (newCandidateGenerated) it.referenceValidated else before?.referenceValidated == true,
+                    referenceProvenanceBlocked = if (newCandidateGenerated) it.referenceProvenanceBlocked else before?.referenceProvenanceBlocked == true,
+                ) }
                 // 写了一半也存下来，可以接着写。
                 _drafts.value[key]?.takeIf { draftRuns[key] == run && it.text.isNotBlank() }?.let { d ->
-                    runCatching { persistDraft(key, run, d.text, workflow = false) }
+                    runCatching { persistDraft(key, run, d.text, workflow = d.workflow) }
                 }
             }
         }
@@ -1383,22 +1451,27 @@ class WritingAi(
         draftRuns[key] = run
         val before = _drafts.value[key]
         val previousCandidate = before?.text.orEmpty()
-        val fresh = !more && !reviewOnly
         _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, "")).copy(
-            text = if (fresh) "" else previousCandidate,
-            loading = true, error = null, workflow = true, stage = DraftStage.PREPARING,
-            assessment = null, instruction = instruction, targetLength = targetLength, referenceAnalysisId = referenceAnalysisId,
-            referenceFingerprint = if (fresh) null else before?.referenceFingerprint,
-            referenceChapterLength = if (fresh) null else before?.referenceChapterLength,
-            referenceValidated = reviewOnly && before?.referenceValidated == true,
-            referenceProvenanceBlocked = !fresh && before?.referenceProvenanceBlocked == true,
+            text = previousCandidate,
+            loading = true, error = null, workflow = before?.workflow == true, stage = DraftStage.PREPARING,
+            assessment = null, instruction = instruction, targetLength = targetLength, workflowChoice = true,
+            // The old bytes retain their old source until new prose actually arrives.
+            referenceAnalysisId = before?.referenceAnalysisId,
+            referenceFingerprint = before?.referenceFingerprint,
+            referenceChapterLength = before?.referenceChapterLength,
+            referenceValidated = before?.referenceValidated == true,
+            referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
         )) }
         val createMeter = AiMeter(AiFeature.DRAFT, workId)
         val reviewMeter = AiMeter(AiFeature.REVIEW, workId)
         val reviseMeter = AiMeter(AiFeature.EDIT, workId)
         val meters = listOf(createMeter, reviewMeter, reviseMeter)
+        var newCandidateGenerated = false
         draftJobs[key] = scope.launch {
             try {
+                withContext(draftDisk) {
+                    if (draftRuns[key] == run) store.setDraftIntent(workId, chapterId, instruction, targetLength, true)
+                }
                 if ((reviewOnly || more) && before?.referenceProvenanceBlocked == true)
                     throw RejectedReferenceWriting(before.error ?: "旧草稿来源无法核验，请从头重新生成")
                 if ((reviewOnly || more) && previousCandidate.isNotBlank() && before?.referenceAnalysisId != referenceAnalysisId)
@@ -1416,8 +1489,6 @@ class WritingAi(
                         throw RejectedReferenceWriting("原候选稿的范本来源未核验或已变化，请从头重写")
                     ReferenceWriting.verifyProse(previous.text, reference)
                 }
-                if (reference != null) updateDraft(key, run) { it.copy(referenceFingerprint = reference.excerpt.fingerprint,
-                    referenceChapterLength = reference.excerpt.chapterLength) }
                 val rules = withContext(Dispatchers.IO) {
                     store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
                 }
@@ -1447,12 +1518,29 @@ class WritingAi(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                             toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
                             stable = samples, meter = createMeter,
-                            onReset = { written = ""; updateDraft(key, run) { it.copy(text = prefix) } },
+                            onReset = {
+                                written = ""
+                                newCandidateGenerated = false
+                                updateDraft(key, run) { it.copy(text = previousCandidate,
+                                    workflow = before?.workflow == true).restoreDraftSource(before) }
+                            },
                         ) { piece ->
                             written += piece
-                            updateDraft(key, run) { it.copy(text = prefix + written) }
+                            val partial = WritePrompts.cleanDraft(written)
+                            newCandidateGenerated = partial.isNotBlank()
+                            updateDraft(key, run) {
+                                if (!newCandidateGenerated) it.copy(text = previousCandidate,
+                                    workflow = before?.workflow == true).restoreDraftSource(before)
+                                else it.copy(text = prefix + partial, workflow = true, referenceAnalysisId = referenceAnalysisId,
+                                    referenceFingerprint = reference?.excerpt?.fingerprint,
+                                    referenceChapterLength = reference?.excerpt?.chapterLength,
+                                    referenceValidated = false, referenceProvenanceBlocked = false)
+                            }
                         }
-                        (prefix + WritePrompts.cleanDraft(answer)).also { candidate ->
+                        val cleaned = WritePrompts.cleanDraft(answer)
+                        check(cleaned.isNotBlank()) { "AI 没有返回正文" }
+                        newCandidateGenerated = true
+                        (prefix + cleaned).also { candidate ->
                             if (reference != null) {
                                 ReferenceWriting.verifyProse(candidate, reference)
                                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
@@ -1478,6 +1566,7 @@ class WritingAi(
                             whole = true, maxTokens = draftTokens, toolsUpTo = chapterId, phase = WritingPhase.REVISE,
                             confirmedOnly = true, stable = samples, meter = reviseMeter,
                         )).also { candidate ->
+                            if (candidate.isNotBlank()) newCandidateGenerated = true
                             if (reference != null) {
                                 ReferenceWriting.verifyProse(candidate, reference)
                                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
@@ -1486,8 +1575,18 @@ class WritingAi(
                         }
                     },
                     onStage = { stage, manuscript, assessment ->
-                        updateDraft(key, run) { it.copy(stage = stage, text = if (stage == DraftStage.CREATING && manuscript.isBlank()) it.text else manuscript, assessment = assessment) }
-                        if (manuscript.isNotBlank()) persistDraft(key, run, manuscript, workflow = true)
+                        if (manuscript.isNotBlank() && manuscript != previousCandidate) newCandidateGenerated = true
+                        updateDraft(key, run) { state ->
+                            if (manuscript.isBlank()) state.copy(stage = stage, assessment = assessment)
+                            else state.copy(stage = stage, text = manuscript, assessment = assessment,
+                                workflow = newCandidateGenerated || reviewOnly || before?.workflow == true,
+                                referenceAnalysisId = if (newCandidateGenerated) referenceAnalysisId else state.referenceAnalysisId,
+                                referenceFingerprint = if (newCandidateGenerated) reference?.excerpt?.fingerprint else state.referenceFingerprint,
+                                referenceChapterLength = if (newCandidateGenerated) reference?.excerpt?.chapterLength else state.referenceChapterLength,
+                                referenceProvenanceBlocked = if (newCandidateGenerated) false else state.referenceProvenanceBlocked)
+                        }
+                        if (manuscript.isNotBlank()) persistDraft(key, run, manuscript,
+                            workflow = newCandidateGenerated || reviewOnly || before?.workflow == true)
                     },
                 )
                 if (reference != null) {
@@ -1497,7 +1596,7 @@ class WritingAi(
                 val current = writingTask(workId, chapterId, instruction, targetLength)
                 val stale = current?.fingerprint != task.fingerprint
                 updateDraft(key, run) { it.copy(
-                    text = result.text, loading = false, assessment = result.assessment,
+                    text = result.text, loading = false, assessment = result.assessment, workflow = true,
                     referenceValidated = reference != null,
                     stage = if (stale) DraftStage.NEEDS_REVIEW else result.stage,
                     error = if (stale) "项目资料在写作期间变化，旧审读结果已过时，请重新审读" else null,
@@ -1508,13 +1607,20 @@ class WritingAi(
                 log(workId, chapterId, if (reviewOnly) "本稿审读" else "项目包写作", instruction, result.text, totalMeter)
             } catch (e: CancellationException) {
                 if (draftRuns[key] == run) {
-                    updateDraft(key, run) { it.copy(loading = false, stage = DraftStage.STOPPED, assessment = null) }
+                    updateDraft(key, run) { state ->
+                        (if (newCandidateGenerated) state else state.copy(text = previousCandidate,
+                            workflow = before?.workflow == true).restoreDraftSource(before))
+                            .copy(loading = false, stage = DraftStage.STOPPED, assessment = null)
+                    }
                     val candidate = _drafts.value[key]?.text.orEmpty()
-                    if (candidate.isNotBlank()) withContext(NonCancellable) { runCatching { persistDraft(key, run, candidate, workflow = true) } }
+                    if (candidate.isNotBlank()) withContext(NonCancellable) {
+                        runCatching { persistDraft(key, run, candidate, workflow = _drafts.value[key]?.workflow == true) }
+                    }
                 }
                 throw e
             } catch (e: RejectedReferenceWriting) {
                 updateDraft(key, run) { it.copy(text = previousCandidate, loading = false, stage = DraftStage.ERROR,
+                    workflow = before?.workflow == true,
                     assessment = null, error = e.message,
                     referenceAnalysisId = before?.referenceAnalysisId,
                     referenceFingerprint = before?.referenceFingerprint,
@@ -1523,14 +1629,23 @@ class WritingAi(
                     referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
                     usage = meters.fold(AiUsage()) { all, m -> all + m.usage },
                     cost = meters.fold(AiCost()) { all, m -> all + m.cost }) }
-                persistDraft(key, run, previousCandidate, workflow = true)
+                persistDraft(key, run, previousCandidate, workflow = before?.workflow == true)
             } catch (e: Exception) {
                 updateDraft(key, run) { it.copy(
+                    text = if (newCandidateGenerated) it.text else previousCandidate,
+                    workflow = if (newCandidateGenerated) true else before?.workflow == true,
                     loading = false, stage = DraftStage.ERROR, assessment = null, error = e.message ?: "本章流程未完成",
+                    referenceAnalysisId = if (newCandidateGenerated) it.referenceAnalysisId else before?.referenceAnalysisId,
+                    referenceFingerprint = if (newCandidateGenerated) it.referenceFingerprint else before?.referenceFingerprint,
+                    referenceChapterLength = if (newCandidateGenerated) it.referenceChapterLength else before?.referenceChapterLength,
+                    referenceValidated = if (newCandidateGenerated) it.referenceValidated else before?.referenceValidated == true,
+                    referenceProvenanceBlocked = if (newCandidateGenerated) it.referenceProvenanceBlocked else before?.referenceProvenanceBlocked == true,
                     usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost },
                 ) }
                 val candidate = _drafts.value[key]?.takeIf { draftRuns[key] == run }?.text.orEmpty()
-                if (candidate.isNotBlank()) runCatching { persistDraft(key, run, candidate, workflow = true) }
+                if (candidate.isNotBlank()) runCatching {
+                    persistDraft(key, run, candidate, workflow = _drafts.value[key]?.workflow == true)
+                }
             }
         }
     }
@@ -1873,6 +1988,7 @@ data class DraftState(
     val referenceChapterLength: Int? = null,
     val referenceValidated: Boolean = false,
     val referenceProvenanceBlocked: Boolean = false,
+    val workflowChoice: Boolean? = null,
 )
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */

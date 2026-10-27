@@ -21,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -151,9 +150,14 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
 /**
  * 存细纲卡时按项合并：这一页上改过的项（[edited] 和打开、上次存时的 [base] 不一样的）用这一页的，
  * 没改过的用盘上最新的 [latest]（这期间“补写章节摘要”写进去的摘要之类，不能被这一页的旧卡片清掉）。
+ * [storedAtOpen] 是打开页面时真正落盘的卡：细纲自动提取的字段只在 [base] 里，盘上还没有时也要带进第一次保存。
  */
-internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCard): ChapterCard {
-    fun pick(get: (ChapterCard) -> String) = if (get(edited) != get(base)) get(edited) else get(latest)
+internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCard, storedAtOpen: ChapterCard = base): ChapterCard {
+    fun pick(get: (ChapterCard) -> String) = when {
+        get(edited) != get(base) -> get(edited)
+        get(latest) != get(storedAtOpen) -> get(latest)
+        else -> get(base)
+    }
     return latest.copy(
         facts = pick { it.facts },
         boundary = pick { it.boundary },
@@ -163,8 +167,31 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
         threads = pick { it.threads },
         summary = pick { it.summary },
         plan = pick { it.plan },
-        auto = if (edited.auto != base.auto) edited.auto else latest.auto,
+        auto = when {
+            edited.auto != base.auto -> edited.auto
+            latest.auto != storedAtOpen.auto -> latest.auto
+            else -> base.auto
+        },
     )
+}
+
+/** Keep a leaving editor's last edits until its already-started save has finished. */
+internal class CardSaveFlight {
+    var submitted: ChapterCard? = null
+    private var leavingWith: ChapterCard? = null
+
+    fun leave(current: ChapterCard): Boolean {
+        if (submitted == null) return false
+        leavingWith = current
+        return true
+    }
+
+    fun finish(): Pair<ChapterCard, ChapterCard>? {
+        val followUp = submitted?.let { first -> leavingWith?.let { first to it } }
+        submitted = null
+        leavingWith = null
+        return followUp
+    }
 }
 
 /**
@@ -175,8 +202,12 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
 fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
-    var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
-    var saved by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
+    var card by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
+    var saved by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
+    var persisted by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
+    var saving by remember(workId, chapterId) { mutableStateOf(false) }
+    var failedAttempt by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
+    val saveFlight = remember(workId, chapterId) { CardSaveFlight() }
     var previous by remember(chapterId) { mutableStateOf<Pair<WorkChapter, ChapterCard>?>(null) }
     var info by remember(chapterId) { mutableStateOf<PlannedCard?>(null) }
     var replacing by remember { mutableStateOf(false) }
@@ -188,34 +219,68 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val scope = rememberCoroutineScope()
     val snackbar = rememberWritingMessages(vm)
     LaunchedEffect(workId, chapterId) {
-        val (mine, prev) = vm.writing.cards(workId, chapterId)
-        card = mine.card
-        saved = mine.card
-        info = mine
-        previous = prev
+        val snapshot = vm.writing.cardSnapshot(workId, chapterId)
+        card = snapshot.planned.card
+        saved = snapshot.planned.card
+        persisted = snapshot.stored
+        info = snapshot.planned
+        previous = snapshot.previous
     }
     // 停一下再存；离开时存。存的时候以盘上最新的卡片为底，只换这一页改过的项。
-    LaunchedEffect(card) {
+    LaunchedEffect(card, saved, persisted, saving, failedAttempt) {
         val now = card ?: return@LaunchedEffect
         val base = saved ?: return@LaunchedEffect
-        if (now == base) return@LaunchedEffect
+        val storedAtOpen = persisted ?: return@LaunchedEffect
+        if (now == base || saving || failedAttempt == now) return@LaunchedEffect
         delay(600)
         // 合并在写盘队列里、和读最新卡片在同一把锁里做，补写摘要这时写进来也不会丢。
-        saved = now
-        vm.writing.updateCard(workId, chapterId, { latest -> mergeCard(base, now, latest) }) { merged ->
-            saved = merged
-            // 别处写进来的（比如 AI 补的摘要）也显示出来；这期间作者又改了的就不动。
-            if (merged != now && card == now) card = merged
-        }
+        saveFlight.submitted = now
+        saving = true
+        failedAttempt = null
+        vm.writing.updateCard(
+            workId, chapterId,
+            { latest -> mergeCard(base, now, latest, storedAtOpen) },
+            then = { merged ->
+                val followUp = saveFlight.finish()
+                if (followUp != null) {
+                    // The screen has left. Queue this after the first save, so a reverted
+                    // field wins even if that first save finished after the author left.
+                    vm.writing.updateCard(workId, chapterId,
+                        { latest -> mergeCard(followUp.first, followUp.second, latest, storedAtOpen) })
+                } else {
+                    // 只在真正落盘后确认。若作者在等待时继续输入，把这些新改动移到落盘后的卡上。
+                    val current = card ?: now
+                    card = mergeCard(now, current, merged)
+                    saved = merged
+                    persisted = merged
+                    saving = false
+                }
+            },
+            onFailure = {
+                val followUp = saveFlight.finish()
+                if (followUp != null) {
+                    // Also retry the full latest card when the first write itself failed.
+                    vm.writing.updateCard(workId, chapterId,
+                        { latest -> mergeCard(followUp.first, followUp.second, latest, storedAtOpen) })
+                } else {
+                    // 不确认失败的写入；停在未保存状态，允许点按重试或下一次编辑再次尝试。
+                    failedAttempt = now
+                    saving = false
+                }
+            },
+        )
     }
-    val latest by rememberUpdatedState(card)
-    val latestSaved by rememberUpdatedState(saved)
     DisposableEffect(workId, chapterId) {
         onDispose {
-            val now = latest
-            val base = latestSaved
-            if (now != null && base != null && now != base) {
-                vm.writing.updateCard(workId, chapterId, { latest -> mergeCard(base, now, latest) })
+            // These are remembered state delegates, read at disposal rather than a value
+            // from the last composition: the save callback may have just rebased the card.
+            val now = card
+            val base = saved
+            val storedAtOpen = persisted
+            if (now != null && base != null && storedAtOpen != null) {
+                if (!saveFlight.leave(now) && now != base) {
+                    vm.writing.updateCard(workId, chapterId, { latest -> mergeCard(base, now, latest, storedAtOpen) })
+                }
             }
         }
     }
@@ -260,6 +325,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 else -> null
                             }
                             if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            if (failedAttempt != null && now != saved) row { ActionRow("细纲卡未保存 · 重试") { failedAttempt = null } }
                             // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
                             row {
                                 // 在拟的时候换成转圈的一行，拟完淡回按钮。
