@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -27,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -163,12 +166,26 @@ private fun TreeOutlineRow(work: Work, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 进出调整模式的一行：和上面的总纲一样带行首图标、名字下面一行说明，看得出能点；
+ * 调整中换成强调色的“完成调整”，右边挂“调整中”标签，再点一下收起。
+ */
 @Composable
 private fun TreeReorderRow(active: Boolean, onToggle: () -> Unit) {
     val c = LocalGroupedColors.current
     GroupedRow(onClick = onToggle) {
-        Text(if (active) "完成调整" else "调整章节顺序", color = if (active) c.tint else c.label, fontSize = 14.sp, modifier = Modifier.weight(1f))
-        Text(if (active) "用章下方按钮移动" else "先进入调整模式", color = c.secondary, fontSize = 12.sp)
+        RowIcon(if (active) LingYueIcons.Check else LingYueIcons.Sort, c.tint)
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (active) "完成调整" else "调整章节顺序",
+                color = if (active) c.tint else c.label,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(if (active) "用每章右侧的箭头上移、下移" else "进入调整模式，逐章上移、下移", color = c.secondary, fontSize = 12.sp)
+        }
+        if (active) Tag("调整中", c.tint)
+        else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
 }
 
@@ -234,29 +251,14 @@ private fun TreeChapterRow(
                     }
                 }
                 StatusLabel(chapter.status)
-                if (!reorderMode) IconButton(onClick = { actions.onToggleCard(chapter.id) }, modifier = Modifier.size(48.dp)) {
-                    Icon(LingYueIcons.Notes, contentDescription = if (cardExpanded) "收起${chapter.title}细纲卡" else "展开${chapter.title}细纲卡", tint = c.tint, modifier = Modifier.size(18.dp))
-                }
-            }
-            if (reorderMode) Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 52.dp, end = 12.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                IconButton(
-                    onClick = { actions.onMoveChapter(chapter, -1) },
-                    enabled = canMoveUp,
-                    modifier = Modifier.width(88.dp).height(48.dp).clip(RoundedCornerShape(12.dp))
-                        .background(c.fill).semantics { contentDescription = "上移${chapter.title}" },
-                ) {
-                    Text("↑ 上移", color = if (canMoveUp) c.label else c.tertiary, fontSize = 13.sp)
-                }
-                IconButton(
-                    onClick = { actions.onMoveChapter(chapter, 1) },
-                    enabled = canMoveDown,
-                    modifier = Modifier.width(88.dp).height(48.dp).clip(RoundedCornerShape(12.dp))
-                        .background(c.fill).semantics { contentDescription = "下移${chapter.title}" },
-                ) {
-                    Text("↓ 下移", color = if (canMoveDown) c.label else c.tertiary, fontSize = 13.sp)
+                if (reorderMode) {
+                    // 调整模式：每行右侧一对紧凑的上下箭头，看着小、能点 48dp；读屏念“上移第一章 雪夜”。
+                    MoveArrow(up = true, enabled = canMoveUp, label = "上移${chapter.title}") { actions.onMoveChapter(chapter, -1) }
+                    MoveArrow(up = false, enabled = canMoveDown, label = "下移${chapter.title}") { actions.onMoveChapter(chapter, 1) }
+                } else {
+                    IconButton(onClick = { actions.onToggleCard(chapter.id) }, modifier = Modifier.size(48.dp)) {
+                        Icon(LingYueIcons.Notes, contentDescription = if (cardExpanded) "收起${chapter.title}细纲卡" else "展开${chapter.title}细纲卡", tint = c.tint, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -271,6 +273,29 @@ private fun TreeChapterRow(
                     TreeMenuAction("删除", c.destructive) { actions.onDismissChapterMenu(); actions.onDeleteChapter(chapter) }
                 }
             }
+        }
+    }
+}
+
+/** 调整模式里的上移 / 下移：28dp 的圆底小箭头，能点的范围 48dp；到头了变灰、不能点。 */
+@Composable
+private fun MoveArrow(up: Boolean, enabled: Boolean, label: String, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(28.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+            Icon(
+                LingYueIcons.ChevronDown,
+                contentDescription = null,
+                tint = if (enabled) c.tint else c.tertiary,
+                modifier = Modifier.size(16.dp).graphicsLayer { rotationZ = if (up) 180f else 0f },
+            )
         }
     }
 }

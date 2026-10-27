@@ -173,23 +173,34 @@ fun VocabularyScreen(vm: AppViewModel) {
         ) {
             item {
                 ProvideGroupedColors {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val c = LocalGroupedColors.current
+                    Column(Modifier.padding(top = 2.dp)) {
+                        // 分段控件铺满一行，左右和下面的词卡一样缩进 12dp。
                         SegmentedControl(
                             listOf(false to "学习中 ${learning.size}", true to "已掌握 ${words.size - learning.size}"),
                             mastered,
-                            Modifier.width(220.dp),
+                            Modifier.padding(horizontal = 12.dp),
                             height = 36.dp,
                         ) { mastered = it }
-                        Spacer(Modifier.weight(1f))
                         if (due.isNotEmpty()) {
-                            // 淡色胶囊（和左边的分段控件一样看着 36dp 高），不用一颗大按钮压过整行。
-                            PillButton("复习 ${due.size}", onClick = { reviewing = true }, style = PillStyle.Tinted)
+                            // 复习是分段控件下面单独的一行操作（和词卡同宽的卡片），不挤在分段控件旁边。
+                            GroupedSection(modifier = Modifier.padding(top = 4.dp)) {
+                                row {
+                                    NavRow(
+                                        "复习 ${due.size}",
+                                        subtitle = "${due.size} 个词今天到期，翻卡片过一遍",
+                                        icon = LingYueIcons.Months,
+                                        iconBackground = c.tint,
+                                    ) { reviewing = true }
+                                }
+                            }
                         } else if (learning.isNotEmpty()) {
                             val next = learning.minOf { it.due }
                             Text(
                                 "下次复习：${dueLabel(next, now)}",
-                                style = MiuixTheme.textStyles.footnote1,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                color = c.secondary,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 2.dp, bottom = 10.dp),
                             )
                         }
                     }

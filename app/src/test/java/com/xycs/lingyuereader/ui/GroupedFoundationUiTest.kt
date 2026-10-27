@@ -7,18 +7,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -72,6 +79,69 @@ class GroupedFoundationUiTest {
         }
         val bounds = compose.onNodeWithContentDescription("关闭目录").getUnclippedBoundsInRoot()
         assertTrue("面板关闭按钮需至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+    }
+
+    @Test
+    fun toolTileGridFillsOneRowWhenItFitsAndWrapsEvenlyWhenItDoesNot() {
+        val width = mutableIntStateOf(400)
+        val tapped = mutableIntStateOf(-1)
+        val labels = listOf("三道审稿", "规则检查", "细纲卡", "本章资料", "设定包")
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    Box(Modifier.width(width.intValue.dp).testTag("grid")) {
+                        ToolTileGrid(labels.mapIndexed { i, label -> ToolTile(label, LingYueIcons.Search) { tapped.intValue = i } })
+                    }
+                }
+            }
+        }
+        fun bounds() = labels.map { compose.onNodeWithContentDescription(it).getUnclippedBoundsInRoot() }
+        fun gridRight() = compose.onNodeWithTag("grid").getUnclippedBoundsInRoot().right
+
+        // 宽屏：五格一行，等宽，最后一格贴到右边，不被切也不留空。
+        var tiles = bounds()
+        assertEquals("放得下时五格在同一行", 1, tiles.map { it.top }.distinct().size)
+        assertTrue("五格等宽（容许取整差 1px）：${tiles.map { it.right - it.left }}", tiles.all { abs((it.right - it.left).value - (tiles[0].right - tiles[0].left).value) <= 1.5f })
+        assertTrue("最后一格铺到行尾", abs((gridRight() - tiles.last().right).value) < 1f)
+        assertTrue("每格能点的高度至少 48dp", tiles.all { it.bottom - it.top >= 48.dp })
+
+        // 窄屏：一格不够 64dp 时每行四格换行，第五格到第二行，和上面一样宽，没有格子伸出容器。
+        width.intValue = 280
+        compose.waitForIdle()
+        tiles = bounds()
+        assertEquals("前四格一行", 1, tiles.take(4).map { it.top }.distinct().size)
+        assertTrue("第五格换到下一行", tiles[4].top > tiles[0].bottom)
+        assertEquals("换行后仍是等宽格", (tiles[0].right - tiles[0].left).value, (tiles[4].right - tiles[4].left).value, 1.5f)
+        assertTrue("没有格子伸出容器", tiles.all { it.right <= gridRight() + 0.5.dp })
+        compose.onNodeWithContentDescription("设定包").performClick()
+        assertEquals(4, tapped.intValue)
+    }
+
+    @Test
+    fun labeledIconButtonNamesItselfAndExplainsOnLongPress() {
+        val clicks = mutableIntStateOf(0)
+        val explains = mutableIntStateOf(0)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    LabeledIconButton(
+                        LingYueIcons.Book,
+                        label = "书灵",
+                        description = "书灵写作",
+                        onLongClick = { explains.intValue++ },
+                        onClick = { clicks.intValue++ },
+                    )
+                }
+            }
+        }
+        val button = compose.onNodeWithContentDescription("书灵写作")
+        val bounds = button.getUnclippedBoundsInRoot()
+        assertTrue("带字图标按钮至少 48dp 见方", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+        button.performClick()
+        assertEquals(1, clicks.intValue)
+        button.performTouchInput { longClick() }
+        assertEquals("长按给说明，不当成点击", 1, explains.intValue)
+        assertEquals(1, clicks.intValue)
     }
 
     @Test
@@ -222,6 +292,68 @@ class GroupedFoundationUiTest {
             height()
         }
         assertEquals(first - 56f, height(), 0.5f)
+    }
+
+    /** 步进器：加减一、到上限 ＋ 变灰、在下限再按 － 回到“不填”、从“不填”按 ＋ 从起点开始、直接输入超出范围收到边上。 */
+    @Test
+    fun numberStepperStepsClampsAndCanBeLeftEmpty() {
+        val value = mutableStateOf<Int?>(null)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    NumberStepper(value.value, { value.value = it }, "计划第几章收", range = 1..3, start = 2)
+                }
+            }
+        }
+        // 不填：中间写“不填”，－ 不能点。
+        compose.onNodeWithText("不填").assertExists()
+        compose.onNodeWithContentDescription("计划第几章收减一").assertIsNotEnabled()
+        val plus = compose.onNodeWithContentDescription("计划第几章收加一")
+        val bounds = plus.getUnclippedBoundsInRoot()
+        assertTrue("步进器的钮触控区至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+
+        // 从“不填”按 ＋：从起点 2 开始；再按一次到上限 3，＋ 变灰。
+        plus.performClick()
+        assertEquals(2, value.value)
+        plus.performClick()
+        assertEquals(3, value.value)
+        plus.assertIsNotEnabled()
+
+        // 减到下限 1，再按 － 回到“不填”。
+        compose.onNodeWithContentDescription("计划第几章收减一").performClick()
+        compose.onNodeWithContentDescription("计划第几章收减一").performClick()
+        assertEquals(1, value.value)
+        compose.onNodeWithContentDescription("计划第几章收改为不填").performClick()
+        assertEquals(null, value.value)
+        compose.onNodeWithText("不填").assertExists()
+
+        // 直接输入：超出上限收到 3，删空就是“不填”。
+        val field = compose.onNode(hasSetTextAction())
+        field.performTextReplacement("25")
+        assertEquals(3, value.value)
+        field.assertTextEquals("3")
+        field.performTextReplacement("")
+        assertEquals(null, value.value)
+    }
+
+    /** 不能空的步进器：最小值上 － 变灰，删空输入框不会把值清掉。 */
+    @Test
+    fun requiredNumberStepperNeverBecomesEmpty() {
+        val value = mutableStateOf<Int?>(1)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    NumberStepper(value.value, { value.value = it }, "从第几章生效", range = 1..30, optional = false)
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("从第几章生效减一").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("从第几章生效加一").performClick()
+        assertEquals(2, value.value)
+        compose.onNode(hasSetTextAction()).performTextReplacement("")
+        assertEquals(2, value.value)
+        compose.onNode(hasSetTextAction()).performTextReplacement("12")
+        assertEquals(12, value.value)
     }
 
     /** 截图里接近 [color] 的像素占多少。 */

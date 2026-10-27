@@ -9,6 +9,7 @@ import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -186,7 +187,7 @@ class WritingUiTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
 
         compose.onNodeWithContentDescription("打开四组工具").performClick()
-        waitForText("写作工具")
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("关闭写作工具").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("查").performClick()
         waitForText("三道审稿")
         compose.onNodeWithText("整理").performClick()

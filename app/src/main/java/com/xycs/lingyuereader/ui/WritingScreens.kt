@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -1380,16 +1381,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             selected = toolGroup,
                             shortcuts = when (toolGroup) {
                                 EditorToolGroup.WRITE -> listOf(
-                                    EditorToolShortcut("写本章草稿", LingYueIcons.Sparkle) {
+                                    EditorToolShortcut("写本章草稿", LingYueIcons.Write) {
                                         toolsOpen = false; saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId))
                                     },
-                                    EditorToolShortcut("AI 接着写", LingYueIcons.Write) {
+                                    EditorToolShortcut("AI 接着写", LingYueIcons.Sparkle) {
                                         toolsOpen = false; onAiItem(AiBarItem.Write)
                                     },
-                                    EditorToolShortcut("润色", LingYueIcons.Write) {
+                                    EditorToolShortcut("润色", LingYueIcons.Polish) {
                                         toolsOpen = false; runEdit(WriteAction.POLISH)
                                     },
-                                    EditorToolShortcut("快捷标点", LingYueIcons.More) {
+                                    EditorToolShortcut("快捷标点", LingYueIcons.Punctuation) {
                                         toolsOpen = false; aiBar = false; punctuationBar = true
                                     },
                                 )
@@ -1403,21 +1404,21 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     EditorToolShortcut("细纲卡", LingYueIcons.ListView) {
                                         toolsOpen = false; vm.open(Screen.ChapterCard(workId, chapterId))
                                     },
-                                    EditorToolShortcut("本章资料", LingYueIcons.Book) {
+                                    EditorToolShortcut("本章资料", LingYueIcons.Info) {
                                         toolsOpen = false; vm.open(Screen.ChapterBrief(workId, chapterId))
                                     },
-                                    EditorToolShortcut("设定包", LingYueIcons.Book) {
+                                    EditorToolShortcut("设定包", LingYueIcons.Folder) {
                                         toolsOpen = false; vm.open(Screen.WorkPack(workId))
                                     },
                                 )
                                 EditorToolGroup.ORGANIZE -> listOf(
-                                    EditorToolShortcut("整理入账", LingYueIcons.Check) {
+                                    EditorToolShortcut("整理入账", LingYueIcons.Download) {
                                         toolsOpen = false; startSync()
                                     },
                                     EditorToolShortcut("故事账本", LingYueIcons.Book) {
                                         toolsOpen = false; vm.open(Screen.WorkLedger(workId, chapterId))
                                     },
-                                    EditorToolShortcut("章节状态", LingYueIcons.ListView) {
+                                    EditorToolShortcut("章节状态", LingYueIcons.Flag) {
                                         toolsOpen = false; statusDialog = true
                                     },
                                     EditorToolShortcut("历史版本", LingYueIcons.History) {
@@ -1427,14 +1428,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     },
                                 )
                                 EditorToolGroup.MORE -> listOf(
-                                    // 小屏也直接看得到全量入口，不把旧工具菜单藏在横向列表末端。
+                                    // “全部工具”放在第一格：小屏换行后也直接看得到完整旧菜单。
                                     EditorToolShortcut("全部工具", LingYueIcons.More) {
                                         toolsOpen = false; menu = true
                                     },
-                                    EditorToolShortcut("范本写法", LingYueIcons.Book) {
+                                    EditorToolShortcut("范本写法", LingYueIcons.Notes) {
                                         toolsOpen = false; saveNow(); vm.open(Screen.WritingReference(workId, chapterId))
                                     },
-                                    EditorToolShortcut("自动排版", LingYueIcons.ListView) {
+                                    EditorToolShortcut("自动排版", LingYueIcons.Format) {
                                         toolsOpen = false
                                         when {
                                             locked -> vm.showMessage("这一章已定稿：要排版先解锁")
@@ -1442,10 +1443,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                             else -> formatOpen = true
                                         }
                                     },
-                                    EditorToolShortcut("预览本章", LingYueIcons.Book) {
+                                    EditorToolShortcut("预览本章", LingYueIcons.Preview) {
                                         toolsOpen = false; saveNow(); vm.previewWork(workId, chapterId)
                                     },
-                                    EditorToolShortcut("听本章", LingYueIcons.Book) {
+                                    EditorToolShortcut("听本章", LingYueIcons.VolumeUp) {
                                         toolsOpen = false; saveNow(); vm.previewWork(workId, chapterId, listen = true)
                                     },
                                 )
@@ -1597,7 +1598,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !rulesOpen && !issuesOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
-                // 平时只占一行：上下文推荐 + 两个旧入口 + 四组工具。旧 AI / 标点条仍可切换，功能不丢。
+                // 平时只占一行：两个带字的旧入口 + 上下文推荐 + 四组工具。旧 AI / 标点条仍可切换，功能不丢。
                 Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
                 val stripMode = when {
                     aiBar -> "ai"
@@ -1608,18 +1609,29 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     Modifier.fillMaxWidth().heightIn(min = 56.dp).background(c.background).padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
+                    // 左边两个入口图标下面写着字，长按再给一句说明，不只靠 ✦ 和书本猜。
+                    LabeledIconButton(
+                        LingYueIcons.Sparkle,
+                        label = if (aiBar) "标点" else "AI",
+                        description = if (aiBar) "换回标点" else "AI 写作",
+                        selected = aiBar,
+                        longClickLabel = "说明",
+                        onLongClick = {
+                            vm.showMessage(if (aiBar) "换回快捷标点条" else "AI 写作：切到 AI 工具条，接着写、润色、扩写、灵感等")
+                        },
                         onClick = {
                             if (aiBar) { aiBar = false; punctuationBar = true }
                             else { aiBar = true; punctuationBar = false }
                             toolsOpen = false
                         },
-                        modifier = Modifier.size(48.dp),
-                    ) {
-                        Icon(LingYueIcons.Sparkle, contentDescription = if (aiBar) "换回标点" else "AI 写作",
-                            tint = if (aiBar) c.tint else c.secondary)
-                    }
-                    IconButton(
+                    )
+                    LabeledIconButton(
+                        LingYueIcons.Book,
+                        label = "书灵",
+                        description = "书灵写作",
+                        selected = companionOpen,
+                        longClickLabel = "说明",
+                        onLongClick = { vm.showMessage("书灵写作：说出这一段要发生什么，可选范本，让 AI 写候选稿给你审定") },
                         onClick = {
                             when {
                                 locked -> vm.showMessage("这一章已定稿，要继续写请先解锁")
@@ -1637,11 +1649,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 }
                             }
                         },
-                        modifier = Modifier.size(48.dp),
-                    ) {
-                        Icon(LingYueIcons.Book, contentDescription = "书灵写作",
-                            tint = if (companionOpen) c.tint else c.secondary)
-                    }
+                    )
                     AnimatedContent(
                         stripMode,
                         modifier = Modifier.weight(1f),
@@ -1670,12 +1678,22 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     }
                                 } else Modifier
                                 val label = if (current == null) "载入中" else recommendation.label
+                                // 正文才是主角：推荐用淡强调色底、强调色字，不铺整条实心色；
+                                // 还没设置写作 AI 时只是一枚描边的次要按钮，不带副标题。
+                                val setup = enabled && recommendation.kind == EditorRecommendationKind.CONFIGURE_AI
+                                val shape = RoundedCornerShape(12.dp)
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
                                         .heightIn(min = 48.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (enabled) c.tint else c.fill)
+                                        .clip(shape)
+                                        .then(
+                                            when {
+                                                setup -> Modifier.border(1.dp, c.tertiary.copy(alpha = 0.45f), shape)
+                                                enabled -> Modifier.background(c.tint.copy(alpha = 0.12f))
+                                                else -> Modifier.background(c.fill)
+                                            },
+                                        )
                                         .then(action)
                                         .semantics {
                                             contentDescription = if (enabled) "智能推荐：$label，${recommendation.reason}"
@@ -1685,11 +1703,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         .padding(horizontal = 8.dp, vertical = 4.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("✦ $label", color = if (enabled) c.onTint else c.label,
+                                    if (setup) {
+                                        Text(label, color = c.label, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("✦ $label", color = if (enabled) c.tint else c.label,
                                             fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(recommendation.reason, color = if (enabled) c.onTint.copy(alpha = 0.82f) else c.secondary,
+                                        Text(recommendation.reason, color = c.secondary,
                                             fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                 }
@@ -1740,7 +1761,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             }
                         }
                     }
-                    IconButton(
+                    LabeledIconButton(
+                        LingYueIcons.Tools,
+                        label = "工具",
+                        description = if (toolsOpen) "关闭四组工具" else "打开四组工具",
+                        selected = toolsOpen,
                         onClick = {
                             if (pendingAi) vm.showMessage("先处理当前的 AI 结果，再打开工具")
                             else {
@@ -1753,11 +1778,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 }
                             }
                         },
-                        modifier = Modifier.size(48.dp),
-                    ) {
-                        Icon(LingYueIcons.ListView, contentDescription = if (toolsOpen) "关闭四组工具" else "打开四组工具",
-                            tint = if (toolsOpen) c.tint else c.secondary)
-                    }
+                    )
                 }
             }
             if (renaming && chapter != null) {

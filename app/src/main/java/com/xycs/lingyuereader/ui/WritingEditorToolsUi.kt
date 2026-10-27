@@ -1,39 +1,15 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.InlineWrite
 import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.data.ChapterStatus
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Text
 
 internal enum class EditorToolGroup(val label: String) {
     WRITE("写"), CHECK("查"), ORGANIZE("整理"), MORE("更多")
@@ -113,7 +89,11 @@ internal fun editorRecommendation(
     return EditorRecommendation(EditorRecommendationKind.CONTINUE, "AI 接着写", "从光标处接续正文")
 }
 
-/** 四组工具是稳定的全量入口；上面的智能推荐可以随编辑状态改变。 */
+/**
+ * 四组工具是稳定的全量入口；上面的智能推荐可以随编辑状态改变。
+ * 不另起标题栏：分段控件铺满一行、关闭钮在它右端，下面一格格工具等宽铺满（[ToolTileGrid]），
+ * 整个面板压在两行左右，键盘上方仍给正文留出地方。
+ */
 @Composable
 internal fun WritingEditorToolsPanel(
     selected: EditorToolGroup,
@@ -121,42 +101,22 @@ internal fun WritingEditorToolsPanel(
     onSelect: (EditorToolGroup) -> Unit,
     onClose: () -> Unit,
 ) {
-    val c = LocalGroupedColors.current
-    InlinePanel(title = "写作工具", icon = LingYueIcons.ListView, onClose = onClose) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            EditorToolGroup.entries.forEach { group ->
-                PillButton(
-                    group.label,
-                    onClick = { onSelect(group) },
-                    modifier = Modifier.weight(1f),
-                    style = if (selected == group) PillStyle.Tinted else PillStyle.Plain,
-                )
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            shortcuts.forEach { item ->
-                Column(
-                    Modifier
-                        .widthIn(min = 80.dp)
-                        .heightIn(min = 64.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(c.fill)
-                        .clickable(role = Role.Button, onClick = item.onClick)
-                        .semantics { contentDescription = item.label }
-                        .padding(horizontal = 5.dp, vertical = 5.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Icon(item.icon, contentDescription = null, tint = c.tint, modifier = Modifier.size(19.dp))
-                    Spacer(Modifier.height(3.dp))
-                    Text(item.label, color = c.label, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
+    InlinePanel(
+        title = "写作工具",
+        onClose = onClose,
+        closeLabel = "关闭写作工具",
+        header = {
+            SegmentedControl(
+                EditorToolGroup.entries.map { it to it.label },
+                selected,
+                modifier = Modifier.weight(1f),
+                onSelect = onSelect,
+            )
+        },
+    ) {
+        ToolTileGrid(
+            shortcuts.map { ToolTile(it.label, it.icon, it.onClick) },
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+        )
     }
 }

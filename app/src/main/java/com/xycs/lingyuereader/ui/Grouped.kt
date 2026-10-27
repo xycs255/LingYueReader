@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -41,6 +42,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
@@ -55,28 +59,40 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -855,6 +871,158 @@ internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
     }
 }
 
+/** 只显示的一行：名字，下面一行灰色说明（[subtitleMaxLines] 限行），左边可带行首图标；不能点。 */
+@Composable
+internal fun InfoRow(
+    title: String,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    iconBackground: Color = Color.Unspecified,
+    subtitleMaxLines: Int = Int.MAX_VALUE,
+) {
+    val c = LocalGroupedColors.current
+    GroupedRow {
+        if (icon != null) RowIcon(icon, iconBackground)
+        RowTitle(title, c.label, true, subtitle, subtitleMaxLines)
+    }
+}
+
+/** 章号这类步进器的默认上限：五位数，和以前只收五位数字的章号输入框一样。 */
+internal const val STEPPER_MAX = 99_999
+
+/**
+ * 步进器（－ 数字 ＋）：章号这类小整数。两边是 32dp 的圆底灰钮（能点的范围 48dp），中间的数字点一下就能直接输入（数字键盘）。
+ * - [value] 为空是“不填”（只有 [optional] 时才有）：中间是第三级灰色的 [emptyText]，－ 不能点，按 ＋ 从 [start] 开始；
+ * - 在最小值上再按 －，回到“不填”；把输入框删空也一样；
+ * - 输入超出 [range] 的数收到边上；到了上限 ＋ 变灰；
+ * - 不能空的（[optional] 为假）删空后离开输入框，恢复原来的值。
+ * [label] 是读屏念的名字（“从第几章起”），两边的钮念成“从第几章起减一”“从第几章起加一”。
+ */
+@Composable
+internal fun NumberStepper(
+    value: Int?,
+    onValueChange: (Int?) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    range: IntRange = 1..STEPPER_MAX,
+    optional: Boolean = true,
+    start: Int = range.first,
+    emptyText: String = "不填",
+) {
+    val c = LocalGroupedColors.current
+    val focus = LocalFocusManager.current
+    val latest by rememberUpdatedState(value)
+    // 输入框里的字跟着外面的值走；删空了、还没填完时先留着自己的。
+    var text by remember(value) { mutableStateOf(value?.toString().orEmpty()) }
+    val atMin = value != null && value <= range.first
+    val canMinus = value != null && (!atMin || optional)
+    val canPlus = value == null || value < range.last
+    Row(modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+        StepperButton(LingYueIcons.Remove, if (atMin && optional) "${label}改为$emptyText" else "${label}减一", canMinus) {
+            onValueChange(if (value == null || value <= range.first) null else value - 1)
+        }
+        BasicTextField(
+            value = text,
+            onValueChange = { raw ->
+                val digits = raw.filter(Char::isDigit).take(9)
+                if (digits.isEmpty()) {
+                    text = ""
+                    if (optional && value != null) onValueChange(null)
+                } else {
+                    val n = digits.toLong().coerceIn(range.first.toLong(), range.last.toLong()).toInt()
+                    text = n.toString()
+                    if (n != value) onValueChange(n)
+                }
+            },
+            singleLine = true,
+            textStyle = TextStyle(color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
+            cursorBrush = SolidColor(c.tint),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
+            modifier = Modifier
+                .width(60.dp)
+                .onFocusChanged { if (!it.isFocused) text = latest?.toString().orEmpty() }
+                .semantics {
+                    contentDescription = label
+                    stateDescription = value?.toString() ?: emptyText
+                },
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.Center) {
+                    if (text.isEmpty()) Text(emptyText, color = c.tertiary, fontSize = 15.sp, maxLines = 1)
+                    inner()
+                }
+            },
+        )
+        StepperButton(LingYueIcons.Add, "${label}加一", canPlus) {
+            onValueChange(if (value == null) start.coerceIn(range) else value + 1)
+        }
+    }
+}
+
+/** 步进器两边的钮：看着 32dp 的圆底，能点 48dp；按下缩一点，不能点时图形变成第三级灰。 */
+@Composable
+private fun StepperButton(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val tint by animateColorAsState(if (enabled) c.label else c.tertiary, Motion.standard(Motion.SHORT), label = "stepper")
+    Box(
+        Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.pressScale(source, 0.9f).size(32.dp).clip(CircleShape).background(c.fill), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * 放不下时左右滑的一排：哪一边还有没露出来的，哪一边的边缘就渐隐（[fade] 宽），提示能滑；全放得下时两边都不渐隐。
+ * 胶囊少、能换行的用 FlowRow；要一格格对齐、人多时一行排不下的（知情格）才用它。
+ */
+@Composable
+internal fun FadingScrollRow(
+    modifier: Modifier = Modifier,
+    state: ScrollState = rememberScrollState(),
+    fade: Dp = 28.dp,
+    horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
+    verticalAlignment: Alignment.Vertical = Alignment.Top,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier.horizontalFadingEdges(state, fade).horizontalScroll(state),
+        horizontalArrangement = horizontalArrangement,
+        verticalAlignment = verticalAlignment,
+        content = content,
+    )
+}
+
+/** 横向滚动内容的边缘渐隐：在绘制阶段用 DstIn 把边上一段渐渐抹透明，不改布局；滚到头的那一边不抹。 */
+internal fun Modifier.horizontalFadingEdges(state: ScrollState, fade: Dp): Modifier =
+    graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val w = fade.toPx().coerceAtMost(size.width / 2)
+            if (state.canScrollBackward) {
+                drawRect(
+                    Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = w),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+            if (state.canScrollForward) {
+                drawRect(
+                    Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = size.width - w, endX = size.width),
+                    topLeft = Offset(size.width - w, 0f),
+                    size = Size(w, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+        }
+
 // ---------- 按钮、标签 ----------
 
 /**
@@ -1129,6 +1297,7 @@ internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modi
  * 标题一行左边可带强调色小图标，[status] 是标题右边的灰色小字（“生成中……”），最右是圆底关闭钮（[onClose] 为空时不显示）；
  * 内容在中间，[actions] 一排胶囊按钮（[PillButton]）在最下面，放不下左右滑。
  * 高矮变化（流式输出、换一条建议）平滑过去；出现、收起由调用处包 AnimatedVisibility（[Motion.edgeEnter] / [Motion.edgeExit]）。
+ * 给了 [header] 时不显示标题字，标题行换成这一排控件（写作工具的分段控件），关闭钮仍在最右；[title] 只留给读屏当面板名。
  */
 @Composable
 internal fun InlinePanel(
@@ -1138,6 +1307,7 @@ internal fun InlinePanel(
     icon: ImageVector? = null,
     status: String? = null,
     closeLabel: String = "关闭",
+    header: (@Composable RowScope.() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -1147,20 +1317,25 @@ internal fun InlinePanel(
             .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(c.cell)
+            .semantics { paneTitle = title }
             .animateHeightChanges()
             .padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 6.dp),
     ) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
-            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            Text(
-                status.orEmpty(),
-                color = c.secondary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
-            )
+            if (header != null) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, content = header)
+            } else {
+                if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
+                Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(
+                    status.orEmpty(),
+                    color = c.secondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                )
+            }
             if (onClose != null) PanelCloseButton(closeLabel, onClose, Modifier.offset(x = 6.dp))
         }
         content()
@@ -1172,6 +1347,112 @@ internal fun InlinePanel(
                 content = actions,
             )
         }
+    }
+}
+
+/** 工具格里的一项：图标、短名字（两到五个字）和点了做什么。 */
+internal data class ToolTile(val label: String, val icon: ImageVector, val onClick: () -> Unit)
+
+/**
+ * 工具格：一格一个“图标 + 短名字”，等宽铺满整行。一行放得下全部（每格不窄于 [minCell]，随字号放大）就排成一行，
+ * 放不下就每行 [columns] 格换行，最后一行不满时空格补齐，格子不会被切掉、右边也不留一大块空。
+ * 每格看着 52dp 高、12dp 圆角灰底，能点的范围不小于 48dp；读屏念名字。
+ */
+@Composable
+internal fun ToolTileGrid(
+    tiles: List<ToolTile>,
+    modifier: Modifier = Modifier,
+    columns: Int = 4,
+    minCell: Dp = 64.dp,
+    gap: Dp = 6.dp,
+) {
+    val c = LocalGroupedColors.current
+    val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val fitsOneRow = tiles.size > columns &&
+            (maxWidth - gap * (tiles.size - 1)) / tiles.size >= minCell * scale
+        val perRow = if (fitsOneRow) tiles.size else columns.coerceAtLeast(1)
+        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            tiles.chunked(perRow).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    row.forEach { tile ->
+                        val source = remember { MutableInteractionSource() }
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .heightIn(min = 52.dp)
+                                .pressScale(source, 0.95f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(c.fill)
+                                .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = tile.onClick)
+                                .semantics { contentDescription = tile.label }
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(tile.icon, contentDescription = null, tint = c.tint, modifier = Modifier.size(20.dp))
+                            Text(
+                                tile.label,
+                                color = c.label,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                    }
+                    repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 带字的图标按钮：图标下面一行 10sp 小字写着是什么（“AI”“书灵”“工具”），用在编辑器底栏这种只放得下图标的地方。
+ * 能点的范围 48dp 宽、至少 52dp 高；[selected] 时图标和字是强调色，否则次要色。
+ * [description] 给读屏（不给就念 [label]）；[onLongClick] 长按时给一句说明，读屏也能从操作菜单里找到。
+ */
+@Composable
+internal fun LabeledIconButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    description: String = label,
+    selected: Boolean = false,
+    longClickLabel: String? = null,
+    onLongClick: (() -> Unit)? = null,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val color by animateColorAsState(if (selected) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "labeledIcon")
+    Column(
+        modifier
+            .widthIn(min = 48.dp)
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(pressHighlight(pressed))
+            .combinedClickable(
+                interactionSource = source,
+                indication = null,
+                role = Role.Button,
+                onLongClickLabel = longClickLabel,
+                onLongClick = onLongClick,
+                onClick = onClick,
+            )
+            .clearAndSetSemantics {
+                contentDescription = description
+                if (selected) this.selected = true
+            }
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+        Text(label, color = color, fontSize = 10.sp, lineHeight = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
