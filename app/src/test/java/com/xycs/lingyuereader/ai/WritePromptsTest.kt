@@ -327,15 +327,17 @@ class WritePromptsTest {
     }
 
     @Test
-    fun systemPromptCarriesStylePackAndAcceptedExamples() {
+    fun systemPromptCarriesStylePackAndAcceptedExamplesGoLast() {
         val assist = WorkAssist(style = "第一人称，口语化", accepted = listOf(StyleExample("润色", "风很大。", "风刮得很猛。", 1)))
-        val s = WritePrompts.system("长夜", assist, pack = "【人物档案·人物（优先级 3）】\n林月：药铺掌柜的女儿", examples = true)
+        val s = WritePrompts.system("长夜", assist, pack = "【人物档案·人物（优先级 3）】\n林月：药铺掌柜的女儿")
         assertTrue("《长夜》" in s)
         assertTrue("作者对文风的要求（最优先" in s && "第一人称，口语化" in s)
         assertTrue("林月：药铺掌柜的女儿" in s)
-        assertTrue("原文：风很大。\n改为：风刮得很猛。" in s)
+        // 采纳过的修改不在系统提示里，在请求最后的写法要求里。
+        assertFalse("改为" in s)
+        assertTrue("原文：风很大。\n改为：风刮得很猛。" in WritePrompts.voiceTail(assist, null))
+        assertFalse("改为" in WritePrompts.voiceTail(assist, null, examples = false))
         assertFalse("林月" in WritePrompts.system("长夜", assist))
-        assertFalse("改为" in WritePrompts.system("长夜", assist))
     }
 
     @Test
