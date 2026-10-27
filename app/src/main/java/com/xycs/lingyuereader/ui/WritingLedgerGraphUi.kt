@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,11 +60,51 @@ internal fun ledgerGraphStates(entries: List<LedgerEntry>, chapter: LedgerChapte
         .groupBy { it.subject.trim() to it.aspect.trim() }
         .values.map { it.maxWith(compareBy<LedgerEntry>({ e -> e.from ?: -1 }, { e -> e.updatedAt })) }
 
-/** An intervening edit prevents undo from silently overwriting that edit. */
+/**
+ * An intervening edit prevents undo from silently overwriting that edit. [after] 是刚写进去的那一条（连同写入时间）：
+ * 撤销带着它去存储层比对（[LedgerOp.Update.expected]），界面上的列表过期了也不会覆盖别处后来的修改。
+ */
 internal fun ledgerGraphUndoOp(current: List<LedgerEntry>, before: LedgerEntry?, after: LedgerEntry): LedgerOp? {
     val actual = current.firstOrNull { it.id == after.id } ?: return null
     if (actual.copy(updatedAt = 0) != after.copy(updatedAt = 0)) return null
-    return if (before == null) LedgerOp.Remove(after.id) else LedgerOp.Update(before)
+    return if (before == null) LedgerOp.Remove(after.id, expected = after) else LedgerOp.Update(before, expected = after)
+}
+
+/**
+ * 知情图里的一件事（按内容归在一起）：[entries] 是这件事所有的知情记录，[truth] 是其中只有作者知道的那几条
+ * （察觉表“真相”那一格导入的，意思是视角人物还不知道）——它们不算任何人已知。
+ */
+internal data class LedgerGraphFact(val text: String, val entries: List<LedgerEntry>) {
+    val truth: List<LedgerEntry> get() = entries.filter { it.secret }
+}
+
+/** 一个人对一件事：[known] 是到这一章已经知道的那一条，[existing] 是最新的一条记录（还没到的也算），都没有是“尚未知”。 */
+internal data class LedgerGraphCell(val known: LedgerEntry?, val existing: LedgerEntry?)
+
+internal fun ledgerGraphFacts(entries: List<LedgerEntry>): List<LedgerGraphFact> =
+    entries.filter { it.kind == LedgerKind.KNOW && it.text.isNotBlank() }.groupBy { it.text.trim() }.map { (text, list) -> LedgerGraphFact(text, list) }
+
+/** [who] 对 [fact] 知不知道：只看不是只有作者知道的记录。 */
+internal fun ledgerGraphCell(fact: LedgerGraphFact, who: String, chapter: LedgerChapter?): LedgerGraphCell {
+    val byPerson = fact.entries.filter { it.subject == who && !it.secret }
+    val recentFirst = compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt })
+    return LedgerGraphCell(
+        known = byPerson.filter { chapter == null || it.validAt(chapter.no, chapter.volume) }.maxWithOrNull(recentFirst),
+        existing = byPerson.maxWithOrNull(recentFirst),
+    )
+}
+
+/** 在知情格上登记的一条：作者登记的是人物得知了，一律不是只有作者知道的（不继承那件事的“真相”标记）。 */
+internal fun ledgerQuickKnowledgeEntry(target: LedgerQuickKnowledge, from: Int?, via: String, quote: String): LedgerEntry =
+    LedgerEntry(kind = LedgerKind.KNOW, text = target.fact.text, subject = target.subject, from = from, via = via.trim(), quote = quote.trim(), secret = false)
+
+/**
+ * 伏笔卡滑块松手时要写的计划收章：只有真的拖过（[dragging] 不为空）、值和账本里的不一样才写；
+ * 没定计划收章（[LedgerEntry.payoff] 为空）的伏笔不在这里写，要作者点“定计划收章”、再点保存。
+ */
+internal fun ledgerPayoffToSave(entry: LedgerEntry, dragging: Float?, start: Int, end: Int): Int? {
+    if (entry.payoff == null || dragging == null) return null
+    return dragging.roundToInt().coerceIn(start, end).takeIf { it != entry.payoff }
 }
 
 @Composable
@@ -145,7 +184,7 @@ internal fun LazyListScope.ledgerPromiseGraph(
     chapter: LedgerChapter?,
     chapters: List<LedgerChapter>,
     personFilter: String?,
-    onPayoff: (LedgerEntry, Int) -> Unit,
+    onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
 ) {
     val promises = ledgerGraphPromises(entries, chapter, personFilter)
@@ -171,14 +210,17 @@ internal fun ledgerGraphPromises(entries: List<LedgerEntry>, chapter: LedgerChap
 private fun LedgerPromiseCard(
     entry: LedgerEntry,
     chapters: List<LedgerChapter>,
-    onPayoff: (LedgerEntry, Int) -> Unit,
+    onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
 ) {
     val c = LocalGroupedColors.current
     val start = (entry.from ?: 1).coerceAtLeast(1)
     val end = maxOf(start + 2, chapters.maxOfOrNull { it.no } ?: start + 2, (entry.payoff ?: start) + 2)
-    var dragging by remember(entry.id, entry.payoff) { mutableFloatStateOf((entry.payoff ?: start + 1).coerceIn(start, end).toFloat()) }
-    val selected = dragging.roundToInt().coerceIn(start, end)
+    // 拖动途中的值；没拖过是空的，显示账本里的计划。保存失败时复位，卡片不留一个没存下来的计划。
+    var dragging by remember(entry.id, entry.payoff) { mutableStateOf<Float?>(null) }
+    // 没定计划收章的伏笔：点“定计划收章”才出滑块，拖好再点保存；轻点、滚动时碰到都不会写。
+    var choosing by remember(entry.id, entry.payoff) { mutableStateOf(false) }
+    val selected = (dragging?.roundToInt() ?: entry.payoff ?: (start + 1)).coerceIn(start, end)
     LedgerGraphCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -190,22 +232,47 @@ private fun LedgerPromiseCard(
             Box(Modifier.size(8.dp).clip(CircleShape).background(c.tint))
         }
         Text(
-            "第 $start 章埋下  →  " + if (entry.done) entry.closed?.let { "第 $it 章已收" } ?: "已收" else "计划第 $selected 章收",
+            "第 $start 章埋下  →  " + when {
+                entry.done -> entry.closed?.let { "第 $it 章已收" } ?: "已收"
+                entry.payoff == null && !choosing -> "计划收章未定"
+                else -> "计划第 $selected 章收"
+            },
             color = c.secondary, fontSize = 12.sp,
         )
-        if (!entry.done) {
+        if (!entry.done && entry.payoff == null && !choosing) {
+            PillButton("定计划收章", onClick = { choosing = true })
+        } else if (!entry.done) {
             LingYueSlider(
-                value = dragging,
+                value = selected.toFloat(),
                 onValueChange = { dragging = it },
                 valueRange = start.toFloat()..end.toFloat(),
                 label = "调整“" + entry.text + "”计划收章",
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 valueText = "第 $selected 章",
-                onValueChangeFinished = { if (selected != entry.payoff) onPayoff(entry, selected) },
+                // 松手（或读屏调节）时现读 dragging：读屏先改值再调这里，组合时算好的 selected 还是旧值。
+                onValueChangeFinished = {
+                    val payoff = ledgerPayoffToSave(entry, dragging, start, end)
+                    if (payoff != null) onPayoff(entry, payoff) { dragging = null }
+                    else if (entry.payoff != null) dragging = null
+                },
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("第 $start 章", color = c.tertiary, fontSize = 11.sp)
                 Text("第 $end 章", color = c.tertiary, fontSize = 11.sp)
+            }
+            if (entry.payoff == null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("保存：计划第 $selected 章收", onClick = {
+                        onPayoff(entry, selected) {
+                            dragging = null
+                            choosing = false
+                        }
+                    })
+                    PillButton("取消", onClick = {
+                        dragging = null
+                        choosing = false
+                    })
+                }
             }
         }
         PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
@@ -219,7 +286,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
     onKnown: (LedgerEntry) -> Unit,
     onUnknown: (LedgerQuickKnowledge) -> Unit,
 ) {
-    val facts = entries.filter { it.kind == LedgerKind.KNOW && it.text.isNotBlank() }.groupBy { it.text.trim() }
+    val facts = ledgerGraphFacts(entries)
     val people = entries.map { it.subject.trim() }.filter { it.isNotBlank() }.distinct().sorted()
         .filter { personFilter == null || it == personFilter }
     if (facts.isEmpty() || people.isEmpty()) {
@@ -227,18 +294,22 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
         return
     }
     item(key = "graph:knowledge:intro") { GroupedListHeader("谁知道什么 · 点格子核对") }
-    facts.forEach { (fact, factEntries) ->
+    facts.forEach { f ->
+        val fact = f.text
         item(key = "graph:knowledge:$fact") {
             val c = LocalGroupedColors.current
             LedgerGraphCard {
                 Text(fact, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                // 只有作者知道的真相：单独标出来，不当成谁已经知道。
+                f.truth.firstOrNull()?.let { t ->
+                    Text(
+                        "真相（作者）" + if (t.subject.isNotBlank()) "：${t.subject}还不知道" else "：只有作者知道",
+                        color = c.secondary, fontSize = 12.sp,
+                    )
+                }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     people.forEach { who ->
-                        val byPerson = factEntries.filter { it.subject == who }
-                        val recentFirst = compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt })
-                        val existing = byPerson.maxWithOrNull(recentFirst)
-                        val known = byPerson.filter { chapter == null || it.validAt(chapter.no, chapter.volume) }
-                            .maxWithOrNull(recentFirst)
+                        val (known, existing) = ledgerGraphCell(f, who, chapter)
                         val cellLabel = when {
                             known != null -> "已知"
                             existing == null -> "尚未知"
@@ -253,7 +324,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                                     when {
                                         known != null -> onKnown(known)
                                         existing != null -> onKnown(existing)
-                                        else -> onUnknown(LedgerQuickKnowledge(who, factEntries.first()))
+                                        else -> onUnknown(LedgerQuickKnowledge(who, f.entries.first()))
                                     }
                                 },
                                 modifier = Modifier.semantics {
@@ -338,14 +409,7 @@ internal fun LedgerQuickKnowledgeDialog(
         }
         DialogButtons(
             onDismiss = onDismiss,
-            onConfirm = {
-                onSave(
-                    LedgerEntry(
-                        kind = LedgerKind.KNOW, text = target.fact.text, subject = target.subject,
-                        from = number, via = via.trim(), quote = quote.trim(), secret = target.fact.secret,
-                    ),
-                )
-            },
+            onConfirm = { onSave(ledgerQuickKnowledgeEntry(target, number, via, quote)) },
             confirmText = "登记知情",
             confirmEnabled = validChapter && via.isNotBlank(),
         )

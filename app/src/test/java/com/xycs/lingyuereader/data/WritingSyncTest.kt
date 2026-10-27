@@ -10,6 +10,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 /** 整理进设定包：定位置、写进去（表格追加一行、## 小节）、存历史版本、变更登记、哪些章整理过；随章变化的记进故事账本（一章一批、只记一次）。 */
 class WritingSyncTest {
@@ -17,6 +21,18 @@ class WritingSyncTest {
     val tmp = TemporaryFolder()
 
     private fun store() = WorkStore(tmp.newFolder())
+
+    /** Older write-path cases use the same real chapter snapshot that the UI now passes into applySync. */
+    private fun WorkStore.applySyncWithSnapshot(workId: String, items: List<SyncItem>): Map<String, Int> {
+        val work = requireNotNull(get(workId))
+        val sources = items.groupBy { it.chapterId }.map { (chapterId, proposals) ->
+            val chapter = requireNotNull(work.chapter(chapterId)) { "Test fixture has no chapter $chapterId" }
+            val body = text(workId, chapterId)
+            ChapterSyncResult(chapterId, chapter.title, proposals.first().chapter, ChapterSyncs.hash(body), proposals,
+                sourceDigest = ChapterSyncs.digest(body))
+        }
+        return applySync(workId, items, sources)
+    }
 
     private fun doc(kind: PackKind, title: String, text: String, id: String = title) = PackDoc(id, kind, title) to text
 
@@ -108,9 +124,14 @@ class WritingSyncTest {
         assertEquals(table, PackSync.apply(table, item))
         // 察觉表里已经有、而且不晚于这一章：不再提。
         assertTrue(PackSync.plan(listOf(knows("沈默", "知道林月是旧案遗孤")), docs).isEmpty())
-        // 账本里已经有：也不再提。
+        // 账本里已经有一模一样的（只差标点）：也不再提。
         val ledger = listOf(LedgerEntry(kind = LedgerKind.KNOW, text = "沈默是朝廷的卧底", subject = "林月", from = 10))
-        assertTrue(PackSync.plan(listOf(knows("林月", "沈默是朝廷派来的卧底")), docs, ledger).isEmpty())
+        assertTrue(PackSync.plan(listOf(knows("林月", "沈默是朝廷的卧底。")), docs, ledger).isEmpty())
+        // 只是看起来像：照常列出，标“可能重复”，默认不勾。
+        val alike = PackSync.plan(listOf(knows("林月", "沈默是朝廷派来的卧底")), docs, ledger).single()
+        assertEquals(ledger.single(), alike.maybeSame)
+        assertTrue(alike.writable)
+        assertFalse(alike.defaultOn)
     }
 
     @Test
@@ -126,12 +147,12 @@ class WritingSyncTest {
         assertEquals("账本里写林月 第30章才知道，正文第12章就知道了", item.title)
         assertEquals("沈默是卧底（第 30 章起）", item.packSays)
         // 勾上：账本那一条改成从这一章起，不另加一条；再写一次没有变化。
-        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySync(w.id, listOf(item)))
+        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySyncWithSnapshot(w.id, listOf(item)))
         val k = s.ledger(w.id).single()
         assertEquals("k1", k.id)
         assertEquals(12, k.from)
         assertEquals("顾长风", k.via)
-        assertEquals(emptyMap<String, Int>(), s.applySync(w.id, listOf(item)))
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, listOf(item)))
     }
 
     @Test
@@ -159,15 +180,18 @@ class WritingSyncTest {
             ledgerItem(SyncGroup.TIME, "入冬第三天", entry(LedgerKind.TIME, "入冬第三天")),
         )
         val planned = PackSync.plan(items, emptyList(), ledger)
-        assertEquals(listOf("到了京城", "渡口的船停了", "收起：顾长风说三日后再来", "入冬第三天"), planned.map { it.title })
-        assertTrue(planned.all { it.place == SyncPlace.LEDGER && it.writable && it.defaultOn && it.where == "记进故事账本" })
+        // 完全一样的丢掉；“老周死在了渡口”和账本里的“老周死在渡口”只是像：照常列出，默认不勾。
+        assertEquals(listOf("到了京城", "老周死在了渡口", "渡口的船停了", "收起：顾长风说三日后再来", "入冬第三天"), planned.map { it.title })
+        assertTrue(planned.all { it.place == SyncPlace.LEDGER && it.writable && it.where == "记进故事账本" })
+        assertEquals(listOf(true, false, true, true, true), planned.map { it.defaultOn })
+        assertEquals(ledger[1], planned[1].maybeSame)
         // 生成的改动：加一条、收一条。
         assertEquals(LedgerOp.Add(planned[0].entry!!), PackSync.ledgerOp(planned[0], ledger))
-        assertEquals(LedgerOp.Close("p1", 12, "原句", "c"), PackSync.ledgerOp(planned[2], ledger))
+        assertEquals(LedgerOp.Close("p1", 12, "原句", "c"), PackSync.ledgerOp(planned[3], ledger))
     }
 
     @Test
-    fun ledgerItemsAreWrittenAsOneBatchPerChapterAndOnlyOnce() {
+    fun ledgerItemsAreWrittenAsOneBatchAndOnlyOnce() {
         val s = store()
         val w = s.create("长夜")
         val (_, two) = s.addChapter(w.id, w.volumes[0].id, "第二章")!!
@@ -187,10 +211,10 @@ class WritingSyncTest {
         )
         val versions = s.ledgerVersions(w.id).size
         // 第二章重复的“老周死了”不再记；第一章三条、第二章两条。
-        assertEquals(mapOf(PackSync.LEDGER to 5), s.applySync(w.id, items))
-        // 一章一批：账本的历史版本多了两个，按章号先后。
-        assertEquals(listOf("整理第 2 章", "整理第 1 章"), s.ledgerVersions(w.id).take(2).map { it.label })
-        assertEquals(versions + 2, s.ledgerVersions(w.id).size)
+        assertEquals(mapOf(PackSync.LEDGER to 5), s.applySyncWithSnapshot(w.id, items))
+        // 整次一批：账本的历史版本只多一个（批量整理前的样子），不会把更早的版本挤掉。
+        assertEquals("批量整理第 1–2 章（2 章）", s.ledgerVersions(w.id).first().label)
+        assertEquals(versions + 1, s.ledgerVersions(w.id).size)
         val ledger = s.ledger(w.id)
         assertEquals(1, ledger.count { it.kind == LedgerKind.EVENT })
         assertTrue(ledger.single { it.id == "p1" }.let { it.done && it.closed == 2 && it.quote == "顾长风推门进来" && it.chapterId == two.id })
@@ -198,9 +222,9 @@ class WritingSyncTest {
         // 到第二章为止，林月身体这一方面是最新的“伤好了”。
         assertEquals("伤好了", StoryLedger.snapshot(ledger, 2).states.single().text)
         // 重试：账本不变，也不再存历史版本；变更登记不记账本的。
-        assertEquals(emptyMap<String, Int>(), s.applySync(w.id, items))
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, items))
         assertEquals(ledger, s.ledger(w.id))
-        assertEquals(versions + 2, s.ledgerVersions(w.id).size)
+        assertEquals(versions + 1, s.ledgerVersions(w.id).size)
         assertTrue(s.changes(w.id).isEmpty())
     }
 
@@ -219,7 +243,7 @@ class WritingSyncTest {
             payoffs = mapOf(promise.key to 15),
         )
         assertEquals(setOf(state.key, promise.key), session.picked)
-        assertEquals(mapOf(PackSync.LEDGER to 2), s.applySync(w.id, session.chosen))
+        assertEquals(mapOf(PackSync.LEDGER to 2), s.applySyncWithSnapshot(w.id, session.chosen))
         val ledger = s.ledger(w.id)
         val st = ledger.single { it.kind == LedgerKind.STATE }
         assertEquals("在渡口的茶馆里", st.text)
@@ -273,13 +297,13 @@ class WritingSyncTest {
         }
         assertEquals(setOf(unchanged.key), session.repeats)
         assertEquals(listOf(a.key, b.key, back.key), session.chosen.map { it.key })
-        assertEquals(mapOf(PackSync.LEDGER to 3), store.applySync(work.id, session.chosen))
+        assertEquals(mapOf(PackSync.LEDGER to 3), store.applySyncWithSnapshot(work.id, session.chosen))
         val ledger = store.ledger(work.id)
         assertEquals("在京城", StoryLedger.snapshot(ledger, 2).states.single().text)
         assertEquals("在渡口", StoryLedger.snapshot(ledger, 3).states.single().text)
         assertEquals("在渡口", StoryLedger.snapshot(ledger, 4).states.single().text)
         assertEquals(listOf(1, 2, 3), ledger.map { it.from })
-        assertEquals(emptyMap<String, Int>(), store.applySync(work.id, session.chosen))
+        assertEquals(emptyMap<String, Int>(), store.applySyncWithSnapshot(work.id, session.chosen))
     }
 
     @Test
@@ -415,7 +439,7 @@ class WritingSyncTest {
         )
         assertEquals("记进故事账本", items[1].where)
         Thread.sleep(2)
-        val counts = s.applySync(w.id, items)
+        val counts = s.applySyncWithSnapshot(w.id, items)
         assertEquals(mapOf("人物档案" to 1, PackSync.LEDGER to 1), counts)
         assertEquals("| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |\n| 杜娘 | 渡口茶馆老板娘 |", s.packText(w.id, people.id))
         // 写之前存了原来的一版；文档的修改时间更新了。
@@ -447,7 +471,7 @@ class WritingSyncTest {
         val place = SyncItem(SyncGroup.NEW, "新地名：渡口", "原句", PackKind.CANON, section = "地名", name = "渡口", text = "城东渡口", chapterId = w.chapters[0].id, chapter = 1)
         val planned = PackSync.plan(listOf(place), docs).single().copy(text = "- 渡口：城东的老渡口，冬天封河")
         val note = SyncItem(SyncGroup.CONFLICT, "老周的生死", "原句", PackKind.CHARACTER, fixText = true, chapterId = w.chapters[0].id, chapter = 1).let { PackSync.plan(listOf(it), docs).single() }
-        assertEquals(mapOf("硬性设定" to 1), s.applySync(w.id, listOf(planned, note)))
+        assertEquals(mapOf("硬性设定" to 1), s.applySyncWithSnapshot(w.id, listOf(planned, note)))
         assertEquals("## 地名\n- 青石镇：林月的家乡\n- 渡口：城东的老渡口，冬天封河", s.packText(w.id, canon.id))
         assertEquals(1, s.changes(w.id).size)
     }
@@ -480,6 +504,341 @@ class WritingSyncTest {
     }
 
     @Test
+    fun changedChapterRejectsPendingProposalsBeforePackOrLedgerWrites() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val source = "林月在渡口看见老周。"
+        s.saveText(w.id, c.id, source, count = false)
+        val canon = s.addPackDoc(w.id, PackKind.CANON, "硬性设定", "## 地名\n- 青石镇：林月的家乡")
+        val proposed = PackSync.plan(listOf(SyncItem(
+            SyncGroup.NEW, "新地名：渡口", source, PackKind.CANON, section = "地名", name = "渡口",
+            text = "渡口常起雾", chapterId = c.id, chapter = 1,
+        )), s.pack(w.id).map { it to s.packText(w.id, it.id) }).single()
+        val event = SyncItem(SyncGroup.EVENT, "林月见老周", source, PackKind.CANON,
+            text = "林月在渡口见到老周", chapterId = c.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月在渡口见到老周", from = 1))
+        val snapshot = com.xycs.lingyuereader.ChapterSyncResult(c.id, c.title, 1, ChapterSyncs.hash(source),
+            listOf(proposed, event), sourceDigest = ChapterSyncs.digest(source))
+        s.saveText(w.id, c.id, "林月在渡口没见到老周。", count = false)
+
+        val failure = runCatching { s.applySync(w.id, listOf(proposed, event), listOf(snapshot)) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException && failure.message.orEmpty().contains("正文已变化"))
+        assertEquals("## 地名\n- 青石镇：林月的家乡", s.packText(w.id, canon.id))
+        assertTrue(s.ledger(w.id).isEmpty())
+        assertTrue(s.changes(w.id).isEmpty())
+    }
+
+    @Test
+    fun formattingChangesInvalidatePendingSnapshotButKeepLegacySyncedHash() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val source = "林月走到渡口, 雾起了。"
+        s.saveText(w.id, c.id, source, count = false)
+        val proposed = SyncItem(SyncGroup.EVENT, "渡口起雾", source, PackKind.CANON,
+            text = "渡口起雾", chapterId = c.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "渡口起雾", from = 1))
+        val snapshot = com.xycs.lingyuereader.ChapterSyncResult(c.id, c.title, 1, ChapterSyncs.hash(source),
+            listOf(proposed), sourceDigest = ChapterSyncs.digest(source))
+        val reformatted = "林月 走到渡口，雾起了。"
+        s.saveText(w.id, c.id, reformatted, count = false)
+
+        assertEquals(ChapterSyncs.hash(source), ChapterSyncs.hash(reformatted))
+        assertFalse(ChapterSyncs.digest(source) == ChapterSyncs.digest(reformatted))
+        assertEquals(ChapterSyncs.digest("甲\r\n乙"), ChapterSyncs.digest("甲\n乙"))
+        val failure = runCatching { s.applySync(w.id, listOf(proposed), listOf(snapshot)) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException && failure.message.orEmpty().contains("正文已变化"))
+        assertTrue(s.ledger(w.id).isEmpty())
+    }
+
+    @Test
+    fun changedReplaceOrExistingSectionNeverFallsBackToAppend() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val voice = "## 顾长风\n顾长风叫林月“林姑娘”，从不叫小名。"
+        val doc = s.addPackDoc(w.id, PackKind.VOICE, "称谓与语气", voice)
+        val replace = PackSync.plan(listOf(SyncItem(SyncGroup.CONFLICT, "顾长风的称呼", "原句", PackKind.VOICE,
+            packSays = "顾长风叫林月“林姑娘”，从不叫小名。", text = "顾长风私下叫林月“月丫头”。",
+            chapterId = c.id, chapter = 1)), listOf(doc to voice)).single()
+        s.savePackText(w.id, doc.id, "## 顾长风\n顾长风的称呼尚未确定。")
+        val missingReplace = runCatching { s.applySyncWithSnapshot(w.id, listOf(replace)) }.exceptionOrNull()
+        assertTrue(missingReplace is IllegalStateException && missingReplace.message.orEmpty().contains("原定要替换"))
+        assertEquals("## 顾长风\n顾长风的称呼尚未确定。", s.packText(w.id, doc.id))
+
+        val original = "## 地名\n- 青石镇：林月的家乡"
+        val canon = s.addPackDoc(w.id, PackKind.CANON, "硬性设定", original)
+        val section = PackSync.plan(listOf(SyncItem(SyncGroup.NEW, "新地名：渡口", "原句", PackKind.CANON,
+            section = "地名", name = "渡口", text = "渡口常起雾", chapterId = c.id, chapter = 1)), listOf(canon to original)).single()
+        assertEquals(true, section.plannedSectionExists)
+        s.savePackText(w.id, canon.id, "## 城镇\n- 青石镇：林月的家乡")
+        val missingSection = runCatching { s.applySyncWithSnapshot(w.id, listOf(section)) }.exceptionOrNull()
+        assertTrue(missingSection is IllegalStateException && missingSection.message.orEmpty().contains("原定小节"))
+        assertEquals("## 城镇\n- 青石镇：林月的家乡", s.packText(w.id, canon.id))
+    }
+
+    @Test
+    fun removingAnExistingCharacterBulletRejectsThePlannedSection() {
+        val s = store()
+        val w = s.create("长夜")
+        val original = "# 人物\n- 林月：身份：药铺掌柜的女儿\n- 沈默：身份：镖师"
+        val doc = s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", original)
+        val item = PackSync.plan(listOf(person("林月", "本章" to "在渡口见到老周")
+            .copy(chapterId = w.chapters.single().id, chapter = 1)), listOf(doc to original)).single()
+        assertEquals(SyncPlace.SECTION, item.place)
+        assertEquals(true, item.plannedSectionExists)
+        s.savePackText(w.id, doc.id, "# 人物\n- 沈默：身份：镖师")
+
+        val failure = runCatching { s.applySyncWithSnapshot(w.id, listOf(item)) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException && failure.message.orEmpty().contains("原定小节"))
+        assertEquals("# 人物\n- 沈默：身份：镖师", s.packText(w.id, doc.id))
+        assertTrue(s.changes(w.id).isEmpty())
+    }
+
+    @Test
+    fun unselectedFailedChapterDoesNotBlockSuccessfulChapter() {
+        val s = store()
+        val w = s.create("长夜")
+        val first = w.chapters.single()
+        val (_, second) = s.addChapter(w.id, w.volumes.single().id, "第二章")!!
+        val source = "林月在渡口见到老周。"
+        s.saveText(w.id, first.id, source, count = false)
+        s.saveText(w.id, second.id, "沈默回城。", count = false)
+        val item = SyncItem(SyncGroup.EVENT, "林月见老周", source, PackKind.CANON,
+            text = "林月见到老周", chapterId = first.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月见到老周", from = 1))
+        val ready = ChapterSyncResult(first.id, first.title, 1, ChapterSyncs.hash(source), listOf(item),
+            sourceDigest = ChapterSyncs.digest(source))
+        val failed = ChapterSyncResult(second.id, second.title, 2, ChapterSyncs.hash("沈默回城。"),
+            error = "请求失败", sourceDigest = ChapterSyncs.digest("沈默回城。"))
+        s.saveText(w.id, second.id, "沈默没有回城。", count = false)
+
+        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySync(w.id, listOf(item), listOf(ready, failed)))
+        assertEquals("林月见到老周", s.ledger(w.id).single().text)
+    }
+
+    @Test
+    fun changedUnselectedSuccessfulChapterDoesNotBlockChosenChapter() {
+        val s = store()
+        val w = s.create("长夜")
+        val first = w.chapters.single()
+        val (_, second) = s.addChapter(w.id, w.volumes.single().id, "第二章")!!
+        val firstText = "林月在渡口见到老周。"
+        val secondText = "沈默回城。"
+        s.saveText(w.id, first.id, firstText, count = false)
+        s.saveText(w.id, second.id, secondText, count = false)
+        fun event(chapterId: String, number: Int, source: String, summary: String) =
+            SyncItem(SyncGroup.EVENT, summary, source, PackKind.CANON,
+                text = summary, chapterId = chapterId, chapter = number, place = SyncPlace.LEDGER,
+                entry = LedgerEntry(kind = LedgerKind.EVENT, text = summary, from = number))
+        val chosen = event(first.id, 1, firstText, "林月见到老周")
+        val unselected = event(second.id, 2, secondText, "沈默回城")
+        val firstResult = ChapterSyncResult(first.id, first.title, 1, ChapterSyncs.hash(firstText), listOf(chosen),
+            sourceDigest = ChapterSyncs.digest(firstText))
+        val secondResult = ChapterSyncResult(second.id, second.title, 2, ChapterSyncs.hash(secondText), listOf(unselected),
+            sourceDigest = ChapterSyncs.digest(secondText))
+        s.saveText(w.id, second.id, "沈默没有回城。", count = false)
+
+        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySync(w.id, listOf(chosen), listOf(firstResult, secondResult)))
+        assertEquals(listOf("林月见到老周"), s.ledger(w.id).map { it.text })
+    }
+
+    @Test
+    fun nonEmptySyncRequiresAnExplicitSourceSnapshot() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val item = SyncItem(SyncGroup.EVENT, "渡口起雾", "渡口起雾。", PackKind.CANON,
+            text = "渡口起雾", chapterId = c.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "渡口起雾", from = 1))
+
+        val missing = runCatching { s.applySync(w.id, listOf(item), emptyList()) }.exceptionOrNull()
+        assertTrue(missing is IllegalStateException && missing.message.orEmpty().contains("缺少原文快照"))
+        val result = ChapterSyncResult(c.id, c.title, 1, ChapterSyncs.hash(s.text(w.id, c.id)), listOf(item))
+        listOf("", "a".repeat(63), "A".repeat(64), "g".repeat(64)).forEach { digest ->
+            val invalid = runCatching { s.applySync(w.id, listOf(item), listOf(result.copy(sourceDigest = digest))) }.exceptionOrNull()
+            assertTrue("digest=$digest", invalid is IllegalStateException && invalid.message.orEmpty().contains("有效原文快照"))
+        }
+        assertTrue(s.ledger(w.id).isEmpty())
+        assertEquals(emptyMap<String, Int>(), s.applySync(w.id, emptyList(), emptyList()))
+    }
+
+    @Test
+    fun failedChapterProposalsStayVisibleButCannotBeSelectedOrWritten() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val source = "林月在渡口见到老周。"
+        s.saveText(w.id, c.id, source, count = false)
+        val item = SyncItem(SyncGroup.EVENT, "林月见老周", source, PackKind.CANON,
+            text = "林月见到老周", chapterId = c.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月见到老周", from = 1))
+        val failed = ChapterSyncResult(c.id, c.title, 1, ChapterSyncs.hash(source), listOf(item),
+            error = "第二段请求失败", sourceDigest = ChapterSyncs.digest(source))
+        val session = SyncSession(w.id).with(failed)
+        assertEquals(listOf(item), session.items)
+        assertTrue(session.picked.isEmpty())
+        val later = item.copy(chapterId = "later", chapter = 2, entry = item.entry!!.copy(from = 2))
+        val continued = session.with(ChapterSyncResult("later", "第二章", 2, 0, listOf(later)))
+        assertEquals(setOf(later.key), continued.picked)
+
+        val failure = runCatching { s.applySync(w.id, listOf(item), listOf(failed)) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException && failure.message.orEmpty().contains("尚未整理完成"))
+        assertTrue(s.ledger(w.id).isEmpty())
+    }
+
+    @Test
+    fun duplicateOrMismatchedSourceResultsCannotAuthorizeAChosenItem() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters.single()
+        val source = "林月在渡口见到老周。"
+        s.saveText(w.id, c.id, source, count = false)
+        val item = SyncItem(SyncGroup.EVENT, "林月见老周", source, PackKind.CANON,
+            text = "林月见到老周", chapterId = c.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月见到老周", from = 1))
+        val ready = ChapterSyncResult(c.id, c.title, 1, ChapterSyncs.hash(source), listOf(item),
+            sourceDigest = ChapterSyncs.digest(source))
+        val duplicate = runCatching { s.applySync(w.id, listOf(item), listOf(ready, ready)) }.exceptionOrNull()
+        assertTrue(duplicate is IllegalStateException && duplicate.message.orEmpty().contains("重复章节"))
+        val mismatch = runCatching { s.applySync(w.id, listOf(item), listOf(ready.copy(items = emptyList()))) }.exceptionOrNull()
+        assertTrue(mismatch is IllegalStateException && mismatch.message.orEmpty().contains("不匹配"))
+        assertTrue(s.ledger(w.id).isEmpty())
+    }
+
+    @Test
+    fun replaceStillSupportsIdempotentRetryAndMissingTargetIsAConflict() {
+        val s = store()
+        val w = s.create("长夜")
+        val old = "## 顾长风\n顾长风叫林月“林姑娘”，从不叫小名。"
+        val doc = s.addPackDoc(w.id, PackKind.VOICE, "称谓与语气", old)
+        val item = PackSync.plan(listOf(SyncItem(SyncGroup.CONFLICT, "顾长风的称呼", "原句", PackKind.VOICE,
+            packSays = "顾长风叫林月“林姑娘”，从不叫小名。", text = "顾长风私下叫林月“月丫头”。",
+            chapterId = w.chapters.single().id, chapter = 1)), listOf(doc to old)).single()
+        assertEquals(mapOf("称谓与语气" to 1), s.applySyncWithSnapshot(w.id, listOf(item)))
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, listOf(item)))
+        s.deletePackDoc(w.id, doc.id)
+        val missing = runCatching { s.applySyncWithSnapshot(w.id, listOf(item)) }.exceptionOrNull()
+        assertTrue(missing is IllegalStateException && missing.message.orEmpty().contains("原定文档已删除"))
+    }
+
+    @Test
+    fun applyingSyncHoldsTheRootLockAgainstAnotherStoreInstance() {
+        val root = tmp.newFolder()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = WorkStore(root, savePhaseHook = { phase ->
+            if (phase == "ledger-body") {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "等待写入竞态测试超时" }
+            }
+        })
+        val second = WorkStore(root)
+        val work = first.create("长夜")
+        val chapter = work.chapters.single()
+        first.saveText(work.id, chapter.id, "林月在渡口见到老周。", count = false)
+        val item = SyncItem(SyncGroup.EVENT, "林月见老周", "林月在渡口见到老周。", PackKind.CANON,
+            text = "林月见到老周", chapterId = chapter.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月见到老周", from = 1))
+        val snapshot = com.xycs.lingyuereader.ChapterSyncResult(chapter.id, chapter.title, 1,
+            ChapterSyncs.hash(first.text(work.id, chapter.id)), listOf(item),
+            sourceDigest = ChapterSyncs.digest(first.text(work.id, chapter.id)))
+        val applied = AtomicReference<Throwable?>()
+        val written = AtomicReference<Throwable?>()
+        val writeStarted = CountDownLatch(1)
+        val writeDone = CountDownLatch(1)
+        val applying = thread { applied.set(runCatching { first.applySync(work.id, listOf(item), listOf(snapshot)) }.exceptionOrNull()) }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val writing = thread {
+                writeStarted.countDown()
+                written.set(runCatching { second.saveText(work.id, chapter.id, "林月没见到老周。", count = false) }.exceptionOrNull())
+                writeDone.countDown()
+            }
+            try {
+                assertTrue(writeStarted.await(5, TimeUnit.SECONDS))
+                assertFalse("另一实例不能在整理写入中改正文", writeDone.await(150, TimeUnit.MILLISECONDS))
+            }
+            finally { release.countDown() }
+            applying.join(5_000)
+            writing.join(5_000)
+            assertFalse(applying.isAlive)
+            assertFalse(writing.isAlive)
+            assertNull(applied.get())
+            assertNull(written.get())
+            assertEquals("林月没见到老周。", second.text(work.id, chapter.id))
+            assertEquals(1, second.ledger(work.id).size)
+        } finally {
+            release.countDown()
+            applying.join(5_000)
+        }
+    }
+
+    @Test
+    fun addingPackDocInAnotherStoreWaitsForSyncAndKeepsBothIndexChanges() {
+        val root = tmp.newFolder()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = WorkStore(root, savePhaseHook = { phase ->
+            if (phase == "ledger-body") {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "等待设定索引竞态测试超时" }
+            }
+        })
+        val second = WorkStore(root)
+        val work = first.create("长夜")
+        val chapter = work.chapters.single()
+        val source = "林月在渡口见到老周。"
+        first.saveText(work.id, chapter.id, source, count = false)
+        val original = "## 地名\n- 青石镇：林月的家乡"
+        val canon = first.addPackDoc(work.id, PackKind.CANON, "硬性设定", original)
+        val place = PackSync.plan(listOf(SyncItem(SyncGroup.NEW, "新地名：渡口", source, PackKind.CANON,
+            section = "地名", name = "渡口", text = "渡口常起雾", chapterId = chapter.id, chapter = 1)),
+            listOf(canon to original)).single()
+        val event = SyncItem(SyncGroup.EVENT, "林月见老周", source, PackKind.CANON,
+            text = "林月见到老周", chapterId = chapter.id, chapter = 1, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = "林月见到老周", from = 1))
+        val items = listOf(place, event)
+        val snapshot = ChapterSyncResult(chapter.id, chapter.title, 1, ChapterSyncs.hash(source), items,
+            sourceDigest = ChapterSyncs.digest(source))
+        val applyError = AtomicReference<Throwable?>()
+        val addError = AtomicReference<Throwable?>()
+        val addedDoc = AtomicReference<PackDoc?>()
+        val addStarted = CountDownLatch(1)
+        val addDone = CountDownLatch(1)
+        val applying = thread { applyError.set(runCatching { first.applySync(work.id, items, listOf(snapshot)) }.exceptionOrNull()) }
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            val adding = thread {
+                addStarted.countDown()
+                val result = runCatching { second.addPackDoc(work.id, PackKind.REFERENCE, "旅行札记", "渡口雾浓") }
+                addedDoc.set(result.getOrNull())
+                addError.set(result.exceptionOrNull())
+                addDone.countDown()
+            }
+            try {
+                assertTrue(addStarted.await(5, TimeUnit.SECONDS))
+                assertFalse("另一实例不能在整理提交中修改设定索引", addDone.await(150, TimeUnit.MILLISECONDS))
+            } finally { release.countDown() }
+            applying.join(5_000)
+            adding.join(5_000)
+            assertFalse(applying.isAlive)
+            assertFalse(adding.isAlive)
+            assertNull(applyError.get())
+            assertNull(addError.get())
+            val docs = second.pack(work.id)
+            assertEquals(setOf(canon.id, addedDoc.get()!!.id), docs.map { it.id }.toSet())
+            assertTrue("渡口常起雾" in second.packText(work.id, canon.id))
+            assertEquals("渡口雾浓", second.packText(work.id, addedDoc.get()!!.id))
+            assertEquals(1, second.ledger(work.id).size)
+        } finally {
+            release.countDown()
+            applying.join(5_000)
+        }
+    }
+
+    @Test
     fun lookupsWhileSyncingStopAtThisChapter() {
         val s = store()
         val w = s.create("长夜")
@@ -509,14 +868,15 @@ class WritingSyncTest {
                 listOf(
                     person("老周", "身份" to "渡口的船夫", "本章" to "撑船").copy(chapterId = c, chapter = n),
                     SyncItem(SyncGroup.NEW, "新地名：渡口", "原句", PackKind.CANON, section = "地名", name = "渡口", text = if (n == 3) "城东的渡口" else "城东渡口，常起雾", chapterId = c, chapter = n),
-                    knows("林月", if (n == 3) "沈默是朝廷的卧底" else "沈默是朝廷派来的卧底").copy(chapterId = c, chapter = n),
+                    // 写入前只认完全一样的（只差标点、空白）；措辞不同的在结果页标“前面章已有”，默认不勾。
+                    knows("林月", if (n == 3) "沈默是朝廷的卧底" else "沈默是朝廷的 卧底。").copy(chapterId = c, chapter = n),
                 ),
                 docs,
             )
         }
         assertEquals(9, items.size)
         // 写的时候用已经写进去的文字再查：每样只写一次。
-        assertEquals(mapOf("人物档案" to 1, "硬性设定" to 1, PackSync.LEDGER to 1), s.applySync(w.id, items))
+        assertEquals(mapOf("人物档案" to 1, "硬性设定" to 1, PackSync.LEDGER to 1), s.applySyncWithSnapshot(w.id, items))
         assertEquals(1, s.packText(w.id, people.id).lines().count { "老周" in it })
         assertEquals("## 地名\n- 青石镇：林月的家乡\n- 渡口：城东的渡口", s.packText(w.id, canon.id))
         // 察觉记进账本：三章说的同一件事只记一条（第 3 章那条）。
@@ -580,11 +940,11 @@ class WritingSyncTest {
         s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林月 | 药铺掌柜的女儿 |")
         val docs = s.pack(w.id).map { it to s.packText(w.id, it.id) }
         val items = PackSync.plan(listOf(person("杜娘", "身份" to "渡口茶馆老板娘"), knows("林月", "沈默是朝廷的卧底")).map { it.copy(chapterId = c) }, docs)
-        assertEquals(mapOf("人物档案" to 1, PackSync.LEDGER to 1), s.applySync(w.id, items))
+        assertEquals(mapOf("人物档案" to 1, PackSync.LEDGER to 1), s.applySyncWithSnapshot(w.id, items))
         val texts = s.pack(w.id).associate { it.id to s.packText(w.id, it.id) }
         val ledger = s.ledger(w.id)
         // 再写一次（上次写到一半出错，重试）：已经有了的不再写，账本也不再记第二条。
-        assertEquals(emptyMap<String, Int>(), s.applySync(w.id, items))
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, items))
         assertEquals(texts, s.pack(w.id).associate { it.id to s.packText(w.id, it.id) })
         assertEquals(ledger, s.ledger(w.id))
         assertEquals(1, s.changes(w.id).size)
@@ -622,5 +982,136 @@ class WritingSyncTest {
         assertEquals("船夫", zhou.field("身份"))
         assertEquals("杜娘的表哥", zhou.field("关系"))
         assertEquals("撑船送林月过河；在渡口等沈默", zhou.field("本章"))
+    }
+
+    @Test
+    fun aRevealOfAnImportedAuthorOnlyTruthIsProposedCheckedAndEndsTheSecret() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林远 | 镖师 |\n| 赵四 | 船夫 |")
+        s.addPackDoc(w.id, PackKind.AWARENESS, "察觉表", "### 林远\n\n| 卷 | 线索 | 消息从哪来 | 真相 |\n| --- | --- | --- | --- |\n| 一 | 赵四常去渡口 | 自己看见 | 赵四是朝廷的密探 |")
+        // 导入：林远知道“赵四常去渡口”；“真相”那格另成一条只有作者知道的（林远还不知道）。
+        s.importLedger(w.id, s.ledgerImportPreview(w.id))
+        val secret = s.ledger(w.id).single { it.secret }
+        assertEquals(Pair("林远", "赵四是朝廷的密探"), secret.subject to secret.text)
+        // 第 30 章林远终于知道了。
+        val learned = SyncItem(
+            SyncGroup.AWARENESS, "林远：赵四是朝廷的密探", "原句", PackKind.AWARENESS, name = "林远",
+            fields = listOf("人物" to "林远", "知道什么" to "赵四是朝廷的密探", "从第几章起" to "第30章", "消息从哪来" to "杜娘"),
+            chapterId = c, chapter = 30,
+        )
+        val docs = s.pack(w.id).map { it to s.packText(w.id, it.id) }
+        val planned = PackSync.plan(listOf(learned), docs, s.ledger(w.id)).single()
+        assertEquals(SyncGroup.AWARENESS, planned.group)
+        assertEquals("林远从第30章起知道了（这条原本只有作者知道）", planned.title)
+        assertEquals(secret, planned.reveals)
+        assertNull(planned.maybeSame)
+        assertTrue(planned.defaultOn)
+        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySyncWithSnapshot(w.id, listOf(planned)))
+        val ledger = s.ledger(w.id)
+        val known = ledger.single { !it.secret && it.text == "赵四是朝廷的密探" }
+        assertEquals(Triple("林远", 30, "杜娘"), Triple(known.subject, known.from, known.via))
+        // 那条秘密到第 30 章止：之前照旧要瞒着，之后不再要求 AI 隐瞒。
+        assertEquals(30, ledger.single { it.secret }.until)
+        assertEquals(listOf("赵四是朝廷的密探"), StoryLedger.snapshot(ledger, 29).secrets.map { it.text })
+        assertTrue(StoryLedger.snapshot(ledger, 29).known.none { it.text == "赵四是朝廷的密探" })
+        val after = StoryLedger.snapshot(ledger, 31)
+        assertTrue(after.secrets.isEmpty())
+        assertTrue(after.known.any { it.subject == "林远" && it.text == "赵四是朝廷的密探" })
+        assertFalse("只有作者知道" in after.render()!!)
+        // 再写一次、再整理一次：账本里已经有了。
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, listOf(planned)))
+        assertTrue(PackSync.plan(listOf(learned), docs, s.ledger(w.id)).isEmpty())
+    }
+
+    @Test
+    fun lookalikeLedgerItemsAreListedUncheckedAndOnlyIdenticalOnesAreSkipped() {
+        val ledger = listOf(
+            LedgerEntry(kind = LedgerKind.EVENT, text = "林远杀了赵四", from = 10),
+            LedgerEntry(kind = LedgerKind.PROMISE, text = "第三把钥匙的下落", from = 4),
+            LedgerEntry(kind = LedgerKind.EVENT, text = "下雨", from = 2),
+            LedgerEntry(kind = LedgerKind.KNOW, text = "老周是赵四的师父", subject = "林远山", from = 5),
+        )
+        fun event(text: String, group: SyncGroup = SyncGroup.EVENT, kind: LedgerKind = LedgerKind.EVENT) =
+            SyncItem(group, text, "原句", PackKind.CANON, text = text, chapterId = "c", chapter = 20, entry = LedgerEntry(kind = kind, text = text, from = 20, origin = LedgerOrigin.SYNC))
+        val planned = PackSync.plan(
+            listOf(
+                event("林远杀了赵五"),
+                event("林远杀了赵四。"),
+                event("第二把钥匙的下落", SyncGroup.PROMISE, LedgerKind.PROMISE),
+                event("傍晚下雨了，渡口封了"),
+                knows("林远", "老周是赵四的师父").copy(chapter = 20),
+                event("林远在渡口杀了赵四"),
+            ),
+            emptyList(), ledger,
+        )
+        // 只差一个字的人名、数目，换了人（林远不是林远山）：都是新的，默认勾上；只差标点的那条直接跳过。
+        assertEquals(listOf("林远杀了赵五", "第二把钥匙的下落", "傍晚下雨了，渡口封了", "林远：老周是赵四的师父", "林远在渡口杀了赵四"), planned.map { it.title })
+        assertEquals(listOf(true, true, true, true, false), planned.map { it.defaultOn })
+        // 多了几个字、说的可能是同一件事：照常列出，标出账本里像的那一条，让作者决定。
+        assertEquals(ledger[0], planned.last().maybeSame)
+        assertTrue(planned.dropLast(1).all { it.maybeSame == null })
+
+        assertFalse(PackSync.similar("林远杀了赵四", "林远杀了赵五"))
+        assertFalse(PackSync.similar("顾长风说三日后再来", "顾长风说五日后再来"))
+        assertFalse(PackSync.similar("老周第12章回到京城", "老周第13章回到京城"))
+        assertFalse(PackSync.similar("沈默把信交给了林月", "沈默把信交给了杜娘", setOf("林月", "杜娘")))
+        assertTrue(PackSync.similar("老周死在渡口", "老周死在了渡口"))
+        assertTrue(PackSync.same("老周死在渡口", "老周 死在渡口。"))
+        assertFalse(PackSync.same("老周死在渡口", "老周死在了渡口"))
+    }
+
+    @Test
+    fun bothKillingsAreWrittenAndARetryWritesNothing() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "林远杀了赵四", from = 10))), "手动")
+        fun event(text: String) = SyncItem(SyncGroup.EVENT, text, "原句", PackKind.CANON, text = text, chapterId = c, chapter = 20, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = text, from = 20, origin = LedgerOrigin.SYNC))
+        val items = listOf(event("林远杀了赵五"), event("林远杀了赵四。"), event("林远在渡口杀了赵四"))
+        // 作者勾上了“可能重复”的那条：确实是另一件事，写进去；只差标点的那条写之前再查一遍，跳过。
+        assertEquals(mapOf(PackSync.LEDGER to 2), s.applySyncWithSnapshot(w.id, items))
+        assertEquals(listOf("林远杀了赵四", "林远杀了赵五", "林远在渡口杀了赵四"), s.ledger(w.id).map { it.text })
+        // 重复调用：精确判定挡住同一条，账本不变。
+        val versions = s.ledgerVersions(w.id).size
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, items))
+        assertEquals(3, s.ledger(w.id).size)
+        assertEquals(versions, s.ledgerVersions(w.id).size)
+    }
+
+    @Test
+    fun awarenessRecordedOnlyByVolumeIsComparedWithTheChaptersVolume() {
+        val ledger = listOf(LedgerEntry(id = "k3", kind = LedgerKind.KNOW, text = "赵四是朝廷的密探", subject = "林远", volume = 3, origin = LedgerOrigin.IMPORT))
+        val early = knows("林远", "赵四是朝廷的密探").copy(chapter = 10, volume = 1)
+        // 第一卷就知道了第三卷才该知道的事：提前说破，改成冲突。
+        val conflict = PackSync.plan(listOf(early), emptyList(), ledger).single()
+        assertEquals(SyncGroup.CONFLICT, conflict.group)
+        assertEquals("账本里写林远 第3卷才知道，正文第10章就知道了", conflict.title)
+        assertFalse(conflict.defaultOn)
+        assertEquals(LedgerOp.Update(ledger.single().copy(from = 10, volume = null, quote = "原句", chapterId = "c")), PackSync.ledgerOp(conflict, ledger))
+        // 到了第三卷：账本里已有，不再提。
+        assertTrue(PackSync.plan(listOf(early.copy(chapter = 40, volume = 3)), emptyList(), ledger).isEmpty())
+    }
+
+    @Test
+    fun aBatchOfMoreChaptersThanTheHistoryKeepsLeavesThePreSyncVersion() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = "在渡口", subject = "林月", aspect = "位置", from = 1))), "手动添加")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "老周的船沉了", from = 1))), "作者手工维护")
+        val manual = s.ledgerVersions(w.id).single()
+        val items = (1..35).map { n ->
+            SyncItem(SyncGroup.TIME, "时间：入冬第${n}天", "原句", PackKind.CANON, text = "入冬第${n}天", chapterId = c, chapter = n, place = SyncPlace.LEDGER,
+                entry = LedgerEntry(kind = LedgerKind.TIME, text = "入冬第${n}天", from = n, origin = LedgerOrigin.SYNC))
+        }
+        assertEquals(mapOf(PackSync.LEDGER to 35), s.applySyncWithSnapshot(w.id, items))
+        // 35 章只存一个“整理前”的版本，作者手工维护的那一版还在。
+        val versions = s.ledgerVersions(w.id)
+        assertEquals(listOf("批量整理第 1–35 章（35 章）", "作者手工维护"), versions.map { it.label })
+        assertEquals(manual, versions.last())
+        assertEquals(2, s.ledgerVersion(w.id, versions.first().at)!!.size)
     }
 }

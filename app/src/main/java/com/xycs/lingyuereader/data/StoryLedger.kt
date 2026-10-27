@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigDecimal
 import java.util.UUID
 
 /**
@@ -72,11 +73,11 @@ data class LedgerEntry(
 
     /**
      * 用来认重复：类别、谁、哪一方面、内容（去掉空白和标点差异）。人物状态、时间还要算上从第几章起：
-     * 先“在渡口”、去了京城、后来又“在渡口”，是新的一条。
+     * 先“在渡口”、去了京城、后来又“在渡口”，是新的一条。只有作者知道的另算：“林远不知道这件事”和“林远知道了这件事”是两条。
      */
     val key: String
         get() = kind.name + "|" + subject.trim() + "|" + aspect.trim() + "|" + ChapterSyncs.normalize(text) +
-            if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else ""
+            (if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else "") + if (secret) "|secret" else ""
 
     /** “第 12 章起”“第 3 章埋，计划第 9 章收”这类说明。 */
     val whenLabel: String
@@ -113,30 +114,86 @@ data class LedgerEntry(
     }
 
     companion object {
-        private fun JSONObject.int(key: String): Int? = if (has(key) && !isNull(key)) optInt(key, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE && it >= 0 } else null
+        private val fields = setOf(
+            "id", "kind", "text", "subject", "aspect", "from", "volume", "until", "payoff", "done", "closed",
+            "via", "secret", "quote", "chapterId", "origin", "updatedAt",
+        )
 
-        /** 读不出、没有内容的返回 null。 */
+        private fun JSONObject.checkFields() {
+            val names = keys()
+            while (names.hasNext()) {
+                val name = names.next()
+                require(name in fields) { "故事账本含有无法识别的字段：$name" }
+            }
+        }
+
+        private fun JSONObject.string(key: String): String {
+            val value = opt(key)
+            require(value == null || value == JSONObject.NULL || value is String) { "故事账本 $key 不是文字" }
+            return (value as? String).orEmpty()
+        }
+
+        private fun JSONObject.integer(key: String): BigDecimal? {
+            if (!has(key) || isNull(key)) return null
+            val value = opt(key)
+            require(value is Number || value is String) { "故事账本 $key 不是整数" }
+            return runCatching { BigDecimal(value.toString()) }.getOrElse {
+                throw IllegalArgumentException("故事账本 $key 不是整数", it)
+            }
+        }
+
+        private fun JSONObject.int(key: String): Int? = integer(key)?.let { value ->
+            val number = runCatching { value.intValueExact() }.getOrNull()
+            require(number != null && number >= 0) { "故事账本 $key 不是非负整数" }
+            number
+        }
+
+        private fun JSONObject.long(key: String): Long? = integer(key)?.let { value ->
+            val number = runCatching { value.longValueExact() }.getOrNull()
+            require(number != null && number >= 0) { "故事账本 $key 不是非负整数" }
+            number
+        }
+
+        private fun JSONObject.boolean(key: String): Boolean {
+            if (!has(key) || isNull(key)) return false
+            return when (val value = opt(key)) {
+                is Boolean -> value
+                is String -> when {
+                    value.equals("true", ignoreCase = true) -> true
+                    value.equals("false", ignoreCase = true) -> false
+                    else -> throw IllegalArgumentException("故事账本 $key 不是布尔值")
+                }
+                else -> throw IllegalArgumentException("故事账本 $key 不是布尔值")
+            }
+        }
+
+        /** 类别或正文无效时返回 null；其余已存在却损坏的字段抛错，避免静默丢失。 */
         fun fromJson(o: JSONObject): LedgerEntry? {
-            val kind = runCatching { LedgerKind.valueOf(o.optString("kind")) }.getOrNull() ?: return null
-            val text = o.optString("text").trim().takeIf { it.isNotEmpty() } ?: return null
+            o.checkFields()
+            val kind = (o.opt("kind") as? String)?.let { runCatching { LedgerKind.valueOf(it) }.getOrNull() } ?: return null
+            val text = (o.opt("text") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val origin = if (!o.has("origin") || o.isNull("origin")) LedgerOrigin.MANUAL else
+                runCatching { LedgerOrigin.valueOf(o.string("origin")) }.getOrElse {
+                    throw IllegalArgumentException("故事账本 origin 无效", it)
+                }
             return LedgerEntry(
-                id = o.optString("id").ifEmpty { UUID.randomUUID().toString() },
+                id = o.string("id").ifEmpty { UUID.randomUUID().toString() },
                 kind = kind,
                 text = text,
-                subject = o.optString("subject").trim(),
-                aspect = o.optString("aspect").trim(),
+                subject = o.string("subject").trim(),
+                aspect = o.string("aspect").trim(),
                 from = o.int("from"),
                 volume = o.int("volume"),
                 until = o.int("until"),
                 payoff = o.int("payoff"),
-                done = o.optBoolean("done"),
+                done = o.boolean("done"),
                 closed = o.int("closed"),
-                via = o.optString("via").trim(),
-                secret = o.optBoolean("secret"),
-                quote = o.optString("quote"),
-                chapterId = o.optString("chapterId"),
-                origin = runCatching { LedgerOrigin.valueOf(o.optString("origin")) }.getOrDefault(LedgerOrigin.MANUAL),
-                updatedAt = o.optLong("updatedAt"),
+                via = o.string("via").trim(),
+                secret = o.boolean("secret"),
+                quote = o.string("quote"),
+                chapterId = o.string("chapterId"),
+                origin = origin,
+                updatedAt = o.long("updatedAt") ?: 0,
             )
         }
     }
@@ -146,12 +203,19 @@ data class LedgerEntry(
 sealed interface LedgerOp {
     /** 加一条；和已有的重复（[LedgerEntry.key] 相同）时不加。 */
     data class Add(val entry: LedgerEntry) : LedgerOp
-    /** 换掉 [entry].id 那一条。 */
-    data class Update(val entry: LedgerEntry) : LedgerOp
+    /**
+     * 换掉 [entry].id 那一条。[expected] 是改之前看到的那一条（界面上的、撤销时刚写进去的）：
+     * 账本里那一条已经不是这个样子（别处改过、删了）就整批拒绝（[LedgerConflict]），不拿旧的覆盖后来的修改。
+     */
+    data class Update(val entry: LedgerEntry, val expected: LedgerEntry? = null) : LedgerOp
     /** 伏笔收了：第 [chapter] 章（不知道哪章为空）。 */
     data class Close(val id: String, val chapter: Int?, val quote: String = "", val chapterId: String = "") : LedgerOp
-    data class Remove(val id: String) : LedgerOp
+    /** 删掉一条；[expected] 同 [Update]。 */
+    data class Remove(val id: String, val expected: LedgerEntry? = null) : LedgerOp
 }
+
+/** 要改、要删的那一条已经被改过（或删了）：这一批都不写，界面刷新后再改。 */
+class LedgerConflict(val id: String) : IllegalStateException("这条已经被改过，请刷新后再改")
 
 /** 账本的一个历史版本：改之前的样子、什么时候、因为什么改的。 */
 data class LedgerVersion(val at: Long, val label: String, val count: Int)
@@ -163,16 +227,24 @@ object StoryLedger {
     fun toJson(entries: List<LedgerEntry>): JSONObject =
         JSONObject().put("format", FORMAT).put("entries", JSONArray().apply { entries.forEach { put(it.toJson()) } })
 
-    /** 读账本；读不出的条目跳过。整份不是账本（没有 entries）时抛错，由调用方另存坏文件。 */
+    /** 读账本；任一条无法读取时整份报错，由调用方另存原文件，避免下一次保存静默丢掉坏条目。 */
     fun parse(raw: String): List<LedgerEntry> {
         val o = JSONObject(raw)
+        if (o.has("format")) {
+            require(runCatching { BigDecimal(o.get("format").toString()).intValueExact() == FORMAT }.getOrDefault(false)) {
+                "故事账本格式版本不受支持"
+            }
+        }
         val a = o.getJSONArray("entries")
-        return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(LedgerEntry::fromJson) }
+        return (0 until a.length()).map { index ->
+            requireNotNull(LedgerEntry.fromJson(a.getJSONObject(index))) { "故事账本第 ${index + 1} 条无效" }
+        }
     }
 
     /**
      * 把一批改动用在 [entries] 上，返回新的账本和实际加了几条（重复的不加）。[now] 记进改到的条目。
-     * 找不到 id 的改动跳过（作者在别处删了那一条）。
+     * 找不到 id 的改动跳过（作者在别处删了那一条）；带着改之前样子的改动（[LedgerOp.Update.expected]、[LedgerOp.Remove.expected]）
+     * 对不上账本里现在的那一条时抛 [LedgerConflict]，整批不算。
      */
     fun apply(entries: List<LedgerEntry>, ops: List<LedgerOp>, now: Long): Pair<List<LedgerEntry>, Int> {
         val out = entries.toMutableList()
@@ -189,6 +261,7 @@ object StoryLedger {
                 }
                 is LedgerOp.Update -> {
                     val i = out.indexOfFirst { it.id == op.entry.id }
+                    if (op.expected != null && out.getOrNull(i) != op.expected) throw LedgerConflict(op.entry.id)
                     if (i >= 0 && op.entry.text.isNotBlank()) {
                         keys -= out[i].key
                         out[i] = op.entry.copy(text = op.entry.text.trim(), subject = op.entry.subject.trim(), aspect = op.entry.aspect.trim(), updatedAt = now)
@@ -204,6 +277,7 @@ object StoryLedger {
                 }
                 is LedgerOp.Remove -> {
                     val i = out.indexOfFirst { it.id == op.id }
+                    if (op.expected != null && out.getOrNull(i) != op.expected) throw LedgerConflict(op.id)
                     if (i >= 0) keys -= out.removeAt(i).key
                 }
             }
@@ -232,7 +306,8 @@ object StoryLedger {
         // 时间：这一章写了的；没写就用前面最近的一条。
         val times = entries.filter { it.kind == LedgerKind.TIME && it.reached(chapter, volume) }
         val time = times.filter { it.from == chapter }.ifEmpty { listOfNotNull(times.maxByOrNull { it.from ?: -1 }) }
-        val secrets = entries.filter { it.secret && it.reached(chapter, volume) && concerns(it) }
+        // 只有作者知道的到了“第几章止”（人物在那一章得知了）就不再是秘密。
+        val secrets = entries.filter { it.secret && it.validAt(chapter, volume) && concerns(it) }
         return LedgerSnapshot(chapter, states, events, known, notYet, open, due, overdue, time, secrets)
     }
 }

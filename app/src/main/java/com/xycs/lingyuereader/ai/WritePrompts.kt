@@ -10,6 +10,7 @@ import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewIssue
+import com.xycs.lingyuereader.data.ReviewEvidence
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
@@ -96,25 +97,34 @@ object WritePrompts {
     }
 
     /** Structured evidence is kept outside the manuscript; a missing source is not a proven error. */
-    fun projectReview(task: ChapterWritingTask, text: String, rules: String): String = buildString {
+    fun projectReview(task: ChapterWritingTask, text: String, rules: String, evidence: ReviewEvidence? = null): String = buildString {
         append(task.render()).append("\n\n【当前阶段：审读】\n")
         append("待审完整章稿：\n").append(text).append("\n\n")
         if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
         append("先抓最影响这一章的两三处问题，再区分事实必改与审美建议。核时地、在场与知情、资源权限、关键选择、")
         append("因果、伤亡损失、结果和承接。每项问题给正文一字不差的原句、具体资料依据和影响；资料不足列为missing，不能把推测当错误。\n")
+        if (evidence != null) {
+            append("所有必改意见，以及事实类建议，都必须给 source_ref（来源编号）和 source_quote（该来源中连续、原样的至少 ${ReviewEvidence.MIN_QUOTE_CHARS} 字原文，不用省略号）。")
+            append("本章任务来源编号是 ").append(evidence.taskRef)
+            append("：FACT 可引本次明确要求、目标章细纲卡及已定前章摘录；CRAFT 必改只可引本次明确要求。任务中的承接推断和资料摘要不能冒充已定事实。设定文档和已定前文的来源编号见材料标题或查阅结果。")
+            append("FACT 只能引目标章约束、已定前文或事实设定；CRAFT 必改只能引明确要求、写作说明、写作规范、称谓语气或检查规则，不能把事实卡或人物档案改称写法依据，也不能把一般审美偏好写成必改。")
+            val craftSources = evidence.sources.filter { it.supportsCraft && !it.supportsFact }
+            if (craftSources.isNotEmpty()) append(craftSources.joinToString("；", prefix = "写法与规则来源编号：", postfix = "。") { "${it.label} ${it.ref}" })
+            append("若找不到可定位原文，把问题放进 missing 等作者核对，不把猜测列为必改。来源定位只能证明引文存在，仍须判断其含义。\n")
+        }
         append("单独连读对白，检查关系、欲望和情绪是否成立，是否人人准确概括、借角色讲课；检查旁白是否重复对白与结果、是否写成论文。")
         append("不因生活闲话、直接心理或背景没有推进主线就删，不强制短句、逐句动作、统一场次、微伏笔或快慢配额。")
         append("保留有效内容，不为评分凑错，不将审美偏好写成硬性规则。\n")
         append("本阶段只审读，不重写正文，不新增故事事实，不声称已运行脚本或作者已定。输出结构用于软件展示，取代模板中的排版要求。")
         append("只输出JSON，固定顶层结构：{\"summary\":[],\"missing\":[],\"issues\":[]}。summary放两三项主要判断，missing放确实缺少的硬资料；没有则留空数组。")
-        append("每个issues对象格式为{\"kind\":\"FACT\",\"quote\":\"正文原句\",\"problem\":\"问题与影响\",\"basis\":\"具体资料依据或明确创作要求\",\"fix\":\"在既定事实内的改法\",\"required\":true}。kind只能是FACT或CRAFT。")
+        append("每个issues对象格式为{\"kind\":\"FACT\",\"quote\":\"正文原句\",\"problem\":\"问题与影响\",\"basis\":\"具体资料依据或明确创作要求\",\"source_ref\":\"来源编号\",\"source_quote\":\"来源原句\",\"fix\":\"在既定事实内的改法\",\"required\":true}。kind只能是FACT或CRAFT。")
         append("事实错误及明确违反作者要求的写法才required=true；可取舍的审美建议required=false。没有问题如实返回空数组，不伪填通过记录。")
     }
 
     /** Repair is based on checked findings, not permission to invent new facts or replace every voice. */
     fun projectRevision(task: ChapterWritingTask, text: String, review: String, rules: String): String = buildString {
         append(task.render()).append("\n\n【当前阶段：修订】\n")
-        append("当前完整章稿：\n").append(text).append("\n\n已核实、待处理的审读意见：\n").append(review).append("\n\n")
+        append("当前完整章稿：\n").append(text).append("\n\n有可定位来源、仍须核对含义的待处理审读意见：\n").append(review).append("\n\n")
         if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
         append("逐条回原稿与目标章核实意见。修正有依据的事实、因果、视角、承接和明确写法违规；审读意见是线索，")
         append("不自动成为新设定。误读原稿、资料不足或违背细纲的意见不照办；审美建议按整章效果取舍。\n")
@@ -426,11 +436,14 @@ object WritePrompts {
 
     /** 写好的草稿：去掉 ``` 包裹、章名、“本章完”，一行一段、段首不空格。 */
     fun cleanDraft(answer: String): String {
-        val lines = answer.trim().removePrefix("```").removeSuffix("```").lines()
+        val lines = answer.trim().lines()
             .map { it.trim().trim('　').trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("```") }
+            // Drop the entire fence line, including an optional `markdown` / `text` label.
+            .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("~~~") }
             .filterIndexed { i, l -> !(i == 0 && (l.startsWith("#") || ChapterTitles.isTxtChapterTitle(l))) }
             .filterNot { Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$").matches(it) }
+            // 兜底：连接层给问答加的拒答、中途停止提示不是正文（整稿请求遇到拒答本该已经报错）。
+            .filterNot { it == "模型拒绝回答这个问题。" || it == "（模型中途停止了回答。）" }
         return lines.joinToString("\n")
     }
 
@@ -563,22 +576,52 @@ object WritePrompts {
     /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */
     data class SyncParse(val items: List<SyncItem>, val dropped: Int)
 
-    /** 正文里找原句：去掉两头的引号、书名号；末尾“……”省略的，按前面那截找。找不到返回空。 */
-    fun findQuote(text: String, quote: String): String? {
-        var q = quote.trim().trim('“', '”', '「', '」', '『', '』', '"', '\'').trim()
-        if (q.length < 2) return null
-        if (q in text) return q
-        q = q.removeSuffix("……").removeSuffix("...").removeSuffix("…").trim()
-        return q.takeIf { it.length >= 4 && it in text }
+    /** 原句至少要有几个字（不算标点、空白）；不到这么长的，得是正文里完整的一句。 */
+    const val QUOTE_CHARS = 6
+
+    /** 短句最少几个字：“渡口起了雾。”这样完整的一句可以，“他说”“林月”不行。 */
+    private const val QUOTE_SENTENCE_CHARS = 4
+
+    /** 一句开头前面、结尾后面的字（或者在段首、段尾）。 */
+    private const val SENTENCE_OPEN = "。！？!?…；;\n“「『：:"
+    private const val SENTENCE_CLOSE = "。！？!?…；;\n”」』"
+
+    /**
+     * 正文里找原句：去掉两头的引号、书名号；末尾“……”省略的，按前面那截找。找不到返回空。
+     * 依据要够长：去掉标点、空白至少 [QUOTE_CHARS] 字，或者是正文里完整的一句（至少 [QUOTE_SENTENCE_CHARS] 字）；
+     * 去掉人名（[names]）以后不能只剩一个字——只引一个名字、一句“他说”，正文里一定找得到，证明不了什么。
+     */
+    fun findQuote(text: String, quote: String, names: Collection<String> = emptyList()): String? {
+        val q = quote.trim().trim('“', '”', '「', '」', '『', '』', '"', '\'').trim()
+        val cut = q.removeSuffix("……").removeSuffix("...").removeSuffix("…").trim()
+        return listOf(q, cut).distinct().firstOrNull { enough(text, it, names) }
+    }
+
+    private fun enough(text: String, q: String, names: Collection<String>): Boolean {
+        val content = q.replace(Regex("[\\p{P}\\p{S}\\s]"), "")
+        if (content.length < QUOTE_SENTENCE_CHARS || q !in text) return false
+        val rest = names.filter { it.length >= 2 }.sortedByDescending { it.length }.fold(content) { s, n -> s.replace(n, "") }
+        if (rest.length < 2) return false
+        if (content.length >= QUOTE_CHARS) return true
+        // 短的：正文里有一处前后都是句子的边界（标点、段首段尾）。
+        var at = text.indexOf(q)
+        while (at >= 0) {
+            val opens = at == 0 || text[at - 1] in SENTENCE_OPEN
+            val end = at + q.length
+            val closes = q.last() in SENTENCE_CLOSE || end == text.length || text[end] in SENTENCE_CLOSE
+            if (opens && closes) return true
+            at = text.indexOf(q, at + 1)
+        }
+        return false
     }
 
     /**
      * 整理本章的回答：容忍 ``` 包裹、前后多余的话、字段缺失；一类都没有时当作没按格式回（报错，不当成“没什么要整理”）。
      * 只回了 new、conflicts、awareness 的（旧的回法）照样能用。
-     * 依据（quote）在正文 [text] 里找不到的丢掉，防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
+     * 依据（quote）在正文 [text] 里找不到、太短或只是人名（[names]）的丢掉（[findQuote]），防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
      * 认回账本里那一条，认不出的丢掉。
      */
-    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap()): SyncParse {
+    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap(), names: Collection<String> = emptyList()): SyncParse {
         val o = json(answer)
         fun arr(vararg keys: String): JSONArray? = keys.firstNotNullOfOrNull { o.optJSONArray(it) }
         val news = arr("new", "news", "新设定")
@@ -602,7 +645,7 @@ object WritePrompts {
         var dropped = 0
         val out = mutableListOf<SyncItem>()
         fun add(o: JSONObject, make: (String) -> SyncItem?) {
-            val q = findQuote(text, o.s("quote", "依据", "原句"))
+            val q = findQuote(text, o.s("quote", "依据", "原句"), names)
             if (q == null) {
                 dropped++
                 return
@@ -727,13 +770,22 @@ object WritePrompts {
 
     /** 写作建议的回答：只留原文里真找得到、确实有改动的。 */
     fun parseIssues(answer: String, paragraphs: List<String>): List<WriteIssue> {
-        val a = json(answer).optJSONArray("issues") ?: JSONArray()
+        val a = json(answer).optJSONArray("issues") ?: throw AiException("写作建议回答缺少 issues 数组，尚未完成检查")
         return (0 until a.length()).mapNotNull { i ->
-            val o = a.optJSONObject(i) ?: return@mapNotNull null
-            val p = paragraphs.getOrNull(o.optInt("p") - 1) ?: return@mapNotNull null
-            val wrong = o.optString("wrong").trim()
-            val right = o.optString("right").trim()
-            if (wrong.isEmpty() || wrong == right || wrong !in p) return@mapNotNull null
+            val o = a.optJSONObject(i) ?: throw AiException("写作建议回答的 issues 条目格式有误，尚未完成检查")
+            val index = when (val value = o.opt("p")) {
+                is Int -> value
+                is Long -> value.takeIf { it in 1L..paragraphs.size.toLong() }?.toInt()
+                else -> null
+            }?.takeIf { it in 1..paragraphs.size }
+                ?: throw AiException("写作建议回答的段落编号格式有误，尚未完成检查")
+            val wrong = (o.opt("wrong") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: throw AiException("写作建议回答缺少要修改的原文，尚未完成检查")
+            // Empty replacement is a valid deletion; the field itself must still be a string.
+            val right = (o.opt("right") as? String)?.trim()
+                ?: throw AiException("写作建议回答缺少修改内容，尚未完成检查")
+            val p = paragraphs[index - 1]
+            if (wrong == right || wrong !in p) return@mapNotNull null
             WriteIssue(p, wrong, right, o.optString("reason").trim(), SuggestKind.of(o.optString("kind").trim().uppercase()).name, o.optString("source").trim())
         }.distinctBy { it.paragraph to it.wrong }
     }

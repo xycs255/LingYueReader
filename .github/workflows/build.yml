@@ -54,6 +54,13 @@ jobs:
           LINGYUE_KEY_ALIAS: ${{ secrets.LINGYUE_KEY_ALIAS }}
           LINGYUE_KEY_PASSWORD: ${{ secrets.LINGYUE_KEY_PASSWORD }}
         run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:lint :app:assembleRelease
+      - name: Upload failed test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LingYueReader-test-results
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
       - name: Verify release APK signature
         run: |
           apk=app/build/outputs/apk/release/app-release.apk

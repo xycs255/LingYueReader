@@ -145,6 +145,32 @@ class WriteSyncPromptsTest {
     }
 
     @Test
+    fun quotesMustBeASentenceNotJustANameOrAFewWords() {
+        val text = "林月，沈默。\n杜娘把茶碗推给林月，说：“老周昨夜里走了。”\n渡口起了雾。"
+        val names = listOf("林月", "沈默", "杜娘", "老周")
+        // 名字、“说”这类两三个字的片段：正文里一定找得到，不算依据。
+        assertNull(WritePrompts.findQuote(text, "林月"))
+        assertNull(WritePrompts.findQuote(text, "说："))
+        // 不到 6 个字、又不是完整一句的：不算。
+        assertNull(WritePrompts.findQuote(text, "杜娘把茶碗"))
+        assertNull(WritePrompts.findQuote(text, "老周昨夜"))
+        // 完整的短句可以；只是几个人名凑成的一句不行。
+        assertEquals("渡口起了雾。", WritePrompts.findQuote(text, "渡口起了雾。"))
+        assertEquals("林月，沈默。", WritePrompts.findQuote(text, "林月，沈默。"))
+        assertNull(WritePrompts.findQuote(text, "林月，沈默。", names))
+        // 够长的照常认。
+        assertEquals("杜娘把茶碗推给林月", WritePrompts.findQuote(text, "杜娘把茶碗推给林月", names))
+        assertEquals("老周昨夜里走了", WritePrompts.findQuote(text, "“老周昨夜里走了”", names))
+        // 解析时依据只填人名的提议丢掉，算进“找不到原句”。
+        val r = WritePrompts.parseSync(
+            """{"events":[{"what":"林月杀了沈默","quote":"林月"},{"what":"老周走了","quote":"老周昨夜里走了"}]}""",
+            text, "c1", 12, names = names,
+        )
+        assertEquals(1, r.dropped)
+        assertEquals(listOf("老周走了"), r.items.map { it.title })
+    }
+
+    @Test
     fun missingFieldsAreTolerated() {
         // 缺 kind、缺 since、缺 conflicts 都行；名字和说明都没有的、谁和什么缺一样的丢掉。
         val r = parse("""{"new":[{"name":"顾长风","type":"人物","quote":"顾长风在门外喊她“月丫头”。"},{"type":"地名","quote":"渡口起了雾"}],

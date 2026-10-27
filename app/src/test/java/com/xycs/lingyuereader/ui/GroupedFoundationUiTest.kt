@@ -174,9 +174,9 @@ class GroupedFoundationUiTest {
         }
         compose.waitForIdle()
         val c = colors!!
-        // 红底配白字：删除色不够 4.5:1 时把红压深一点，不换成黑字。
+        // 红底配白字：删除色不够 4.5:1 时把红压深一点，不换成黑字。浅色的删除色是偏胭脂的红（和朱砂强调色分开），蓝分量稍高。
         val (red, text) = buttonColors(c, destructive = true)
-        assertTrue("删除确认键是红色：$red", red.red > 0.55f && red.green < 0.3f && red.blue < 0.3f)
+        assertTrue("删除确认键是红色：$red", red.red > 0.55f && red.green < 0.3f && red.blue < 0.4f && red.red > red.blue * 2)
         assertEquals(Color.White, text)
         assertTrue(contrastRatio(text, red) >= 4.5f)
         assertTrue("删除确认键是红底", dominant(compose.onNodeWithText("删除").captureToImage().asAndroidBitmap(), red) > 0.5f)

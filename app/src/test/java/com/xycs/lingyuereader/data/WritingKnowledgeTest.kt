@@ -63,7 +63,9 @@ class WritingKnowledgeTest {
         // 读一节：连同下面的粗体小标题一起。
         val part = call("read_doc", """{"title":"《全书总纲》","section":"分卷速查"}""")
         assertTrue(part.startsWith("## 四、分卷速查") && "第二卷《对岸》" in part)
-        assertEquals("**第二卷《对岸》**\n- 沈默在对岸立足。", call("read_doc", """{"title":"全书总纲","section":"第二卷"}""").substringBefore("备注").trim())
+        val section = call("read_doc", """{"title":"全书总纲","section":"第二卷"}""")
+        assertEquals("**第二卷《对岸》**\n- 沈默在对岸立足。", section.substringBefore("备注").trim())
+        assertTrue(section.endsWith("[来源 ${ReviewEvidence.ref("P", "o", outline)}]"))
         // 长文档分页，说清怎么接着读。
         val page = call("read_doc", """{"title":"全书总纲"}""")
         assertTrue(page.contains("用 offset=${PackTools.PAGE} 接着读"))
@@ -113,7 +115,7 @@ class WritingKnowledgeTest {
         val document = PackDoc("v", PackKind.VOLUME, "双卷细纲", always = false) to markdown
         val tools = PackTools(listOf(document), emptyList())
         val result = tools.run(AiToolCall("1", "read_doc", JSONObject().put("title", "双卷细纲.MD").put("section", "第二卷 › 第一章")))
-        assertEquals("## 第一章\n沈默独自过河。", result)
+        assertTrue(result, result.startsWith("## 第一章\n沈默独自过河。\n[来源 P_"))
         assertTrue(PackKnowledge.build(listOf(document), 2_000).prefix.contains("第二卷 › 第一章"))
         assertTrue(tools.run(AiToolCall("2", "search", JSONObject().put("query", "示例暗号"))).startsWith("没搜到"))
         val characters = "# 张飞\n想要守住关口。\n# 赵云\n想要带人出城。"

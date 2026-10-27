@@ -95,6 +95,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
             item(key = "head") { SyncHead(vm, session, lookup) }
             if (session != null && session.results.isNotEmpty()) {
                 val repeats = session.repeats
+                val failedChapters = session.results.filter { it.error != null }.mapTo(HashSet()) { it.chapterId }
                 SyncGroup.entries.forEach { g ->
                     val list = session.items.filter { it.group == g }
                     // 新加的账本类几组没有就不显示，免得一页空组（只回了旧格式的模型就没有这几组）。
@@ -111,6 +112,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                                         expanded = item.key in open,
                                         showChapter = session.results.size > 1,
                                         repeat = item.key in repeats,
+                                        selectable = item.chapterId !in failedChapters,
                                         onToggle = { vm.writingAi.toggleSync(item.key, item.key !in session.picked) },
                                         onExpand = { open = if (item.key in open) open - item.key else open + item.key },
                                         onEdit = { vm.writingAi.editSync(item.key, it) },
@@ -145,8 +147,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
                             }
                         },
                         modifier = Modifier.padding(horizontal = 12.dp),
-                        // 分段整理有一段没成的章不记为已整理，但其余几段的提议照样可以写。
-                        enabled = session.running == null && !writing && (session.results.any { it.error == null } || n > 0),
+                        enabled = session.running == null && !writing && session.results.any { it.error == null },
                     )
                 }
             }
@@ -166,6 +167,7 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
     val footer = buildList {
         if (dropped > 0) add("有 $dropped 条在正文里找不到 AI 给的原句，没有列出（防止编造）。")
         if (known > 0) add("有 $known 条设定包或账本里已经有了，没再列。")
+        if (session.results.any { it.error != null }) add("没整理全的章只展示提议供核对；重新整理成功后才能勾选写入。")
         add("勾上的才会写进去；写设定包之前原来的文字先存一个历史版本，每写一条在变更登记里记一笔；记进账本的一章一批，账本也存历史版本。")
     }.joinToString("")
     GroupedSection(footer = footer) {
@@ -182,7 +184,7 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
             row {
                 if (r.error != null) {
                     ErrorText(
-                        (if (r.parts > 1) "整理「${r.title}」没整理全，${r.items.size} 条提议照样列在下面：" else "整理「${r.title}」没成：") + r.error,
+                        (if (r.parts > 1) "整理「${r.title}」没整理全，${r.items.size} 条提议仅供核对：" else "整理「${r.title}」没成：") + r.error,
                         Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                     )
                 } else {
@@ -206,6 +208,7 @@ private fun SyncItemRow(
     expanded: Boolean,
     showChapter: Boolean,
     repeat: Boolean,
+    selectable: Boolean,
     onToggle: () -> Unit,
     onExpand: () -> Unit,
     onEdit: (String) -> Unit,
@@ -219,7 +222,7 @@ private fun SyncItemRow(
     val opens = item.group == SyncGroup.PROMISE && item.closes == null && entry != null
     Column(Modifier.fillMaxWidth()) {
         GroupedRow(onClick = onExpand) {
-            if (item.writable) {
+            if (item.writable && selectable) {
                 Box(
                     Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -232,16 +235,21 @@ private fun SyncItemRow(
                     Checkbox(state = ToggleableState(checked), onClick = onToggle)
                 }
             }
-            Column(Modifier.weight(1f).padding(start = if (item.writable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(Modifier.weight(1f).padding(start = if (item.writable && selectable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
                 val extra = when {
                     opens -> entry.payoff?.let { " · 计划第 $it 章收" }.orEmpty()
                     item.group == SyncGroup.STATE -> entry?.aspect?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                     else -> ""
                 }
-                Text((if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") + item.where + extra, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+                Text(
+                    (if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") +
+                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + item.where + extra,
+                    color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp,
+                )
             }
-            if (!item.writable) Tag(if (item.fixText) "改正文" else "只提示", c.warning, Modifier.padding(start = 8.dp))
+            if (item.writable && !selectable) Tag("待重整", c.warning, Modifier.padding(start = 8.dp))
+            else if (!item.writable) Tag(if (item.fixText) "改正文" else "只提示", c.warning, Modifier.padding(start = 8.dp))
             Icon(LingYueIcons.ChevronDown, contentDescription = if (expanded) "收起" else "展开", tint = c.tertiary, modifier = Modifier.padding(start = 6.dp).size(16.dp).rotate(turn))
         }
         AnimatedVisibility(
@@ -250,7 +258,7 @@ private fun SyncItemRow(
             exit = Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Top) + fadeOut(Motion.exit())),
         ) {
             Column(Modifier.fillMaxWidth()) {
-                if (item.group == SyncGroup.STATE && item.writable && entry != null) {
+                if (item.group == SyncGroup.STATE && item.writable && selectable && entry != null) {
                     // 方面：常用的几项，AI 写了别的也列上；“不分”的不顶替别的状态。
                     val options = (listOf("" to "不分") + (LEDGER_ASPECTS + listOf(entry.aspect).filter { it.isNotBlank() && it !in LEDGER_ASPECTS }).map { it to it })
                     PickerRow("方面", options, entry.aspect, onSelect = onAspect)
@@ -261,18 +269,26 @@ private fun SyncItemRow(
                         if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                         if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                     }
+                    item.maybeSame?.let { same ->
+                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    item.reveals?.let { secret ->
+                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
                     val closes = item.closes
                     if (closes != null) {
                         Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
-                    } else if (item.writable) {
+                    } else if (item.writable && selectable) {
                         TextField(
                             value = edited.text,
                             onValueChange = onEdit,
                             label = if (item.place == SyncPlace.LEDGER) "记进账本的内容（可以改）" else "写进去的原文（可以改）",
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
                         )
+                    } else if (item.writable) {
+                        Text("候选内容：${edited.text}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
                     }
-                    if (opens && item.writable) {
+                    if (opens && item.writable && selectable) {
                         var raw by remember(item.key) { mutableStateOf(entry.payoff?.toString().orEmpty()) }
                         TextField(
                             value = raw,

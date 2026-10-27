@@ -12,6 +12,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -23,6 +25,7 @@ import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.importReference
 import com.xycs.lingyuereader.data.saveReferenceAnalysis
@@ -31,6 +34,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -146,6 +150,18 @@ class WritingDraftUiTest {
     private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     @Test
+    fun chapterBudgetPreviewUsesLocalMaterialsWithoutSendingAiRequest() {
+        WorkStore(writingDir).saveText(workId, c2, "")
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+
+        waitForText("写本章请求预算")
+        waitForText("test-model")
+        waitForText("未设置此模型单价")
+        assertTrue("估算本章材料不能自行发起 AI 请求", asked.isEmpty())
+    }
+
+    @Test
     fun authorSelectsARealReferenceBeforeAiWritesTheDraft() {
         val store = WorkStore(writingDir)
         val book = store.importReference(workId, "合成范本.txt", "第一章 门外\n夜里有人叩门。掌柜先问来者身份，等对方迟疑后才移近灯盏。")
@@ -254,6 +270,38 @@ class WritingDraftUiTest {
     }
 
     @Test
+    fun aPassedReviewSurvivesPolishRecordsAndNewDirectionsButStaleMaterialsShowOneStatus() {
+        validWorkflowReview = true
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留杜娘的迟疑", workflow = true) }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.assessment?.passed == true } == true }
+        // 在别章接受、关掉润色：只是文风范例，不让本稿审读失效。
+        store.updateAssist(workId) { it.copy(
+            accepted = listOf(StyleExample("润色", "沈默说完。", "沈默说到这里停了停。", 1)),
+            declined = listOf(StyleExample("改稿", "老周进门。", "老周从不回头。", 2))) }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读：已通过，上方可展开证据")
+        waitForText("可供采纳")
+        // 只改下一次写的要求：当前稿仍按审读时的要求判断，可以采纳。
+        compose.onNode(hasSetTextAction() and hasText("保留杜娘的迟疑")).performTextReplacement("改成林月先开口")
+        waitFor { store.draftIntent(workId, c2)?.instruction == "改成林月先开口" }
+        waitForText("审读：已通过，上方可展开证据")
+        assertNull(kotlinx.coroutines.runBlocking { vm.writingAi.draftBlocked(workId, c2) })
+
+        // 细纲变了：状态标签和“本稿审读”一起显示失效，不再一个绿一个“待核对”。
+        store.saveCard(workId, c2, store.card(workId, c2).copy(facts = "杜娘没有开门，顾长风在门外等到天亮"))
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        waitForText("旧稿一句。")
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读已过时")
+        waitForText("待核对")
+        assertTrue("资料变了不能再显示可供采纳",
+            compose.onAllNodesWithText("可供采纳").fetchSemanticsNodes().isEmpty())
+        waitForText("审读：未通过或已失效")
+    }
+
+    @Test
     fun reopeningACandidateRestoresItsRequestWithoutOverwritingNewEdits() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留人物的迟疑", targetLength = "约30字") }
@@ -270,6 +318,42 @@ class WritingDraftUiTest {
         compose.waitForIdle()
         compose.onNode(hasSetTextAction() and hasText("保留人物的犹豫和改口")).assertExists()
         compose.onNode(hasSetTextAction() and hasText("约30字")).assertExists()
+    }
+
+    @Test
+    fun reviewSwitchRestoresAnExplicitChoiceBeforeAnyCandidateExists() {
+        val store = WorkStore(writingDir)
+        store.setDraftIntent(workId, c2, "先让杜娘开门", "约200字", false)
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNode(hasSetTextAction() and hasText("先让杜娘开门")).assertExists()
+        compose.onNode(hasSetTextAction() and hasText("约200字")).assertExists()
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOff()
+        compose.onNodeWithText("创作后审读、修订").performClick()
+        compose.onNodeWithText("创作后审读、修订").assertIsOn()
+        waitFor { store.draftIntent(workId, c2)?.workflowChoice == true }
+        assertEquals("", store.draft(workId, c2))
+    }
+
+    @Test
+    fun editingRequestWhileProjectTaskLoadsDoesNotSaveItsReviewDefaultAsAnExplicitChoice() {
+        val store = WorkStore(writingDir)
+        store.addPackDoc(workId, PackKind.INSTRUCTION, "完整正文创作提示词", "只输出本章完整正文。")
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("这一章想怎么写")
+        compose.onAllNodes(hasSetTextAction())[0].performTextInput("多留一点悬念")
+        waitFor { store.draftIntent(workId, c2)?.instruction == "多留一点悬念" }
+        assertEquals("没有手动切换时，项目审读默认值不能写成显式选择", null,
+            store.draftIntent(workId, c2)?.workflowChoice)
+        waitForText("本章写作任务")
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOn()
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNodeWithText("创作后审读、修订").performScrollTo().assertIsOn()
+        assertEquals(null, store.draftIntent(workId, c2)?.workflowChoice)
     }
 
     @Test

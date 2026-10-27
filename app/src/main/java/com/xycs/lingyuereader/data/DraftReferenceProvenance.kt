@@ -15,6 +15,8 @@ data class DraftContent(
     val reference: DraftReferenceProvenance? = null,
     val provenanceError: String? = null,
     val blocked: Boolean = false,
+    val revision: DraftRevisionSnapshot? = null,
+    val revisionError: String? = null,
 )
 
 /** The hash prevents a torn text/metadata pair from silently becoming an unreferenced draft. */

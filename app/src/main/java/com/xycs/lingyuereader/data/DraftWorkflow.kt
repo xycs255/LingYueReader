@@ -17,11 +17,25 @@ data class DraftFinding(
     val basis: String,
     val fix: String = "",
     val required: Boolean = false,
+    /** A located quotation is evidence of source text, not proof that the inference is correct. */
+    val sourceRef: String = "",
+    val sourceQuote: String = "",
+    val sourceLocated: Boolean? = null,
+    /** 原句能否在本稿中找到；找不到的必改项只留作待核，不当作已核实的依据。 */
+    val quoteLocated: Boolean = true,
 ) {
     fun render(): String = buildString {
-        append(if (required) "必改" else "建议").append(" · ").append(kind).append("：").append(problem)
+        append(when {
+            !quoteLocated -> "依据未核实"
+            sourceLocated == false -> "待核"
+            required -> "必改"
+            else -> "建议"
+        }).append(" · ").append(kind).append("：").append(problem)
         if (quote.isNotBlank()) append("\n原句：").append(quote)
         if (basis.isNotBlank()) append("\n依据：").append(basis)
+        if (sourceLocated == true) append("\n可定位原文（").append(sourceRef).append("）：").append(sourceQuote)
+        if (!quoteLocated) append("\n原句在本稿中找不到：不能作为已核实的必改意见")
+        if (sourceLocated == false) append("\n来源待核：不能作为已核实的必改意见")
         if (fix.isNotBlank()) append("\n可用改法：").append(fix)
     }
 }
@@ -53,8 +67,11 @@ object DraftChecks {
     fun hash(text: String): String = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 
-    /** Malformed answers and fabricated quotations are errors, never an empty successful review. */
-    fun parse(answer: String, text: String, fingerprint: String): DraftAssessment {
+    /**
+     * Malformed answers are errors, never an empty successful review. 单条意见的原句对不上本稿时不作废整份：
+     * 可取舍的建议直接丢掉；必改项保留、标“依据未核实”并列入缺项，这份审读不能通过，也不据它自动修订。
+     */
+    fun parse(answer: String, text: String, fingerprint: String, evidence: ReviewEvidence? = null): DraftAssessment {
         val start = answer.indexOf('{')
         val end = answer.lastIndexOf('}')
         require(start >= 0 && end > start) { "审读回答不是要求的格式，尚未通过审读" }
@@ -69,22 +86,53 @@ object DraftChecks {
             }.filter { it.isNotBlank() }
         }
         val summary = strings("summary").take(3)
-        val missing = strings("missing")
+        val missing = strings("missing").toMutableList()
+        val notes = mutableListOf<String>()
         val items = root.optJSONArray("issues") ?: throw IllegalArgumentException("审读回答缺少 issues，尚未通过审读")
         require(items.length() <= 100) { "审读意见过多，请重新审读" }
-        val findings = (0 until items.length()).map { n ->
+        val manuscript = quoteKey(text)
+        val findings = (0 until items.length()).mapNotNull { n ->
             val i = items.getJSONObject(n)
             val kind = i.getString("kind")
             require(kind in setOf("FACT", "CRAFT")) { "审读意见类别无法识别" }
             val quote = i.getString("quote").trim()
             val problem = i.getString("problem").trim()
             val basis = i.getString("basis").trim()
-            require(quote.isNotBlank() && quote in text) { "审读意见的原句在本稿中找不到，请重新审读" }
             require(problem.isNotBlank() && basis.isNotBlank()) { "审读意见没有问题说明或依据，尚未通过审读" }
             require(i.get("required") is Boolean) { "审读意见没有区分必改与建议" }
-            DraftFinding(kind, quote, problem, basis, i.optString("fix"), i.getBoolean("required"))
+            val required = i.getBoolean("required")
+            val quoteFound = quoteKey(quote).let { it.isNotEmpty() && it in manuscript }
+            if (!quoteFound) {
+                if (!required) return@mapNotNull null
+                missing += "审读第 ${n + 1} 条必改意见的原句在本稿中找不到，依据未核实，请核对：$problem"
+            }
+            val sourceRef = i.optString("source_ref").trim()
+            val sourceQuote = i.optString("source_quote").trim()
+            val located = if (evidence != null && (required || kind == "FACT"))
+                evidence.locates(sourceRef, sourceQuote, kind) else null
+            if (located == false) {
+                val warning = "审读第 ${n + 1} 条${if (kind == "FACT") "事实" else "写法"}意见的来源无法在本次资料中定位，请核对后再改：$problem"
+                if (required) missing += warning else notes += warning
+            }
+            DraftFinding(kind, quote, problem, basis, i.optString("fix"), required && located != false && quoteFound,
+                sourceRef, sourceQuote, located, quoteFound)
         }
-        return DraftAssessment(hash(text), fingerprint, summary, missing, findings)
+        return DraftAssessment(hash(text), fingerprint, summary, missing.distinct(), findings, notes = notes.distinct())
+    }
+
+    /** 比对原句用：去掉空白，全角字母数字与标点统一成半角，弯引号统一成直引号。 */
+    private fun quoteKey(text: String): String = buildString(text.length) {
+        for (ch in text) {
+            if (ch.isWhitespace() || ch == '\u3000') continue
+            append(when (ch) {
+                in '\uFF01'..'\uFF5E' -> ch - 0xFEE0
+                '。' -> '.'
+                '、' -> ','
+                '“', '”', '「', '」' -> '"'
+                '‘', '’', '『', '』' -> '\''
+                else -> ch
+            })
+        }
     }
 
     /** Numerical targets are overridable per chapter; elastic targets remain notes, not hard quotas. */
@@ -126,6 +174,7 @@ object DraftWorkflow {
         review: suspend (String) -> String,
         revise: suspend (String, String) -> String,
         onStage: suspend (DraftStage, String, DraftAssessment?) -> Unit = { _, _, _ -> },
+        evidence: ReviewEvidence? = null,
     ): DraftWorkflowResult {
         require(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
         var text = initial?.takeIf { it.isNotBlank() } ?: run {
@@ -136,7 +185,9 @@ object DraftWorkflow {
             onStage(DraftStage.CHECKING, text, null)
             val (local, notes) = DraftChecks.local(text, rules, task.targetLength)
             onStage(DraftStage.REVIEWING, text, null)
-            val assessment = DraftChecks.parse(review(text), text, task.fingerprint).copy(localIssues = local, notes = notes, round = round)
+            val assessment = DraftChecks.parse(review(text), text, task.fingerprint, evidence).let { parsed ->
+                parsed.copy(localIssues = local, notes = (parsed.notes + notes).distinct(), round = round)
+            }
             if (assessment.passed || assessment.missing.isNotEmpty() || round == MAX_REVISIONS) {
                 val stage = if (assessment.passed) DraftStage.READY else DraftStage.NEEDS_REVIEW
                 onStage(stage, text, assessment)

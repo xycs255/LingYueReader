@@ -124,9 +124,10 @@ class AiAssistant(
         maxTokens: Int? = null,
         maxRounds: Int = 6,
         cacheExtra: Int = 0,
+        requireTools: Boolean = false,
         onLookup: (AiToolCall) -> Unit = {},
         onText: (String) -> Unit = {},
-    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, onLookup = onLookup, onText = onText)
+    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, requireTools = requireTools, onLookup = onLookup, onText = onText)
 
     /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
     /** 合成一句。[sp] 给定时按它合成（听书开始时的设置，和缓存键一致），否则按当前设置。 */
@@ -394,10 +395,10 @@ class AiAssistant(
         _gloss.value = null
     }
 
-    /** 设置页的“测试连接”：发一句最短的话，回来了就说明地址、模型、密钥都对。 */
+    /** 设置页的“测试连接”：发一次严格限制输出的真实请求，仅验证短回复。 */
     suspend fun test(c: AiConfig): String {
         val start = System.currentTimeMillis()
-        val answer = withContext(AiMeter(AiFeature.TEST)) { client.stream(c, "", listOf(AiMessage("user", "请只回复“好”。"))) }
+        val answer = withContext(AiMeter(AiFeature.TEST)) { client.testConnection(c) }
         val ms = System.currentTimeMillis() - start
         return "连接正常，用时 ${"%.1f".format(ms / 1000f)} 秒，回复：${answer.trim().take(20)}"
     }

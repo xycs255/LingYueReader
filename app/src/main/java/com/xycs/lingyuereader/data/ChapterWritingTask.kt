@@ -153,7 +153,7 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
     val rawDocs = pack(workId).map { it to packText(workId, it.id) }
     val docs = ProjectSources.forPhase(rawDocs, WritingPhase.CREATE)
     val entries = outlineEntries(workId)
-    val found = ChapterOutlines.match(entries, number, catalogVolume, chapter.title, card(workId, chapterId).plan.isNotBlank())
+    val found = chapterOutlineEntries(work, chapterId, entries)
     val volume = found.firstNotNullOfOrNull { it.volume } ?: catalogVolume
     val planned = plannedCard(workId, chapterId, entries)
     val card = planned.card
@@ -209,8 +209,8 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
     val sampleSignature = StyleSamples.signature(sampleSources, sampleFallback, writingAssist.sampleOptions)
     val state = listOf(work.title, chapter.title, number.toString(), volume.toString(), instruction.trim(), length, card.facts, card.boundary, card.pov, card.countdown, card.hook, card.threads, previous, context) +
         warnings + blocking + listOf(
+            // 润色的采纳、不采纳记录只是文风范例，与审读依据无关：不进指纹，免得改别章时让所有章的审读失效。
             StoryLedger.toJson(currentLedger).toString(), writingAssist.style, sampleSignature,
-            writingAssist.accepted.toString(), writingAssist.declined.toString(),
             writingAssist.sampleLimit.toString(), writingAssist.sampleFallback.toString(),
             writingAssist.sampleSkip.sorted().toString(), writingAssist.sampleShift.toSortedMap().toString(),
         ) +

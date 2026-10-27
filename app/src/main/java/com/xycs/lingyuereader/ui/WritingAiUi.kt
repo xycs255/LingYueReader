@@ -39,8 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
@@ -148,7 +148,9 @@ internal fun editTarget(text: String, selection: TextRange, action: WriteAction,
     val end = selection.max.coerceIn(0, text.length)
     if (action == WriteAction.CONTINUE) {
         if (text.substring(0, start).isBlank()) return null
-        return WriteAiTask.Edit(action, "", start, start, instruction)
+        // A continuation has no original span to relocate after an edit. Keep the whole
+        // source snapshot so acceptance cannot silently insert at a stale absolute offset.
+        return WriteAiTask.Edit(action, "", start, start, instruction, continuationBase = text)
     }
     if (end > start) {
         val picked = text.substring(start, end)
@@ -171,12 +173,16 @@ private const val EDIT_NEAR = 1_000
 /**
  * 采纳：把 [result] 换进正文。位置上的文字还是原文就按位置换；正文改过了（等结果时作者在前面加了字），
  * 只在原位置附近找原文：找到一处才换，几处一样的不换（可能在几页之前，换错了不容易发现）。
- * 续写插在光标处，光标在一段中间或段末时另起一段。
+ * 续写只在正文仍与生成时一致时插在光标处；任何变化都需重新生成，以免误插到旧坐标。
+ * 光标在一段中间或段末时另起一段。
  */
 internal fun applyEdit(state: TextFieldState, task: WriteAiTask.Edit, result: String): EditApply {
     val text = state.text.toString()
     if (task.action == WriteAction.CONTINUE) {
-        val at = task.start.coerceIn(0, text.length)
+        if (task.continuationBase != text || task.start !in 0..text.length || task.end != task.start) {
+            return EditApply.MISSING
+        }
+        val at = task.start
         val needBreak = at > 0 && text[at - 1] != '\n'
         val needAfter = at < text.length && text[at] != '\n'
         val insert = (if (needBreak) "\n" else "") + result + (if (needAfter) "\n" else "")
@@ -375,16 +381,39 @@ internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<Int
     (start until start + i.wrong.length) to i
 }
 
+/** 口吻类建议的基准色：紫，离红（删除）、橙（提醒）都远；和强调色撞了再转开。 */
+private val VoiceLight = Color(0xFF7B4FA6)
+private val VoiceDark = Color(0xFFB89BE0)
+
 /**
- * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、
- * 口吻取强调色和删除色的中间。都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。
+ * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、口吻用紫。
+ * 删除色、提醒色在配色里已经和强调色转开了（[distinctFrom]），口吻再和这三种转开，两两色差都 ≥ [SEMANTIC_MIN_DELTA]。
+ * 都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。颜色之外还有 [suggestShape] 和文字标签。
  */
-internal fun suggestColor(kind: String, c: GroupedColors): Color = when (SuggestKind.of(kind)) {
-    SuggestKind.TYPO -> c.destructive
-    SuggestKind.CANON -> c.warning
-    SuggestKind.STYLE -> c.tint
-    SuggestKind.VOICE -> lerp(c.tint, c.destructive, 0.5f)
-}.readableOn(listOf(c.cell, c.background))
+internal fun suggestColor(kind: String, c: GroupedColors): Color {
+    val cards = listOf(c.cell, c.background)
+    return when (SuggestKind.of(kind)) {
+        SuggestKind.TYPO -> c.destructive
+        SuggestKind.CANON -> c.warning
+        SuggestKind.STYLE -> c.tint
+        SuggestKind.VOICE -> (if (c.dark) VoiceDark else VoiceLight).distinctFrom(listOf(c.tint, c.destructive, c.warning), cards)
+    }.readableOn(cards)
+}
+
+/** 各类建议的形状：标签上颜色之外再带一个形状，色弱、灰阶的墨水屏上也分得出是哪类。 */
+internal fun suggestShape(kind: String): String = when (SuggestKind.of(kind)) {
+    SuggestKind.TYPO -> "●"
+    SuggestKind.CANON -> "▲"
+    SuggestKind.STYLE -> "■"
+    SuggestKind.VOICE -> "◆"
+}
+
+/** 一类建议的标签：形状 + 名字，用这类的颜色；读屏只念“某类建议”，不念形状。 */
+@Composable
+internal fun SuggestTag(kind: String, c: GroupedColors, modifier: Modifier = Modifier) {
+    val k = SuggestKind.of(kind)
+    Tag("${suggestShape(kind)} ${k.label}", suggestColor(kind, c), modifier.clearAndSetSemantics { contentDescription = "${k.label}类建议" })
+}
 
 /**
  * AI 在编辑器里写：键盘上方一条——在写（或在查设定）时能停，写完能采纳、重写、撤回。
@@ -482,7 +511,7 @@ internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () ->
         AnimatedContent(issue, transitionSpec = { Motion.fadeThrough() using null }, label = "suggestion") { shown ->
             Column(Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Tag(SuggestKind.of(shown.kind).label, suggestColor(shown.kind, c))
+                    SuggestTag(shown.kind, c)
                     Text(
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(shown.wrong) }
@@ -640,8 +669,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         header = "设定包",
                         footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
                             "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
-                            "放得越多，AI 越不用查，但每次请求越大（相同的开头服务商会缓存，后面几次便宜很多）。" +
-                            "本章资料字数上限只给本机模型用：它不能自己查，按章挑着带。",
+                            "放得越多，AI 越不用查，但每次请求越大。DeepSeek 会尝试缓存相同的开头，实际命中以用量记录为准。" +
+                            "本章资料字数上限也影响联网项目写作；本机模型不能自己查，会按章挑着带。",
                     ) {
                         row {
                             PickerRow(
@@ -651,7 +680,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
                         }
                         row {
-                            PickerRow("本章资料字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                            PickerRow("本章资料上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
                                 vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
                             }
                         }

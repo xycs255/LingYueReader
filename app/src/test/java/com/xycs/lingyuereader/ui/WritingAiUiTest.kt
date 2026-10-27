@@ -59,6 +59,8 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.time.LocalDate
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
@@ -75,6 +77,8 @@ class WritingAiUiTest {
     private val systems: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private val bodies: MutableList<JSONObject> = Collections.synchronizedList(mutableListOf())
     private val draft = "他推门进来。\n风很大。\n他再门口等着，天色以晚。"
+    private val slowSuggestionStarted = CountDownLatch(1)
+    private val slowSuggestionGate = CountDownLatch(1)
 
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -86,7 +90,14 @@ class WritingAiUiTest {
                     prompts += user
                     bodies += body
                     systems += (0 until msgs.length()).map { msgs.getJSONObject(it) }.firstOrNull { it.getString("role") == "system" }?.getString("content").orEmpty()
+                    if (name.methodName in setOf("realtimeQueuesLatestEditAfterSlowRequest", "realtimeDropsPendingEditWhenStopped",
+                            "realtimeMalformedResponseWaitsForNextEditToRetry") && prompts.size == 1 &&
+                        ("只找明显的错误" in user || "只找下面这几类问题" in user)) {
+                        slowSuggestionStarted.countDown()
+                        slowSuggestionGate.await(20, TimeUnit.SECONDS)
+                    }
                     val answer = when {
+                        name.methodName == "realtimeMalformedResponseWaitsForNextEditToRetry" && prompts.size == 1 -> """{"note":"missing issues"}"""
                         "只找明显的错误" in user || "只找下面这几类问题" in user -> """{"issues":[{"p":1,"wrong":"再门口","right":"在门口","reason":"错别字"}]}"""
                         "润色这段文字" in user -> "修改后：风刮得很猛。"
                         "扩写这段" in user -> "风刮得很猛，吹得门窗"
@@ -121,7 +132,9 @@ class WritingAiUiTest {
             val realtime = name.methodName.startsWith("realtime")
             // 写作建议的几个测试：最后一个句号留给测试里打（打开时已有的段落不查，改过的才查）。
             store.saveText(w.id, w.chapters[0].id, if (realtime) draft.removeSuffix("。") else draft)
-            if (realtime) store.updateAssist(w.id) { it.copy(realtime = true) }
+            if (realtime) store.updateAssist(w.id) { it.copy(realtime = true,
+                suggestGap = if (name.methodName in setOf("realtimeQueuesLatestEditAfterSlowRequest", "realtimeDropsPendingEditWhenStopped",
+                        "realtimeMalformedResponseWaitsForNextEditToRetry")) 0 else it.suggestGap) }
             if (name.methodName == "realtimeTypoOnlyIsAPlainProofread") {
                 store.updateAssist(w.id) { it.copy(suggestKinds = listOf("TYPO")) }
                 store.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "## 林月\n药铺掌柜的女儿")
@@ -136,6 +149,7 @@ class WritingAiUiTest {
         }
 
         override fun after() {
+            slowSuggestionGate.countDown()
             server.stop(0)
         }
     }
@@ -229,6 +243,66 @@ class WritingAiUiTest {
     }
 
     @Test
+    fun realtimeQueuesLatestEditAfterSlowRequest() {
+        openEditor()
+        waitForText("写作建议已开")
+        typeAtEnd("。")
+        waitFor { slowSuggestionStarted.count == 0L }
+        // 第一段检查还在等服务商响应；停笔后新内容也必须得到一次检查。
+        typeAtEnd("风声又紧。")
+        Thread.sleep(3_500)
+        ShadowLooper.idleMainLooper()
+        assertEquals(1, prompts.size)
+        slowSuggestionGate.countDown()
+        waitFor(20_000) { prompts.size == 2 }
+        assertTrue("风声又紧。" in prompts[1])
+        assertEquals(2, prompts.size)
+    }
+
+    @Test
+    fun realtimeDropsPendingEditWhenStopped() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        openEditor()
+        waitForText("写作建议已开")
+        typeAtEnd("。")
+        waitFor { slowSuggestionStarted.count == 0L }
+        typeAtEnd("风声又紧。")
+        Thread.sleep(3_500)
+        ShadowLooper.idleMainLooper()
+        assertEquals(1, prompts.size)
+        compose.runOnUiThread { vm.writingAi.stopRealtime() }
+        slowSuggestionGate.countDown()
+        waitFor { vm.writingAi.realtime.value.chapterId.isEmpty() && !vm.writingAi.realtime.value.checking }
+        Thread.sleep(500)
+        ShadowLooper.idleMainLooper()
+        assertEquals(1, prompts.size)
+    }
+
+    @Test
+    fun realtimeMalformedResponseWaitsForNextEditToRetry() {
+        openEditor()
+        waitForText("写作建议已开")
+        typeAtEnd("。")
+        waitFor { slowSuggestionStarted.count == 0L }
+        typeAtEnd("风声又紧。")
+        Thread.sleep(3_500)
+        ShadowLooper.idleMainLooper()
+        assertEquals(1, prompts.size)
+        slowSuggestionGate.countDown()
+        waitForText("写作建议没查成")
+        waitForText("缺少 issues 数组")
+        Thread.sleep(700)
+        ShadowLooper.idleMainLooper()
+        assertEquals("格式错误后不能自动重发收费请求", 1, prompts.size)
+        // 新一次停笔才重试，且必须发送当下最新正文。
+        typeAtEnd("灯未熄。")
+        waitFor(20_000) { prompts.size == 2 }
+        val latestParagraph = WorkStore(writingDir).text(workId, chapterId).lines().last().trim()
+        assertTrue("两次修改都须保留在正文：$latestParagraph", "风声又紧。" in latestParagraph && "灯未熄。" in latestParagraph)
+        assertTrue("第二次请求须包含当下最新段落：${prompts[1]}", latestParagraph in prompts[1])
+    }
+
+    @Test
     fun realtimeTypoOnlyIsAPlainProofread() {
         openEditor()
         waitForText("写作建议已开")
@@ -258,9 +332,9 @@ class WritingAiUiTest {
         compose.onNodeWithText("扩写").performScrollTo().performClick()
         waitForText("回答太长")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
-        // 缩写时模型中途停了：写出的半截显示出来，但不能采纳，那行说明也不出现。
+        // 缩写时模型中途停了（拒答或内容过滤）：整段改稿按失败处理，不能采纳，那行说明也不出现。
         compose.onNodeWithText("缩写").performScrollTo().performClick()
-        waitForText("模型中途停了，结果不完整")
+        waitForText("模型拒绝回答，或内容被服务商过滤")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
         assertTrue(compose.onAllNodesWithText("模型中途停止了回答", substring = true).fetchSemanticsNodes().isEmpty())
         Thread.sleep(1200)

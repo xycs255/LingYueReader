@@ -1526,7 +1526,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                             })
                                         }
                                     }
-                                    EditApply.MISSING -> vm.showMessage("那段原文已经改动，没找到要替换的地方")
+                                    EditApply.MISSING -> vm.showMessage(
+                                        if (task.action == WriteAction.CONTINUE) "正文已变化，接着写的光标位置可能失效；请重新生成或复制结果手动插入"
+                                        else "那段原文已经改动，没找到要替换的地方"
+                                    )
                                     EditApply.AMBIGUOUS -> vm.showMessage("原来的位置附近有几处一样的文字，不知道换哪一处，没有替换：可以复制结果自己改")
                                 }
                             },

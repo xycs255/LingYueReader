@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.data
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -131,7 +133,79 @@ class StoryLedgerTest {
             payoff = 12, done = true, closed = 12, via = "杜娘", secret = true, quote = "信还在怀里", chapterId = "c3", origin = LedgerOrigin.SYNC, updatedAt = 5,
         )
         assertEquals(listOf(e), StoryLedger.parse(StoryLedger.toJson(listOf(e)).toString()))
-        assertNull(LedgerEntry.fromJson(org.json.JSONObject().put("kind", "STATE").put("text", " ")))
+        assertNull(LedgerEntry.fromJson(JSONObject().put("kind", "STATE").put("text", " ")))
+    }
+
+    @Test
+    fun aMalformedEntryRejectsTheWholeLedgerAndTheOriginalSurvivesARejectedEdit() {
+        val root = tmp.newFolder()
+        val store = WorkStore(root)
+        val work = store.create("渡口")
+        val original = StoryLedger.toJson(listOf(state("林月", "位置", "在渡口", 1)))
+            .apply { getJSONArray("entries").put(JSONObject().put("kind", "FUTURE_KIND").put("text", "不可丢失")) }
+            .toString()
+        val file = java.io.File(root, "works/${work.id}/ledger.json")
+        file.writeText(original)
+
+        assertTrue(runCatching { StoryLedger.parse(original) }.isFailure)
+        assertTrue(store.ledger(work.id).isEmpty())
+        val damaged = java.io.File(file.parentFile, "ledger.json.damaged")
+        assertEquals(original, damaged.readText())
+
+        assertTrue(runCatching {
+            store.applyLedger(work.id, listOf(LedgerOp.Add(state("沈默", "位置", "在京城", 2))), "新状态")
+        }.isFailure)
+        assertEquals(original, file.readText())
+        assertEquals(original, damaged.readText())
+    }
+
+    @Test
+    fun nonObjectBlankOrUnknownFieldEntriesAreNotDropped() {
+        val good = state("林月", "位置", "在渡口", 1).toJson()
+        val badEntries = listOf(
+            JSONObject.NULL,
+            "不是条目",
+            JSONObject().put("kind", "EVENT").put("text", " "),
+            JSONObject().put("kind", "EVENT").put("text", "有效").put("futureField", "需保留"),
+            JSONObject().put("kind", "EVENT").put("text", "有效").put("origin", "FUTURE_ORIGIN"),
+        )
+        badEntries.forEach { bad ->
+            val raw = JSONObject().put("entries", JSONArray().put(good).put(bad)).toString()
+            assertTrue("bad=$bad", runCatching { StoryLedger.parse(raw) }.isFailure)
+        }
+        assertTrue(runCatching { StoryLedger.parse(JSONObject().put("format", 2).put("entries", JSONArray().put(good)).toString()) }.isFailure)
+    }
+
+    @Test
+    fun presentInvalidNumericBoundariesRejectTheEntryAndTheWholeLedger() {
+        val boundaries = listOf("from", "volume", "until", "payoff", "closed")
+        val invalid = listOf(-1, "not-a-number", 1.5, Int.MAX_VALUE.toLong() + 1)
+        boundaries.forEach { key ->
+            invalid.forEach { value ->
+                val entry = LedgerEntry(id = "a", kind = LedgerKind.EVENT, text = "渡口失守").toJson().put(key, value)
+                assertTrue("$key=$value", runCatching { LedgerEntry.fromJson(entry) }.isFailure)
+                val raw = JSONObject().put("entries", JSONArray().put(entry)).toString()
+                assertTrue("$key=$value", runCatching { StoryLedger.parse(raw) }.isFailure)
+            }
+        }
+        val badTime = LedgerEntry(id = "a", kind = LedgerKind.EVENT, text = "渡口失守").toJson().put("updatedAt", "not-a-time")
+        assertTrue(runCatching { LedgerEntry.fromJson(badTime) }.isFailure)
+    }
+
+    @Test
+    fun legacyEntriesMayOmitOptionalFieldsAndUseExactNumericStrings() {
+        val legacy = JSONObject().put("kind", "EVENT").put("text", "渡口失守")
+        val entry = LedgerEntry.fromJson(legacy)!!
+        assertEquals(LedgerOrigin.MANUAL, entry.origin)
+        assertNull(entry.from)
+        assertNull(entry.closed)
+        assertFalse(entry.done)
+        assertEquals(0, entry.updatedAt)
+        assertEquals(1, StoryLedger.parse(JSONObject().put("entries", JSONArray().put(legacy)).toString()).size)
+
+        val numericString = legacy.put("from", "12").put("updatedAt", "42")
+        assertEquals(12, LedgerEntry.fromJson(numericString)?.from)
+        assertEquals(42L, LedgerEntry.fromJson(numericString)?.updatedAt)
     }
 
     @Test
@@ -175,5 +249,90 @@ class StoryLedgerTest {
         assertEquals(1, b.restoreBackup(String(a.backup()!!)))
         assertEquals(a.ledger(w.id), b.ledger(w.id))
         assertNotNull(b.ledger(w.id).firstOrNull { it.kind == LedgerKind.PROMISE })
+    }
+
+    @Test
+    fun damagedBackupLedgerNeverReplacesExistingLedger() {
+        val store = WorkStore(tmp.newFolder())
+        val work = store.create("渡口")
+        store.applyLedger(work.id, listOf(LedgerOp.Add(state("林月", "位置", "在渡口", 1))), "原状态")
+        val before = store.ledger(work.id)
+        val backup = JSONObject(String(store.backup()!!))
+        val entries = backup.getJSONArray("works").getJSONObject(0).getJSONArray("ledger")
+        entries.put(JSONObject().put("kind", "FUTURE_KIND").put("text", "不能丢失"))
+        assertTrue(runCatching { store.restoreBackup(backup.toString()) }.isFailure)
+        assertEquals(before, store.ledger(work.id))
+
+        entries.remove(entries.length() - 1)
+        entries.getJSONObject(0).put("from", "not-a-chapter")
+        assertTrue(runCatching { store.restoreBackup(backup.toString()) }.isFailure)
+        assertEquals(before, store.ledger(work.id))
+    }
+
+    @Test
+    fun updateAndRemoveWithAStaleExpectedEntryAreRejectedAsAWholeBatch() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("渡口")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(promise("顾长风说三日后再来", 8, payoff = 11)), LedgerOp.Add(state("林月", "位置", "在渡口", 12))), "导入")
+        // 界面读到的样子：伏笔还开着。
+        val seen = s.ledger(w.id)
+        val p = seen.first { it.kind == LedgerKind.PROMISE }
+        val a = seen.first { it.kind == LedgerKind.STATE }
+        // 之后整理把伏笔收了。
+        s.applyLedger(w.id, listOf(LedgerOp.Close(p.id, 14, "顾长风推门进来")), "整理第 14 章")
+        val versions = s.ledgerVersions(w.id).size
+        val closed = s.ledger(w.id)
+        // 拿旧样子改计划收章：拒绝，整批（连同另一条没过期的）都不写，也不存历史版本。
+        val stale = runCatching {
+            s.applyLedger(w.id, listOf(LedgerOp.Update(a.copy(text = "在石桥"), expected = a), LedgerOp.Update(p.copy(payoff = 15), expected = p)), "调整伏笔计划")
+        }.exceptionOrNull()
+        assertTrue(stale is LedgerConflict)
+        assertEquals("这条已经被改过，请刷新后再改", stale!!.message)
+        assertEquals(closed, s.ledger(w.id))
+        assertTrue(s.ledger(w.id).first { it.id == p.id }.done)
+        assertEquals(versions, s.ledgerVersions(w.id).size)
+        assertTrue(runCatching { s.applyLedger(w.id, listOf(LedgerOp.Remove(p.id, expected = p)), "手动删除") }.exceptionOrNull() is LedgerConflict)
+        assertEquals(closed, s.ledger(w.id))
+        // 刷新以后拿到的样子：写得进去。
+        val fresh = s.ledger(w.id).first { it.id == p.id }
+        s.applyLedger(w.id, listOf(LedgerOp.Update(fresh.copy(text = "顾长风说三日后必来"), expected = fresh)), "手动修改")
+        assertEquals("顾长风说三日后必来", s.ledger(w.id).first { it.id == p.id }.text)
+        assertTrue(s.ledger(w.id).first { it.id == p.id }.done)
+        // 删掉了的也算变了。
+        assertTrue(runCatching { StoryLedger.apply(emptyList(), listOf(LedgerOp.Update(fresh, expected = fresh)), 1) }.exceptionOrNull() is LedgerConflict)
+    }
+
+    @Test
+    fun anAuthorOnlyTruthStopsBeingSecretAtItsUntilChapter() {
+        val truth = LedgerEntry(id = "t", kind = LedgerKind.KNOW, text = "赵四是朝廷的密探", subject = "林远", secret = true, until = 30)
+        assertEquals(listOf(truth), StoryLedger.snapshot(listOf(truth), 29).secrets)
+        assertTrue(StoryLedger.snapshot(listOf(truth), 30).secrets.isEmpty())
+    }
+
+    @Test
+    fun restoringABackupKeepsTheLocalLedgerInHistory() {
+        val root = tmp.newFolder()
+        val s = WorkStore(root)
+        val w = s.create("渡口")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(state("林月", "位置", "在渡口", 1))), "导入")
+        val backup = JSONObject(String(s.backup()!!))
+        // 备份以后本机又记了一条。
+        s.applyLedger(w.id, listOf(LedgerOp.Add(know("沈默", "杜娘是卧底", 15))), "手动添加")
+        val local = s.ledger(w.id)
+        backup.getJSONArray("works").getJSONObject(0).put("updatedAt", s.get(w.id)!!.updatedAt + 1_000_000)
+        assertEquals(1, s.restoreBackup(backup.toString()))
+        assertEquals(listOf("在渡口"), s.ledger(w.id).map { it.text })
+        // 恢复前的本机账本在“历史版本”里，可以换回来。
+        val kept = s.ledgerVersions(w.id).first()
+        assertEquals("从备份恢复", kept.label)
+        assertEquals(local, s.ledgerVersion(w.id, kept.at))
+        assertTrue(s.restoreLedger(w.id, kept.at))
+        assertEquals(local.map { it.text }, s.ledger(w.id).map { it.text })
+        // 本机和备份一样时不多存一版。
+        val same = String(s.backup()!!)
+        val versions = s.ledgerVersions(w.id).size
+        val again = JSONObject(same).apply { getJSONArray("works").getJSONObject(0).put("updatedAt", s.get(w.id)!!.updatedAt + 1_000_000) }
+        assertEquals(1, s.restoreBackup(again.toString()))
+        assertEquals(versions, s.ledgerVersions(w.id).size)
     }
 }

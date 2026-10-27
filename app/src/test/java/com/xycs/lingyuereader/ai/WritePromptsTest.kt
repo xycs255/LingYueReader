@@ -77,6 +77,7 @@ class WritePromptsTest {
         // 续写在光标处，前面得有字。
         val cont = editTarget(text, TextRange(text.length), WriteAction.CONTINUE)!!
         assertEquals("" to (text.length to text.length), cont.original to (cont.start to cont.end))
+        assertEquals(text, cont.continuationBase)
         assertNull(editTarget("  ", TextRange(1), WriteAction.CONTINUE))
     }
 
@@ -99,9 +100,53 @@ class WritePromptsTest {
 
         // 续写接在段末，另起一段。
         val cont = TextFieldState("他推门进来。")
-        assertEquals(EditApply.DONE, applyEdit(cont, WriteAiTask.Edit(WriteAction.CONTINUE, "", 6, 6), "屋里没人。"))
+        val contTask = editTarget(cont.text.toString(), TextRange(cont.text.length), WriteAction.CONTINUE)!!
+        assertEquals(EditApply.DONE, applyEdit(cont, contTask, "屋里没人。"))
         assertEquals("他推门进来。\n屋里没人。", cont.text.toString())
         assertEquals(TextRange(cont.text.length), cont.selection)
+    }
+
+    @Test
+    fun continuationAcceptanceRejectsInsertionOrDeletionBeforeCursor() {
+        val original = "他推门进来。\n屋里很暗。"
+        val at = original.indexOf("屋里")
+        val task = editTarget(original, TextRange(at), WriteAction.CONTINUE)!!
+
+        // The same request still inserts at the intended paragraph boundary when unchanged.
+        val unchanged = TextFieldState(original)
+        assertEquals(EditApply.DONE, applyEdit(unchanged, task, "有人点了灯。"))
+        assertEquals("他推门进来。\n有人点了灯。\n屋里很暗。", unchanged.text.toString())
+
+        for (changed in listOf("忽然，他推门进来。\n屋里很暗。", "他进来。\n屋里很暗。")) {
+            val state = TextFieldState(changed)
+            assertEquals(EditApply.MISSING, applyEdit(state, task, "有人点了灯。"))
+            assertEquals(changed, state.text.toString())
+        }
+    }
+
+    @Test
+    fun continuationAcceptanceDoesNotGuessBetweenRepeatedContext() {
+        val original = "他点了点头。\n他点了点头。\n天黑了。"
+        val task = editTarget(original, TextRange(original.indexOf("他点了点头。") + "他点了点头。".length), WriteAction.CONTINUE)!!
+        val changed = "序章。\n$original"
+        val state = TextFieldState(changed)
+        assertEquals(EditApply.MISSING, applyEdit(state, task, "他说可以。"))
+        assertEquals(changed, state.text.toString())
+
+        // Even a change after the cursor invalidates the request's source context.
+        val changedAfter = "他点了点头。\n他点了点头。\n夜更深了。"
+        val after = TextFieldState(changedAfter)
+        assertEquals(EditApply.MISSING, applyEdit(after, task, "他说可以。"))
+        assertEquals(changedAfter, after.text.toString())
+    }
+
+    @Test
+    fun continuationWithoutSourceSnapshotCannotBeAccepted() {
+        val original = "他推门进来。"
+        val state = TextFieldState(original)
+        val task = WriteAiTask.Edit(WriteAction.CONTINUE, "", original.length, original.length)
+        assertEquals(EditApply.MISSING, applyEdit(state, task, "屋里没人。"))
+        assertEquals(original, state.text.toString())
     }
 
     @Test
@@ -215,14 +260,38 @@ class WritePromptsTest {
               {"p":1,"wrong":"再门口","right":"在门口","reason":"错别字"},
               {"p":2,"wrong":"以晚","right":"已晚","reason":"错别字"},
               {"p":2,"wrong":"编出来的","right":"x","reason":""},
-              {"p":5,"wrong":"他","right":"她","reason":""},
               {"p":1,"wrong":"等着","right":"等着","reason":"没改"}
             ]}```"""
         val issues = WritePrompts.parseIssues(answer, paragraphs)
         assertEquals(listOf("再门口" to "在门口", "以晚" to "已晚"), issues.map { it.wrong to it.right })
         assertEquals(paragraphs[1], issues[1].paragraph)
         assertEquals(emptyList<WriteIssue>(), WritePrompts.parseIssues("""{"issues":[]}""", paragraphs))
+        for (broken in listOf("{}", """{"issues":null}""", """{"issues":{}}""", """{"issues":[null]}""")) {
+            assertTrue(runCatching { WritePrompts.parseIssues(broken, paragraphs) }.exceptionOrNull() is AiException)
+        }
         assertTrue(runCatching { WritePrompts.parseIssues("没有找到", paragraphs) }.exceptionOrNull() is AiException)
+    }
+
+    @Test
+    fun malformedIssueFieldsCannotLookLikeAnEmptySuccessfulCheck() {
+        val paragraphs = listOf("他再门口等着。")
+        val bad = listOf(
+            """{"p":"1","wrong":"再门口","right":"在门口"}""",
+            """{"p":1.0,"wrong":"再门口","right":"在门口"}""",
+            """{"p":0,"wrong":"再门口","right":"在门口"}""",
+            """{"p":2,"wrong":"再门口","right":"在门口"}""",
+            """{"wrong":"再门口","right":"在门口"}""",
+            """{"p":1,"wrong":12,"right":"在门口"}""",
+            """{"p":1,"wrong":"   ","right":"在门口"}""",
+            """{"p":1,"wrong":"再门口","right":12}""",
+            """{"p":1,"wrong":"再门口"}""",
+        )
+        for (item in bad) {
+            val answer = """{"issues":[$item]}"""
+            assertTrue(answer, runCatching { WritePrompts.parseIssues(answer, paragraphs) }.exceptionOrNull() is AiException)
+        }
+        val deletion = WritePrompts.parseIssues("""{"issues":[{"p":1,"wrong":"再","right":""}]}""", paragraphs)
+        assertEquals(listOf("再" to ""), deletion.map { it.wrong to it.right })
     }
 
     @Test

@@ -48,8 +48,8 @@ object ChapterOutlines {
             val text = raw.removePrefix("\uFEFF")
             val docVolume = volumeIn(name)
             val tables = MdTable.parse(text)
-            val tableLines = tables.flatMap { t -> t.lines + listOfNotNull(t.lines.firstOrNull()?.minus(1), t.lines.firstOrNull()?.minus(2)) }.toSet()
-            tables.forEach { t -> out += tableEntries(t, name, docVolume) }
+            val tableStarts = tables.associateBy { it.start }
+            val tableLines = tables.flatMap { t -> t.lines + listOf(t.start, t.start + 1) }.toSet()
 
             val headings = ArrayList<Pair<Int, String>>()
             fun volume(): Int? = headings.asReversed().firstNotNullOfOrNull { volumeIn(it.second) } ?: docVolume
@@ -77,6 +77,8 @@ object ChapterOutlines {
                     return@forEachIndexed
                 }
                 if (i in tableLines) {
+                    // A table without a 卷 column inherits its enclosing Markdown heading.
+                    tableStarts[i]?.let { out += tableEntries(it, name, volume()) }
                     if (cur?.level == 0) finish()
                     return@forEachIndexed
                 }
@@ -231,7 +233,9 @@ object ChapterOutlines {
      * 都没有就用包含这一章的章组。[byNumberOnly] 为真时只按章号找（细纲卡里填了细纲章号）。
      */
     fun match(all: List<OutlineEntry>, chapter: Int?, volume: Int, title: String, byNumberOnly: Boolean = false): List<OutlineEntry> {
-        val entries = all.filter { !it.shared }
+        // A chapter number or title may repeat in another volume. Never use facts explicitly
+        // scoped to that other volume; entries without volume scope still apply to either one.
+        val entries = all.filter { !it.shared && (it.volume == null || it.volume == volume) }
         val name = nameOf(title)
         if (!byNumberOnly && name.length >= 2) {
             val named = entries.filter { it.title == name }
@@ -244,11 +248,7 @@ object ChapterOutlines {
         }
         if (chapter == null) return emptyList()
         val exact = entries.filter { it.single && it.from == chapter }
-        if (exact.isNotEmpty()) {
-            val sameVolume = exact.filter { it.volume == volume }
-            if (sameVolume.isNotEmpty() && exact.any { it.volume != null && it.volume != volume }) return ordered(sameVolume)
-            return ordered(exact.filter { it.volume == null || it.volume == volume }.ifEmpty { exact })
-        }
+        if (exact.isNotEmpty()) return ordered(exact)
         val groups = entries.filter { !it.single && chapter in it.from..it.to }
         return groups.minByOrNull { it.to - it.from }?.let { best -> groups.filter { it.to - it.from == best.to - best.from } }.orEmpty()
     }
@@ -344,6 +344,31 @@ fun WorkStore.outlineEntries(workId: String): List<OutlineEntry> =
         parsed.map { it.copy(rank = rank) }
     }.distinctBy { listOf(it.from, it.to, it.title, it.volume, it.text.replace(Regex("\\s|　"), "")) }
 
+/** A newly imported work may still have one placeholder “正文” volume for all chapters. */
+internal fun WorkStore.chapterOutlineEntries(work: Work, chapterId: String, entries: List<OutlineEntry>): List<OutlineEntry> {
+    val chapter = work.chapter(chapterId) ?: return emptyList()
+    val number = chapterNo(work, chapterId)
+    val catalogVolume = work.volumeNumber(chapterId)
+    val byNumberOnly = card(work.id, chapterId).plan.isNotBlank()
+    val scoped = ChapterOutlines.match(entries, number, catalogVolume, chapter.title, byNumberOnly)
+    if (scoped.isNotEmpty() || byNumberOnly || number == null ||
+        work.volumes.size != 1 || work.volumes.single().title != WorkStore.DEFAULT_VOLUME
+    ) return scoped
+
+    // Infer a different volume only from a unique exact chapter number AND name. Never use a
+    // foreign volume as the ordinary fallback: repeated chapter numbers and names are common.
+    val name = ChapterOutlines.nameOf(chapter.title).takeIf { it.length >= 2 } ?: return scoped
+    val namedVolumes = entries.asSequence().filter { !it.shared && it.volume != null && it.title == name }
+        .mapNotNull { it.volume }.distinct().toList()
+    if (namedVolumes.size != 1) return scoped
+    val inferred = namedVolumes.single()
+    if (inferred == catalogVolume || entries.none {
+            !it.shared && it.volume == inferred && it.single && it.from == number && it.title == name
+        }
+    ) return scoped
+    return ChapterOutlines.match(entries, number, inferred, chapter.title)
+}
+
 /**
  * 这一章要用的细纲卡：作者写过的照用；没写过，或者是从细纲提取、作者没改过的，就按设定包里写到这一章的段落
  * （卷纲细纲、接续索引、总纲……）重新提取。细纲文档改了，没改过的卡跟着变。[entries] 传进来可以省掉重复解析。
@@ -355,7 +380,7 @@ fun WorkStore.plannedCard(workId: String, chapterId: String, entries: List<Outli
     val all = entries ?: outlineEntries(workId)
     val number = chapterNo(work, chapterId)
     val planned = stored.plan.isNotBlank()
-    val found = ChapterOutlines.match(all, number, work.volumeNumber(chapterId), chapter.title, planned)
+    val found = chapterOutlineEntries(work, chapterId, all)
     if (found.isEmpty()) {
         if (pack(workId).none { it.kind == PackKind.VOLUME || it.kind == PackKind.OUTLINE }) return PlannedCard(stored)
         val name = ChapterOutlines.nameOf(chapter.title)
