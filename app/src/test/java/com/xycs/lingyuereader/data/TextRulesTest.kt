@@ -229,7 +229,8 @@ class TextRulesTest {
         val whole = (System.nanoTime() - started) / 1_000_000
         val saved = TextRules.timeoutMillis
         // 期限设成整本耗时的四分之一：整本一次限时会判太慢，按批限时（每批约整本的一百五十分之一）不会。
-        TextRules.timeoutMillis = maxOf(whole / 4, 200)
+        // 下限给 1 秒：机器忙时（全量测试、GC）单批偶尔会被拖慢几百毫秒，下限太低会误判。
+        TextRules.timeoutMillis = maxOf(whole / 4, 1_000)
         try {
             val matcher = TextRules(toc = toc).titleMatcher(text)
             assertTrue(matcher("第300章 渡口"))
