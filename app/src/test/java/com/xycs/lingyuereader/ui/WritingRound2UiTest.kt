@@ -196,7 +196,7 @@ class WritingRound2UiTest {
         waitForText("系统提示（")
         compose.onNodeWithText("好").performClick()
         // 本章资料上限改成 2 万字。
-        compose.onNodeWithText("本章资料字数上限").performScrollTo().performClick()
+        compose.onNodeWithText("本章资料上限").performScrollTo().performClick()
         compose.onNodeWithText("20 千字").performClick()
         waitFor { store.assist(workId).briefLimit == 20_000 }
 

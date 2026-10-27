@@ -36,11 +36,13 @@ class AiWireTest {
     @Test
     fun openAiBodyPutsTheSystemPromptFirst() {
         val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "问"))))
-        assertEquals("deepseek-chat", o.getString("model"))
+        assertEquals(AiPresets.DEEPSEEK_V4_PRO, o.getString("model"))
         assertTrue(o.getBoolean("stream"))
         val m = o.getJSONArray("messages")
         assertEquals("system", m.getJSONObject(0).getString("role"))
         assertEquals("问", m.getJSONObject(1).getString("content"))
+        val flash = JSONObject(AiWire.body(deepseek.copy(model = AiPresets.DEEPSEEK_FLASH), "系统", listOf(AiMessage("user", "问"))))
+        assertEquals(AiPresets.DEEPSEEK_FLASH, flash.getString("model"))
     }
 
     @Test
@@ -93,6 +95,8 @@ class AiWireTest {
         assertTrue(AiWire.error(401, """{"error":{"message":"Invalid API key"}}""").startsWith("密钥不对"))
         assertTrue(AiWire.error(401, """{"error":{"message":"Invalid API key"}}""").contains("Invalid API key"))
         assertEquals("接口地址或模型名不对", AiWire.error(404, "<html>"))
+        assertTrue(AiWire.error(422, "").startsWith("请求参数无效"))
+        assertTrue(AiWire.error(429, "").contains("同时进行的请求太多"))
         assertTrue(AiWire.error(503, "").contains("503"))
     }
 }

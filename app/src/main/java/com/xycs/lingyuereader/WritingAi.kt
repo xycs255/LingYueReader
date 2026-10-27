@@ -2,7 +2,9 @@ package com.xycs.lingyuereader
 
 import android.content.SharedPreferences
 import com.xycs.lingyuereader.ai.AiAssistant
+import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiCost
+import com.xycs.lingyuereader.ai.AiException
 import com.xycs.lingyuereader.ai.AiFeature
 import com.xycs.lingyuereader.ai.AiMeter
 import com.xycs.lingyuereader.ai.AiUsage
@@ -156,6 +158,20 @@ data class RealtimeState(
     val today: Int = 0,
 )
 
+/** Upper bound for one complete chapter response, including V4's thinking tokens. */
+internal fun draftOutputTokenLimit(config: AiConfig): Int? {
+    val deepseek = config.preset == "deepseek" ||
+        runCatching { java.net.URI(config.baseUrl.trim()).host.equals("api.deepseek.com", ignoreCase = true) }.getOrDefault(false)
+    if (deepseek) {
+        return when (config.model.trim().lowercase()) {
+            "deepseek-v4-pro" -> 32_768
+            "deepseek-flash", "deepseek-v4-flash" -> 16_384
+            else -> 8_192
+        }
+    }
+    return if (config.preset in setOf("qwen", "kimi")) 8_192 else null
+}
+
 /**
  * 写作的 AI：选中文字改写、灵感、读者点评、矛盾检查、写作建议、整理设定集。
  * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
@@ -284,7 +300,10 @@ class WritingAi(
                 val meter = AiMeter(feature, workId)
                 // 改稿类的结果要换进正文：被截断（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
                 val answer = if (task == WriteAiTask.Review) ask(label, workId, system, prompt, meter = meter, onText = onPiece)
-                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId, confirmedOnly = taskSnapshot?.project == true, stable = samples, meter = meter, onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
+                else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
+                    confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
+                    stable = samples, meter = meter,
+                    onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 if (task is WriteAiTask.Edit && answer.endsWith(STOPPED_NOTE)) {
                     // 模型中途停了：写出来的只是一半，显示出来但不能采纳，那行说明也不能进正文。
                     _state.update { s ->
@@ -517,12 +536,12 @@ class WritingAi(
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
                 val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
                 if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, instruction) }
                 val reference = referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
                 if (reference != null) update { it.copy(referenceFingerprint = reference.excerpt.fingerprint,
                     referenceChapterLength = reference.excerpt.chapterLength) }
                 val (pack, rules, length, previous) = withContext(Dispatchers.IO) {
                     val i = work.chapters.indexOfFirst { it.id == chapterId }
-                    val taskSnapshot = store.writingTask(workId, chapterId, instruction)
                     listOf(
                         chapterContext(workId, chapterId, text).orEmpty(),
                         writingRules(workId, chapterId, text),
@@ -542,8 +561,9 @@ class WritingAi(
                 // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
                 var shown = 0L
                 val answer = askWithPack(
-                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens, stable = samples, meter = meter,
+                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens?.coerceAtMost(8_192), stable = samples, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
+                    requireTools = taskSnapshot?.project == true,
                     onReset = {
                         written = ""
                         shown = 0L
@@ -785,12 +805,17 @@ class WritingAi(
         toolsUpTo: String? = null,
         phase: WritingPhase? = null,
         confirmedOnly: Boolean = false,
+        /** Project tasks must not silently continue without access to the confirmed source documents. */
+        requireTools: Boolean = false,
         stable: String? = null,
         meter: AiMeter = AiMeter(featureOf(label), workId),
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
-        if (!canUsePack) return ask(label, workId, rest, prompt, whole, meter, onText)
+        if (!canUsePack) {
+            if (requireTools) throw AiException("本次项目任务需要设定包查阅工具；本机模型无法完成，请选支持工具调用的模型")
+            return ask(label, workId, rest, prompt, whole, meter, onText)
+        }
         val budget = knowledgeBudget(workId)
         val stage = phase ?: when (label) {
             "写本章", "接着写", "在编辑器里写", "续写" -> WritingPhase.CREATE
@@ -821,6 +846,7 @@ class WritingAi(
                 whole = whole,
                 maxTokens = maxTokens,
                 maxRounds = maxRounds,
+                requireTools = requireTools,
                 onLookup = { onReset() },
                 onText = onText,
             ) }
@@ -884,9 +910,9 @@ class WritingAi(
         return withContext(Dispatchers.IO) { store.aiPack(workId, budget) }
     }
 
-    /** 写一整章时回答的长度上限：这几家能放到 8K token（约五六千字），别家用默认。 */
+    /** 整章 V4 思考与正文共用输出上限；局部续写仍维持较短上限。 */
     private val draftTokens: Int?
-        get() = ai.currentConfig.preset.takeIf { it in setOf("deepseek", "qwen", "kimi") }?.let { 8_192 }
+        get() = draftOutputTokenLimit(ai.currentConfig)
 
     /** 记一条写作 AI 的结果（灵感、点评、矛盾检查、写本章）。 */
     private suspend fun log(workId: String, chapterId: String, kind: String, ask: String, text: String, meter: AiMeter? = null) {
@@ -969,12 +995,17 @@ class WritingAi(
                         ReviewGate.FACT -> {
                             if (!ready) GateResult(gate, error = "没有设置 AI，跳过", at = System.currentTimeMillis())
                             else {
-                                val (pack, previous) = withContext(Dispatchers.IO) {
+                                val (pack, previous, project) = withContext(Dispatchers.IO) {
                                     val i = work.chapters.indexOfFirst { it.id == chapterId }
                                     val taskSnapshot = store.writingTask(workId, chapterId)
-                                    chapterContext(workId, chapterId, text) to (if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(1_500) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty())
+                                    Triple(chapterContext(workId, chapterId, text),
+                                        if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(1_500)
+                                        else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty(),
+                                        taskSnapshot?.project == true)
                                 }
-                                val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack), WritePrompts.factReview(text, title, previous), whole = true, toolsUpTo = chapterId, phase = WritingPhase.REVIEW, confirmedOnly = true)
+                                val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack),
+                                    WritePrompts.factReview(text, title, previous), whole = true, toolsUpTo = chapterId,
+                                    phase = WritingPhase.REVIEW, confirmedOnly = true, requireTools = project)
                                 reviewResult(gate, answer)
                             }
                         }
@@ -1310,6 +1341,7 @@ class WritingAi(
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, stable = samples, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
+                    requireTools = taskSnapshot?.project == true,
                     onReset = {
                         written = ""
                         newCandidateGenerated = false
@@ -1516,7 +1548,7 @@ class WritingAi(
                         if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                         val answer = askWithPack(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
-                            toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
+                            toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
                             stable = samples, meter = createMeter,
                             onReset = {
                                 written = ""
@@ -1555,7 +1587,8 @@ class WritingAi(
                         }
                         askWithPack(
                             "本稿审读", workId, reviewer, WritePrompts.projectReview(task, manuscript, proseRules),
-                            whole = true, toolsUpTo = chapterId, phase = WritingPhase.REVIEW, confirmedOnly = true, meter = reviewMeter,
+                            whole = true, toolsUpTo = chapterId, phase = WritingPhase.REVIEW, confirmedOnly = true,
+                            requireTools = true, meter = reviewMeter,
                         )
                     },
                     revise = { manuscript, findings ->
@@ -1564,7 +1597,7 @@ class WritingAi(
                             "本稿修订", workId, system, WritePrompts.projectRevision(task, manuscript, findings, proseRules) +
                                 (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: ""),
                             whole = true, maxTokens = draftTokens, toolsUpTo = chapterId, phase = WritingPhase.REVISE,
-                            confirmedOnly = true, stable = samples, meter = reviseMeter,
+                            confirmedOnly = true, requireTools = true, stable = samples, meter = reviseMeter,
                         )).also { candidate ->
                             if (candidate.isNotBlank()) newCandidateGenerated = true
                             if (reference != null) {
@@ -1759,7 +1792,8 @@ class WritingAi(
                 val before = parts.getOrNull(i - 1)?.takeLast(WritePrompts.SYNC_OVERLAP).orEmpty()
                 val answer = askWithPack(
                     "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text),
-                    whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId, meter = meter,
+                    whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
+                    requireTools = true, meter = meter,
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
                 val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes)

@@ -20,17 +20,21 @@ data class AiPreset(
     val model: String,
     /** 去哪里申请密钥。 */
     val keySite: String,
-    /** 上下文多大（token）：写作 AI 按它决定设定包的知识库能整份放进多少。 */
+    /** 应用默认使用的上下文规划预算（token）：可低于服务商公布的模型容量，以控制设定包发送量。 */
     val context: Int = 64_000,
 )
 
 object AiPresets {
+    const val DEEPSEEK = "deepseek"
+    const val DEEPSEEK_V4_PRO = "deepseek-v4-pro"
+    const val DEEPSEEK_FLASH = "deepseek-flash"
     const val CUSTOM = "custom"
     const val LOCAL = "local"
     const val DEVICE = "device"
 
     val ALL = listOf(
-        AiPreset("deepseek", "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", "deepseek-chat", "platform.deepseek.com", 128_000),
+        // 1M 是服务商公布的模型容量；应用暂用 128K 估算写作设定包预算。
+        AiPreset(DEEPSEEK, "DeepSeek", AiProtocol.OPENAI, "https://api.deepseek.com", DEEPSEEK_V4_PRO, "platform.deepseek.com", 128_000),
         AiPreset("qwen", "通义千问", AiProtocol.OPENAI, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "阿里云百炼控制台", 128_000),
         AiPreset("kimi", "Kimi", AiProtocol.OPENAI, "https://api.moonshot.cn/v1", "kimi-latest", "platform.moonshot.cn", 128_000),
         AiPreset("glm", "智谱 GLM", AiProtocol.OPENAI, "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash", "open.bigmodel.cn", 128_000),
@@ -41,6 +45,14 @@ object AiPresets {
     )
 
     fun of(id: String): AiPreset = ALL.firstOrNull { it.id == id } ?: ALL.last()
+
+    /** 旧模型名保留在用户设置中供确认，不自动切换到可能更贵的 V4 Pro。 */
+    fun retiredDeepSeekModel(model: String): Boolean = model.trim().lowercase() in
+        setOf("deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash")
+
+    /** Flash 旧名仍暂时转到新模型；真正已停止服务的是这两个旧型号。 */
+    fun stoppedDeepSeekModel(model: String): Boolean = model.trim().lowercase() in
+        setOf("deepseek-chat", "deepseek-reasoner")
 }
 
 /** 划选后“问 AI”的快捷问题：[label] 显示在按钮上，[instruction] 是发给模型的要求。读者可以改、可以加。 */
@@ -112,10 +124,19 @@ data class AiConfig(
     /** 接口在局域网里：可以用 http://，密钥可以不填。 */
     val lan: Boolean get() = isLanHost(runCatching { java.net.URI(baseUrl.trim()).host }.getOrNull())
 
-    /** 地址、模型、密钥都填了（局域网里的模型可以不要密钥）。 */
-    val complete: Boolean get() = if (onDevice) model.isNotBlank() else baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan)
+    /** 只在官方 DeepSeek 地址提示历史型号；自定义代理是否仍提供它由代理决定。 */
+    val retiredOfficialDeepSeek: Boolean get() = preset == AiPresets.DEEPSEEK &&
+        runCatching { java.net.URI(baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }.getOrDefault(false) &&
+        AiPresets.retiredDeepSeekModel(model)
 
-    /** 模型的上下文大约多大（token）：按选的服务商。 */
+    val stoppedOfficialDeepSeek: Boolean get() = retiredOfficialDeepSeek && AiPresets.stoppedDeepSeekModel(model)
+
+    /** 地址、模型、密钥都填了（局域网里的模型可以不要密钥）。 */
+    val complete: Boolean get() = if (onDevice) model.isNotBlank() else
+        baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || lan) &&
+            !stoppedOfficialDeepSeek
+
+    /** 设定包的应用规划预算，不等于所填具体模型的硬上限。 */
     val contextTokens: Int get() = AiPresets.of(preset).context
 
     /** 用本机模型：不联网，上下文短。 */
