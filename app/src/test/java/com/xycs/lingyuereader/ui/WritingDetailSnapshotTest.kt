@@ -1,0 +1,399 @@
+package com.xycs.lingyuereader.ui
+
+import android.content.Context
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.unit.dp
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sun.net.httpserver.HttpServer
+import com.xycs.lingyuereader.MainActivity
+import com.xycs.lingyuereader.data.Appearance
+import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.LedgerEntry
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.LedgerOp
+import com.xycs.lingyuereader.data.LedgerOrigin
+import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.Prefs
+import com.xycs.lingyuereader.data.ThemeMode
+import com.xycs.lingyuereader.data.WorkStore
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
+import org.junit.runner.Description
+import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowLooper
+import java.io.File
+import java.net.InetSocketAddress
+
+/**
+ * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
+ * 细纲卡、AI 写本章、三道审稿、设定包、生词本。只截图供设计复核，不做像素断言；
+ * 每张截图前都断言关键文字，确认真的点到了那个状态。
+ */
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36], qualifiers = "w411dp-h891dp")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+class WritingDetailSnapshotTest {
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private var server: HttpServer? = null
+
+    private val seed = object : ExternalResource() {
+        /** 方法名里带 “Ai” 的测试把写作 AI 配好（指向本地假服务器），其余保持未配置。 */
+        private var withAi = false
+
+        override fun apply(base: Statement, description: Description): Statement {
+            withAi = description.methodName.orEmpty().contains("Ai")
+            return super.apply(base, description)
+        }
+
+        override fun before() {
+            val files = context.filesDir
+            // 书架：只有一本书。
+            File(files, "books").deleteRecursively()
+            val dir = File(files, "books/b1").apply { mkdirs() }
+            File(dir, "s0.txt").writeText("第一章 渡口\n　　河上的灯一盏盏亮起来。\n")
+            val entry = JSONObject()
+                .put("id", "b1").put("title", "渡口夜话").put("author", "沈青禾").put("format", "TXT")
+                .put("addedAt", 1L).put("openedAt", 0L).put("chapterCount", 1).put("charCount", 13)
+                .put("sources", JSONArray().put(JSONObject().put("name", "渡口夜话.txt").put("uri", "").put("file", "s0.txt")))
+            File(files, "books/index.json").writeText(JSONArray().put(entry).toString())
+            // 生词本：几个学习中的词，一个已掌握的词；收词时间是这几天，卡片上不显示 1970 年。
+            val day = 86_400_000L
+            val now = System.currentTimeMillis()
+            File(files, "vocabulary.json").writeText(
+                """[{"word":"渡口","reading":"dù kǒu","gloss":"ferry crossing","context":"河上的灯一盏盏亮起来，渡口还没有船。","bookTitle":"渡口夜话","addedAt":$now},
+                   {"word":"盏","reading":"zhǎn","gloss":"measure word for lamps","context":"河上的灯一盏盏亮起来。","bookTitle":"渡口夜话","addedAt":${now - 1 * day}},
+                   {"word":"封航","reading":"fēng háng","gloss":"to suspend shipping","context":"雪下大了，渡口封航。","bookTitle":"渡口夜话","addedAt":${now - 2 * day}},
+                   {"word":"船夫","reading":"chuán fū","gloss":"boatman","context":"船夫把桨收进舱里。","bookTitle":"渡口夜话","addedAt":${now - 3 * day},"mastered":true}]""",
+            )
+            File(files, "writing").deleteRecursively()
+            File(files, "llm").deleteRecursively()
+            seedWork(WorkStore(File(files, "writing")))
+            context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+            val ai = context.getSharedPreferences("ai", Context.MODE_PRIVATE).edit().clear()
+            if (withAi) {
+                // 照 WritingRound2UiTest：本地假服务器，只回一句话；截图过程中并不真的发请求。
+                server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+                    createContext("/v1/chat/completions") { ex ->
+                        ex.requestBody.readBytes()
+                        val bytes = JSONObject().put("choices", JSONArray().put(JSONObject()
+                            .put("message", JSONObject().put("content", "1. 让门外有脚步声。")).put("finish_reason", "stop")))
+                            .toString().toByteArray()
+                        ex.responseHeaders.add("Content-Type", "application/json")
+                        ex.sendResponseHeaders(200, bytes.size.toLong())
+                        ex.responseBody.use { it.write(bytes) }
+                    }
+                    start()
+                }
+                ai.putBoolean("enabled", true).putString("preset", "local").putString("protocol", "OPENAI")
+                    .putString("baseUrl", "http://127.0.0.1:${server!!.address.port}/v1").putString("model", "test-model")
+            }
+            ai.commit()
+            Prefs(context).saveAppearance(Appearance(mode = ThemeMode.LIGHT, blur = false, liquidGlass = false))
+        }
+
+        override fun after() {
+            server?.stop(0)
+            server = null
+        }
+    }
+    private val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    /** 作品《长夜》：30 章、几章正文与细纲卡、设定包几份文档、账本里的人物、伏笔和知情。 */
+    private fun seedWork(store: WorkStore) {
+        val work = store.create("长夜", "沈青禾")
+        val volume = work.volumes[0].id
+        val names = listOf(
+            "雪夜", "渡口", "夜渡", "客栈", "旧账", "沉船", "玉佩", "茶馆", "约定", "离岸",
+            "暗流", "城南", "偷听", "对质", "卧底", "火光", "残卷", "盐帮", "旧人", "归途",
+            "风起", "截杀", "石桥", "夜谈", "船票", "破绽", "围城", "对岸", "灯灭", "天亮",
+        )
+        store.renameChapter(work.id, work.chapters[0].id, "第1章 ${names[0]}")
+        val ids = mutableListOf(work.chapters[0].id)
+        names.drop(1).forEachIndexed { i, name -> ids += store.addChapter(work.id, volume, "第${i + 2}章 $name")!!.second.id }
+        store.saveText(work.id, ids[0], "林月推开门，风雪灌进来。")
+        store.saveText(work.id, ids[1], "渡口的灯还亮着，老周蹲在船头抽烟。")
+        store.saveText(work.id, ids[2], "林月把半块玉佩攥在手心。\n\n“今晚还有船吗？”她问。\n\n老周没抬头：“封航了，明天也未必有。”")
+        store.saveCard(work.id, ids[1], ChapterCard(
+            facts = "林月到渡口，得知封航", boundary = "不揭开老周的过去", pov = "林月",
+            hook = "对岸亮起一盏灯", threads = "明线",
+        ))
+        store.saveCard(work.id, ids[2], ChapterCard(
+            facts = "林月求老周夜里渡河，老周拒绝；沈默出现，替她付了船钱",
+            boundary = "沈默的来意不点破；玉佩只露一角",
+            pov = "林月",
+            countdown = "天亮前必须过河",
+            hook = "船行到河心，沈默问起那半块玉佩",
+            threads = "明线：过河；暗线：玉佩",
+        ))
+        store.addPackDoc(work.id, PackKind.OUTLINE, "总纲", "林月追查父亲沉船的真相，最后在天亮前渡过对岸。")
+        store.addPackDoc(work.id, PackKind.CHARACTER, "人物档案", "林月：想要真相，怕连累旁人。\n沈默：话少，随身带一把旧伞。")
+        store.addPackDoc(work.id, PackKind.FORESHADOW, "伏笔表", "| 伏笔 | 埋 | 收 |\n| 半块玉佩 | 1 | 12 |")
+        store.addPackDoc(work.id, PackKind.STYLE, "写作规范", "对白要短；不写心理独白。")
+        store.addPackDoc(work.id, PackKind.REFERENCE, "渡口地图说明", "渡口在城南，对岸是旧盐仓。")
+        store.applyLedger(work.id, ledgerEntries(), "截图示例")
+    }
+
+    private fun state(who: String, aspect: String, text: String, from: Int) =
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = text, subject = who, aspect = aspect, from = from))
+
+    private fun ledgerEntries(): List<LedgerOp> = listOf(
+        // 人物状态：每人好几个方面，让那排胶囊溢出。
+        state("林月", "位置", "在渡口客栈二楼", 3),
+        state("林月", "身体", "左臂刀伤未愈", 2),
+        state("林月", "随身", "半块玉佩、一把短刀", 1),
+        state("林月", "目标", "找到沉船那夜的账册", 4),
+        state("林月", "关系", "与沈默暂时结盟", 9),
+        state("林月", "情绪", "戒备，不信任何人", 5),
+        state("沈默", "位置", "在城南茶馆", 8),
+        state("沈默", "随身", "一把旧伞", 3),
+        state("沈默", "目标", "查清盐帮旧账", 6),
+        state("沈默", "身份", "自称账房先生", 3),
+        state("老周", "位置", "守着渡口的旧船", 2),
+        state("老周", "身体", "右腿跛了多年", 2),
+        state("老周", "情绪", "提起沉船就沉默", 6),
+        state("杜娘", "位置", "城南茶馆柜台后", 8),
+        state("杜娘", "身份", "茶馆老板娘", 8),
+        state("杜娘", "关系", "与顾长风有旧", 12),
+        state("顾长风", "位置", "离开渡口北上", 10),
+        state("顾长风", "目标", "三日后回来接人", 9),
+        // 伏笔：开着的、过期没收的、已收的、计划未定的。
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "顾长风说三日后再来", subject = "顾长风", from = 9, payoff = 26)),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "老周藏起的半张船票", subject = "老周", from = 2, payoff = 6)),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "半块玉佩的来历", subject = "林月", from = 1, payoff = 12, done = true, closed = 12)),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.PROMISE, text = "渡口那盏不灭的灯", from = 3)),
+        // 知情：有人知道、有人后来才知道，以及只有作者知道的。
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "杜娘是卧底", subject = "沈默", from = 15, via = "偷听")),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "杜娘是卧底", subject = "林月", from = 22, via = "沈默告知")),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "杜娘是卧底", subject = "顾长风", secret = true, origin = LedgerOrigin.IMPORT)),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "沉船那夜有人纵火", subject = "老周", from = 1, via = "亲眼所见")),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "沉船那夜有人纵火", subject = "林月", from = 18, via = "残卷")),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.KNOW, text = "老周就是当年的船主", secret = true, origin = LedgerOrigin.IMPORT)),
+        // 一件事和一条时间线。
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "老周的船沉了", from = 3, origin = LedgerOrigin.IMPORT)),
+        LedgerOp.Add(LedgerEntry(kind = LedgerKind.TIME, text = "离开渡口第三天", from = 9)),
+    )
+
+    private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
+        ShadowLooper.idleMainLooper()
+        condition()
+    }
+
+    private fun count(text: String, substring: Boolean = true) =
+        compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().size
+
+    private fun waitForText(text: String) = waitFor { count(text) > 0 }
+
+    private fun waitForGone(text: String) = waitFor { count(text) == 0 }
+
+    private fun waitForDescription(text: String) =
+        waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        val working = File(requireNotNull(System.getProperty("user.dir")))
+        val appDir = if (working.name == "app") working else File(working, "app")
+        val output = File(appDir, "build/outputs/ui-check/$name.png")
+        output.parentFile!!.mkdirs()
+        output.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /**
+     * 在作品页的列表里滚到 [target]。列表先按“作品进度”找到，再按节点 id 认：
+     * 滚下去以后“作品进度”就不在树里了，不能一直靠它认列表。
+     */
+    private fun scrollWorkListTo(target: SemanticsMatcher) {
+        compose.waitForIdle()
+        val id = compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(hasText("作品进度"))).fetchSemanticsNode().id
+        val list = compose.onNode(SemanticsMatcher("作品页列表") { it.id == id })
+        list.performScrollToNode(target)
+        // 滚到的那一行贴在列表顶上、被标题栏盖住：再往回滚一点，让它露出来、点得到。
+        val back = with(compose.density) { 160.dp.toPx() }
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, -back) }
+        compose.waitForIdle()
+    }
+
+    /** 从书架点进《长夜》作品页。 */
+    private fun openWork() {
+        waitForText("渡口夜话")
+        compose.onNodeWithText("写作").performClick()
+        waitForText("长夜")
+        compose.onNodeWithText("长夜").performClick()
+        waitForText("作品进度")
+    }
+
+    /** 在作品页的规划树里点第 3 章，进编辑器。 */
+    private fun openChapterThree() {
+        openWork()
+        val row = hasText("第3章 夜渡") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
+        scrollWorkListTo(row)
+        compose.onNode(row).performScrollTo().performClick()
+        waitForText("半块玉佩攥在手心")
+        waitForDescription("打开四组工具")
+    }
+
+    private fun openTools() {
+        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        waitForText("写作工具")
+        waitForDescription("关闭四组工具")
+    }
+
+    /** 点写作工具里的一个分类，等这个分类的第一个入口出现。 */
+    private fun pickGroup(label: String, firstShortcut: String) {
+        compose.onNodeWithText(label).performClick()
+        waitForDescription(firstShortcut)
+    }
+
+    @Test
+    fun editorToolsBottomCardAndPack() {
+        openChapterThree()
+        // 没配置写作 AI：底栏是“设置写作 AI”大按钮。
+        waitForText("设置写作 AI")
+        capture("detail-editor-bottom")
+
+        openTools()
+        waitForDescription("写本章草稿")
+        waitForDescription("快捷标点")
+        capture("detail-editor-tools-write")
+        pickGroup("查", "三道审稿")
+        waitForDescription("规则检查")
+        capture("detail-editor-tools-check")
+        pickGroup("整理", "整理入账")
+        waitForDescription("历史版本")
+        capture("detail-editor-tools-tidy")
+        pickGroup("更多", "全部工具")
+        waitForDescription("范本写法")
+        capture("detail-editor-tools-more")
+
+        // 细纲卡：从“查”里点进去。
+        pickGroup("查", "细纲卡")
+        compose.onNodeWithContentDescription("细纲卡").performClick()
+        waitForText("沈默的来意不点破")
+        waitForText("上一章「第2章 渡口」留下的")
+        capture("detail-chapter-card")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForDescription("打开四组工具")
+
+        // 设定包：同样从“查”里点进去。
+        openTools()
+        pickGroup("查", "设定包")
+        compose.onNodeWithContentDescription("设定包").performClick()
+        waitForText("渡口地图说明")
+        waitForText("人物档案")
+        capture("detail-pack")
+    }
+
+    @Test
+    fun editorWithAiBottomDraftAndReview() {
+        openChapterThree()
+        // 配好写作 AI、正文不空、没有选字：推荐“AI 接着写”。
+        waitForText("AI 接着写")
+        waitForGone("设置写作 AI")
+        capture("detail-editor-bottom-ai")
+
+        // AI 写本章：没有候选稿。
+        openTools()
+        compose.onNodeWithContentDescription("写本章草稿").performClick()
+        waitForText("开始创作")
+        waitForGone("正在读取已保存的候选稿")
+        waitForGone("正在核对本章任务与资料")
+        waitForText("本章写作任务")
+        waitForGone("正在按本章资料估算")
+        capture("detail-draft")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForDescription("打开四组工具")
+
+        // 三道审稿：还没开始审。
+        openTools()
+        pickGroup("查", "三道审稿")
+        compose.onNodeWithContentDescription("三道审稿").performClick()
+        waitForText("还没有审过")
+        waitForText("开始审稿")
+        capture("detail-review")
+    }
+
+    @Test
+    fun ledgerTabsAndDialogs() {
+        openWork()
+        compose.onNodeWithText("故事账本").performScrollTo().performClick()
+        // 从作品页进来默认是“人物”标签。
+        waitForText("人物状态 · 点方面直接调整")
+        waitForText("身体 · 左臂刀伤未愈")
+        capture("detail-ledger-people")
+
+        compose.onNodeWithText("伏笔").performClick()
+        waitForText("账本伏笔 · 拖动计划收章")
+        waitForText("老周藏起的半张船票")
+        capture("detail-ledger-foreshadow")
+
+        compose.onNodeWithText("知情").performClick()
+        waitForText("谁知道什么 · 点格子核对")
+        waitForText("真相（作者）")
+        capture("detail-ledger-know")
+
+        compose.onNodeWithText("全部记录").performClick()
+        waitForText("人物状态 · 杜娘")
+        capture("detail-ledger-all")
+
+        // 看到第几章：章节选择对话框。
+        compose.onNodeWithText("看到第几章").performClick()
+        waitForText("列出所有条目")
+        waitForText("第3章 夜渡")
+        capture("detail-ledger-chapter-pick")
+        compose.onNodeWithText("列出所有条目").performClick()
+        waitForGone("列出所有条目")
+
+        // 点开一条：编辑对话框。
+        compose.onNodeWithText("茶馆老板娘").performScrollTo().performClick()
+        waitForText("改一条")
+        waitForText("删除这一条")
+        capture("detail-ledger-edit")
+    }
+
+    @Test
+    fun workTreeReorder() {
+        openWork()
+        // 滚到“调整章节顺序”，让它和前几章同在画面里。
+        scrollWorkListTo(hasText("调整章节顺序"))
+        compose.onNodeWithText("调整章节顺序").performClick()
+        waitForText("完成调整")
+        waitForText("用章下方按钮移动")
+        capture("detail-work-tree-reorder")
+    }
+
+    @Test
+    fun vocabularyCardsAndSingleBookShelf() {
+        waitForText("渡口夜话")
+        capture("detail-shelf-one")
+        compose.onNodeWithText("生词本").performClick()
+        waitForText("学习中 3")
+        waitForText("已掌握 1")
+        waitForText("fēng háng")
+        capture("detail-vocabulary-cards")
+    }
+}
