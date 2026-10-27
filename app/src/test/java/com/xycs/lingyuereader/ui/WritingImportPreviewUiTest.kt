@@ -6,7 +6,9 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -78,6 +80,8 @@ class WritingImportPreviewUiTest {
             compose.activity.setContent { LingYueTheme(appearance) { WorkPackScreen(vm, workId, initialPreview = items) } }
         }
         waitForText("3 个文件")
+        waitForText("来源：第一卷/细纲.md")
+        waitForText("来源：第二卷/细纲.md")
         waitForText("和前面的重名，导入为「细纲（2）」")
         waitForText("替换同名")
         compose.onNodeWithText("导入 3 个文件").performClick()
@@ -124,5 +128,48 @@ class WritingImportPreviewUiTest {
         val doc = store.pack(workId).single { it.title == "细纲" }
         assertEquals(Triple(PackKind.CHARACTER, PackKind.CHARACTER.priority, false), Triple(doc.kind, doc.priority, doc.always))
         assertTrue(store.pack(workId).none { it.title == "杂记" })
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "w360dp-h640dp")
+    fun markdownImportShowsItsRelativePathAndExcerptAndAllowsRetitling() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val item = PackImport.classify("第一卷/人物/杜娘.md", "# 杜娘\n\n她守着渡口客栈，知道渡船晚到。")
+        val appearance = vm.appearance.value
+        vm.writing.loadPack(workId)
+        compose.runOnUiThread {
+            compose.activity.setContent { LingYueTheme(appearance) { WorkPackScreen(vm, workId, initialPreview = listOf(item)) } }
+        }
+        waitForText("来源：第一卷/人物/杜娘.md")
+        waitForText("原文：# 杜娘 · 她守着渡口客栈")
+        compose.onNodeWithText("来源：第一卷/人物/杜娘.md").performClick()
+        waitForText("导入后的标题")
+        compose.onNode(hasSetTextAction()).performTextReplacement("杜娘人物表")
+        compose.onNodeWithText("好").performClick()
+        waitForText("杜娘人物表")
+        compose.onNodeWithText("导入 1 个文件").performScrollTo().performClick()
+        val store = WorkStore(writingDir)
+        waitFor { store.pack(workId).any { it.title == "杜娘人物表" } }
+        val doc = store.pack(workId).single { it.title == "杜娘人物表" }
+        assertEquals(item.text, store.packText(workId, doc.id))
+    }
+
+    @Test
+    fun blankMarkdownCannotBeSelectedOverAnExistingDocument() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val item = PackImport.classify("人物档案.md", "  \n  ")
+        val appearance = vm.appearance.value
+        vm.writing.loadPack(workId)
+        compose.runOnUiThread {
+            compose.activity.setContent { LingYueTheme(appearance) { WorkPackScreen(vm, workId, initialPreview = listOf(item)) } }
+        }
+        waitForText("空白文件已跳过")
+        waitForText("导入 0 个文件")
+        compose.onNodeWithText("来源：人物档案.md").performClick()
+        waitForText("空白文件不能导入")
+        compose.onNodeWithText("好").performClick()
+        waitForText("导入 0 个文件")
+        val store = WorkStore(writingDir)
+        assertEquals("林月", store.packText(workId, store.pack(workId).single { it.title == "人物档案" }.id))
     }
 }

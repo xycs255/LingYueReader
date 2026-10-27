@@ -933,6 +933,7 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
      */
     @Synchronized
     fun importPack(workId: String, items: List<PackImportItem>): PackImportResult {
+        require(items.none { it.include && it.text.isBlank() }) { "空白的 Markdown/TXT 文件不能导入或覆盖现有资料" }
         var added = 0
         var replaced = 0
         var chapters = 0
@@ -949,7 +950,8 @@ class WorkStore(private val root: File, private val restoreSwapHook: ((String) -
         val chapterTitles = HashSet<String>()
         manuscripts.forEach { item ->
             val fileName = item.fileName.substringAfterLast('/')
-            PackImport.chapters(item.text, item.title).forEach { (heading, body) ->
+            PackImport.chapters(item.text, item.title, markdown = item.fileName.endsWith(".md", true) ||
+                item.fileName.endsWith(".markdown", true)).forEach { (heading, body) ->
                 val work = get(workId) ?: return@forEach
                 // 两卷都从“第1章”编号这类：后一章加编号另起一章，不把本次前面导入的那章盖掉。
                 val title = if (heading in chapterTitles) PackImport.uniqueTitle(heading, chapterTitles + work.chapters.map { it.title }) else heading

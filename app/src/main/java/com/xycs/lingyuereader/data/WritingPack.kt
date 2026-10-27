@@ -2,9 +2,11 @@ package com.xycs.lingyuereader.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.Charset
+import java.text.Normalizer
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -46,7 +48,8 @@ data class PackImportItem(
     val text: String,
     val kind: PackKind,
     val asChapters: Boolean = false,
-    val include: Boolean = true,
+    /** Empty source files are shown in preview but never selected to replace author material. */
+    val include: Boolean = text.isNotBlank(),
     val priority: Int = kind.priority,
     val always: Boolean = kind.always,
     /** 导入后的标题：默认是去掉文件夹和扩展名的文件名。 */
@@ -124,7 +127,7 @@ object PackImport {
     }
 
     /** 正文按章名拆开：Markdown 标题或“第X章”“楔子”这类单独成行的章名。没有章名时整份当一章。 */
-    fun chapters(text: String, fallbackTitle: String): List<Pair<String, String>> {
+    fun chapters(text: String, fallbackTitle: String, markdown: Boolean = true): List<Pair<String, String>> {
         val out = mutableListOf<Pair<String, String>>()
         var title: String? = null
         val body = StringBuilder()
@@ -135,8 +138,23 @@ object PackImport {
             body.setLength(0)
         }
         var preface: Pair<String, String>? = null
+        var fence: Char? = null
+        var fenceWidth = 0
         for (raw in text.removePrefix("\uFEFF").lines()) {
             val line = raw.trim().trim('　').trim()
+            val marker = line.firstOrNull()?.takeIf { it == '`' || it == '~' }
+            val width = if (marker == null) 0 else line.takeWhile { it == marker }.length
+            if (markdown && fence != null) {
+                if (line.isNotEmpty()) body.append(line).append('\n')
+                if (marker == fence && width >= fenceWidth && line.drop(width).isBlank()) fence = null
+                continue
+            }
+            if (markdown && marker != null && width >= 3) {
+                fence = marker
+                fenceWidth = width
+                body.append(line).append('\n')
+                continue
+            }
             val heading = Regex("""^#{1,4}\s+(.+)$""").matchEntire(line)?.groupValues?.get(1)?.trim()
             val isTitle = heading?.let { ChapterTitles.isTxtChapterTitle(it) || it.startsWith("第") } ?: ChapterTitles.isTxtChapterTitle(line)
             if (isTitle) {
@@ -163,6 +181,63 @@ object PackImport {
     // ---------- 打包 ----------
 
     private const val MANIFEST = "pack.json"
+    const val MAX_TEXT_BYTES = 16 * 1024 * 1024
+    const val MAX_IMPORT_BYTES = 64 * 1024 * 1024
+    const val MAX_IMPORT_FILES = 512
+    const val MAX_IMPORT_SOURCES = 512
+    private const val MAX_MANIFEST_BYTES = 1024 * 1024
+    private const val MAX_ARCHIVE_ENTRIES = 2_048
+    const val MAX_ARCHIVE_EXPANDED_BYTES = 128 * 1024 * 1024
+    private const val MAX_PATH_CHARS = 512
+
+    private fun sizeLabel(bytes: Int): String = when {
+        bytes % (1024 * 1024) == 0 -> "${bytes / (1024 * 1024)} MB"
+        bytes >= 1024 -> "${bytes / 1024} KB"
+        else -> "$bytes 字节"
+    }
+
+    /** Read incrementally so a large file or compressed ZIP entry cannot allocate without bound. */
+    private fun limitedBytes(input: InputStream, name: String, maxBytes: Int): ByteArray {
+        val output = ByteArrayOutputStream(minOf(maxBytes, 8_192))
+        val buffer = ByteArray(8_192)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            require(output.size().toLong() + read <= maxBytes) { "$name 超过 ${sizeLabel(maxBytes)} 导入上限" }
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
+    }
+
+    private fun discardBytes(input: InputStream, maxBytes: Int, archiveLimit: Int): Int {
+        val buffer = ByteArray(8_192)
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return total
+            require(total.toLong() + read <= maxBytes) { "ZIP 解压后超过 ${sizeLabel(archiveLimit)} 上限" }
+            total += read
+        }
+    }
+
+    fun readText(name: String, input: InputStream, maxBytes: Int = MAX_TEXT_BYTES): String {
+        require(maxBytes in 1..MAX_TEXT_BYTES) { "文本导入大小限制无效" }
+        return TextDecoder.decode(limitedBytes(input, name, maxBytes))
+    }
+
+    /** ZIP names are logical source paths, never filesystem destinations. */
+    private fun zipPath(raw: String): String {
+        require(raw.isNotEmpty() && raw.length <= MAX_PATH_CHARS) { "ZIP 文件路径无效或过长" }
+        val path = Normalizer.normalize(raw.replace('\\', '/'), Normalizer.Form.NFC)
+        require(!path.startsWith('/') && !Regex("^[A-Za-z]:").containsMatchIn(path)) { "ZIP 不支持绝对路径：$raw" }
+        val parts = path.split('/').filter { it.isNotEmpty() && it != "." }
+        require(parts.isNotEmpty() && parts.none { it == ".." } && parts.none { part -> part.any { it < ' ' } }) {
+            "ZIP 文件路径无效：$raw"
+        }
+        return parts.joinToString("/")
+    }
+
+    private class ZipNameCharsetException(cause: IllegalArgumentException) : RuntimeException(cause)
 
     /** 设定包打成 zip：每份文档一个 .md，外加 pack.json 记类型、优先级、常用与否，导回来原样还原。 */
     fun writeZip(docs: List<Pair<PackDoc, String>>, out: OutputStream) {
@@ -188,43 +263,115 @@ object PackImport {
         }
     }
 
-    /** 读 zip 里的文本文件；有 pack.json 时按它还原类型和优先级。压缩包的文件名先按 UTF-8 读，读不出再按 GBK（Windows 上打的包）。 */
-    fun readZip(open: () -> InputStream): List<PackImportItem> {
-        val files = linkedMapOf<String, ByteArray>()
+    /** 读 zip 里的文本文件；有 pack.json 时按它还原属性。文件名先试 UTF-8，再试 GBK。 */
+    fun readZip(open: () -> InputStream): List<PackImportItem> = readZip(open, MAX_IMPORT_BYTES, MAX_IMPORT_FILES)
+
+    /** Budgeted overload for a batch of selected files. */
+    fun readZip(
+        open: () -> InputStream,
+        maxTextBytes: Int = MAX_IMPORT_BYTES,
+        maxFiles: Int = MAX_IMPORT_FILES,
+        maxArchiveBytes: Int = MAX_ARCHIVE_EXPANDED_BYTES,
+    ): List<PackImportItem> = readZipMeasured(open, maxTextBytes, maxFiles, maxArchiveBytes).first
+
+    /** Return expanded bytes as well so a batch can share one ZIP budget. */
+    internal fun readZipMeasured(
+        open: () -> InputStream,
+        maxTextBytes: Int,
+        maxFiles: Int,
+        maxArchiveBytes: Int,
+    ): Pair<List<PackImportItem>, Int> {
+        require(maxTextBytes in 1..MAX_IMPORT_BYTES && maxFiles in 1..MAX_IMPORT_FILES &&
+            maxArchiveBytes in 1..MAX_ARCHIVE_EXPANDED_BYTES) { "ZIP 导入大小限制无效" }
+        val files = linkedMapOf<String, String>()
         var manifest: JSONObject? = null
+        var expandedBytes = 0L
         fun read(charset: Charset) {
             files.clear()
+            manifest = null
+            var entries = 0
+            var totalBytes = 0L
+            expandedBytes = 0L
+            val seen = HashSet<String>()
             ZipInputStream(open(), charset).use { zip ->
                 while (true) {
-                    val e = zip.nextEntry ?: break
+                    val e = try { zip.nextEntry } catch (error: IllegalArgumentException) {
+                        throw ZipNameCharsetException(error)
+                    } ?: break
+                    require(++entries <= MAX_ARCHIVE_ENTRIES) { "ZIP 内文件过多（最多 $MAX_ARCHIVE_ENTRIES 项）" }
+                    val name = zipPath(e.name)
+                    require(seen.add(name)) { "ZIP 内重复文件路径：$name" }
                     if (e.isDirectory) continue
-                    val name = e.name
                     val base = name.substringAfterLast('/')
-                    if (base.startsWith(".") || name.startsWith("__MACOSX")) continue
+                    val remainingArchive = (maxArchiveBytes - expandedBytes).toInt()
+                    require(remainingArchive > 0) { "ZIP 解压后超过 ${sizeLabel(maxArchiveBytes)} 上限" }
+                    if (base == ".DS_Store" || base.startsWith("._") || name.startsWith("__MACOSX/") ||
+                        (base != MANIFEST && !isText(base))) {
+                        expandedBytes += discardBytes(zip, remainingArchive, maxArchiveBytes)
+                        continue
+                    }
                     when {
-                        base == MANIFEST -> manifest = runCatching { JSONObject(zip.readBytes().decodeToString()) }.getOrNull()
-                        isText(base) -> files[name] = zip.readBytes()
+                        base == MANIFEST -> {
+                            require(manifest == null) { "ZIP 内有多份 pack.json" }
+                            val bytes = limitedBytes(zip, name, minOf(MAX_MANIFEST_BYTES, remainingArchive))
+                            expandedBytes += bytes.size
+                            manifest = try { JSONObject(TextDecoder.decode(bytes)) }
+                            catch (error: Exception) { throw IllegalArgumentException("$name 损坏：${error.message ?: "元数据无法读取"}", error) }
+                        }
+                        else -> {
+                            require(files.size < maxFiles) { "ZIP 内文本文件过多（最多 $maxFiles 份）" }
+                            val allowed = minOf(MAX_TEXT_BYTES.toLong(), maxTextBytes - totalBytes, remainingArchive.toLong()).toInt()
+                            require(allowed > 0) { "ZIP 文本总量超过 ${sizeLabel(maxTextBytes)} 上限" }
+                            val bytes = limitedBytes(zip, name, allowed)
+                            totalBytes += bytes.size
+                            expandedBytes += bytes.size
+                            files[name] = try { TextDecoder.decode(bytes) }
+                            catch (error: Exception) { throw IllegalArgumentException("$name 无法解码：${error.message ?: "文本损坏"}", error) }
+                        }
                     }
                 }
             }
+            require(entries > 0) { "ZIP 文件损坏或为空" }
         }
         try {
             read(Charsets.UTF_8)
-        } catch (e: IllegalArgumentException) {
+        } catch (e: ZipNameCharsetException) {
             read(Charset.forName("GBK"))
         }
-        val meta = manifest?.optJSONArray("docs")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.associateBy { it.optString("file") } }.orEmpty()
-        return files.map { (name, bytes) ->
-            val text = TextDecoder.decode(bytes)
-            val m = meta[name.substringAfterLast('/')]
+        require(files.isNotEmpty()) { "ZIP 中没有可导入的 Markdown/TXT 文件" }
+        val meta = linkedMapOf<String, JSONObject>()
+        manifest?.let { root ->
+            require(root.opt("format") is Number && root.getInt("format") == 1) { "pack.json 版本不受支持" }
+            val docs = root.optJSONArray("docs") ?: throw IllegalArgumentException("pack.json 缺少 docs 列表")
+            for (i in 0 until docs.length()) {
+                val m = docs.optJSONObject(i) ?: throw IllegalArgumentException("pack.json 第 ${i + 1} 项格式无效")
+                val path = zipPath(m.optString("file"))
+                require(meta.putIfAbsent(path, m) == null) { "pack.json 重复文件：$path" }
+                require(m.opt("kind") is String && runCatching { PackKind.valueOf(m.getString("kind")) }.isSuccess &&
+                    m.opt("priority") is Number && m.opt("always") is Boolean &&
+                    (!m.has("title") || m.opt("title") is String)) { "pack.json 中 $path 的属性格式无效" }
+            }
+        }
+        val baseCounts = files.keys.groupingBy { it.substringAfterLast('/') }.eachCount()
+        val usedMeta = HashSet<String>()
+        val items = files.map { (name, text) ->
+            val base = name.substringAfterLast('/')
+            val key = when {
+                name in meta -> name
+                baseCounts[base] == 1 && base in meta -> base
+                else -> null
+            }
+            val m = key?.let { usedMeta += it; meta[it] }
             if (m != null) {
-                val kind = runCatching { PackKind.valueOf(m.optString("kind")) }.getOrDefault(PackKind.REFERENCE)
+                val kind = PackKind.valueOf(m.getString("kind"))
                 val item = PackImportItem(name, text, kind, priority = m.optInt("priority", kind.priority), always = m.optBoolean("always", kind.always))
                 m.optString("title").takeIf { it.isNotBlank() }?.let { item.copy(title = it) } ?: item
             } else {
                 classify(name, text)
             }
         }.sortedBy { it.fileName }
+        require(usedMeta.size == meta.size) { "pack.json 引用了 ZIP 中不存在或有歧义的文件" }
+        return items to expandedBytes.toInt()
     }
 
     /** 新建文档时的模板：人物档案给人物卡的五问，写作规范给常用的几条，检查规则给写法示例，其余空着。 */

@@ -45,7 +45,7 @@ class WritingKnowledgeTest {
         assertEquals(listOf("人物档案", "写作约定"), small.knowledge.map { it.title })
         assertEquals(listOf("全书总纲"), small.overflow.map { it.title })
         assertTrue("《全书总纲》（总纲，" in small.prefix && "模型上下文放不下改为按需查" in small.prefix)
-        assertTrue("小节：一、写作原则；四、分卷速查；第一卷《渡口》；第二卷《对岸》" in small.prefix)
+        assertTrue("小节：一、写作原则；四、分卷速查；四、分卷速查 › 第一卷《渡口》；四、分卷速查 › 第二卷《对岸》" in small.prefix)
         // 文档没改，前缀每次都一样（服务商能缓存）。
         assertEquals(small.prefix, PackKnowledge.build(docs(), budget = 2_000).prefix)
         // DeepSeek（128K）大约能放十万字。
@@ -91,6 +91,35 @@ class WritingKnowledgeTest {
         repeat(8) { i -> total += tools.run(AiToolCall("$i", "read_doc", JSONObject().put("title", "资料").put("offset", i * PackTools.PAGE))).length }
         assertTrue(total < PackTools.TOTAL + 200)
         assertTrue(tools.run(AiToolCall("x", "read_doc", JSONObject().put("title", "资料"))).startsWith("这次能查的已经到上限了"))
+    }
+
+    @Test
+    fun importedMarkdownH1SectionsKeepTheirScopeAndIgnoreFencedExamples() {
+        val markdown = """# 第一卷
+            |## 第一章
+            |林月守在渡口。
+            |```md
+            |# 假卷
+            |## 第一章
+            |示例暗号只供排版说明。
+            |```
+            |# 第二卷
+            |## 第一章
+            |沈默独自过河。
+        """.trimMargin()
+        val paths = PackOutline.sections(markdown, "双卷细纲").map { it.path.joinToString(" › ") }
+        assertEquals(listOf("第一卷", "第一卷 › 第一章", "第二卷", "第二卷 › 第一章"), paths)
+        assertEquals("## 第一章\n沈默独自过河。", PackOutline.read(markdown, "第二卷 › 第一章", "双卷细纲"))
+        val document = PackDoc("v", PackKind.VOLUME, "双卷细纲", always = false) to markdown
+        val tools = PackTools(listOf(document), emptyList())
+        val result = tools.run(AiToolCall("1", "read_doc", JSONObject().put("title", "双卷细纲.MD").put("section", "第二卷 › 第一章")))
+        assertEquals("## 第一章\n沈默独自过河。", result)
+        assertTrue(PackKnowledge.build(listOf(document), 2_000).prefix.contains("第二卷 › 第一章"))
+        assertTrue(tools.run(AiToolCall("2", "search", JSONObject().put("query", "示例暗号"))).startsWith("没搜到"))
+        val characters = "# 张飞\n想要守住关口。\n# 赵云\n想要带人出城。"
+        assertEquals(listOf("张飞", "赵云"), PackOutline.sections(characters, "人物档案").map { it.title })
+        assertEquals("# 赵云\n想要带人出城。", PackOutline.read(characters, "赵云", "人物档案"))
+        assertEquals(listOf("人物"), PackOutline.sections("# 人物档案\n## 人物\n张飞与赵云。", "人物档案").map { it.title })
     }
 
     @Test

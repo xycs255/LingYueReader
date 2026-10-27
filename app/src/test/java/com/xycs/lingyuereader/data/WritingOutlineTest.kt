@@ -118,6 +118,42 @@ class WritingOutlineTest {
     }
 
     @Test
+    fun fencedMarkdownExamplesAreNotChapterOutlinesOrFacts() {
+        val markdown = """
+            # 第一卷细纲
+
+            ### 第一章 真章
+            事实：开端。
+
+            ```markdown
+            ## 第二卷
+            ### 第二章 示例章节
+            事实：只用于展示格式。
+            | 章 | 事实 |
+            |---|---|
+            | 第八章 | 示例表格 |
+            ```
+
+            事实：代码块之后仍属第一章。
+
+            ~~~text
+            第九章 示例段落：不应进入细纲。
+            ~~~
+
+            ### 第三章 真结尾
+            事实：真实的下一章。
+        """.trimIndent()
+        val txt = "第四章 原有写法：中文 TXT 细纲仍可识别。"
+        val entries = ChapterOutlines.parse(listOf("细纲.md" to markdown, "细纲.txt" to txt))
+
+        assertEquals(listOf(1, 3, 4), entries.map { it.from })
+        assertEquals(listOf(1, 1, null), entries.map { it.volume })
+        assertEquals("事实：开端。\n事实：代码块之后仍属第一章。", entries[0].text)
+        assertEquals("真实的下一章。", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 1, "第三章 真结尾")).facts)
+        assertTrue(entries.none { "示例" in it.text || "示例" in it.title })
+    }
+
+    @Test
     fun cardsFollowTheOutlineUntilTheAuthorEditsThem() {
         val s = WorkStore(tmp.newFolder())
         val w = s.create("长夜")

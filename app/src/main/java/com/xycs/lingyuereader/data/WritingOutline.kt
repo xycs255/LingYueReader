@@ -58,7 +58,10 @@ object ChapterOutlines {
                 cur?.let { b -> out += b.entries(name, volume()) }
                 cur = null
             }
+            val fences = MarkdownFenceTracker()
             text.lines().forEachIndexed { i, line ->
+                // 项目包里的代码示例不是细纲；也不能混进正在解析的章节正文。
+                if (fences.isInsideOrFence(line)) return@forEachIndexed
                 val trimmed = line.trim()
                 val h = headingLine.matchEntire(trimmed)
                 if (h != null) {

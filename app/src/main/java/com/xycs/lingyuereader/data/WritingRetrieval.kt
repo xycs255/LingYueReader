@@ -15,8 +15,9 @@ object PackUnits {
     private val heading = Regex("^(#{1,6})\\s+(.+?)\\s*#*$")
     private val lead = Regex("^\\*\\*([^*\\n]{2,40}?)[：:]?\\*\\*")
     private val item = Regex("^(?:[-*+•]\\s+|\\d{1,3}[.、)）]\\s*)")
+    private val titlePunctuation = Regex("[《》「」\\s]")
 
-    fun split(text: String, max: Int = 900): List<PackUnit> {
+    fun split(text: String, max: Int = 900, documentTitle: String? = null): List<PackUnit> {
         val out = mutableListOf<PackUnit>()
         val headings = ArrayList<Pair<Int, String>>()
         var leadTitle: String? = null
@@ -50,7 +51,33 @@ object PackUnits {
             if (piece.isNotEmpty()) buf.append(piece).append('\n')
         }
         val lines = text.removePrefix("\uFEFF").lines()
+        // Only the first H1 matching this document's title is a cover. A single-person card such
+        // as # 赵云 / ## 动机 must retain 赵云 in the retrieval path.
+        val headingFence = MarkdownFenceTracker()
+        val visible = lines.mapIndexedNotNull { i, line ->
+            if (headingFence.isInsideOrFence(line)) null else i to line.trim()
+        }
+        val h1 = visible.mapNotNull { (i, line) ->
+            heading.matchEntire(line)?.takeIf { it.groupValues[1].length == 1 }?.let { i to it.groupValues[2].trim() }
+        }
+        val firstVisible = visible.firstOrNull { it.second.isNotBlank() }?.first
+        val documentHeading = h1.firstOrNull()?.takeIf { (i, title) ->
+            i == firstVisible && documentTitle != null &&
+                title.replace(titlePunctuation, "") == documentTitle.replace(titlePunctuation, "")
+        }?.first
+        val fences = MarkdownFenceTracker()
+        var skippingCode = false
         lines.forEachIndexed { i, raw ->
+            if (fences.isInsideOrFence(raw)) {
+                if (!skippingCode) {
+                    flush()
+                    tableHead = null
+                    leadTitle = null
+                }
+                skippingCode = true
+                return@forEachIndexed
+            }
+            skippingCode = false
             val line = raw.trimEnd()
             val trimmed = line.trim()
             val h = heading.matchEntire(trimmed)
@@ -60,7 +87,7 @@ object PackUnits {
                 leadTitle = null
                 val level = h.groupValues[1].length
                 while (headings.isNotEmpty() && headings.last().first >= level) headings.removeAt(headings.lastIndex)
-                if (level >= 2) headings += level to h.groupValues[2].replace("*", "").trim()
+                if (level >= 2 || i != documentHeading) headings += level to h.groupValues[2].replace("*", "").trim()
                 return@forEachIndexed
             }
             if (trimmed.isEmpty()) {

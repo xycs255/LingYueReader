@@ -20,6 +20,22 @@ class WritingPackTest {
 
     private fun store() = WorkStore(tmp.newFolder())
 
+    private fun zipOf(vararg files: Pair<String, String>): ByteArray = ByteArrayOutputStream().also { out ->
+        ZipOutputStream(out).use { zip ->
+            files.forEach { (name, text) ->
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(text.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+        }
+    }.toByteArray()
+
+    private fun expectImportError(fragment: String, block: () -> Unit) {
+        val error = runCatching(block).exceptionOrNull()
+        assertTrue("Expected import to reject $fragment", error != null)
+        assertTrue(error?.message.orEmpty(), fragment in error?.message.orEmpty())
+    }
+
     @Test
     fun fileNamesAreSortedIntoKinds() {
         val cases = mapOf(
@@ -67,6 +83,37 @@ class WritingPackTest {
     }
 
     @Test
+    fun fencedCodeHeadingsNeverCreateChapters() {
+        val text = """## 第一章 真章
+            |开门。
+            |```markdown
+            |## 第二章 假章
+            |```
+            |~~~
+            |第三章 也是假章
+            |~~~
+            |## 第二章 真章
+            |收尾。
+        """.trimMargin()
+        val chapters = PackImport.chapters(text, "备用")
+        assertEquals(listOf("第一章 真章", "第二章 真章"), chapters.map { it.first })
+        assertTrue(chapters[0].second.contains("## 第二章 假章"))
+        assertTrue(chapters[0].second.contains("第三章 也是假章"))
+        assertEquals("收尾。", chapters[1].second)
+    }
+
+    @Test
+    fun txtSceneSeparatorDoesNotHideLaterChapters() {
+        val s = store()
+        val w = s.create("长夜")
+        val text = "第一章 开端\n林月守渡口。\n~~~\n第二章 夜归\n沈默回来了。"
+        s.importPack(w.id, listOf(PackImport.classify("已定正文.txt", text)))
+        val chapters = s.get(w.id)!!.chapters
+        assertEquals(listOf("第一章 开端", "第二章 夜归"), chapters.map { it.title })
+        assertTrue(s.text(w.id, chapters[0].id).contains("~~~"))
+    }
+
+    @Test
     fun zipRoundTripKeepsKindsAndPriorities() {
         val docs = listOf(
             PackDoc("a", PackKind.OUTLINE, "全本总纲", 1, true) to "主线：复仇。",
@@ -92,6 +139,62 @@ class WritingPackTest {
         }
         val items = PackImport.readZip { out.toByteArray().inputStream() }
         assertEquals(listOf("人物档案" to PackKind.CHARACTER), items.map { it.title to it.kind })
+    }
+
+    @Test
+    fun emptySourcesStayUncheckedAndCannotReplaceExistingMaterial() {
+        val s = store()
+        val w = s.create("长夜")
+        val doc = s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "原有的林月档案")
+        val empty = PackImport.classify("人物档案.md", " \n\t")
+        assertFalse(empty.include)
+        assertEquals(PackImportResult(0, 0, 0), s.importPack(w.id, listOf(empty)))
+        assertEquals("原有的林月档案", s.packText(w.id, doc.id))
+        expectImportError("空白") { s.importPack(w.id, listOf(empty.copy(include = true))) }
+        assertEquals("原有的林月档案", s.packText(w.id, doc.id))
+        assertEquals("新档案", PackImport.classify("人物档案.md", "新档案").text)
+    }
+
+    @Test
+    fun damagedManifestIsRejectedInsteadOfReclassifyingDocuments() {
+        expectImportError("ZIP 文件损坏或为空") { PackImport.readZip { "not a zip".byteInputStream() } }
+        val damaged = zipOf("人物档案.md" to "林月", "pack.json" to "{bad json")
+        expectImportError("pack.json 损坏") { PackImport.readZip { damaged.inputStream() } }
+        val wrongKind = zipOf(
+            "人物档案.md" to "林月",
+            "pack.json" to """{"format":1,"docs":[{"file":"人物档案.md","kind":"UNKNOWN","priority":3,"always":true}]}""",
+        )
+        expectImportError("属性格式无效") { PackImport.readZip { wrongKind.inputStream() } }
+    }
+
+    @Test
+    fun zipPathsAreNormalizedForManifestAndDuplicatesAreRejected() {
+        val manifest = """{"format":1,"docs":[{"file":"./第一卷\\\\细纲.md","title":"第一卷细纲","kind":"VOLUME","priority":2,"always":false}]}"""
+        val valid = zipOf("第一卷/细纲.md" to "## 第一章\n守渡口。", "pack.json" to manifest)
+        val item = PackImport.readZip { valid.inputStream() }.single()
+        assertEquals("第一卷细纲", item.title)
+        assertEquals(PackKind.VOLUME, item.kind)
+        assertFalse(item.always)
+
+        val duplicate = zipOf("第一卷\\细纲.md" to "前稿", "第一卷/细纲.md" to "后稿")
+        expectImportError("重复文件路径") { PackImport.readZip { duplicate.inputStream() } }
+        val unicodeAlias = zipOf("cafe\u0301.md" to "前稿", "café.md" to "后稿")
+        expectImportError("重复文件路径") { PackImport.readZip { unicodeAlias.inputStream() } }
+        val traversal = zipOf("../人物档案.md" to "林月")
+        expectImportError("路径无效") { PackImport.readZip { traversal.inputStream() } }
+    }
+
+    @Test
+    fun directAndZippedTextsHaveEnforcedSizeAndCountLimits() {
+        expectImportError("导入上限") { PackImport.readText("人物档案.md", "七个字节".byteInputStream(), 6) }
+        val tooLarge = zipOf("人物档案.md" to "1234567")
+        expectImportError("导入上限") { PackImport.readZip({ tooLarge.inputStream() }, maxTextBytes = 6) }
+        val tooMany = zipOf("一.md" to "一", "二.md" to "二")
+        expectImportError("文本文件过多") { PackImport.readZip({ tooMany.inputStream() }, maxFiles = 1) }
+        val combined = zipOf("一.md" to "1234", "二.md" to "5678")
+        expectImportError("导入上限") { PackImport.readZip({ combined.inputStream() }, maxTextBytes = 7) }
+        val ignoredExpansion = zipOf("封面.png" to "x".repeat(13), "人物.md" to "林月")
+        expectImportError("解压后") { PackImport.readZip({ ignoredExpansion.inputStream() }, maxArchiveBytes = 12) }
     }
 
     @Test
