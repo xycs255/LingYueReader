@@ -284,6 +284,21 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     }
 
     companion object {
+        /** 整稿请求（[whole]）遇到拒答或内容过滤：不能把提示语当正文交出去。 */
+        const val REFUSED = "模型拒绝回答，或内容被服务商过滤，本次没有完整回答；调整内容后再试"
+        /** 整稿请求的流没有正常结束（代理超时、对端断开）。 */
+        const val INCOMPLETE = "连接中断，回答不完整；请重试"
+
+        /**
+         * 流是否正常结束：OpenAI 兼容见到 `[DONE]` 或非空 finish_reason 任一即可（有的转发服务只给其一），
+         * Anthropic 要见到 message_stop。只用来拦整稿请求，普通问答不发 `[DONE]` 的局域网服务照常可用。
+         */
+        internal fun streamEnded(protocol: AiProtocol, sawDone: Boolean, sawFinish: Boolean): Boolean = when (protocol) {
+            AiProtocol.OPENAI -> sawDone || sawFinish
+            AiProtocol.ANTHROPIC -> sawDone
+            AiProtocol.DEVICE -> true
+        }
+
         /** 一次向量请求最多几段（通义千问的向量接口一次最多 10 段）。 */
         const val EMBED_BATCH = 10
         /** 一段语音返回的压缩音频上限，避免异常服务端耗尽内存。 */
@@ -292,7 +307,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
 
     /**
      * 发出请求，回答一段段到时调 [onText]（在 IO 线程）；返回整段回答。拒答时末尾加一句说明。
-     * 回答到了长度上限被截断时：[whole] 为真（要完整 JSON 的整理、翻译）就报错，否则末尾加一句说明。
+     * 回答到了长度上限被截断、拒答或被过滤、流没有正常结束时：[whole] 为真（整稿、要完整 JSON 的整理、翻译）就报错，
+     * 否则截断和拒答在末尾加一句说明，断流照常返回。
      */
     suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
         streamWithOptions(config, system, messages, whole, onText)
@@ -380,6 +396,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 if (officialDeepSeek && !wholeJson) {
                     if (!sawDone || !sawFinish) throw AiException("DeepSeek 回答流未完整结束，本次内容可能不完整，请重试")
                 }
+                if (whole && !wholeJson && !streamEnded(config.protocol, sawDone, sawFinish)) throw AiException(INCOMPLETE)
                 // 收完了就记用量（之后截断报错也照样花了钱）。
                 reported = true
                 report(config, usage, sent, out.toString())
@@ -390,6 +407,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     onText(note)
                 }
                 if (refused) {
+                    if (whole) throw AiException(REFUSED)
                     val note = if (out.isEmpty()) "模型拒绝回答这个问题。" else "\n\n（模型中途停止了回答。）"
                     out.append(note)
                     onText(note)
@@ -444,7 +462,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 while (true) {
                     val allow = useTools.isNotEmpty() && round < maxRounds
                     val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra)
-                    val turn = post(config, body, onText)
+                    val turn = post(config, body, whole, onText)
                     if (turn.truncated && turn.calls.isNotEmpty()) {
                         throw AiException("模型的工具调用被截断，本次没有执行，请缩短材料后重试")
                     }
@@ -454,6 +472,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                             if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
                             "\n\n（回答太长，后面被截断了。）".let { out.append(it); onText(it) }
                         }
+                        if (turn.refused && whole) throw AiException(REFUSED)
                         if (turn.refused) ("\n\n（模型中途停止了回答。）".takeIf { out.isNotEmpty() } ?: "模型拒绝回答这个问题。").let { out.append(it); onText(it) }
                         if (out.isBlank()) throw AiException("服务商没有返回内容")
                         return out.toString()
@@ -477,8 +496,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         }
     }
 
-    /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。 */
-    private suspend fun post(config: AiConfig, body: String, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
+    /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。[whole] 为真时流必须正常结束。 */
+    private suspend fun post(config: AiConfig, body: String, whole: Boolean, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
         val collector = AiToolWire.Collector(config.protocol, AiWire.officialDeepSeek(config), onText)
         var reported = false
         val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
@@ -524,6 +543,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 (!collector.finished || !collector.terminal)) {
                 throw AiException("DeepSeek 回答流未完整结束，本次内容可能不完整，请重试")
             }
+            if (whole && !wholeJson && !streamEnded(config.protocol, collector.finished, collector.terminal)) throw AiException(INCOMPLETE)
             collector.finish().also { turn ->
                 reported = true
                 report(config, turn.usage, { body }, turn.text + turn.calls.joinToString("") { it.name + it.arguments })

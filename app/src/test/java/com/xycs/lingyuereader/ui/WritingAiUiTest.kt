@@ -332,9 +332,9 @@ class WritingAiUiTest {
         compose.onNodeWithText("扩写").performScrollTo().performClick()
         waitForText("回答太长")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
-        // 缩写时模型中途停了：写出的半截显示出来，但不能采纳，那行说明也不出现。
+        // 缩写时模型中途停了（拒答或内容过滤）：整段改稿按失败处理，不能采纳，那行说明也不出现。
         compose.onNodeWithText("缩写").performScrollTo().performClick()
-        waitForText("模型中途停了，结果不完整")
+        waitForText("模型拒绝回答，或内容被服务商过滤")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
         assertTrue(compose.onAllNodesWithText("模型中途停止了回答", substring = true).fetchSemanticsNodes().isEmpty())
         Thread.sleep(1200)

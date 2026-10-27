@@ -25,6 +25,7 @@ import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.importReference
 import com.xycs.lingyuereader.data.saveReferenceAnalysis
@@ -33,6 +34,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -265,6 +267,38 @@ class WritingDraftUiTest {
             compose.onAllNodesWithText("对白语气需作者最终确认", substring = true).fetchSemanticsNodes().isEmpty())
         compose.onNodeWithText("展开审读证据与建议").performScrollTo().performClick()
         waitForText("对白语气需作者最终确认")
+    }
+
+    @Test
+    fun aPassedReviewSurvivesPolishRecordsAndNewDirectionsButStaleMaterialsShowOneStatus() {
+        validWorkflowReview = true
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留杜娘的迟疑", workflow = true) }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.assessment?.passed == true } == true }
+        // 在别章接受、关掉润色：只是文风范例，不让本稿审读失效。
+        store.updateAssist(workId) { it.copy(
+            accepted = listOf(StyleExample("润色", "沈默说完。", "沈默说到这里停了停。", 1)),
+            declined = listOf(StyleExample("改稿", "老周进门。", "老周从不回头。", 2))) }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读：已通过，上方可展开证据")
+        waitForText("可供采纳")
+        // 只改下一次写的要求：当前稿仍按审读时的要求判断，可以采纳。
+        compose.onNode(hasSetTextAction() and hasText("保留杜娘的迟疑")).performTextReplacement("改成林月先开口")
+        waitFor { store.draftIntent(workId, c2)?.instruction == "改成林月先开口" }
+        waitForText("审读：已通过，上方可展开证据")
+        assertNull(kotlinx.coroutines.runBlocking { vm.writingAi.draftBlocked(workId, c2) })
+
+        // 细纲变了：状态标签和“本稿审读”一起显示失效，不再一个绿一个“待核对”。
+        store.saveCard(workId, c2, store.card(workId, c2).copy(facts = "杜娘没有开门，顾长风在门外等到天亮"))
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
+        waitForText("旧稿一句。")
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读已过时")
+        waitForText("待核对")
+        assertTrue("资料变了不能再显示可供采纳",
+            compose.onAllNodesWithText("可供采纳").fetchSemanticsNodes().isEmpty())
+        waitForText("审读：未通过或已失效")
     }
 
     @Test

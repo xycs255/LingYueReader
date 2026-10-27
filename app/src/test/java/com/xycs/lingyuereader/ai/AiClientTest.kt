@@ -246,6 +246,55 @@ class AiClientTest {
     }
 
     @Test
+    fun wholeRequestsRejectRefusalsInsteadOfReturningTheNoteAsProse() = runBlocking<Unit> {
+        val filtered = "data: {\"choices\":[{\"delta\":{\"content\":\"林月走到渡口\"}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n\n"
+        val refusal = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+        for ((config, body) in listOf(openAi() to filtered, anthropic() to refusal)) {
+            reply = Triple(200, "text/event-stream", body)
+            val streamed = runCatching { AiClient().stream(config, "", listOf(AiMessage("user", "写本章")), whole = true) }.exceptionOrNull()
+            assertTrue(streamed?.message.orEmpty(), streamed is AiException && "拒绝回答" in streamed.message!!)
+            val conversed = runCatching { AiClient().converse(config, "", "写本章", emptyList(), { "" }, whole = true) }.exceptionOrNull()
+            assertTrue(conversed?.message.orEmpty(), conversed is AiException && "拒绝回答" in conversed.message!!)
+        }
+        // 普通问答照旧显示拒答说明。
+        reply = Triple(200, "text/event-stream", filtered)
+        assertEquals("林月走到渡口\n\n（模型中途停止了回答。）", AiClient().stream(openAi(), "", listOf(AiMessage("user", "问"))))
+        assertEquals("林月走到渡口\n\n（模型中途停止了回答。）", AiClient().converse(openAi(), "", "问", emptyList(), { "" }))
+    }
+
+    @Test
+    fun wholeRequestsRejectStreamsThatEndWithoutAFinishMarker() = runBlocking<Unit> {
+        val half = "data: {\"choices\":[{\"delta\":{\"content\":\"沈默推开门\"}}]}\n\n"
+        val anthropicHalf = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"沈默推开门\"}}\n\n"
+        for ((config, body) in listOf(openAi() to half, anthropic() to anthropicHalf,
+            anthropic() to anthropicHalf + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")) {
+            reply = Triple(200, "text/event-stream", body)
+            val streamed = runCatching { AiClient().stream(config, "", listOf(AiMessage("user", "写本章")), whole = true) }.exceptionOrNull()
+            assertTrue(streamed?.message.orEmpty(), streamed is AiException && "连接中断" in streamed.message!!)
+            val conversed = runCatching { AiClient().converse(config, "", "写本章", emptyList(), { "" }, whole = true) }.exceptionOrNull()
+            assertTrue(conversed?.message.orEmpty(), conversed is AiException && "连接中断" in conversed.message!!)
+            // 普通问答不要求结束标记：不发 [DONE] 的局域网服务照常可用。
+            assertEquals("沈默推开门", AiClient().stream(config, "", listOf(AiMessage("user", "问"))))
+            assertEquals("沈默推开门", AiClient().converse(config, "", "问", emptyList(), { "" }))
+        }
+        // 有 finish_reason、没有 [DONE]，或者只有 [DONE]：都算正常结束。
+        val endings = listOf(
+            half + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            half + "data: [DONE]\n\n",
+        )
+        for (body in endings) {
+            reply = Triple(200, "text/event-stream", body)
+            assertEquals("沈默推开门", AiClient().stream(openAi(), "", listOf(AiMessage("user", "写本章")), whole = true))
+            assertEquals("沈默推开门", AiClient().converse(openAi(), "", "写本章", emptyList(), { "" }, whole = true))
+        }
+        reply = Triple(200, "text/event-stream", anthropicHalf + "data: {\"type\":\"message_stop\"}\n\n")
+        assertEquals("沈默推开门", AiClient().stream(anthropic(), "", listOf(AiMessage("user", "写本章")), whole = true))
+        assertEquals("沈默推开门", AiClient().converse(anthropic(), "", "写本章", emptyList(), { "" }, whole = true))
+    }
+
+    @Test
     fun askBookSendsOnlyWhatWasReadAndKeepsSources() = runBlocking<Unit> {
         reply = Triple(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"他从江南来[1]。\"}}]}\n\ndata: [DONE]\n\n")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

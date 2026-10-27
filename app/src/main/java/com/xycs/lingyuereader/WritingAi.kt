@@ -307,25 +307,12 @@ class WritingAi(
                     else -> AiFeature.IDEA
                 }
                 val meter = AiMeter(feature, workId)
-                // 改稿类的结果要换进正文：被截断（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
+                // 改稿类的结果要换进正文：被截断、拒答或中途断开（whole）就报错，不给采纳；灵感、点评只给人看，截断了照样显示。
                 val answer = if (task == WriteAiTask.Review) ask(label, workId, system, prompt, meter = meter, onText = onPiece)
                 else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
                     confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
                     stable = samples, meter = meter,
                     onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
-                if (task is WriteAiTask.Edit && answer.endsWith(STOPPED_NOTE)) {
-                    // 模型中途停了：写出来的只是一半，显示出来但不能采纳，那行说明也不能进正文。
-                    _state.update { s ->
-                        s?.takeIf { it.task === task }?.copy(
-                            text = WritePrompts.clean(answer.removeSuffix(STOPPED_NOTE), task.original),
-                            loading = false,
-                            error = "模型中途停了，结果不完整，不能采纳；可以再来一次",
-                            usage = meter.usage,
-                            cost = meter.cost,
-                        ) ?: s
-                    }
-                    return@launch
-                }
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false, usage = meter.usage, cost = meter.cost) ?: s }
                 // 灵感、点评、矛盾检查记下来，关了面板还能回头翻。
@@ -1207,6 +1194,8 @@ class WritingAi(
     private val draftRuns = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Int>()
     private var draftSeq = 0
     private val draftDisk = Dispatchers.IO.limitedParallelism(1)
+    /** 这一次（run）的修订稿已经写盘：之后停止或复审失败都保留它。 */
+    private val draftRevisionSaved = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Int>()
 
     private fun rememberDraftBaseline(key: Pair<String, String>, run: Int, before: DraftState?) {
         val original = if (before?.loading == true) draftBaselines[key]?.state ?: before else before
@@ -1275,6 +1264,17 @@ class WritingAi(
         referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
         initialText = before?.initialText,
         alternateText = before?.alternateText,
+    )
+
+    /**
+     * 本次失败或停止，用基线换回上一版：连同它自己的审读、阶段和错误一起恢复（它们仍绑定旧稿的哈希），
+     * 本次的错误只记在 [DraftState.notice]，不挡采纳。作者刚填的要求保留，只用于下一次写。
+     */
+    private fun DraftState.restoredFrom(old: DraftState, notice: String): DraftState = old.copy(
+        loading = false, instruction = instruction, targetLength = targetLength, workflowChoice = workflowChoice,
+        // 写盘失败时磁盘内容待核，仍要挡住采纳。
+        error = error?.takeIf { it.contains("保存失败") } ?: old.error,
+        notice = notice,
     )
 
     /** 打开草稿页：读上次没放进正文的草稿（这一章已经有状态，比如正在写，就不动）。 */
@@ -1377,7 +1377,7 @@ class WritingAi(
         // Keep the saved candidate visible until this request actually produces replacement text.
         _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, previousCandidate)).copy(
             loading = true, error = null, instruction = instruction, targetLength = targetLength,
-            workflowChoice = workflow)) }
+            workflowChoice = workflow, notice = null)) }
         var written = ""
         var newCandidateGenerated = false
         val meter = AiMeter(AiFeature.DRAFT, workId)
@@ -1441,7 +1441,9 @@ class WritingAi(
                             referenceFingerprint = reference?.excerpt?.fingerprint,
                             referenceChapterLength = reference?.excerpt?.chapterLength,
                             referenceValidated = false, referenceProvenanceBlocked = false,
-                            initialText = null, alternateText = null, revisionWarning = null)
+                            initialText = null, alternateText = null, revisionWarning = null,
+                            // 旧稿的审读不挂在新文字下面。
+                            assessment = null, stage = DraftStage.IDLE)
                     }
                 }
                 val cleaned = WritePrompts.cleanDraft(answer)
@@ -1458,6 +1460,7 @@ class WritingAi(
                     referenceChapterLength = reference?.excerpt?.chapterLength,
                     referenceValidated = reference != null, referenceProvenanceBlocked = false,
                     initialText = null, alternateText = null, revisionWarning = null,
+                    assessment = null, stage = DraftStage.IDLE, taskInstruction = null, taskTargetLength = null,
                     usage = meter.usage, cost = meter.cost) }
                 persistDraft(key, run, text, workflow = false)
                 forgetDraftBaseline(key, run)
@@ -1469,7 +1472,7 @@ class WritingAi(
                     val partial = if (cleaned.isNotBlank()) prefix + cleaned else previousCandidate
                     updateDraft(key, run) { state ->
                         val old = draftBaseline(key, run)
-                        if (old != null) old.copy(loading = false, assessment = null)
+                        if (old != null) state.restoredFrom(old, "已停止，保留上一版")
                         else (if (cleaned.isNotBlank()) state.copy(text = partial, workflow = false)
                             else state.copy(text = partial, workflow = before?.workflow == true).restoreDraftSource(before))
                             .copy(loading = false)
@@ -1492,7 +1495,7 @@ class WritingAi(
             } catch (e: Exception) {
                 updateDraft(key, run) { state ->
                     val old = draftBaseline(key, run)
-                    if (old != null) old.copy(loading = false, error = e.message ?: "请求失败")
+                    if (old != null) state.restoredFrom(old, "没写成：${e.message ?: "请求失败"}；已保留上一版")
                     else state.copy(text = if (newCandidateGenerated) state.text else previousCandidate,
                         workflow = false, loading = false, error = e.message ?: "请求失败",
                         initialText = null, alternateText = null)
@@ -1561,7 +1564,11 @@ class WritingAi(
         writeProjectDraft(workId, chapterId, instruction, targetLength, reviewOnly = true,
             referenceAnalysisId = _drafts.value[workId to chapterId]?.referenceAnalysisId)
 
-    /** An author edit creates a new candidate version and invalidates every earlier assessment. */
+    /**
+     * An author edit creates a new candidate version and invalidates every earlier assessment.
+     * 留底照旧：[DraftState.initialText] 仍是上一次修订前的那一版，作者可以拿它换回（手改稿进对照位）；
+     * 已换回初稿再手改时，[DraftState.alternateText] 里的修订稿只作对照。再次“审读并修订”前会把手改稿重新留底。
+     */
     fun updateDraftText(workId: String, chapterId: String, text: String) {
         if (text.isBlank()) { message("候选稿不能为空"); return }
         val key = workId to chapterId
@@ -1570,7 +1577,7 @@ class WritingAi(
         draftRuns[key] = run
         draftJobs.remove(key)?.cancel()
         _drafts.update { it + (key to d.copy(text = text, loading = false, assessment = null, stage = DraftStage.IDLE,
-            error = if (d.referenceProvenanceBlocked) d.error else null, referenceValidated = false)) }
+            error = if (d.referenceProvenanceBlocked) d.error else null, referenceValidated = false, notice = null)) }
         scope.launch {
             try { persistDraft(key, run, text, d.workflow) }
             catch (e: CancellationException) { throw e }
@@ -1596,7 +1603,7 @@ class WritingAi(
         draftJobs.remove(key)?.cancel()
         val next = before.copy(text = target, loading = false, assessment = null, stage = DraftStage.IDLE,
             error = if (before.referenceProvenanceBlocked) before.error else null,
-            referenceValidated = false,
+            referenceValidated = false, notice = null,
             alternateText = if (first) before.text else null)
         _drafts.update { it + (key to next) }
         scope.launch {
@@ -1605,8 +1612,17 @@ class WritingAi(
         }
     }
 
+    /**
+     * 判断这一版审读用的任务：按审读它时的要求和篇幅重算（资料取当前的），不用界面上新改、只给下一次写的要求。
+     * 没审读过的稿子按它保存的要求算。
+     */
+    suspend fun reviewTask(workId: String, chapterId: String): ChapterWritingTask? {
+        val d = _drafts.value[workId to chapterId] ?: return null
+        return writingTask(workId, chapterId, d.taskInstruction ?: d.instruction, d.taskTargetLength ?: d.targetLength)
+    }
+
     /** Validate the manuscript and material versions immediately before the author adopts a candidate. */
-    suspend fun draftBlocked(workId: String, chapterId: String, instruction: String? = null, targetLength: String? = null): String? {
+    suspend fun draftBlocked(workId: String, chapterId: String): String? {
         val d = _drafts.value[workId to chapterId] ?: return "没有可采纳的草稿"
         if (d.loading) return "本章流程还在进行，请先等它完成或停止"
         if (d.revisionWarning?.contains("无法安全留底") == true) return d.revisionWarning
@@ -1622,8 +1638,9 @@ class WritingAi(
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { return e.message ?: "范本来源已变化，请重新选择后写一版" }
         }
-        if (!d.workflow) return null
-        val task = writingTask(workId, chapterId, instruction ?: d.instruction, targetLength ?: d.targetLength) ?: return "作品或章节不在了"
+        val task = reviewTask(workId, chapterId) ?: return "作品或章节不在了"
+        // 项目章一律要审读才能采纳，和重开后 loadDraft 的判定一致；“创作后审读、修订”开关只决定写完要不要自动走流程。
+        if (!d.workflow && !task.project) return null
         if (task.blocking.isNotEmpty()) return task.blocking.joinToString("；")
         val report = d.assessment ?: return "本稿尚未完成审读，请先审读此稿"
         if (!report.matches(d.text, task.fingerprint)) return "正文或项目资料已经变化，旧审读结果已过时，请重新审读"
@@ -1647,7 +1664,7 @@ class WritingAi(
         _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, "")).copy(
             text = previousCandidate,
             loading = true, error = null, workflow = before?.workflow == true, stage = DraftStage.PREPARING,
-            assessment = null, instruction = instruction, targetLength = targetLength, workflowChoice = true,
+            assessment = null, instruction = instruction, targetLength = targetLength, workflowChoice = true, notice = null,
             // The old bytes retain their old source until new prose actually arrives.
             referenceAnalysisId = before?.referenceAnalysisId,
             referenceFingerprint = before?.referenceFingerprint,
@@ -1662,6 +1679,9 @@ class WritingAi(
         var newCandidateGenerated = false
         var freshCandidateCommitted = false
         var firstCandidateSaved = false
+        // 正在修订的那一版；复审轮看到不同的稿子，说明修订稿已经出来了。
+        var revising: String? = null
+        var revisionSaved = false
         draftJobs[key] = scope.launch {
             try {
                 withContext(draftDisk) {
@@ -1675,7 +1695,7 @@ class WritingAi(
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: error("作品不在了")
                 check(work.chapter(chapterId)?.locked != true) { "这一章已定稿：要改先解锁并登记原因" }
                 val reviewEvidence = withContext(Dispatchers.IO) { store.reviewEvidence(workId, chapterId, task) }
-                updateDraft(key, run) { it.copy(task = task) }
+                updateDraft(key, run) { it.copy(task = task, taskInstruction = instruction, taskTargetLength = targetLength) }
                 check(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
                 val reference = referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
                 if ((more || reviewOnly) && reference != null && before?.referenceAnalysisId == referenceAnalysisId && previousCandidate.isNotBlank()) {
@@ -1776,6 +1796,9 @@ class WritingAi(
                         if (manuscript.isNotBlank() && manuscript != previousCandidate) newCandidateGenerated = true
                         val firstCreatedCandidate = stage == DraftStage.CHECKING && !reviewOnly && !freshCandidateCommitted
                         if (firstCreatedCandidate) freshCandidateCommitted = true
+                        val revisionCommitted = stage == DraftStage.CHECKING && revising != null &&
+                            manuscript.isNotBlank() && manuscript != revising
+                        if (stage == DraftStage.REVISING) revising = manuscript
                         updateDraft(key, run) { state ->
                             val next = if (manuscript.isBlank()) state.copy(stage = stage, assessment = assessment)
                             else state.copy(stage = stage, text = manuscript, assessment = assessment,
@@ -1786,7 +1809,8 @@ class WritingAi(
                                 referenceProvenanceBlocked = if (newCandidateGenerated) false else state.referenceProvenanceBlocked)
                             when {
                                 firstCreatedCandidate -> next.copy(initialText = null, alternateText = null, revisionWarning = null)
-                                stage == DraftStage.REVISING && manuscript.isNotBlank() && next.initialText == null ->
+                                // 修订前无条件留底当前这一版（AI 初稿、作者手改稿或上一轮修订稿），修订后可以换回。
+                                stage == DraftStage.REVISING && manuscript.isNotBlank() ->
                                     next.copy(initialText = manuscript, alternateText = null)
                                 else -> next
                             }
@@ -1803,9 +1827,14 @@ class WritingAi(
                                 "候选稿版本保存失败", saveFailure)
                             throw saveFailure
                         }
-                        if (firstCreatedCandidate) {
+                        // 新稿写盘后就是新的基线：之后失败或停止都保留它，“审读并修订此稿”的修订稿也一样。
+                        if (firstCreatedCandidate || revisionCommitted) {
                             firstCandidateSaved = true
                             forgetDraftBaseline(key, run)
+                        }
+                        if (revisionCommitted) {
+                            revisionSaved = true
+                            draftRevisionSaved[key] = run
                         }
                     },
                 )
@@ -1819,7 +1848,7 @@ class WritingAi(
                     text = result.text, loading = false, assessment = result.assessment, workflow = true,
                     referenceValidated = reference != null,
                     stage = if (stale) DraftStage.NEEDS_REVIEW else result.stage,
-                    error = if (stale) "项目资料在写作期间变化，旧审读结果已过时，请重新审读" else null,
+                    error = if (stale) "项目资料在写作期间变化，旧审读结果已过时，请重新审读" else null, notice = null,
                     usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost },
                 ) }
                 val totalMeter = AiMeter(AiFeature.DRAFT, workId)
@@ -1828,9 +1857,12 @@ class WritingAi(
             } catch (e: CancellationException) {
                 if (draftRuns[key] == run) {
                     updateDraft(key, run) { state ->
-                        (draftBaseline(key, run) ?: if (newCandidateGenerated) state else state.copy(
+                        val old = draftBaseline(key, run)
+                        if (old != null) state.restoredFrom(old, "已停止，保留上一版")
+                        else (if (newCandidateGenerated) state else state.copy(
                             text = previousCandidate, workflow = before?.workflow == true).restoreDraftSource(before))
-                            .copy(loading = false, stage = DraftStage.STOPPED, assessment = null)
+                            .copy(loading = false, stage = DraftStage.STOPPED, assessment = null,
+                                notice = REVISION_SAVED.takeIf { revisionSaved })
                     }
                     val candidate = _drafts.value[key]?.text.orEmpty()
                     if (candidate.isNotBlank()) withContext(NonCancellable) {
@@ -1850,11 +1882,16 @@ class WritingAi(
                 if (kept != null) persistDraft(key, run, kept.text, workflow = kept.workflow)
             } catch (e: Exception) {
                 updateDraft(key, run) { state ->
-                    (draftBaseline(key, run) ?: if (newCandidateGenerated) state else state.copy(
+                    val usage = meters.fold(AiUsage()) { all, m -> all + m.usage }
+                    val cost = meters.fold(AiCost()) { all, m -> all + m.cost }
+                    val reason = e.message ?: "本章流程未完成"
+                    val old = draftBaseline(key, run)
+                    if (old != null) state.restoredFrom(old, "本次流程未完成：$reason；已保留上一版").copy(usage = usage, cost = cost)
+                    else (if (newCandidateGenerated) state else state.copy(
                         text = previousCandidate, workflow = before?.workflow == true).restoreDraftSource(before)).copy(
                     loading = false, stage = DraftStage.ERROR, assessment = null,
-                    error = state.error?.takeIf { it.contains("保存失败") } ?: e.message ?: "本章流程未完成",
-                    usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost },
+                    error = state.error?.takeIf { it.contains("保存失败") } ?: if (revisionSaved) "$REVISION_SAVED：$reason" else reason,
+                    usage = usage, cost = cost,
                 ) }
                 val candidate = _drafts.value[key]?.takeIf { draftRuns[key] == run }?.text.orEmpty()
                 if (candidate.isNotBlank()) try {
@@ -1865,6 +1902,7 @@ class WritingAi(
                 }
             } finally {
                 forgetDraftBaseline(key, run)
+                draftRevisionSaved.remove(key, run)
             }
         }
     }
@@ -1872,14 +1910,18 @@ class WritingAi(
     /** 停下这一章正在写的：停在作者看到的这一刻，写了的留着，存成草稿。 */
     fun stopDraft(workId: String, chapterId: String) {
         val key = workId to chapterId
-        val previous = draftRuns[key]?.let { draftBaseline(key, it) }
+        val current = draftRuns[key]
+        val previous = current?.let { draftBaseline(key, it) }
+        val revisionSaved = current != null && draftRevisionSaved[key] == current
         // 换个编号：取消以后还在路上的字、取消时的处理都不再改它。
         val run = ++draftSeq
         draftRuns[key] = run
         draftJobs.remove(key)?.cancel()
         val d = _drafts.value[key] ?: return
-        val kept = (previous ?: d).copy(loading = false,
-            stage = if ((previous ?: d).workflow) DraftStage.STOPPED else (previous ?: d).stage, assessment = null)
+        // 有基线就换回上一版，连同它的审读；新稿已经写盘（包括修订稿）就留着新稿。
+        val kept = if (previous != null) d.restoredFrom(previous, "已停止，保留上一版")
+            else d.copy(loading = false, stage = if (d.workflow) DraftStage.STOPPED else d.stage, assessment = null,
+                notice = REVISION_SAVED.takeIf { revisionSaved })
         _drafts.update { it + (key to kept) }
         if (kept.text.isNotBlank()) scope.launch {
             try { withContext(NonCancellable) { persistDraft(key, run, kept.text, kept.workflow) } }
@@ -1896,6 +1938,7 @@ class WritingAi(
         val run = ++draftSeq
         draftRuns[key] = run
         draftBaselines.remove(key)
+        draftRevisionSaved.remove(key)
         draftJobs.remove(key)?.cancel()
         _drafts.update { it + (key to DraftState(workId, chapterId, "")) }
         scope.launch {
@@ -2202,6 +2245,9 @@ class WritingAi(
         private const val TRUNCATED_NOTE = "\n\n（回答太长，后面被截断了。）"
         private const val STOPPED_NOTE = "\n\n（模型中途停止了回答。）"
 
+        /** 修订稿已写盘、复审没走完时给作者看的状态。 */
+        const val REVISION_SAVED = "修订稿已保存，复审没完成"
+
         /** 写作建议今天发了几次存在偏好里的键（后面接作品id）。 */
         private const val SUGGEST_COUNT_KEY = "suggest_count."
     }
@@ -2240,6 +2286,11 @@ data class DraftState(
     /** Revised candidate retained when the author restores the first version. */
     val alternateText: String? = null,
     val revisionWarning: String? = null,
+    /** 审读这一版时用的本次要求和篇幅：采纳时按它重算任务，界面上新改的要求只用于下一次写。 */
+    val taskInstruction: String? = null,
+    val taskTargetLength: String? = null,
+    /** 这一次运行的提示（比如失败后恢复了上一版）：只给作者看，不参与采纳判断。 */
+    val notice: String? = null,
 )
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
