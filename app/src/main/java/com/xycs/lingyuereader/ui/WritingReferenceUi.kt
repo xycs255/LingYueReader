@@ -43,12 +43,13 @@ import com.xycs.lingyuereader.data.WritingReferenceImport
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
-import java.io.ByteArrayOutputStream
+import java.io.File
 
 /** External reference books are imported here, never into the current story's setting package. */
 @Composable
@@ -168,9 +169,11 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
         if (uri != null) scope.launch {
             importing = true
             error = null
+            var copy: File? = null
             try {
-                val (name, bytes) = withContext(Dispatchers.IO) { referenceFile(context, uri) }
-                val imported = vm.writing.importReference(workId, name, bytes)
+                val (name, file) = withContext(Dispatchers.IO) { referenceFile(context, uri) }
+                copy = file
+                val imported = vm.writing.importReference(workId, name, file)
                 references = vm.writing.references(workId)
                 referenceId = imported.id
                 manualChapterChoice = false
@@ -179,7 +182,11 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                 vm.showMessage("已添加范本《${imported.title}》，请选择要分析的章节和范围")
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = "导入范本失败：${e.message ?: "文件打不开"}" }
-            finally { importing = false }
+            catch (_: OutOfMemoryError) { error = "导入范本失败：${WritingReferenceImport.TOO_LARGE}" }
+            finally {
+                copy?.let { withContext(NonCancellable + Dispatchers.IO) { it.delete() } }
+                importing = false
+            }
         }
     }
 
@@ -381,25 +388,30 @@ private fun ReferenceChoiceDialog(title: String, options: List<Pair<String, Stri
     }
 }
 
-/** Bound the read before allocating an arbitrarily large provider document in memory. */
-private fun referenceFile(context: Context, uri: Uri): Pair<String, ByteArray> {
+/**
+ * 先看文档提供方报的大小，超过上限的在读取之前就拒绝；其余边读边写进缓存目录的临时文件，
+ * 不在内存里攒整份文件。上次中断留下的临时文件顺手清掉。
+ */
+private fun referenceFile(context: Context, uri: Uri): Pair<String, File> {
     val resolver = context.contentResolver
-    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) cursor.getString(0) else null
+    var size: Long? = null
+    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        if (!cursor.isNull(1)) size = cursor.getLong(1)
+        cursor.getString(0)
     } ?: uri.lastPathSegment ?: "范本.txt"
     val limit = WritingReferenceImport.byteLimit(name)
-    val bytes = resolver.openInputStream(uri)?.use { input ->
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(32 * 1024)
-        var total = 0L
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            require(total <= limit) { "范本文件过大，请先拆分后导入。" }
-            out.write(buffer, 0, count)
-        }
-        out.toByteArray()
-    } ?: error("无法读取所选范本文件")
-    return name to bytes
+    size?.let { require(it <= limit) { "范本文件过大，请先拆分后导入（上限 ${limit / 1024 / 1024} MB）" } }
+    context.cacheDir.listFiles { file -> file.name.startsWith(TEMP_PREFIX) }.orEmpty().forEach { it.delete() }
+    val target = File.createTempFile(TEMP_PREFIX, ".tmp", context.cacheDir)
+    try {
+        val input = resolver.openInputStream(uri) ?: error("无法读取所选范本文件")
+        input.use { WritingReferenceImport.copyBounded(it, target, limit) }
+    } catch (e: Throwable) {
+        target.delete()
+        throw e
+    }
+    return name to target
 }
+
+private const val TEMP_PREFIX = "reference-import-"

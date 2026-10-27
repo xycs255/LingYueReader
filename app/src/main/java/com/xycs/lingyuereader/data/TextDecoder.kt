@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.data
 
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStream
+import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
@@ -43,6 +47,115 @@ object TextDecoder {
         }
         return validate(text, "文本编码无法识别或文件已损坏")
     }
+
+    /**
+     * 大文件按行流式解码：先整份扫一遍定编码（不保留解码结果），再逐行交给 [block]。
+     * 定编码和坏字节的规则与 [decode] 相同，只是不必同时持有原始字节和整本文字。
+     * 无 BOM 的 UTF-16 与 Big5 只看开头一段样本。
+     */
+    fun <T> readLines(file: File, block: (Sequence<String>) -> T): T {
+        val head = file.inputStream().use { input ->
+            val buffer = ByteArray(SAMPLE_BYTES)
+            var size = 0
+            while (size < buffer.size) {
+                val count = input.read(buffer, size, buffer.size - size)
+                if (count < 0) break
+                size += count
+            }
+            buffer.copyOf(size)
+        }
+        val known = when {
+            head.startsWith(0xEF, 0xBB, 0xBF) -> Charsets.UTF_8 to 3
+            head.startsWith(0xFF, 0xFE) -> Charsets.UTF_16LE to 2
+            head.startsWith(0xFE, 0xFF) -> Charsets.UTF_16BE to 2
+            file.length() % 2 == 0L -> bomlessUtf16(head.copyOf(head.size - head.size % 2))?.let { it to 0 }
+            else -> null
+        }
+        val (charset, offset) = known ?: when {
+            decodes(file, Charsets.UTF_8) -> Charsets.UTF_8
+            decodes(file, gb18030) -> big5Sample(head) ?: gb18030
+            else -> {
+                val (utf8Bad, utf8Length) = damage(file, Charsets.UTF_8)
+                if (utf8Bad * 100 <= utf8Length) Charsets.UTF_8
+                else gb18030.takeIf { damage(file, it).first < utf8Bad } ?: Charsets.UTF_8
+            }
+        } to 0
+        val error = if (known != null) "${charset.name()} 文本编码损坏" else "文本编码无法识别或文件已损坏"
+        return BufferedReader(reader(file, charset, offset, CodingErrorAction.REPLACE), 64 * 1024).use { reader ->
+            var bad = 0L
+            var length = 0L
+            var padding = 0L
+            var readable = false
+            val lines = generateSequence { reader.readLine() }.map { line ->
+                val cleaned = StringBuilder(line.length)
+                for (c in line) {
+                    // 末尾的 NUL、Ctrl-Z 填充不算损坏；后面还有字时才把它们算进去。
+                    if (c == '\u0000' || c == '\u001A') { padding++; continue }
+                    bad += padding
+                    length += padding
+                    padding = 0
+                    length++
+                    if ((c < ' ' && c != '\t' && c != '\u000C') || c in '\u007F'..'\u009F') { bad++; continue }
+                    if (c == '\uFFFD') bad++ else if (!c.isWhitespace()) readable = true
+                    cleaned.append(c)
+                }
+                length++
+                cleaned.toString()
+            }
+            val result = block(lines)
+            require(bad * 100 <= length) { if (bad == 0L) error else "$error（$bad 处损坏）" }
+            require(bad == 0L || readable) { error }
+            result
+        }
+    }
+
+    private fun reader(file: File, charset: Charset, offset: Int, action: CodingErrorAction): InputStreamReader {
+        val input: InputStream = file.inputStream().buffered(64 * 1024)
+        var skipped = 0L
+        while (skipped < offset) {
+            val count = input.skip(offset - skipped)
+            if (count <= 0) break
+            skipped += count
+        }
+        return InputStreamReader(input, charset.newDecoder().onMalformedInput(action).onUnmappableCharacter(action))
+    }
+
+    /** 整份严格解码一遍，只看能不能通过，不保留结果。 */
+    private fun decodes(file: File, charset: Charset): Boolean = try {
+        reader(file, charset, 0, CodingErrorAction.REPORT).use { reader ->
+            val buffer = CharArray(16 * 1024)
+            while (reader.read(buffer) >= 0) Unit
+        }
+        true
+    } catch (_: CharacterCodingException) {
+        false
+    }
+
+    /** 宽容解码一遍，返回坏字数和总字数。 */
+    private fun damage(file: File, charset: Charset): Pair<Int, Long> =
+        reader(file, charset, 0, CodingErrorAction.REPLACE).use { reader ->
+            val buffer = CharArray(16 * 1024)
+            var bad = 0
+            var length = 0L
+            while (true) {
+                val count = reader.read(buffer)
+                if (count < 0) break
+                length += count
+                for (i in 0 until count) if (buffer[i] == '\uFFFD') bad++
+            }
+            bad to length
+        }
+
+    /** 与 [big5Instead] 同一判断，只用开头样本比较。 */
+    private fun big5Sample(head: ByteArray): Charset? {
+        val charset = big5 ?: return null
+        val b5 = runCatching { lenientDecode(head, charset) }.getOrNull() ?: return null
+        val gb = runCatching { lenientDecode(head, gb18030) }.getOrNull() ?: return null
+        val b5Score = commonScore(b5)
+        return charset.takeIf { b5Score > commonScore(gb.take(b5.length)) * 2 && b5Score >= 20 }
+    }
+
+    private const val SAMPLE_BYTES = 64 * 1024
 
     private val big5: Charset? = listOf("Big5-HKSCS", "Big5").firstNotNullOfOrNull { runCatching { Charset.forName(it) }.getOrNull() }
 

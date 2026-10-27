@@ -2,7 +2,11 @@ package com.xycs.lingyuereader.data
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.net.URLDecoder
+import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
 
 object EpubParser {
@@ -16,13 +20,36 @@ object EpubParser {
     private const val MAX_UNCOMPRESSED_BYTES = 512L * 1024 * 1024
     private const val MAX_ENTRIES = 20_000
 
-    fun parse(bytes: ByteArray, fallbackTitle: String): BookContent {
-        val files = unzip(bytes)
-        val container = files["META-INF/container.xml"]?.let(TextDecoder::decode)
+    fun parse(bytes: ByteArray, fallbackTitle: String): BookContent = parse(unzip(bytes)::get, fallbackTitle)
+
+    /**
+     * 从文件按条目随用随读：只解压 container、OPF、目录和正文用到的文本条目，图片等其余条目不解压，
+     * 读过的正文字节用完就丢，不像 [unzip] 那样把全部文本条目同时留在内存里。
+     */
+    fun parse(file: File, fallbackTitle: String): BookContent {
+        val zip = try { ZipFile(file) } catch (e: IOException) {
+            throw IllegalArgumentException("不是有效的 EPUB：${e.message ?: "压缩包打不开"}")
+        }
+        return zip.use {
+            require(zip.size() <= MAX_ENTRIES) { "EPUB 内文件过多，无法安全导入" }
+            var retained = 0L
+            parse({ name ->
+                val entry = zip.getEntry(name)?.takeIf { wanted(name) && !it.isDirectory }
+                entry?.let { found ->
+                    zip.getInputStream(found).use { input ->
+                        read(input) { size -> require(retained + size <= MAX_TEXT_BYTES) { "EPUB 正文过大，无法安全导入" } }
+                    }.also { retained += it.size }
+                }
+            }, fallbackTitle)
+        }
+    }
+
+    private fun parse(files: (String) -> ByteArray?, fallbackTitle: String): BookContent {
+        val container = files("META-INF/container.xml")?.let(TextDecoder::decode)
             ?: error("不是有效的 EPUB：缺少 container.xml")
         val opfPath = attr(Regex("""<rootfile\b[^>]*>""").find(container)?.value.orEmpty(), "full-path")
             ?: error("不是有效的 EPUB：找不到 OPF")
-        val opf = files[opfPath]?.let(TextDecoder::decode) ?: error("不是有效的 EPUB：缺少 $opfPath")
+        val opf = files(opfPath)?.let(TextDecoder::decode) ?: error("不是有效的 EPUB：缺少 $opfPath")
         val base = opfPath.substringBeforeLast('/', "")
 
         val title = Regex("""<dc:title\b[^>]*>(.*?)</dc:title>""", RegexOption.DOT_MATCHES_ALL)
@@ -61,7 +88,7 @@ object EpubParser {
         var missing = 0
         val noteKeys = linkedSetOf<String>()
         for (item in spine) {
-            val bytes = files[item.href]
+            val bytes = files(item.href)
             if (bytes == null) {
                 // 正文文件在压缩包里缺失：不让整本书打不开，也不悄悄少一章，留一章说明缺了什么。
                 chapters += ChapterTitles.chapter(
@@ -100,15 +127,15 @@ object EpubParser {
         val indexes = HashMap<String, HtmlText.NoteIndex>()
         val notes = noteKeys.mapNotNull { key ->
             val path = key.substringBefore('#')
-            val index = indexes.getOrPut(path) { HtmlText.NoteIndex(files[path]?.let(TextDecoder::decode).orEmpty()) }
+            val index = indexes.getOrPut(path) { HtmlText.NoteIndex(files(path)?.let(TextDecoder::decode).orEmpty()) }
             index.text(key.substringAfter('#'))?.let { key to it }
         }.toMap()
         return BookContent(title ?: fallbackTitle, author, chapters, description, cover, notes)
     }
 
     /** 目录：EPUB3 的 nav 或 EPUB2 的 NCX；同一文件取第一个标题。 */
-    private fun tocTitles(files: Map<String, ByteArray>, path: String?): Map<String, String> {
-        val text = path?.let(files::get)?.let(TextDecoder::decode) ?: return emptyMap()
+    private fun tocTitles(files: (String) -> ByteArray?, path: String?): Map<String, String> {
+        val text = path?.let(files)?.let(TextDecoder::decode) ?: return emptyMap()
         val base = path.substringBeforeLast('/', "")
         val result = linkedMapOf<String, String>()
         if (path.endsWith(".ncx", ignoreCase = true)) {
@@ -140,10 +167,7 @@ object EpubParser {
                 val entry = zip.nextEntry ?: break
                 require(++entries <= MAX_ENTRIES) { "EPUB 内文件过多，无法安全导入" }
                 val name = entry.name
-                val wanted = name.endsWith(".xml", ignoreCase = true) || name.endsWith(".opf", ignoreCase = true) ||
-                    name.endsWith(".ncx", ignoreCase = true) || name.endsWith(".xht", ignoreCase = true) ||
-                    name.endsWith(".xhtml", ignoreCase = true) || name.endsWith(".html", ignoreCase = true) ||
-                    name.endsWith(".htm", ignoreCase = true)
+                val wanted = wanted(name)
                 // A directory entry can still carry compressed bytes. Drain it through the
                 // same bounded loop so nextEntry() cannot skip decompression outside our limit.
                 val output = if (wanted && !entry.isDirectory) ByteArrayOutputStream() else null
@@ -168,6 +192,29 @@ object EpubParser {
             }
         }
         return files
+    }
+
+    /** 只有这些文本条目会被解压保留；图片、字体等一律不留。 */
+    private fun wanted(name: String): Boolean =
+        name.endsWith(".xml", ignoreCase = true) || name.endsWith(".opf", ignoreCase = true) ||
+            name.endsWith(".ncx", ignoreCase = true) || name.endsWith(".xht", ignoreCase = true) ||
+            name.endsWith(".xhtml", ignoreCase = true) || name.endsWith(".html", ignoreCase = true) ||
+            name.endsWith(".htm", ignoreCase = true)
+
+    /** 有界地读出一个条目；[check] 收到读到目前为止的字节数，超限时抛出。 */
+    private fun read(input: InputStream, check: (Long) -> Unit): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var size = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            size += count
+            require(size <= MAX_ENTRY_BYTES) { "EPUB 正文过大，无法安全导入" }
+            check(size)
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
     }
 
     private fun attr(tag: String, name: String): String? =

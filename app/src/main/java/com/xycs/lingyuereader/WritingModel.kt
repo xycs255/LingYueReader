@@ -719,8 +719,9 @@ class WritingModel(
     /** 范本存放在作品自己的独立目录，不作为本作的设定或正文。 */
     suspend fun references(workId: String): List<WritingReference> = withContext(disk) { store.references(workId) }
 
-    suspend fun importReference(workId: String, fileName: String, bytes: ByteArray): WritingReference =
-        withContext(disk) { store.importReference(workId, fileName, bytes) }
+    /** [file] 是选文件时复制出的临时副本：TXT 按行流式解码，EPUB 只解压正文用到的文本条目。 */
+    suspend fun importReference(workId: String, fileName: String, file: java.io.File): WritingReference =
+        withContext(disk) { store.importReference(workId, fileName, file) }
 
     suspend fun importBookReference(workId: String, bookId: String, content: BookContent, sourceName: String = "书架"): WritingReference =
         withContext(disk) { store.importBookReference(workId, bookId, content, sourceName) }
