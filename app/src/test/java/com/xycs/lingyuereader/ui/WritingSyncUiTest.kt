@@ -392,11 +392,18 @@ class WritingSyncUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterSync(workId)); vm.writingAi.syncChapter(workId, chapterId) }
         waitForText("没整理全")
         assertEquals(2, bodies.size)
-        // 第一段的提议照样能写，但这一章不记为已整理。
-        press("写进设定包和账本（3 条）")
+        // 第一段的提议仅供核对；失败章不提供勾选，也不能写进设定包。
+        assertTrue(vm.writingAi.sync.value!!.picked.isEmpty())
+        assertTrue(seen("待重整"))
         val people = store.pack(workId).first { it.kind == PackKind.CHARACTER }
-        waitFor { "杜娘" in store.packText(workId, people.id) }
-        waitFor { vm.writingAi.sync.value == null }
+        assertFalse("杜娘" in store.packText(workId, people.id))
         assertFalse(store.assist(workId).synced.containsKey(chapterId))
+
+        failWhen = null
+        compose.runOnUiThread { vm.writingAi.syncChapter(workId, chapterId) }
+        waitFor { vm.writingAi.sync.value?.results?.singleOrNull()?.let { it.error == null && it.items.isNotEmpty() } == true }
+        press("写进设定包和账本（3 条）")
+        waitFor { "杜娘" in store.packText(workId, people.id) }
+        waitFor { store.assist(workId).synced.containsKey(chapterId) }
     }
 }

@@ -148,6 +148,18 @@ class WritingDraftUiTest {
     private fun waitForGate(text: String) = waitFor { compose.onAllNodesWithContentDescription(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     @Test
+    fun chapterBudgetPreviewUsesLocalMaterialsWithoutSendingAiRequest() {
+        WorkStore(writingDir).saveText(workId, c2, "")
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+
+        waitForText("写本章请求预算")
+        waitForText("test-model")
+        waitForText("未设置此模型单价")
+        assertTrue("估算本章材料不能自行发起 AI 请求", asked.isEmpty())
+    }
+
+    @Test
     fun authorSelectsARealReferenceBeforeAiWritesTheDraft() {
         val store = WorkStore(writingDir)
         val book = store.importReference(workId, "合成范本.txt", "第一章 门外\n夜里有人叩门。掌柜先问来者身份，等对方迟疑后才移近灯盏。")

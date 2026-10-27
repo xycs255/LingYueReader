@@ -10,6 +10,7 @@ import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReviewIssue
+import com.xycs.lingyuereader.data.ReviewEvidence
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
@@ -96,25 +97,34 @@ object WritePrompts {
     }
 
     /** Structured evidence is kept outside the manuscript; a missing source is not a proven error. */
-    fun projectReview(task: ChapterWritingTask, text: String, rules: String): String = buildString {
+    fun projectReview(task: ChapterWritingTask, text: String, rules: String, evidence: ReviewEvidence? = null): String = buildString {
         append(task.render()).append("\n\n【当前阶段：审读】\n")
         append("待审完整章稿：\n").append(text).append("\n\n")
         if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
         append("先抓最影响这一章的两三处问题，再区分事实必改与审美建议。核时地、在场与知情、资源权限、关键选择、")
         append("因果、伤亡损失、结果和承接。每项问题给正文一字不差的原句、具体资料依据和影响；资料不足列为missing，不能把推测当错误。\n")
+        if (evidence != null) {
+            append("所有必改意见，以及事实类建议，都必须给 source_ref（来源编号）和 source_quote（该来源中连续、原样的至少 ${ReviewEvidence.MIN_QUOTE_CHARS} 字原文，不用省略号）。")
+            append("本章任务来源编号是 ").append(evidence.taskRef)
+            append("：FACT 可引本次明确要求、目标章细纲卡及已定前章摘录；CRAFT 必改只可引本次明确要求。任务中的承接推断和资料摘要不能冒充已定事实。设定文档和已定前文的来源编号见材料标题或查阅结果。")
+            append("FACT 只能引目标章约束、已定前文或事实设定；CRAFT 必改只能引明确要求、写作说明、写作规范、称谓语气或检查规则，不能把事实卡或人物档案改称写法依据，也不能把一般审美偏好写成必改。")
+            val craftSources = evidence.sources.filter { it.supportsCraft && !it.supportsFact }
+            if (craftSources.isNotEmpty()) append(craftSources.joinToString("；", prefix = "写法与规则来源编号：", postfix = "。") { "${it.label} ${it.ref}" })
+            append("若找不到可定位原文，把问题放进 missing 等作者核对，不把猜测列为必改。来源定位只能证明引文存在，仍须判断其含义。\n")
+        }
         append("单独连读对白，检查关系、欲望和情绪是否成立，是否人人准确概括、借角色讲课；检查旁白是否重复对白与结果、是否写成论文。")
         append("不因生活闲话、直接心理或背景没有推进主线就删，不强制短句、逐句动作、统一场次、微伏笔或快慢配额。")
         append("保留有效内容，不为评分凑错，不将审美偏好写成硬性规则。\n")
         append("本阶段只审读，不重写正文，不新增故事事实，不声称已运行脚本或作者已定。输出结构用于软件展示，取代模板中的排版要求。")
         append("只输出JSON，固定顶层结构：{\"summary\":[],\"missing\":[],\"issues\":[]}。summary放两三项主要判断，missing放确实缺少的硬资料；没有则留空数组。")
-        append("每个issues对象格式为{\"kind\":\"FACT\",\"quote\":\"正文原句\",\"problem\":\"问题与影响\",\"basis\":\"具体资料依据或明确创作要求\",\"fix\":\"在既定事实内的改法\",\"required\":true}。kind只能是FACT或CRAFT。")
+        append("每个issues对象格式为{\"kind\":\"FACT\",\"quote\":\"正文原句\",\"problem\":\"问题与影响\",\"basis\":\"具体资料依据或明确创作要求\",\"source_ref\":\"来源编号\",\"source_quote\":\"来源原句\",\"fix\":\"在既定事实内的改法\",\"required\":true}。kind只能是FACT或CRAFT。")
         append("事实错误及明确违反作者要求的写法才required=true；可取舍的审美建议required=false。没有问题如实返回空数组，不伪填通过记录。")
     }
 
     /** Repair is based on checked findings, not permission to invent new facts or replace every voice. */
     fun projectRevision(task: ChapterWritingTask, text: String, review: String, rules: String): String = buildString {
         append(task.render()).append("\n\n【当前阶段：修订】\n")
-        append("当前完整章稿：\n").append(text).append("\n\n已核实、待处理的审读意见：\n").append(review).append("\n\n")
+        append("当前完整章稿：\n").append(text).append("\n\n有可定位来源、仍须核对含义的待处理审读意见：\n").append(review).append("\n\n")
         if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
         append("逐条回原稿与目标章核实意见。修正有依据的事实、因果、视角、承接和明确写法违规；审读意见是线索，")
         append("不自动成为新设定。误读原稿、资料不足或违背细纲的意见不照办；审美建议按整章效果取舍。\n")
@@ -728,13 +738,22 @@ object WritePrompts {
 
     /** 写作建议的回答：只留原文里真找得到、确实有改动的。 */
     fun parseIssues(answer: String, paragraphs: List<String>): List<WriteIssue> {
-        val a = json(answer).optJSONArray("issues") ?: JSONArray()
+        val a = json(answer).optJSONArray("issues") ?: throw AiException("写作建议回答缺少 issues 数组，尚未完成检查")
         return (0 until a.length()).mapNotNull { i ->
-            val o = a.optJSONObject(i) ?: return@mapNotNull null
-            val p = paragraphs.getOrNull(o.optInt("p") - 1) ?: return@mapNotNull null
-            val wrong = o.optString("wrong").trim()
-            val right = o.optString("right").trim()
-            if (wrong.isEmpty() || wrong == right || wrong !in p) return@mapNotNull null
+            val o = a.optJSONObject(i) ?: throw AiException("写作建议回答的 issues 条目格式有误，尚未完成检查")
+            val index = when (val value = o.opt("p")) {
+                is Int -> value
+                is Long -> value.takeIf { it in 1L..paragraphs.size.toLong() }?.toInt()
+                else -> null
+            }?.takeIf { it in 1..paragraphs.size }
+                ?: throw AiException("写作建议回答的段落编号格式有误，尚未完成检查")
+            val wrong = (o.opt("wrong") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: throw AiException("写作建议回答缺少要修改的原文，尚未完成检查")
+            // Empty replacement is a valid deletion; the field itself must still be a string.
+            val right = (o.opt("right") as? String)?.trim()
+                ?: throw AiException("写作建议回答缺少修改内容，尚未完成检查")
+            val p = paragraphs[index - 1]
+            if (wrong == right || wrong !in p) return@mapNotNull null
             WriteIssue(p, wrong, right, o.optString("reason").trim(), SuggestKind.of(o.optString("kind").trim().uppercase()).name, o.optString("source").trim())
         }.distinctBy { it.paragraph to it.wrong }
     }

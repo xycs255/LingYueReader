@@ -12,6 +12,7 @@ import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.ReviewEvidence
 import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
@@ -117,7 +118,11 @@ class WritingPackAiUiTest {
         assertEquals(3, first.getJSONArray("tools").length())
         // 工具读到的第一章交回给 AI 了。
         val second = bodies[1].getJSONArray("messages")
-        assertEquals("沈默进了城，在杜娘的茶馆落脚。", second.getJSONObject(second.length() - 1).getString("content"))
+        val chapterText = "沈默进了城，在杜娘的茶馆落脚。"
+        val returned = second.getJSONObject(second.length() - 1).getString("content")
+        val firstChapterId = WorkStore(writingDir).get(workId)!!.chapters.first().id
+        assertEquals(chapterText, returned.substringBefore('\n'))
+        assertEquals("[来源 ${ReviewEvidence.ref("C", firstChapterId, chapterText)}]", returned.substringAfter('\n'))
         // 作者看得到 AI 查了什么。
         assertEquals(listOf("读正文 第一章 进城"), vm.writingAi.lastRequest.value!!.lookups)
 
