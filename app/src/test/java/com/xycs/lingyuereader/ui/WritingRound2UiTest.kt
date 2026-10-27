@@ -23,6 +23,7 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.DeviceModels
 import com.xycs.lingyuereader.data.PackKind
@@ -154,9 +155,24 @@ class WritingRound2UiTest {
         // 审稿中和结果之间是淡入淡出的：过渡途中新旧两份都在，等只剩一份再点。
         waitFor { compose.onAllNodesWithText("林月这时还不知道").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("林月这时还不知道").performScrollTo().performClick()
+        // The issue row click opens a separate dialog. Its action is composed after the row
+        // click, so wait for that exact option before asking Compose to click it.
+        waitFor { compose.onAllNodesWithText("按这条让 AI 改").fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("按这条让 AI 改").performClick()
+        fun handoffState(): String {
+            val ai = vm.writingAi.state.value
+            return "screen=${vm.stack.value.lastOrNull()}, jump=${vm.writing.jump.value}, " +
+                "aiTask=${ai?.task}, loading=${ai?.loading}, error=${ai?.error}, " +
+                "message=${vm.messages.value}, requests=${synchronized(asked) { asked.size }}"
+        }
+        fun awaitHandoff(stage: String, condition: () -> Boolean) {
+            try { waitFor(condition = condition) }
+            catch (e: Throwable) { throw AssertionError("AI 改稿交接停在 $stage：${handoffState()}", e) }
+        }
+        awaitHandoff("返回编辑器") { vm.stack.value.lastOrNull() == Screen.Editor(workId, chapterId) }
+        awaitHandoff("编辑器启动改稿") { vm.writingAi.state.value?.task is WriteAiTask.Edit }
         // 采纳按钮在 AI 回答之前就在面板上：等请求发出、回答回来再点。
-        waitFor { asked.any { "审稿意见" in it } }
+        awaitHandoff("发出 AI 请求") { synchronized(asked) { asked.any { "审稿意见" in it } } }
         waitFor { vm.writingAi.state.value?.let { !it.loading && it.text.isNotEmpty() } == true }
         val req = asked.last { "审稿意见" in it }
         assertTrue("要改的文字：\n林月早就知道" in req)

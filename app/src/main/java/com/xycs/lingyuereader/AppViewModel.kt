@@ -2873,8 +2873,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             beginBusy()
             try {
                 withContext(Dispatchers.IO) {
-                    val out = getApplication<Application>().contentResolver.openOutputStream(uri, "wt") ?: throw IllegalArgumentException("无法写入文件")
-                    out.use { writing.export(workId, format, it) }
+                    val app = getApplication<Application>()
+                    stagedWritingExport(app.cacheDir, { app.contentResolver.openOutputStream(uri, "wt") }) {
+                        writing.export(workId, format, it)
+                    }
                 }
                 _messages.value = "已导出 ${format.label}"
             } catch (cancelled: CancellationException) {
@@ -2910,8 +2912,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             beginBusy()
             try {
                 withContext(Dispatchers.IO) {
-                    val out = getApplication<Application>().contentResolver.openOutputStream(uri, "wt") ?: throw IllegalArgumentException("无法写入文件")
-                    out.use { writing.exportPack(workId, it) }
+                    val app = getApplication<Application>()
+                    stagedWritingExport(app.cacheDir, { app.contentResolver.openOutputStream(uri, "wt") }) {
+                        writing.exportPack(workId, it)
+                    }
                 }
                 _messages.value = "已导出设定包"
             } catch (cancelled: CancellationException) {

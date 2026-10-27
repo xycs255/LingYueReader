@@ -77,19 +77,21 @@ internal fun companionIndex(config: AiConfig): Int {
 internal fun WritingCaretCompanion(position: EditorCompanionPosition, scroll: ScrollState, config: AiConfig, accent: Color) {
     val portraits = ImageBitmap.imageResource(R.drawable.writing_companions)
     val index = companionIndex(config)
-    val breathing = rememberInfiniteTransition(label = "writingCompanion")
-    val opacity = breathing.animateFloat(
-        initialValue = 0.83f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500), repeatMode = RepeatMode.Reverse),
-        label = "breathing",
-    )
+    val opacity = if (Effects.noMotion) 1f else {
+        val breathing = rememberInfiniteTransition(label = "writingCompanion")
+        breathing.animateFloat(
+            initialValue = 0.83f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1500), repeatMode = RepeatMode.Reverse),
+            label = "breathing",
+        ).value
+    }
     Canvas(Modifier.fillMaxSize().clearAndSetSemantics { }) {
         val y = scroll.value.toFloat()
         val caret = Rect(position.caret.left, position.caret.top - y,
             position.caret.right, position.caret.bottom - y)
         if (caret.bottom <= 0f || caret.top >= size.height) return@Canvas
-        val alpha = opacity.value
+        val alpha = opacity
         val icon = 22.dp.toPx().roundToInt()
         val gap = 4.dp.toPx()
         // 行末有空白时贴近光标；光标在文字中间时退到当前行外侧页边，避免压住正文。

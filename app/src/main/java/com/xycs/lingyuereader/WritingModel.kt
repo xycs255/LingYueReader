@@ -406,12 +406,27 @@ class WritingModel(
         }
     }
 
-    /** 这一章和上一章的细纲卡（上一章的钩子和承接边界写这一章时要接上）。没写过的按设定包里的细纲提取。 */
-    suspend fun cards(workId: String, chapterId: String): Pair<PlannedCard, Pair<WorkChapter, ChapterCard>?> = withContext(disk) {
+    /** 页面编辑时同时保留盘上的原卡。自动提取的字段只存在于 [PlannedCard]，首次保存需要这个基线。 */
+    data class CardSnapshot(
+        val planned: PlannedCard,
+        val stored: ChapterCard,
+        val previous: Pair<WorkChapter, ChapterCard>?,
+    )
+
+    suspend fun cardSnapshot(workId: String, chapterId: String): CardSnapshot = withContext(disk) {
         val chapters = store.get(workId)?.chapters.orEmpty()
         val i = chapters.indexOfFirst { it.id == chapterId }
-        store.plannedCard(workId, chapterId) to chapters.getOrNull(i - 1)?.let { it to store.plannedCard(workId, it.id).card }
+        val stored = store.card(workId, chapterId)
+        CardSnapshot(
+            store.plannedCard(workId, chapterId),
+            stored,
+            chapters.getOrNull(i - 1)?.let { it to store.plannedCard(workId, it.id).card },
+        )
     }
+
+    /** 这一章和上一章的细纲卡（上一章的钩子和承接边界写这一章时要接上）。没写过的按设定包里的细纲提取。 */
+    suspend fun cards(workId: String, chapterId: String): Pair<PlannedCard, Pair<WorkChapter, ChapterCard>?> =
+        cardSnapshot(workId, chapterId).let { it.planned to it.previous }
 
     fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
         scope.launch {
@@ -421,17 +436,27 @@ class WritingModel(
 
     /**
      * 按字段改细纲卡（见 [WorkStore.updateCard]）：在写盘队列里读出现在的卡再改，只动 [transform] 改到的字段，
-     * 不会拿页面上的旧卡片把 AI 刚写的摘要盖掉。[then] 拿到改后的卡。
+     * 不会拿页面上的旧卡片把 AI 刚写的摘要盖掉。[then] 只在落盘成功后拿到改后的卡；
+     * [onFailure] 让页面保留未保存状态并提供重试。
      */
-    fun updateCard(workId: String, chapterId: String, transform: (ChapterCard) -> ChapterCard, then: (ChapterCard) -> Unit = {}) {
+    fun updateCard(
+        workId: String,
+        chapterId: String,
+        transform: (ChapterCard) -> ChapterCard,
+        then: (ChapterCard) -> Unit = {},
+        onFailure: (Exception) -> Unit = {},
+    ) {
         scope.launch {
-            try {
-                then(withContext(disk) { store.updateCard(workId, chapterId, transform) })
+            val merged = try {
+                withContext(disk) { store.updateCard(workId, chapterId, transform) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 message("保存失败：${e.message ?: "写入出错"}")
+                onFailure(e)
+                return@launch
             }
+            then(merged)
         }
     }
 

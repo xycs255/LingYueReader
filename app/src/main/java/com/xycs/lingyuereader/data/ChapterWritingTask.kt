@@ -153,7 +153,7 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
     val rawDocs = pack(workId).map { it to packText(workId, it.id) }
     val docs = ProjectSources.forPhase(rawDocs, WritingPhase.CREATE)
     val entries = outlineEntries(workId)
-    val found = ChapterOutlines.match(entries, number, catalogVolume, chapter.title, card(workId, chapterId).plan.isNotBlank())
+    val found = chapterOutlineEntries(work, chapterId, entries)
     val volume = found.firstNotNullOfOrNull { it.volume } ?: catalogVolume
     val planned = plannedCard(workId, chapterId, entries)
     val card = planned.card

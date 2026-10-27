@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader
 
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.WorkStore
 import kotlinx.coroutines.CompletableDeferred
@@ -61,6 +62,44 @@ class WritingModelSafetyTest {
             model.flush()
             assertFalse(success)
             assertFalse(store.get(work.id)!!.chapter(chapter)!!.locked)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun failedCardWriteCallsFailureInsteadOfSuccessAndCanBeRetried() = runBlocking {
+        val root = tmp.newFolder()
+        val store = WorkStore(root)
+        val work = store.create("长夜")
+        val chapter = work.chapters.single().id
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val error = CompletableDeferred<String>()
+        val failure = CompletableDeferred<Exception>()
+        val model = WritingModel(store, scope) { error.complete(it) }
+        val blockedTemp = File(root, "works/${work.id}/$chapter.card.json.tmp")
+        assertTrue(blockedTemp.mkdir())
+        var acknowledged = false
+        try {
+            model.updateCard(
+                work.id, chapter, { it.copy(facts = "林月入城") },
+                then = { acknowledged = true },
+                onFailure = { failure.complete(it) },
+            )
+            withTimeout(5_000) { failure.await() }
+            assertTrue(withTimeout(5_000) { error.await() }.startsWith("保存失败"))
+            assertFalse(acknowledged)
+            assertEquals(ChapterCard(), store.card(work.id, chapter))
+
+            assertTrue(blockedTemp.delete())
+            val completed = CompletableDeferred<ChapterCard>()
+            model.updateCard(
+                work.id, chapter, { it.copy(facts = "林月入城") },
+                then = { completed.complete(it) },
+                onFailure = { throw AssertionError("重试仍失败", it) },
+            )
+            assertEquals("林月入城", withTimeout(5_000) { completed.await() }.facts)
+            assertEquals("林月入城", store.card(work.id, chapter).facts)
         } finally {
             scope.cancel()
         }

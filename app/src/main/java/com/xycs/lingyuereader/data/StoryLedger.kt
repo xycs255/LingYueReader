@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.data
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.math.BigDecimal
 import java.util.UUID
 
 /**
@@ -113,30 +114,86 @@ data class LedgerEntry(
     }
 
     companion object {
-        private fun JSONObject.int(key: String): Int? = if (has(key) && !isNull(key)) optInt(key, Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE && it >= 0 } else null
+        private val fields = setOf(
+            "id", "kind", "text", "subject", "aspect", "from", "volume", "until", "payoff", "done", "closed",
+            "via", "secret", "quote", "chapterId", "origin", "updatedAt",
+        )
 
-        /** 读不出、没有内容的返回 null。 */
+        private fun JSONObject.checkFields() {
+            val names = keys()
+            while (names.hasNext()) {
+                val name = names.next()
+                require(name in fields) { "故事账本含有无法识别的字段：$name" }
+            }
+        }
+
+        private fun JSONObject.string(key: String): String {
+            val value = opt(key)
+            require(value == null || value == JSONObject.NULL || value is String) { "故事账本 $key 不是文字" }
+            return (value as? String).orEmpty()
+        }
+
+        private fun JSONObject.integer(key: String): BigDecimal? {
+            if (!has(key) || isNull(key)) return null
+            val value = opt(key)
+            require(value is Number || value is String) { "故事账本 $key 不是整数" }
+            return runCatching { BigDecimal(value.toString()) }.getOrElse {
+                throw IllegalArgumentException("故事账本 $key 不是整数", it)
+            }
+        }
+
+        private fun JSONObject.int(key: String): Int? = integer(key)?.let { value ->
+            val number = runCatching { value.intValueExact() }.getOrNull()
+            require(number != null && number >= 0) { "故事账本 $key 不是非负整数" }
+            number
+        }
+
+        private fun JSONObject.long(key: String): Long? = integer(key)?.let { value ->
+            val number = runCatching { value.longValueExact() }.getOrNull()
+            require(number != null && number >= 0) { "故事账本 $key 不是非负整数" }
+            number
+        }
+
+        private fun JSONObject.boolean(key: String): Boolean {
+            if (!has(key) || isNull(key)) return false
+            return when (val value = opt(key)) {
+                is Boolean -> value
+                is String -> when {
+                    value.equals("true", ignoreCase = true) -> true
+                    value.equals("false", ignoreCase = true) -> false
+                    else -> throw IllegalArgumentException("故事账本 $key 不是布尔值")
+                }
+                else -> throw IllegalArgumentException("故事账本 $key 不是布尔值")
+            }
+        }
+
+        /** 类别或正文无效时返回 null；其余已存在却损坏的字段抛错，避免静默丢失。 */
         fun fromJson(o: JSONObject): LedgerEntry? {
-            val kind = runCatching { LedgerKind.valueOf(o.optString("kind")) }.getOrNull() ?: return null
-            val text = o.optString("text").trim().takeIf { it.isNotEmpty() } ?: return null
+            o.checkFields()
+            val kind = (o.opt("kind") as? String)?.let { runCatching { LedgerKind.valueOf(it) }.getOrNull() } ?: return null
+            val text = (o.opt("text") as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val origin = if (!o.has("origin") || o.isNull("origin")) LedgerOrigin.MANUAL else
+                runCatching { LedgerOrigin.valueOf(o.string("origin")) }.getOrElse {
+                    throw IllegalArgumentException("故事账本 origin 无效", it)
+                }
             return LedgerEntry(
-                id = o.optString("id").ifEmpty { UUID.randomUUID().toString() },
+                id = o.string("id").ifEmpty { UUID.randomUUID().toString() },
                 kind = kind,
                 text = text,
-                subject = o.optString("subject").trim(),
-                aspect = o.optString("aspect").trim(),
+                subject = o.string("subject").trim(),
+                aspect = o.string("aspect").trim(),
                 from = o.int("from"),
                 volume = o.int("volume"),
                 until = o.int("until"),
                 payoff = o.int("payoff"),
-                done = o.optBoolean("done"),
+                done = o.boolean("done"),
                 closed = o.int("closed"),
-                via = o.optString("via").trim(),
-                secret = o.optBoolean("secret"),
-                quote = o.optString("quote"),
-                chapterId = o.optString("chapterId"),
-                origin = runCatching { LedgerOrigin.valueOf(o.optString("origin")) }.getOrDefault(LedgerOrigin.MANUAL),
-                updatedAt = o.optLong("updatedAt"),
+                via = o.string("via").trim(),
+                secret = o.boolean("secret"),
+                quote = o.string("quote"),
+                chapterId = o.string("chapterId"),
+                origin = origin,
+                updatedAt = o.long("updatedAt") ?: 0,
             )
         }
     }
@@ -163,11 +220,18 @@ object StoryLedger {
     fun toJson(entries: List<LedgerEntry>): JSONObject =
         JSONObject().put("format", FORMAT).put("entries", JSONArray().apply { entries.forEach { put(it.toJson()) } })
 
-    /** 读账本；读不出的条目跳过。整份不是账本（没有 entries）时抛错，由调用方另存坏文件。 */
+    /** 读账本；任一条无法读取时整份报错，由调用方另存原文件，避免下一次保存静默丢掉坏条目。 */
     fun parse(raw: String): List<LedgerEntry> {
         val o = JSONObject(raw)
+        if (o.has("format")) {
+            require(runCatching { BigDecimal(o.get("format").toString()).intValueExact() == FORMAT }.getOrDefault(false)) {
+                "故事账本格式版本不受支持"
+            }
+        }
         val a = o.getJSONArray("entries")
-        return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(LedgerEntry::fromJson) }
+        return (0 until a.length()).map { index ->
+            requireNotNull(LedgerEntry.fromJson(a.getJSONObject(index))) { "故事账本第 ${index + 1} 条无效" }
+        }
     }
 
     /**

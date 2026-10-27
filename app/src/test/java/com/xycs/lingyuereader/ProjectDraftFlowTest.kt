@@ -8,6 +8,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.data.DraftStage
+import com.xycs.lingyuereader.data.DraftReferenceProvenance
+import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
@@ -60,6 +62,14 @@ class ProjectDraftFlowTest {
     private val releaseReview = CountDownLatch(1)
     @Volatile private var holdReview = false
     @Volatile private var reviewMode = ReviewMode.ISSUE_THEN_PASS
+    @Volatile private var failCreate = false
+    @Volatile private var streamFenceOnly = false
+    @Volatile private var holdFence = false
+    @Volatile private var holdBeforeFence = false
+    @Volatile private var fenceEntered = CountDownLatch(1)
+    @Volatile private var releaseFence = CountDownLatch(1)
+    @Volatile private var createEntered = CountDownLatch(1)
+    @Volatile private var releaseFirstToken = CountDownLatch(1)
 
     private enum class ReviewMode { ISSUE_THEN_PASS, PASS, MALFORMED }
     private data class Request(val phase: String, val system: String, val user: String) {
@@ -95,9 +105,36 @@ class ProjectDraftFlowTest {
                     "【当前阶段：创作】" in user -> "CREATE"
                     "【当前阶段：审读】" in user -> "REVIEW"
                     "【当前阶段：修订】" in user -> "REVISE"
+                    streamFenceOnly && ("请写出这一章" in user || "请从最后一句接着往下写" in user) -> "CREATE"
                     else -> "UNEXPECTED"
                 }
                 asked += Request(phase, system, user)
+                if (phase == "CREATE" && failCreate) {
+                    exchange.sendResponseHeaders(503, -1)
+                    exchange.close()
+                    return@createContext
+                }
+                if (phase == "CREATE" && streamFenceOnly) {
+                    val entered = fenceEntered
+                    val release = releaseFence
+                    val first = releaseFirstToken
+                    exchange.responseHeaders.add("Content-Type", "text/event-stream")
+                    exchange.sendResponseHeaders(200, 0)
+                    runCatching {
+                        exchange.responseBody.use { out ->
+                            createEntered.countDown()
+                            if (holdBeforeFence) first.await(15, TimeUnit.SECONDS)
+                            val delta = JSONObject().put("choices", JSONArray().put(JSONObject().put("delta",
+                                JSONObject().put("content", "```markdown\n"))))
+                            out.write("data: $delta\n\n".toByteArray())
+                            out.flush()
+                            entered.countDown()
+                            if (holdFence) release.await(15, TimeUnit.SECONDS)
+                            out.write("data: [DONE]\n\n".toByteArray())
+                        }
+                    }
+                    return@createContext
+                }
                 val answer = when (phase) {
                     "CREATE" -> candidate
                     "REVISE" -> revised
@@ -153,6 +190,8 @@ class ProjectDraftFlowTest {
     @After
     fun tearDown() {
         releaseReview.countDown()
+        releaseFence.countDown()
+        releaseFirstToken.countDown()
         models.forEach { it.viewModelScope.cancel() }
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         server.stop(0)
@@ -298,7 +337,7 @@ class ProjectDraftFlowTest {
     fun restoringAFailedProjectCandidateNeverTurnsItIntoAnUnreviewedLegacyDraft() {
         reviewMode = ReviewMode.MALFORMED
         val vm = model()
-        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        vm.writingAi.writeDraft(workId, chapterId, "保留借灯前的犹豫", workflow = true, targetLength = "10—100字")
         assertEquals(DraftStage.ERROR, completed(vm).stage)
         assertEquals(candidate, store.draft(workId, chapterId))
         val restarted = model()
@@ -307,11 +346,175 @@ class ProjectDraftFlowTest {
         val restored = restarted.writingAi.drafts.value.getValue(workId to chapterId)
         assertEquals(candidate, restored.text)
         assertTrue("项目候选稿的流程标记必须持久保留", restored.workflow)
+        assertEquals("保留借灯前的犹豫", restored.instruction)
+        assertEquals("10—100字", restored.targetLength)
         assertEquals(DraftStage.IDLE, restored.stage)
         assertNull(restored.assessment)
         assertNotNull(runBlocking { restarted.writingAi.draftBlocked(workId, chapterId) })
         assertEquals(original, store.text(workId, chapterId))
         assertCounts(create = 1, review = 1, revise = 0)
+    }
+
+    @Test
+    fun emptyCandidateRestoresExplicitReviewChoiceAndAuthorIntent() {
+        store.setDraftIntent(workId, chapterId, "先写门外声响", "约120字", false)
+        val first = model()
+        first.writingAi.loadDraft(workId, chapterId)
+        waitUntil("未载入作者要求") { first.writingAi.drafts.value.containsKey(workId to chapterId) }
+        assertEquals(false, first.writingAi.drafts.value.getValue(workId to chapterId).workflowChoice)
+        assertEquals("先写门外声响", first.writingAi.drafts.value.getValue(workId to chapterId).instruction)
+        assertEquals("约120字", first.writingAi.drafts.value.getValue(workId to chapterId).targetLength)
+        first.writingAi.saveDraftIntent(workId, chapterId, "改成先问来客", "约200字", true)
+        waitUntil("新选项未写入磁盘") { store.draftIntent(workId, chapterId)?.workflowChoice == true }
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        waitUntil("重启后未载入作者要求") { restarted.writingAi.drafts.value.containsKey(workId to chapterId) }
+        val restored = restarted.writingAi.drafts.value.getValue(workId to chapterId)
+        assertEquals("改成先问来客", restored.instruction)
+        assertEquals("约200字", restored.targetLength)
+        assertEquals(true, restored.workflowChoice)
+        assertEquals("", restored.text)
+    }
+
+    @Test
+    fun malformedDraftIntentDoesNotSilentlyDropOnlyTheBrokenChapter() {
+        store.setDraftIntent(workId, chapterId, "原要求", "120字", true)
+        val assistFile = File(writingDir, "works/$workId/assist.json")
+        val broken = JSONObject(assistFile.readText()).put("draftIntents", JSONObject().put(chapterId, "坏条目"))
+        assistFile.writeText(broken.toString())
+        assertTrue(store.assist(workId).draftIntents.isEmpty())
+        assertTrue(File(assistFile.parentFile, "assist.json.damaged").isFile)
+    }
+
+    @Test
+    fun failedRegenerationBeforeOutputKeepsTheExistingCandidateInMemoryAndOnDisk() {
+        for (workflow in listOf(false, true)) {
+            val vm = model()
+            val old = "先前写好的候选稿，不能因本次失败而消失。"
+            store.saveDraft(workId, chapterId, old)
+            store.setDraftWorkflow(workId, chapterId, true)
+            vm.writingAi.loadDraft(workId, chapterId)
+            waitUntil("旧候选稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
+            store.setStatus(workId, chapterId, ChapterStatus.FINAL)
+            vm.writingAi.writeDraft(workId, chapterId, "再写一版", workflow = workflow)
+            assertEquals("请求开始时仍须看得到旧候选稿", old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+            val failed = completed(vm)
+            assertTrue(failed.error.orEmpty().contains("定稿"))
+            assertEquals(old, failed.text)
+            assertEquals(old, store.draft(workId, chapterId))
+            assertTrue(chapterId in store.assist(workId).draftWorkflows)
+            assertEquals(0, asked.size)
+            vm.writingAi.forget()
+            store.setStatus(workId, chapterId, ChapterStatus.REVISION, "测试重新开始")
+        }
+    }
+
+    @Test
+    fun providerFailureBeforeFirstTokenKeepsTheOldProjectCandidate() {
+        val old = "已经审阅中的旧候选稿。"
+        store.saveDraft(workId, chapterId, old)
+        store.setDraftWorkflow(workId, chapterId, true)
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("旧候选稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
+        failCreate = true
+        vm.writingAi.writeDraft(workId, chapterId, "按旧设定重写", workflow = true, targetLength = "10—100字")
+        assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+        val failed = completed(vm)
+        assertEquals(DraftStage.ERROR, failed.stage)
+        assertNotNull(failed.error)
+        assertEquals(old, failed.text)
+        assertEquals(old, store.draft(workId, chapterId))
+        assertCounts(create = 1, review = 0, revise = 0)
+    }
+
+    @Test
+    fun streamedFenceWithoutProseCannotReplaceAnOldCandidateOnFailure() {
+        streamFenceOnly = true
+        for (workflow in listOf(false, true)) {
+            val old = "围栏之前已经存在的候选稿。"
+            store.saveDraft(workId, chapterId, old)
+            store.setDraftWorkflow(workId, chapterId, true)
+            val vm = model()
+            vm.writingAi.loadDraft(workId, chapterId)
+            waitUntil("旧稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
+            vm.writingAi.writeDraft(workId, chapterId, workflow = workflow, targetLength = "10—100字")
+            val failed = completed(vm)
+            assertNotNull(failed.error)
+            assertEquals(old, failed.text)
+            assertEquals(old, store.draft(workId, chapterId))
+            assertTrue(chapterId in store.assist(workId).draftWorkflows)
+            if (workflow) assertEquals(DraftStage.ERROR, failed.stage)
+        }
+        assertCounts(create = 2, review = 0, revise = 0)
+    }
+
+    @Test
+    fun stoppingAfterOnlyAStreamedFenceKeepsTheOldCandidate() {
+        streamFenceOnly = true
+        holdFence = true
+        for (workflow in listOf(false, true)) {
+            fenceEntered = CountDownLatch(1)
+            releaseFence = CountDownLatch(1)
+            val old = "停止生成前保存的候选稿。"
+            store.saveDraft(workId, chapterId, old)
+            store.setDraftWorkflow(workId, chapterId, true)
+            val vm = model()
+            vm.writingAi.loadDraft(workId, chapterId)
+            waitUntil("旧稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
+            vm.writingAi.writeDraft(workId, chapterId, workflow = workflow, targetLength = "10—100字")
+            waitUntil("围栏 token 尚未送达") { fenceEntered.count == 0L }
+            assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+            vm.writingAi.stopDraft(workId, chapterId)
+            waitUntil("停止后旧候选稿未保留") { vm.writingAi.drafts.value[workId to chapterId]?.loading == false }
+            assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+            waitUntil("停止后旧候选稿未落盘") { store.draft(workId, chapterId) == old }
+            assertTrue(chapterId in store.assist(workId).draftWorkflows)
+            releaseFence.countDown()
+        }
+    }
+
+    @Test
+    fun stoppingBeforeFirstTokenKeepsOldReviewRequirementAndSource() {
+        streamFenceOnly = true
+        holdBeforeFence = true
+        val old = "已有范本来源且需要审读的旧候选稿。"
+        val priorSource = DraftReferenceProvenance(java.util.UUID.randomUUID().toString(), "a".repeat(64), old.length, true)
+        store.saveDraft(workId, chapterId, old, priorSource)
+        store.setDraftWorkflow(workId, chapterId, true)
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("旧稿来源没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.referenceValidated == true }
+        vm.writingAi.writeDraft(workId, chapterId, workflow = false, targetLength = "10—100字", referenceAnalysisId = null)
+        waitUntil("创作请求尚未进入假服务商") { createEntered.count == 0L }
+        assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+        assertEquals(priorSource.analysisId, vm.writingAi.drafts.value[workId to chapterId]?.referenceAnalysisId)
+        assertTrue(vm.writingAi.drafts.value[workId to chapterId]?.workflow == true)
+        vm.writingAi.stopDraft(workId, chapterId)
+        releaseFirstToken.countDown()
+        waitUntil("停止后旧稿未保留") { vm.writingAi.drafts.value[workId to chapterId]?.loading == false }
+        assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+        assertEquals(priorSource, store.draftContent(workId, chapterId).reference)
+        assertTrue(chapterId in store.assist(workId).draftWorkflows)
+    }
+
+    @Test
+    fun cancellingAfterOnlyAStreamedFenceKeepsTheOldProjectCandidate() {
+        streamFenceOnly = true
+        holdFence = true
+        val old = "应用退出前保存的项目候选稿。"
+        store.saveDraft(workId, chapterId, old)
+        store.setDraftWorkflow(workId, chapterId, true)
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("旧稿没有载入") { vm.writingAi.drafts.value[workId to chapterId]?.text == old }
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        waitUntil("围栏 token 尚未送达") { fenceEntered.count == 0L }
+        vm.viewModelScope.cancel()
+        releaseFence.countDown()
+        waitUntil("取消后旧候选稿未保留") { vm.writingAi.drafts.value[workId to chapterId]?.loading == false }
+        assertEquals(old, vm.writingAi.drafts.value[workId to chapterId]?.text)
+        assertEquals(old, store.draft(workId, chapterId))
     }
 
     @Test

@@ -426,9 +426,10 @@ object WritePrompts {
 
     /** 写好的草稿：去掉 ``` 包裹、章名、“本章完”，一行一段、段首不空格。 */
     fun cleanDraft(answer: String): String {
-        val lines = answer.trim().removePrefix("```").removeSuffix("```").lines()
+        val lines = answer.trim().lines()
             .map { it.trim().trim('　').trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("```") }
+            // Drop the entire fence line, including an optional `markdown` / `text` label.
+            .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("~~~") }
             .filterIndexed { i, l -> !(i == 0 && (l.startsWith("#") || ChapterTitles.isTxtChapterTitle(l))) }
             .filterNot { Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$").matches(it) }
         return lines.joinToString("\n")

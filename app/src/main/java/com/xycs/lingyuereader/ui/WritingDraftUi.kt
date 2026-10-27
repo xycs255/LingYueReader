@@ -78,9 +78,13 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val chapter = works.firstOrNull { it.id == workId }?.chapter(chapterId)
     val draft = drafts[workId to chapterId]
-    var instruction by rememberSaveable(workId, chapterId) { mutableStateOf(draft?.instruction.orEmpty()) }
-    var targetLength by rememberSaveable(workId, chapterId) { mutableStateOf(draft?.targetLength.orEmpty()) }
-    var workflowChoice by rememberSaveable(workId, chapterId) { mutableStateOf<Boolean?>(true.takeIf { draft?.workflow == true }) }
+    // A saved UI override wins over an asynchronously loaded draft, including an explicit empty value.
+    // Null means the author has not edited this field in this screen instance yet.
+    var instructionChoice by rememberSaveable(workId, chapterId) { mutableStateOf<String?>(null) }
+    var targetLengthChoice by rememberSaveable(workId, chapterId) { mutableStateOf<String?>(null) }
+    var workflowChoice by rememberSaveable(workId, chapterId) { mutableStateOf<Boolean?>(null) }
+    val instruction = instructionChoice ?: draft?.instruction.orEmpty()
+    val targetLength = targetLengthChoice ?: draft?.targetLength.orEmpty()
     var task by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
     var taskError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
     var showTask by remember { mutableStateOf(false) }
@@ -137,8 +141,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
     val text = draft?.text.orEmpty()
     val loading = draft?.loading == true
-    val workflow = workflowChoice ?: (task?.project == true)
-    val canReview = aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
+    val savedWorkflowChoice = workflowChoice ?: draft?.workflowChoice
+    val workflow = savedWorkflowChoice ?: (draft?.workflow == true || task?.project == true)
+    LaunchedEffect(workId, chapterId, draft != null, instructionChoice, targetLengthChoice, savedWorkflowChoice) {
+        if (draft == null || instructionChoice == null && targetLengthChoice == null && workflowChoice == null) return@LaunchedEffect
+        delay(250)
+        // Persist only an actual author choice. The project default may still be loading here.
+        vm.writingAi.saveDraftIntent(workId, chapterId, instruction, targetLength, savedWorkflowChoice)
+    }
+    val canReview = draft != null && aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
     val canWrite = canReview &&
         (referenceId == null || !sourceLoading && sourceExcerpt != null && sourceError == null)
     // A map belongs to an exact selected source. A completed graphic is shown only after
@@ -210,6 +221,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         locked -> "这一章已定稿，不能让 AI 重写。要改先解锁并登记原因。"
                         !aiConfig.ready -> "先在“我的 → AI 助手”里设置服务商。"
                         taskError != null -> taskError
+                        draft == null -> "正在读取已保存的候选稿……"
                         task == null -> "正在核对本章任务与资料……"
                         workflow && task?.blocking?.isNotEmpty() == true -> task?.blocking?.joinToString("；")
                         card?.isEmpty == true -> "这一章还没有细纲卡。项目包写作需要先确定本章事实与章界。"
@@ -222,7 +234,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                             TextField(
                                 value = instruction,
-                                onValueChange = { instruction = it },
+                                onValueChange = { instructionChoice = it },
                                 label = "这一章想怎么写（可空）· 比如：多写对白，节奏快一点",
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp),
                             )
@@ -231,7 +243,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                             TextField(
-                                value = targetLength, onValueChange = { targetLength = it },
+                                value = targetLength, onValueChange = { targetLengthChoice = it },
                                 label = "目标篇幅（可空，默认依本章细纲）",
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 100.dp),
                             )
@@ -458,7 +470,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 TextField(value = directionText, onValueChange = { directionText = it },
                     label = "比如：对白增加试探，仍遵守本章结果", modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 250.dp))
                 DialogButtons(onDismiss = { directionDialog = false }, onConfirm = {
-                    instruction = directionText
+                    instructionChoice = directionText
                     directionDialog = false
                 }, confirmText = "保存方向")
             }
