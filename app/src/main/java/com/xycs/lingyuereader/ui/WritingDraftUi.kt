@@ -521,7 +521,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
                         row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
                         if (draft?.initialText != null && draft.alternateText == null && text != draft.initialText)
-                            row { ActionRow("恢复创作初稿", enabled = !locked && !revisionWriteBlocked) {
+                            row { ActionRow("换回修订前那一版", enabled = !locked && !revisionWriteBlocked) {
                                 vm.writingAi.restoreInitialDraft(workId, chapterId)
                             } }
                         if (draft?.alternateText != null && text == draft.initialText)
