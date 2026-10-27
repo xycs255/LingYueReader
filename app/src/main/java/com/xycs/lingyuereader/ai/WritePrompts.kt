@@ -51,12 +51,16 @@ data class WriteIssue(
     val source: String = "",
 )
 
-/** 写作建议的几类：作者可以分别开关。 */
-enum class SuggestKind(val label: String, val ask: String) {
+/**
+ * 写作建议的几类：前四类作者可以分别开关（[realtime]），停笔时自动查；
+ * [CLICHE] 是作者点“去 AI 腔”才查的，结果和写作建议一样一条条改或忽略，不在设置里开关。
+ */
+enum class SuggestKind(val label: String, val ask: String, val realtime: Boolean = true) {
     TYPO("错字", "错别字、用错的词、漏字多字、标点误用、明显的病句"),
     CANON("设定", "和设定包冲突的：人数、生死、日期、地点、官职、称呼、物件；人物知道了按察觉表这时还不该知道的事；提前写出后面才发生的事"),
     STYLE("规范", "违反作者写作约定、写作规范的：禁用词、对白写法、旁白腔、篇幅节奏这类明写了的规矩（只按作者写明的规矩，不按你自己的口味）"),
     VOICE("口吻", "人物说话不像他：和设定包里这个人的身份、称谓、说话方式不符"),
+    CLICHE("AI 腔", "套话、神态模板、替读者解释和点题的句子", realtime = false),
     ;
 
     companion object {
@@ -859,10 +863,31 @@ object WritePrompts {
     }
 
     /** 记一条采纳的修改：只留最近 [WorkAssist.KEEP_EXAMPLES] 条，太长的截断。 */
-    fun remember(assist: WorkAssist, action: WriteAction, before: String, after: String, at: Long): WorkAssist {
-        if (action == WriteAction.CONTINUE || before.isBlank()) return assist
-        val e = StyleExample(action.label, before.take(300), after.take(400), at)
+    fun remember(assist: WorkAssist, action: WriteAction, before: String, after: String, at: Long): WorkAssist =
+        if (action == WriteAction.CONTINUE) assist else remember(assist, action.label, before, after, at)
+
+    /** 记一条采纳的修改，[label] 是哪种改法（“润色”“去 AI 腔”）。 */
+    fun remember(assist: WorkAssist, label: String, before: String, after: String, at: Long): WorkAssist {
+        if (before.isBlank()) return assist
+        val e = StyleExample(label, before.take(300), after.take(400), at)
         return assist.copy(accepted = (assist.accepted + e).takeLast(WorkAssist.KEEP_EXAMPLES))
+    }
+
+    /**
+     * 去 AI 腔：[paragraphs] 是含标出说法的段落（段落原文、标出的那几处）。只改标出的说法和它所在的那一句，
+     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。
+     */
+    fun decliche(paragraphs: List<Pair<String, List<String>>>): String = buildString {
+        append("下面是作者小说里的几段正文，每段前面是编号，后面方括号里是本机标出的 AI 腔说法：\n\n")
+        paragraphs.forEachIndexed { i, (p, marks) ->
+            append(i + 1).append(". ").append(p).append('\n')
+            append("   [标出：").append(marks.joinToString("、") { "「$it」" }).append("]\n")
+        }
+        append("\n请去掉这些 AI 腔：只改标出的说法和它所在的那一句，能少改就少改。")
+        append("换成具体的动作、细节或直接删掉；不改情节，不改对白的内容，不动没标出的句子，不加新的比喻和形容词。\n")
+        append("wrong 必须是原文里一字不差的一小段（包含标出的说法，最长一句），right 是改好的这一小段（删掉就写空串），reason 用几个字说怎么改的。\n")
+        append("每处标出的说法最多一条；改不好、改了反而别扭的就不列。")
+        append("只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\"}]}，都不用改就输出 {\"issues\":[]}。")
     }
 }
 

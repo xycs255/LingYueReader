@@ -28,6 +28,7 @@ import com.xycs.lingyuereader.data.PackTools
 import com.xycs.lingyuereader.data.aiPack
 import com.xycs.lingyuereader.data.chapterHints
 import com.xycs.lingyuereader.data.packTools
+import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.GateResult
@@ -163,6 +164,12 @@ data class RealtimeState(
     val waiting: String? = null,
     /** 今天发了几次。 */
     val today: Int = 0,
+    /** 正在去 AI 腔（作者点的，结果作为 [SuggestKind.CLICHE] 的建议放进 [issues]）。 */
+    val cliche: Boolean = false,
+    /** 去 AI 腔没成：原因。 */
+    val clicheError: String? = null,
+    /** 去 AI 腔做完了的一句话（“AI 觉得这几处不用改”这类）。 */
+    val clicheNote: String? = null,
 )
 
 /** Upper bound for one complete chapter response, including V4's thinking tokens. */
@@ -424,7 +431,7 @@ class WritingAi(
         val launched = scope.launch {
             val assist = assistOf(workId)
             if (!assist.realtime) return@launch
-            val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k } }.toSet()
+            val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k && it.realtime } }.toSet()
             if (kinds.isEmpty()) return@launch
             // 省钱：两次至少隔几秒，一天最多几次（按作品、按日期记在盘上）。
             val today = java.time.LocalDate.now().toString()
@@ -533,7 +540,71 @@ class WritingAi(
         realtimeGeneration++
         pendingRealtime = null
         realtimeJob?.cancel()
+        clicheJob?.cancel()
         _realtime.value = RealtimeState()
+    }
+
+    // ---------- 去 AI 腔 ----------
+
+    private var clicheJob: Job? = null
+
+    /**
+     * 去 AI 腔：[ranges] 是正文 [text] 里本机标出的 AI 腔、黑名单命中，把含它们的段落（最多 [CLICHE_BATCH] 段）发给 AI，
+     * 只改标出的说法和它所在的那一句。结果放进写作建议的列表（[SuggestKind.CLICHE]），作者一条条改或忽略；
+     * 上一次去 AI 腔的结果换成这一次的。写作建议没开也能用：这是作者自己点的。定稿的章不给。
+     */
+    fun decliche(workId: String, chapterId: String, text: String, ranges: List<IntRange>) {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        val picked = AiCliche.paragraphs(text, ranges, CLICHE_BATCH)
+        if (picked.isEmpty()) {
+            message("这一章没有标出的 AI 腔")
+            return
+        }
+        clicheJob?.cancel()
+        _realtime.update { r -> (if (r.chapterId != chapterId) RealtimeState(chapterId, today = r.today) else r).copy(cliche = true, clicheError = null, clicheNote = null) }
+        clicheJob = scope.launch {
+            try {
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+                if (work.chapter(chapterId)?.locked == true) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val assist = assistOf(workId)
+                val paragraphs = picked.map { it.first }
+                // 只看这几段，不带设定包、不给工具：一问一答。写法要求（含黑名单）照样接在最后。
+                val answer = ask("去 AI 腔", workId, WritePrompts.system(work.title, assist),
+                    WritePrompts.withVoice(WritePrompts.decliche(picked), WritePrompts.voiceTail(assist, null)),
+                    whole = true, meter = AiMeter(AiFeature.CLICHE, workId))
+                val found = WritePrompts.parseIssues(answer, paragraphs)
+                    .map { it.copy(kind = SuggestKind.CLICHE.name, source = AiCliche.DOC) }
+                    .filter { (it.paragraph to it.wrong) !in dismissed }
+                _realtime.update { r ->
+                    if (r.chapterId != chapterId) r
+                    else r.copy(
+                        issues = (r.issues.filter { it.kind != SuggestKind.CLICHE.name } + found).distinctBy { it.paragraph to it.wrong },
+                        cliche = false,
+                        clicheNote = if (found.isEmpty()) "AI 觉得标出的这几处不用改" else null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                _realtime.update { r -> if (r.chapterId == chapterId) r.copy(cliche = false) else r }
+                throw e
+            } catch (e: Exception) {
+                _realtime.update { r -> if (r.chapterId == chapterId) r.copy(cliche = false, clicheError = e.message ?: "请求失败") else r }
+            }
+        }
+    }
+
+    /** 收起去 AI 腔的提示（出错、不用改）。 */
+    fun clearClicheNote() {
+        _realtime.update { it.copy(clicheError = null, clicheNote = null) }
+    }
+
+    /** 作者点“改”采纳了一条去 AI 腔：记进采纳过的修改（那一句的前后），以后当例子学。 */
+    fun acceptCliche(workId: String, issue: WriteIssue) {
+        val before = AiCliche.sentence(issue.paragraph, issue.wrong)
+        val after = before.replaceFirst(issue.wrong, issue.right)
+        updateAssist(workId) { WritePrompts.remember(it, "去 AI 腔", before, after, System.currentTimeMillis()) }
     }
 
     // ---------- 在编辑器里写 ----------
@@ -801,6 +872,7 @@ class WritingAi(
     /** 请求的名字对应的功能（按功能累计用量）。 */
     private fun featureOf(label: String): AiFeature = when (label) {
         "写作建议" -> AiFeature.SUGGEST
+        "去 AI 腔" -> AiFeature.CLICHE
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
@@ -2257,6 +2329,8 @@ class WritingAi(
     companion object {
         /** 写作建议一次最多发几段。 */
         const val REALTIME_BATCH = 6
+        /** 去 AI 腔一次最多发几段。 */
+        const val CLICHE_BATCH = 20
         /** 太短的段（一两个字、一句短对话）不查。 */
         const val MIN_PARAGRAPH = 8
         const val EXTRACT_CHARS = 15_000

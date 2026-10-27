@@ -100,4 +100,25 @@ class VoiceTailTest {
             WritePrompts.suggest(listOf("他推门进来。"), setOf(SuggestKind.TYPO)),
         ).forEach { assertFalse(WritePrompts.VOICE_HEADER in it) }
     }
+
+    @Test
+    fun declichePromptAndAnswer() {
+        val paragraphs = listOf("林月嘴角勾起，看着窗外。" to listOf("嘴角勾起"), "沈默倒吸一口凉气。" to listOf("倒吸一口凉气"))
+        val p = WritePrompts.decliche(paragraphs)
+        assertTrue("1. 林月嘴角勾起，看着窗外。\n   [标出：「嘴角勾起」]" in p)
+        assertTrue("只改标出的说法和它所在的那一句" in p && "不改对白的内容" in p)
+        assertTrue("{\"issues\":[{\"p\":1" in p)
+        // 回答照写作建议的格式读；删掉（right 空）也算一条。
+        val found = WritePrompts.parseIssues(
+            """{"issues":[{"p":1,"wrong":"林月嘴角勾起，","right":"林月笑了一下，","reason":"换成动作"},{"p":2,"wrong":"倒吸一口凉气","right":"","reason":"删"}]}""",
+            paragraphs.map { it.first },
+        )
+        assertEquals(listOf("林月笑了一下，", ""), found.map { it.right })
+        // 采纳记进“采纳过的修改”，带着改法的名字。
+        val a = WritePrompts.remember(WorkAssist(), "去 AI 腔", "林月嘴角勾起，看着窗外。", "林月笑了一下，看着窗外。", 1)
+        assertEquals("去 AI 腔", a.accepted.single().action)
+        // 去 AI 腔不是停笔自动查的那几类，设置里没有开关。
+        assertFalse(SuggestKind.CLICHE.realtime)
+        assertTrue(SuggestKind.entries.filter { it.realtime }.none { it == SuggestKind.CLICHE })
+    }
 }

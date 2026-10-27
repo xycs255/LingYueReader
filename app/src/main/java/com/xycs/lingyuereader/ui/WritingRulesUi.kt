@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.ai.SuggestKind
+import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterStats
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.PackKind
@@ -284,6 +286,8 @@ internal fun RulesPanel(
     onJump: (RuleHit) -> Unit,
     onOpenRules: () -> Unit,
     onClose: () -> Unit,
+    /** 有 AI 腔、黑名单命中时：“去 AI 腔”，把那几段发给 AI。 */
+    onCliche: (() -> Unit)? = null,
 ) {
     val c = LocalGroupedColors.current
     // 没规则、在检查、检查完三种：原地淡过去，高矮由面板平滑跟上。
@@ -296,7 +300,10 @@ internal fun RulesPanel(
         "规则检查",
         onClose = onClose,
         closeLabel = "收起",
-        actions = { PillButton("管理规则", onOpenRules) },
+        actions = {
+            if (onCliche != null) PillButton("去 AI 腔", onCliche, style = PillStyle.Filled)
+            PillButton("管理规则", onOpenRules)
+        },
     ) {
         AnimatedContent(phase, transitionSpec = { Motion.fadeThrough() using null }, label = "rulesPhase") { p ->
             when {
@@ -321,6 +328,10 @@ internal fun RulesPanel(
                                     .padding(vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                // AI 腔、黑名单的命中标出来源，和作者自己定的规则分开。
+                                if (AiCliche.isVoice(h)) {
+                                    Tag(if (AiCliche.isBanned(h)) AiCliche.BANNED_DOC else "AI 腔", suggestColor(SuggestKind.CLICHE.name, c), Modifier.padding(end = 8.dp))
+                                }
                                 Text(h.message, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.weight(1f))
                                 if (h.ranges.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
                             }

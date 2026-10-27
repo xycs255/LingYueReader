@@ -95,6 +95,8 @@ import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
+import com.xycs.lingyuereader.data.AiCliche
+import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.FormatKind
 import com.xycs.lingyuereader.data.FormatResult
@@ -877,6 +879,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var lastJump by remember { mutableStateOf<Pair<String, Int>?>(null) }
     // 定稿的章不给写作建议（反正不能改）。
     val realtimeOn = assists[workId]?.realtime == true && aiConfig.ready && !locked
+    // 正文里显示的建议：写作建议（开了才有）加上作者点的去 AI 腔（写作建议关着也显示）；别的章、定稿的章不显示。
+    val shownRealtime = remember(realtime, realtimeOn, chapterId, locked) {
+        if (locked || realtime.chapterId != chapterId) RealtimeState()
+        else realtime.copy(issues = realtime.issues.filter { realtimeOn || it.kind == SuggestKind.CLICHE.name })
+    }
+    val clicheOn = shownRealtime.cliche || shownRealtime.clicheError != null || shownRealtime.clicheNote != null ||
+        shownRealtime.issues.any { it.kind == SuggestKind.CLICHE.name }
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
     // 自动排版：先在键盘上方给预览（按类勾掉的不排），排好作为一步编辑写进正文。
     val formatSettings = assists[workId]?.format ?: FormatSettings()
@@ -920,7 +929,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     // 计划在这一章回收的伏笔：编辑器上方提醒一句。
     var due by remember(workId, chapterId) { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(workId, chapterId, packs[workId]) { due = vm.writing.brief(workId, chapterId)?.due?.map { it.what }.orEmpty() }
-    val rules = ruleSet
+    // 开了“查 AI 腔”时内置清单、还有我的黑名单，和设定包的检查规则合在一起查（命中照样标在正文里，来源分开显示）。
+    val assistNow = assists[workId]
+    val voiceRules = remember(assistNow?.aiCliche, assistNow?.banned) { AiCliche.rules(assistNow) }
+    val rules = ruleSet?.let { it + voiceRules }
     LaunchedEffect(current, rules) {
         if (current == null || rules == null || rules.isEmpty) {
             report = null
@@ -1006,9 +1018,33 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             !ChapterSyncs.isSynced(assist?.synced?.get(chapterId), text)
     }
 
+    /** 采纳一条建议：换掉正文里那几个字；去 AI 腔的还记进采纳过的修改，以后当例子学。 */
+    fun fixIssue(st: TextFieldState, issue: WriteIssue) {
+        if (!applyIssue(st, issue)) vm.showMessage("那段已经改动了")
+        else if (issue.kind == SuggestKind.CLICHE.name) vm.writingAi.acceptCliche(workId, issue)
+        vm.writingAi.dismissIssue(issue)
+    }
+
+    /** 去 AI 腔：按现在的正文重新数一遍标出的 AI 腔、黑名单（停笔检查可能还没跟上），把那几段发给 AI。 */
+    fun startCliche() {
+        val st = current ?: return
+        if (locked) {
+            vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+            return
+        }
+        val text = st.text.toString()
+        val ranges = CheckRules.check(text, voiceRules).hits.filter(AiCliche::isVoice).flatMap { it.ranges }
+        if (ranges.isNotEmpty() && vm.writingAi.ready) {
+            rulesOpen = false
+            issuesOpen = true
+        }
+        vm.writingAi.decliche(workId, chapterId, text, ranges)
+    }
+
     fun onAiItem(item: AiBarItem) {
         val st = current ?: return
         when (item) {
+            AiBarItem.Cliche -> startCliche()
             AiBarItem.Write -> if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else inlineDialog = true
             is AiBarItem.Edit -> runEdit(item.action)
             AiBarItem.Custom -> {
@@ -1054,7 +1090,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
                         val head = (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · "
                         val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
-                        val tail = (report?.hits?.size?.takeIf { it > 0 }?.let { " · $it 条不合规则" } ?: "") + if (realtimeOn) " · 写作建议已开" else ""
+                        // 作者自己的规则按条数，AI 腔按标出的处数，分开写：一眼看出哪些是 AI 腔。
+                        val ruleCount = report?.hits?.count { !AiCliche.isVoice(it) } ?: 0
+                        val clicheCount = report?.hits?.let(AiCliche::count) ?: 0
+                        val tail = (if (ruleCount > 0) " · $ruleCount 条不合规则" else "") + (if (clicheCount > 0) " · $clicheCount 处 AI 腔" else "") +
+                            if (realtimeOn) " · 写作建议已开" else ""
                         // 保存状态“编辑中 / 已保存”只淡入淡出（[Motion.SHORT]），不挪动别的字（几种状态都是三个字宽）；读屏照旧念一整行。
                         Row(Modifier.clearAndSetSemantics { this.text = AnnotatedString(head + saving + tail) }) {
                             Text(head, color = c.secondary, fontSize = 12.sp, maxLines = 1)
@@ -1158,9 +1198,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val effects = rememberCoroutineScope()
                 val accepted = remember(current) { AcceptSettle() }
                 val textNow = current?.text?.toString().orEmpty()
-                val issueSpans = remember(textNow, realtime.issues, realtimeOn) {
-                    if (!realtimeOn || realtime.chapterId != chapterId) emptyList() else locateIssues(textNow, realtime.issues)
-                }
+                val issueSpans = remember(textNow, shownRealtime.issues) { locateIssues(textNow, shownRealtime.issues) }
                 val ruleSpans = remember(textNow, report) {
                     report?.hits.orEmpty().flatMap { h -> h.ranges.filter { it.last < textNow.length }.map { it to h } }.take(300)
                 }
@@ -1316,18 +1354,24 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
                 val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
                 val chosenCompanionAnalysis = companionAnalyses.firstOrNull { it.id == companionSelection }
+                // AI 写完、还没采纳的那段：本机数一下有几处 AI 腔、黑名单（只提醒，不拦采纳）。
+                val inlineCliche = remember(inline?.text, inline?.loading, voiceRules) {
+                    val w = inline
+                    if (w == null || w.loading || w.text.isBlank()) 0 else AiCliche.count(CheckRules.check(w.text, voiceRules).hits)
+                }
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
                     inline != null -> EditorPanel.Inline(inline)
                     formatOpen -> EditorPanel.Format
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
-                    issuesOpen && realtimeOn -> EditorPanel.Issues
+                    issuesOpen && (realtimeOn || clicheOn) -> EditorPanel.Issues
                     rulesOpen -> EditorPanel.Rules
                     companionOpen && !locked -> EditorPanel.Companion
                     toolsOpen -> EditorPanel.Tools
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
                     shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
-                    realtimeOn && (realtime.issues.isNotEmpty() || realtime.checking || realtime.error != null || realtime.waiting != null) && realtime.chapterId == chapterId ->
+                    shownRealtime.issues.isNotEmpty() ||
+                        (realtimeOn && realtime.chapterId == chapterId && (realtime.checking || realtime.error != null || realtime.waiting != null)) ->
                         EditorPanel.Realtime
                     else -> EditorPanel.None
                 }
@@ -1475,6 +1519,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             },
                             onRetry = { vm.writingAi.retryInline() },
                             onDiscard = { vm.writingAi.discardInline() },
+                            cliche = inlineCliche,
                         )
                         EditorPanel.Format -> FormatPanel(
                             formatResult,
@@ -1560,26 +1605,44 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         )
                         is EditorPanel.Suggestion -> SuggestionBar(
                             p.issue,
-                            onFix = {
-                                if (!applyIssue(st, p.issue)) vm.showMessage("那段已经改动了")
-                                vm.writingAi.dismissIssue(p.issue)
-                            },
+                            onFix = { fixIssue(st, p.issue) },
                             onIgnore = { vm.writingAi.ignoreIssue(p.issue) },
-                            onMute = { vm.writingAi.muteKind(workId, p.issue.kind) },
+                            onMute = { vm.writingAi.muteKind(workId, p.issue.kind) }.takeIf { p.issue.kind != SuggestKind.CLICHE.name },
                         )
-                        is EditorPanel.Rule -> RuleNote(p.hit.message) { rulesOpen = true }
+                        is EditorPanel.Rule -> {
+                            val hit = p.hit
+                            // 内置清单的命中：光标那一处的原文（2–20 字）可以一键加进黑名单。
+                            val at = hit.ranges.firstOrNull { r -> caret != null && caret in r.first..r.last + 1 } ?: hit.ranges.firstOrNull()
+                            val phrase = at?.takeIf { hit.rule.source.doc == AiCliche.DOC && it.last < textNow.length }
+                                ?.let { AiCliche.bannable(textNow.substring(it.first, it.last + 1)) }
+                            RuleNote(
+                                hit.message,
+                                tag = when {
+                                    AiCliche.isBanned(hit) -> AiCliche.BANNED_DOC
+                                    AiCliche.isVoice(hit) -> "AI 腔"
+                                    else -> "规则"
+                                },
+                                onBan = phrase?.let { ph ->
+                                    {
+                                        vm.writingAi.updateAssist(workId) { it.ban(ph) }
+                                        vm.showMessage("「$ph」加进了我的黑名单")
+                                    }
+                                },
+                            ) { rulesOpen = true }
+                        }
                         EditorPanel.Issues -> IssuesPanel(
-                            realtime,
-                            onFix = { i ->
-                                if (!applyIssue(st, i)) vm.showMessage("那段已经改动了")
-                                vm.writingAi.dismissIssue(i)
-                            },
+                            shownRealtime,
+                            onFix = { i -> fixIssue(st, i) },
                             onIgnore = { vm.writingAi.ignoreIssue(it) },
-                            onClose = { issuesOpen = false },
+                            onClose = {
+                                issuesOpen = false
+                                vm.writingAi.clearClicheNote()
+                            },
                         )
                         EditorPanel.Rules -> RulesPanel(
                             report,
                             hasRules = rules?.isEmpty == false,
+                            onCliche = { startCliche() }.takeIf { !locked && report?.hits?.any(AiCliche::isVoice) == true },
                             onJump = jump@{ hit ->
                                 if (hit.ranges.isEmpty()) return@jump
                                 val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
@@ -1591,7 +1654,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             onOpenRules = { vm.open(Screen.WorkRules(workId)) },
                             onClose = { rulesOpen = false },
                         )
-                        EditorPanel.Realtime -> RealtimeLine(realtime) { if (realtime.issues.isNotEmpty()) issuesOpen = true }
+                        EditorPanel.Realtime -> RealtimeLine(if (realtimeOn) shownRealtime else shownRealtime.copy(checking = false, error = null, waiting = null)) {
+                            if (shownRealtime.issues.isNotEmpty()) issuesOpen = true
+                        }
                         EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }
                 }
@@ -1720,7 +1785,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (mode == "ai") {
-                                    AI_BAR.forEach { item ->
+                                    val clicheHere = !locked && report?.hits?.any(AiCliche::isVoice) == true
+                                    (if (clicheHere) AI_BAR.take(1) + AiBarItem.Cliche + AI_BAR.drop(1) else AI_BAR).forEach { item ->
                                         Box(
                                             Modifier
                                                 .padding(horizontal = 2.dp)
@@ -1809,7 +1875,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 )
             }
             if (statusDialog && chapter != null) {
-                StatusDialog(chapter, ruleHits = report?.hits?.size, onDismiss = { statusDialog = false }) { st, reason, canon ->
+                StatusDialog(chapter, ruleHits = report?.hits?.count { !AiCliche.isVoice(it) }, onDismiss = { statusDialog = false }) { st, reason, canon ->
                     statusDialog = false
                     vm.writing.setStatus(workId, chapterId, st, reason, canon, currentText = current?.text?.toString()) {
                         if (st == ChapterStatus.FINAL && wantsSyncTip()) syncTip = true
