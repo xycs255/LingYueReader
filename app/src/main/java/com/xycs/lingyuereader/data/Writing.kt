@@ -48,9 +48,19 @@ data class ChapterCard(
     val auto: Int = 0,
     /** 独立于正文的修改时间；恢复旧备份时不能用正文时间覆盖后来写的细纲。 */
     val updatedAt: Long = 0,
+    /**
+     * 节拍：一行一拍，写这一章的哪一步（比如“沈默赶到渡口，发现船不见了（800字）”），见 [Beats]。
+     * 不算进 [auto] 的指纹：节拍是作者自己拆的，细纲文档改了也不跟着变。
+     */
+    val beats: String = "",
+    /** 哪几拍已经写进正文（拍的序号，从 1 数）。节拍条数变了就清空，见 [withBeats]。 */
+    val beatsDone: List<Int> = emptyList(),
 ) {
-    /** 细纲（写之前的六项）是不是空的；摘要不算。 */
-    val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
+    /** 写之前的六项是不是都空着：判断要不要从细纲提取、算不算作者手写的细纲时看它。 */
+    val outlineEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
+
+    /** 细纲卡是不是空的：六项和节拍都没写；摘要不算。只写了节拍也算有内容。 */
+    val isEmpty: Boolean get() = outlineEmpty && beats.isBlank()
 }
 
 /** 变更登记的种类。 */
@@ -837,11 +847,12 @@ class WorkStore(
 
     @Synchronized
     fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null,
-                  blocked: Boolean = false, revision: DraftRevisionSnapshot? = null) =
-        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked, revision) }
+                  blocked: Boolean = false, revision: DraftRevisionSnapshot? = null, beats: DraftBeats? = null) =
+        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked, revision, beats) }
 
+    /** [beats] 是逐拍写的进度：和正文、来源记录在同一次保存里落盘（见 [DraftBeats]）。 */
     private fun saveDraftLocked(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance?,
-                                blocked: Boolean, revision: DraftRevisionSnapshot?) {
+                                blocked: Boolean, revision: DraftRevisionSnapshot?, beats: DraftBeats?) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖草稿" }
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
@@ -871,7 +882,7 @@ class WorkStore(
                 throw failure
             }
         } else {
-            val provenance = DraftReferenceCodec.encode(text, reference, blocked).toString()
+            val provenance = DraftReferenceCodec.encode(text, reference, blocked, beats).toString()
             val snapshot = revision?.let { DraftRevisionCodec.encode(text, it.initialText, it.alternateText).toString() }
             if (file.isFile && source.isFile && file.readText() == text && source.readText() == provenance &&
                 (if (snapshot == null) !revisionFile.exists() else revisionFile.isFile && revisionFile.readText() == snapshot)) return
@@ -1498,7 +1509,7 @@ class WorkStore(
             val cards = JSONObject().apply { w.chapters.forEach { c ->
                 val source = cardFile(w.id, c.id)
                 val card = if (source.isFile) component(source, "「${c.title}」的细纲卡读不出，没有放进备份") { JSONObject(it).toCard() } else ChapterCard()
-                card?.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 }
+                card?.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 || it.beatsDone.isNotEmpty() }
                     ?.let { put(c.id, it.toJson()) }
             } }
             val changesSource = File(dir(w.id), changesFile)
@@ -1631,8 +1642,12 @@ class WorkStore(
             raw.keys().asSequence().associateWith { id ->
                 require(id in chapterIds) { "备份细纲卡引用未知章节" }
                 val cardJson = raw.getJSONObject(id)
-                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan").forEach { key ->
+                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan", "beats").forEach { key ->
                     require(!cardJson.has(key) || cardJson.opt(key) is String) { "备份细纲卡结构损坏" }
+                }
+                if (cardJson.has("beatsDone")) {
+                    val done = cardJson.opt("beatsDone")
+                    require(done is JSONArray && (0 until done.length()).all { (done.opt(it) as? Number)?.toLong() in 1L..Beats.MAX.toLong() }) { "备份细纲卡节拍损坏" }
                 }
                 cardJson.checkedInteger("auto", Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份细纲卡指纹损坏")
                 cardJson.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份细纲卡时间损坏")
@@ -2040,9 +2055,13 @@ class WorkStore(
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
             .put("summary", summary).put("plan", plan).put("auto", auto).put("updatedAt", updatedAt)
+            .put("beats", beats).put("beatsDone", JSONArray(beatsDone))
 
+        // 旧卡片没有节拍两项：读成空的。
         private fun JSONObject.toCard() =
-            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"))
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"),
+                beats = optString("beats"),
+                beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty())
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
