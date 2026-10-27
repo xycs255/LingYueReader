@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasScrollToIndexAction
@@ -19,6 +20,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.MainActivity
@@ -32,6 +34,7 @@ import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -85,6 +88,13 @@ class PaperUiSnapshotTest {
         compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    /** 写作工具没有标题栏了：等分段控件那一行右端的关闭钮。 */
+    private fun waitForToolsPanel() {
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithContentDescription("关闭写作工具").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
     private fun waitForEditorTools() {
         compose.waitUntil(10_000) {
             compose.onAllNodesWithContentDescription("打开四组工具").fetchSemanticsNodes().isNotEmpty()
@@ -127,7 +137,7 @@ class PaperUiSnapshotTest {
         waitFor("他推开门")
         capture("paper-editor")
         compose.onNodeWithContentDescription("打开四组工具").performClick()
-        waitFor("写作工具")
+        waitForToolsPanel()
         capture("paper-editor-tools")
         compose.onNodeWithContentDescription("返回").performClick()
         waitFor("第二章 天亮")
@@ -183,7 +193,7 @@ class PaperUiSnapshotTest {
         waitFor("天终于亮了")
         capture("ink-editor")
         compose.onNodeWithContentDescription("打开四组工具").performClick()
-        waitFor("写作工具")
+        waitForToolsPanel()
         capture("ink-editor-tools")
     }
 
@@ -199,7 +209,12 @@ class PaperUiSnapshotTest {
         compose.onNodeWithText("继续写").performClick()
         waitForEditorTools()
         compose.onNodeWithContentDescription("打开四组工具").performClick()
-        waitFor("写作工具")
+        waitForToolsPanel()
+        compose.waitForIdle()
+        // 360 × 640 上展开写作工具后，正文上方仍留着好几行可见的地方，不被面板挤没。
+        val bodyTop = compose.onNodeWithContentDescription("正文").getUnclippedBoundsInRoot().top
+        val panelTop = compose.onNodeWithContentDescription("关闭写作工具").getUnclippedBoundsInRoot().top
+        assertTrue("写作工具面板不能把正文挤掉：正文顶 $bodyTop、面板顶 $panelTop", panelTop - bodyTop >= 200.dp)
         capture("paper-editor-compact-tools")
     }
 }

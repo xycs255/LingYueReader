@@ -70,6 +70,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -1129,6 +1130,7 @@ internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modi
  * 标题一行左边可带强调色小图标，[status] 是标题右边的灰色小字（“生成中……”），最右是圆底关闭钮（[onClose] 为空时不显示）；
  * 内容在中间，[actions] 一排胶囊按钮（[PillButton]）在最下面，放不下左右滑。
  * 高矮变化（流式输出、换一条建议）平滑过去；出现、收起由调用处包 AnimatedVisibility（[Motion.edgeEnter] / [Motion.edgeExit]）。
+ * 给了 [header] 时不显示标题字，标题行换成这一排控件（写作工具的分段控件），关闭钮仍在最右；[title] 只留给读屏当面板名。
  */
 @Composable
 internal fun InlinePanel(
@@ -1138,6 +1140,7 @@ internal fun InlinePanel(
     icon: ImageVector? = null,
     status: String? = null,
     closeLabel: String = "关闭",
+    header: (@Composable RowScope.() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -1147,20 +1150,25 @@ internal fun InlinePanel(
             .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(c.cell)
+            .semantics { paneTitle = title }
             .animateHeightChanges()
             .padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 6.dp),
     ) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
-            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-            Text(
-                status.orEmpty(),
-                color = c.secondary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
-            )
+            if (header != null) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, content = header)
+            } else {
+                if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
+                Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(
+                    status.orEmpty(),
+                    color = c.secondary,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                )
+            }
             if (onClose != null) PanelCloseButton(closeLabel, onClose, Modifier.offset(x = 6.dp))
         }
         content()
@@ -1172,6 +1180,112 @@ internal fun InlinePanel(
                 content = actions,
             )
         }
+    }
+}
+
+/** 工具格里的一项：图标、短名字（两到五个字）和点了做什么。 */
+internal data class ToolTile(val label: String, val icon: ImageVector, val onClick: () -> Unit)
+
+/**
+ * 工具格：一格一个“图标 + 短名字”，等宽铺满整行。一行放得下全部（每格不窄于 [minCell]，随字号放大）就排成一行，
+ * 放不下就每行 [columns] 格换行，最后一行不满时空格补齐，格子不会被切掉、右边也不留一大块空。
+ * 每格看着 52dp 高、12dp 圆角灰底，能点的范围不小于 48dp；读屏念名字。
+ */
+@Composable
+internal fun ToolTileGrid(
+    tiles: List<ToolTile>,
+    modifier: Modifier = Modifier,
+    columns: Int = 4,
+    minCell: Dp = 64.dp,
+    gap: Dp = 6.dp,
+) {
+    val c = LocalGroupedColors.current
+    val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val fitsOneRow = tiles.size > columns &&
+            (maxWidth - gap * (tiles.size - 1)) / tiles.size >= minCell * scale
+        val perRow = if (fitsOneRow) tiles.size else columns.coerceAtLeast(1)
+        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            tiles.chunked(perRow).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    row.forEach { tile ->
+                        val source = remember { MutableInteractionSource() }
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .heightIn(min = 52.dp)
+                                .pressScale(source, 0.95f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(c.fill)
+                                .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = tile.onClick)
+                                .semantics { contentDescription = tile.label }
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(tile.icon, contentDescription = null, tint = c.tint, modifier = Modifier.size(20.dp))
+                            Text(
+                                tile.label,
+                                color = c.label,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                    }
+                    repeat(perRow - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 带字的图标按钮：图标下面一行 10sp 小字写着是什么（“AI”“书灵”“工具”），用在编辑器底栏这种只放得下图标的地方。
+ * 能点的范围 48dp 宽、至少 52dp 高；[selected] 时图标和字是强调色，否则次要色。
+ * [description] 给读屏（不给就念 [label]）；[onLongClick] 长按时给一句说明，读屏也能从操作菜单里找到。
+ */
+@Composable
+internal fun LabeledIconButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    description: String = label,
+    selected: Boolean = false,
+    longClickLabel: String? = null,
+    onLongClick: (() -> Unit)? = null,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val color by animateColorAsState(if (selected) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "labeledIcon")
+    Column(
+        modifier
+            .widthIn(min = 48.dp)
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(pressHighlight(pressed))
+            .combinedClickable(
+                interactionSource = source,
+                indication = null,
+                role = Role.Button,
+                onLongClickLabel = longClickLabel,
+                onLongClick = onLongClick,
+                onClick = onClick,
+            )
+            .clearAndSetSemantics {
+                contentDescription = description
+                if (selected) this.selected = true
+            }
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+        Text(label, color = color, fontSize = 10.sp, lineHeight = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     }
 }
 

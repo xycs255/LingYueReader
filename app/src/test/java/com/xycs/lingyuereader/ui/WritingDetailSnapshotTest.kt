@@ -259,7 +259,8 @@ class WritingDetailSnapshotTest {
 
     private fun openTools() {
         compose.onNodeWithContentDescription("打开四组工具").performClick()
-        waitForText("写作工具")
+        // 写作工具不再有标题栏：分段控件那一行右端的关闭钮出现，就是面板展开了。
+        waitForDescription("关闭写作工具")
         waitForDescription("关闭四组工具")
     }
 
@@ -272,7 +273,7 @@ class WritingDetailSnapshotTest {
     @Test
     fun editorToolsBottomCardAndPack() {
         openChapterThree()
-        // 没配置写作 AI：底栏是“设置写作 AI”大按钮。
+        // 没配置写作 AI：底栏是描边的“设置写作 AI”次要按钮。
         waitForText("设置写作 AI")
         capture("detail-editor-bottom")
 

@@ -621,4 +621,83 @@ object LingYueIcons {
             }
         }
     }
+
+    /** 润色：一支斜放的毛笔，笔头收成尖。和铅笔（写作）分得开。 */
+    val Polish by lazy {
+        glyph("Polish") {
+            trace {
+                moveTo(13.2f, 10.8f); lineTo(19.8f, 4.2f)
+                moveTo(10.6f, 10.6f); lineTo(13.4f, 13.4f)
+                moveTo(10.6f, 10.6f)
+                curveTo(7.6f, 11.4f, 6.3f, 13.6f, 5.8f, 16.4f)
+                quadTo(5.4f, 18.8f, 4.2f, 19.8f)
+                quadTo(9.2f, 20f, 11.6f, 17.4f)
+                curveTo(12.9f, 16f, 13.4f, 14.6f, 13.4f, 13.4f)
+            }
+        }
+    }
+
+    /** 快捷标点：一对直角引号「」，左下一个句号圈。 */
+    val Punctuation by lazy {
+        glyph("Punctuation") {
+            trace {
+                moveTo(10.5f, 4.5f); lineTo(5.5f, 4.5f); lineTo(5.5f, 11f)
+                moveTo(18.5f, 13f); lineTo(18.5f, 19.5f); lineTo(13.5f, 19.5f)
+                moveTo(8f, 15.5f)
+                arcTo(2.2f, 2.2f, 0f, true, true, 7.99f, 15.5f)
+            }
+        }
+    }
+
+    /** 章节状态：一面燕尾小旗插在杆上。 */
+    val Flag by lazy {
+        glyph("Flag") {
+            trace {
+                moveTo(6f, 20.5f); lineTo(6f, 4f)
+                moveTo(6f, 4.8f); lineTo(18.5f, 4.8f); lineTo(15.6f, 8.9f); lineTo(18.5f, 13f); lineTo(6f, 13f)
+            }
+        }
+    }
+
+    /** 自动排版：两段文字，段首各空两格。 */
+    val Format by lazy {
+        glyph("Format", autoMirror = true) {
+            trace {
+                moveTo(9.5f, 5.5f); lineTo(19.5f, 5.5f)
+                moveTo(4.5f, 9.5f); lineTo(19.5f, 9.5f)
+                moveTo(4.5f, 13.5f); lineTo(13.5f, 13.5f)
+                moveTo(9.5f, 18.5f); lineTo(19.5f, 18.5f)
+            }
+        }
+    }
+
+    /** 预览：一只睁开的眼睛。 */
+    val Preview by lazy {
+        glyph("Preview") {
+            trace {
+                moveTo(2.8f, 12f)
+                quadTo(12f, 2.6f, 21.2f, 12f)
+                quadTo(12f, 21.4f, 2.8f, 12f)
+                close()
+                moveTo(12f, 9.2f)
+                arcTo(2.8f, 2.8f, 0f, true, true, 11.99f, 9.2f)
+            }
+        }
+    }
+
+    /** 工具：四个圆角小方块排成田字，编辑器底栏打开写作工具。 */
+    val Tools by lazy {
+        glyph("Tools") {
+            trace {
+                listOf(4.5f to 4.5f, 13.5f to 4.5f, 4.5f to 13.5f, 13.5f to 13.5f).forEach { (x, y) ->
+                    moveTo(x + 1.5f, y)
+                    lineTo(x + 4.5f, y); quadTo(x + 6f, y, x + 6f, y + 1.5f)
+                    lineTo(x + 6f, y + 4.5f); quadTo(x + 6f, y + 6f, x + 4.5f, y + 6f)
+                    lineTo(x + 1.5f, y + 6f); quadTo(x, y + 6f, x, y + 4.5f)
+                    lineTo(x, y + 1.5f); quadTo(x, y, x + 1.5f, y)
+                    close()
+                }
+            }
+        }
+    }
 }

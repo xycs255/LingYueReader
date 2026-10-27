@@ -18,7 +18,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -72,6 +74,69 @@ class GroupedFoundationUiTest {
         }
         val bounds = compose.onNodeWithContentDescription("关闭目录").getUnclippedBoundsInRoot()
         assertTrue("面板关闭按钮需至少 48dp", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+    }
+
+    @Test
+    fun toolTileGridFillsOneRowWhenItFitsAndWrapsEvenlyWhenItDoesNot() {
+        val width = mutableIntStateOf(400)
+        val tapped = mutableIntStateOf(-1)
+        val labels = listOf("三道审稿", "规则检查", "细纲卡", "本章资料", "设定包")
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    Box(Modifier.width(width.intValue.dp).testTag("grid")) {
+                        ToolTileGrid(labels.mapIndexed { i, label -> ToolTile(label, LingYueIcons.Search) { tapped.intValue = i } })
+                    }
+                }
+            }
+        }
+        fun bounds() = labels.map { compose.onNodeWithContentDescription(it).getUnclippedBoundsInRoot() }
+        fun gridRight() = compose.onNodeWithTag("grid").getUnclippedBoundsInRoot().right
+
+        // 宽屏：五格一行，等宽，最后一格贴到右边，不被切也不留空。
+        var tiles = bounds()
+        assertEquals("放得下时五格在同一行", 1, tiles.map { it.top }.distinct().size)
+        assertTrue("五格等宽（容许取整差 1px）：${tiles.map { it.right - it.left }}", tiles.all { abs((it.right - it.left).value - (tiles[0].right - tiles[0].left).value) <= 1.5f })
+        assertTrue("最后一格铺到行尾", abs((gridRight() - tiles.last().right).value) < 1f)
+        assertTrue("每格能点的高度至少 48dp", tiles.all { it.bottom - it.top >= 48.dp })
+
+        // 窄屏：一格不够 64dp 时每行四格换行，第五格到第二行，和上面一样宽，没有格子伸出容器。
+        width.intValue = 280
+        compose.waitForIdle()
+        tiles = bounds()
+        assertEquals("前四格一行", 1, tiles.take(4).map { it.top }.distinct().size)
+        assertTrue("第五格换到下一行", tiles[4].top > tiles[0].bottom)
+        assertEquals("换行后仍是等宽格", (tiles[0].right - tiles[0].left).value, (tiles[4].right - tiles[4].left).value, 1.5f)
+        assertTrue("没有格子伸出容器", tiles.all { it.right <= gridRight() + 0.5.dp })
+        compose.onNodeWithContentDescription("设定包").performClick()
+        assertEquals(4, tapped.intValue)
+    }
+
+    @Test
+    fun labeledIconButtonNamesItselfAndExplainsOnLongPress() {
+        val clicks = mutableIntStateOf(0)
+        val explains = mutableIntStateOf(0)
+        compose.setContent {
+            LingYueTheme {
+                ProvideGroupedColors {
+                    LabeledIconButton(
+                        LingYueIcons.Book,
+                        label = "书灵",
+                        description = "书灵写作",
+                        onLongClick = { explains.intValue++ },
+                        onClick = { clicks.intValue++ },
+                    )
+                }
+            }
+        }
+        val button = compose.onNodeWithContentDescription("书灵写作")
+        val bounds = button.getUnclippedBoundsInRoot()
+        assertTrue("带字图标按钮至少 48dp 见方", bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
+        button.performClick()
+        assertEquals(1, clicks.intValue)
+        button.performTouchInput { longClick() }
+        assertEquals("长按给说明，不当成点击", 1, explains.intValue)
+        assertEquals(1, clicks.intValue)
     }
 
     @Test
