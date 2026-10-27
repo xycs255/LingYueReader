@@ -205,6 +205,9 @@ sealed interface Screen {
     /** 一部作品的排版设置：各条规则、引号风格、输入时自动排版。 */
     data class WorkFormatSettings(val workId: String) : Screen
 
+    /** 一部作品的“我的黑名单”：不想再看到的说法，能看、能删、能手动加。 */
+    data class WorkBanned(val workId: String) : Screen
+
     /** 全书排版：先看各章要改几处，再按章排（跳过定稿的章）。 */
     data class WorkFormat(val workId: String) : Screen
 }

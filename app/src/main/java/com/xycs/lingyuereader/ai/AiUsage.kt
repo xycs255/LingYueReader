@@ -97,6 +97,7 @@ enum class AiFeature(val label: String) {
     INLINE("AI 接着写"),
     DRAFT("写本章草稿"),
     EDIT("改稿"),
+    CLICHE("去 AI 腔"),
     IDEA("灵感与点评"),
     REVIEW("审稿"),
     SYNC("整理进设定包"),

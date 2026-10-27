@@ -130,6 +130,11 @@ internal sealed interface AiBarItem {
     data object Consistency : AiBarItem {
         override val label = "矛盾检查"
     }
+
+    /** 本章有 AI 腔、黑名单命中时才出现：把标出的段落发给 AI，只改那几处。 */
+    data object Cliche : AiBarItem {
+        override val label = "去 AI 腔"
+    }
 }
 
 internal val AI_BAR = listOf(
@@ -342,15 +347,25 @@ internal fun WriteAiPanel(
     }
 }
 
-/** 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。改掉、忽略的那条淡出，下面的平滑补上来。 */
+/**
+ * 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。改掉、忽略的那条淡出，下面的平滑补上来。
+ * 去 AI 腔的结果也列在这里（带“AI 腔”标签）：正在去时显示一行“正在……”，没成、不用改时显示一句。
+ */
 @Composable
 internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, onIgnore: (WriteIssue) -> Unit, onClose: () -> Unit) {
     val c = LocalGroupedColors.current
     InlinePanel("可能的问题", onClose = onClose, closeLabel = "收起") {
-        if (realtime.issues.isEmpty()) Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+        when {
+            realtime.cliche -> PanelBusy("正在去 AI 腔……", Modifier.padding(vertical = 8.dp))
+            realtime.clicheError != null -> ErrorText("去 AI 腔没成：${realtime.clicheError}", Modifier.padding(vertical = 8.dp))
+            realtime.clicheNote != null && realtime.issues.isEmpty() ->
+                Text(realtime.clicheNote, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+            realtime.issues.isEmpty() -> Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
+        }
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
             items(realtime.issues, key = { "${it.paragraph}\u0000${it.wrong}" }) { i ->
                 Column(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 8.dp)) {
+                    if (i.kind == SuggestKind.CLICHE.name) SuggestTag(i.kind, c, Modifier.padding(bottom = 4.dp))
                     Text(
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(i.wrong) }
@@ -391,6 +406,10 @@ internal fun locateIssues(text: String, issues: List<WriteIssue>): List<Pair<Int
 private val VoiceLight = Color(0xFF7B4FA6)
 private val VoiceDark = Color(0xFFB89BE0)
 
+/** AI 腔的基准色：青，离红、橙、紫都远；和强调色、另外几类撞了再转开。 */
+private val ClicheLight = Color(0xFF00796B)
+private val ClicheDark = Color(0xFF5CC8BA)
+
 /**
  * 各类建议的颜色，从语义色和强调色来，四类分得开：错字用删除色、设定用提醒色、规范用强调色、口吻用紫。
  * 删除色、提醒色在配色里已经和强调色转开了（[distinctFrom]），口吻再和这三种转开，两两色差都 ≥ [SEMANTIC_MIN_DELTA]。
@@ -402,9 +421,13 @@ internal fun suggestColor(kind: String, c: GroupedColors): Color {
         SuggestKind.TYPO -> c.destructive
         SuggestKind.CANON -> c.warning
         SuggestKind.STYLE -> c.tint
-        SuggestKind.VOICE -> (if (c.dark) VoiceDark else VoiceLight).distinctFrom(listOf(c.tint, c.destructive, c.warning), cards)
+        SuggestKind.VOICE -> voiceColor(c, cards)
+        SuggestKind.CLICHE -> (if (c.dark) ClicheDark else ClicheLight).distinctFrom(listOf(c.tint, c.destructive, c.warning, voiceColor(c, cards)), cards)
     }.readableOn(cards)
 }
+
+private fun voiceColor(c: GroupedColors, cards: List<Color>): Color =
+    (if (c.dark) VoiceDark else VoiceLight).distinctFrom(listOf(c.tint, c.destructive, c.warning), cards)
 
 /** 各类建议的形状：标签上颜色之外再带一个形状，色弱、灰阶的墨水屏上也分得出是哪类。 */
 internal fun suggestShape(kind: String): String = when (SuggestKind.of(kind)) {
@@ -412,6 +435,7 @@ internal fun suggestShape(kind: String): String = when (SuggestKind.of(kind)) {
     SuggestKind.CANON -> "▲"
     SuggestKind.STYLE -> "■"
     SuggestKind.VOICE -> "◆"
+    SuggestKind.CLICHE -> "★"
 }
 
 /** 正文里一类建议的划线线形：颜色之外再分线形，色弱、灰阶的墨水屏上也分得出（静止的线，减少动效时也一样）。 */
@@ -420,14 +444,16 @@ internal enum class SuggestLine(val label: String) {
     DOUBLE("双线"),
     DASHED("虚线"),
     DOTTED("点线"),
+    DASH_DOT("点划线"),
 }
 
-/** 各类建议在正文里的划线：错字波浪线、设定双线、规范虚线、口吻点线（和标签上的 ●▲■◆ 一一对应）。 */
+/** 各类建议在正文里的划线：错字波浪线、设定双线、规范虚线、口吻点线、AI 腔点划线（和标签上的 ●▲■◆★ 一一对应）。 */
 internal fun suggestLine(kind: String): SuggestLine = when (SuggestKind.of(kind)) {
     SuggestKind.TYPO -> SuggestLine.WAVY
     SuggestKind.CANON -> SuggestLine.DOUBLE
     SuggestKind.STYLE -> SuggestLine.DASHED
     SuggestKind.VOICE -> SuggestLine.DOTTED
+    SuggestKind.CLICHE -> SuggestLine.DASH_DOT
 }
 
 /** 在 [y]（基线下方）从 [fromX] 到 [toX] 按 [line] 画一道划线；线宽、间距按 dp 算，各密度下看起来一样。 */
@@ -466,6 +492,11 @@ internal fun DrawScope.drawSuggestLine(line: SuggestLine, color: Color, fromX: F
             color, Offset(fromX + stroke, y), Offset(toX, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round,
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.01f, 4.dp.toPx())),
         )
+        // 一长划一圆点：长划和虚线一样长，点是圆头、近乎为零长的一段。
+        SuggestLine.DASH_DOT -> drawLine(
+            color, Offset(fromX, y), Offset(toX, y), strokeWidth = stroke, cap = StrokeCap.Round,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 3.dp.toPx(), 0.01f, 3.dp.toPx())),
+        )
     }
 }
 
@@ -481,7 +512,16 @@ internal fun SuggestTag(kind: String, c: GroupedColors, modifier: Modifier = Mod
  * 写的字显示在正文的光标处（浅色），采纳前不算正文。在写、写好、出错之间原地淡过去；写的时候带一个小转圈。
  */
 @Composable
-internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit, onAccept: () -> Unit, onRetry: () -> Unit, onDiscard: () -> Unit) {
+internal fun InlineBar(
+    inline: InlineWrite,
+    lookup: String?,
+    onStop: () -> Unit,
+    onAccept: () -> Unit,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+    /** AI 写的字里有几处 AI 腔、黑名单命中（本机算的）；只提醒，不拦采纳。 */
+    cliche: Int = 0,
+) {
     val c = LocalGroupedColors.current
     val phase = when {
         inline.error != null -> 2
@@ -525,6 +565,9 @@ internal fun InlineBar(inline: InlineWrite, lookup: String?, onStop: () -> Unit,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
                     )
+                    if (cliche > 0) {
+                        Text("这段有 $cliche 处 AI 腔", color = c.warning, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
                     UsageNote(inline.usage, inline.cost, Modifier.padding(top = 2.dp))
                 }
             }
@@ -556,7 +599,7 @@ internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Uni
  * 光标挪到另一条建议上时面板不动，里面的字原地淡过去。
  */
 @Composable
-internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () -> Unit, onMute: () -> Unit) {
+internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () -> Unit, onMute: (() -> Unit)?) {
     val c = LocalGroupedColors.current
     val kind = SuggestKind.of(issue.kind)
     InlinePanel(
@@ -566,7 +609,8 @@ internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () ->
         actions = {
             PillButton("采纳", onFix, style = PillStyle.Filled)
             PillButton("不改", onIgnore)
-            PillButton("${kind.label}类不提", onMute)
+            // 去 AI 腔是作者点了才查的，不在设置里开关，没有“这类不提”。
+            if (onMute != null && kind.realtime) PillButton("${kind.label}类不提", onMute)
         },
     ) {
         AnimatedContent(issue, transitionSpec = { Motion.fadeThrough() using null }, label = "suggestion") { shown ->
@@ -593,17 +637,21 @@ internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () ->
     }
 }
 
-/** 光标落在一处不合检查规则的地方：说是哪条规则（本机检查，不花钱）。 */
+/**
+ * 光标落在一处不合检查规则的地方：说是哪条规则（本机检查，不花钱）。[tag] 是来源：作者的“规则”，
+ * 或者“AI 腔”（内置清单）、“我的黑名单”。AI 腔那几处带 [onBan]：“以后都不要”，把这处原文加进黑名单。
+ */
 @Composable
-internal fun RuleNote(text: String, onOpen: () -> Unit) {
+internal fun RuleNote(text: String, tag: String = "规则", onBan: (() -> Unit)? = null, onOpen: () -> Unit) {
     val c = LocalGroupedColors.current
     Row(
         Modifier.fillMaxWidth().background(c.background).clickable { onOpen() }.padding(horizontal = 18.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Tag("规则", c.warning)
+        Tag(tag, if (tag == "规则") c.warning else suggestColor(SuggestKind.CLICHE.name, c))
         Text(text, color = c.label, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
-        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
+        if (onBan != null) PillButton("以后都不要", onBan, modifier = Modifier.padding(start = 8.dp))
+        else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
 }
 
@@ -760,7 +808,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                         if (assist.realtime) {
-                            SuggestKind.entries.forEach { k ->
+                            SuggestKind.entries.filter { it.realtime }.forEach { k ->
                                 row {
                                     ToggleRow("查${k.label}", k.name in assist.suggestKinds) { on ->
                                         vm.writingAi.updateAssist(workId) { a -> a.copy(suggestKinds = if (on) (a.suggestKinds + k.name).distinct() else a.suggestKinds - k.name) }
@@ -776,6 +824,22 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                                 PickerRow("一天最多", WorkAssist.SUGGEST_CAPS.map { it to if (it == 0) "不限" else "$it 次" }, assist.suggestCap) { v ->
                                     vm.writingAi.updateAssist(workId) { it.copy(suggestCap = v) }
                                 }
+                            }
+                        }
+                    }
+                    GroupedSection(
+                        header = "AI 腔",
+                        footer = "本机按内置清单标出套话，不花钱；AI 写正文、改稿时也叮嘱它别这样写。" +
+                            "“我的黑名单”里的说法正文里出现就标出（对白里也算），AI 写的时候一个都不用。",
+                    ) {
+                        row {
+                            ToggleRow("查 AI 腔", assist.aiCliche) { on ->
+                                vm.writingAi.updateAssist(workId) { it.copy(aiCliche = on) }
+                            }
+                        }
+                        row {
+                            NavRow("我的黑名单", value = if (assist.banned.isEmpty()) "空" else "${assist.banned.size} 条") {
+                                vm.open(Screen.WorkBanned(workId))
                             }
                         }
                     }
@@ -844,5 +908,67 @@ internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, o
             }
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onAdd(list.filter { it.name in chosen }) }, confirmText = "加入设定集")
+    }
+}
+
+/**
+ * 我的黑名单：作者不想再看到的说法。编辑器里点到 AI 腔点“以后都不要”加进来，这里也能手动加、删。
+ * 最近加的排在最上面；本机全文禁用（对白里也查），AI 写正文时一个都不用。
+ */
+@Composable
+fun WorkBannedScreen(vm: AppViewModel, workId: String) {
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val banned = assists[workId]?.banned.orEmpty()
+    var input by remember(workId) { mutableStateOf("") }
+    val phrase = input.trim()
+    val canAdd = phrase.isNotEmpty() && phrase !in banned
+    fun add() {
+        if (!canAdd) return
+        vm.writingAi.updateAssist(workId) { it.ban(phrase) }
+        input = ""
+    }
+    SubPageScaffold("我的黑名单", onBack = { vm.back() }) { padding ->
+        val c = LocalGroupedColors.current
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            item(key = "add") {
+                GroupedSection(
+                    header = "加一条",
+                    footer = "写进来的说法，正文里出现就标出来（对白里也算），AI 写正文、改稿时一个都不用。" +
+                        "最多记 ${WorkAssist.KEEP_BANNED} 条，满了丢最早加的。在编辑器里点到标出的 AI 腔，点“以后都不要”也能加。",
+                ) {
+                    row {
+                        TextField(
+                            value = input,
+                            // 一条说法不跨段：换行去掉。
+                            onValueChange = { input = it.replace("\n", "") },
+                            label = "不想再看到的说法",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        )
+                    }
+                    row { ActionRow("加入黑名单", enabled = canAdd) { add() } }
+                }
+            }
+            item(key = "list") {
+                GroupedSection(header = if (banned.isEmpty()) null else "${banned.size} 条") {
+                    if (banned.isEmpty()) row { EmptyRow("还没有。") }
+                    banned.asReversed().forEach { b ->
+                        row {
+                            GroupedRow {
+                                Text(b, color = c.label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unban(b) } }) {
+                                    Icon(LingYueIcons.Delete, contentDescription = "从黑名单删去「$b」", tint = c.destructive)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

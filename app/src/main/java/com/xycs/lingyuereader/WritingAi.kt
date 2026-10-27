@@ -28,6 +28,7 @@ import com.xycs.lingyuereader.data.PackTools
 import com.xycs.lingyuereader.data.aiPack
 import com.xycs.lingyuereader.data.chapterHints
 import com.xycs.lingyuereader.data.packTools
+import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.GateResult
@@ -163,6 +164,12 @@ data class RealtimeState(
     val waiting: String? = null,
     /** 今天发了几次。 */
     val today: Int = 0,
+    /** 正在去 AI 腔（作者点的，结果作为 [SuggestKind.CLICHE] 的建议放进 [issues]）。 */
+    val cliche: Boolean = false,
+    /** 去 AI 腔没成：原因。 */
+    val clicheError: String? = null,
+    /** 去 AI 腔做完了的一句话（“AI 觉得这几处不用改”这类）。 */
+    val clicheNote: String? = null,
 )
 
 /** Upper bound for one complete chapter response, including V4's thinking tokens. */
@@ -291,8 +298,10 @@ class WritingAi(
                         val after = text.substring(task.end.coerceIn(0, text.length))
                         // 本章开头的话，前文接上一章的结尾。
                         val context = if (before.length < WritePrompts.BEFORE_CHARS && previous.isNotBlank()) previous.takeLast(WritePrompts.BEFORE_CHARS - before.length) + "\n" + before else before
-                        WritePrompts.system(work.title, assist, pack, examples = task.action != WriteAction.CONTINUE, samples = samples) to
-                            WritePrompts.edit(task.action, task.original, context, after, title, task.instruction)
+                        // 文风范例、采纳过的改法、去 AI 腔和黑名单都接在请求最后（挑错不带，见 usesSamples）。
+                        val voice = if (WritePrompts.usesSamples(task.action)) WritePrompts.voiceTail(assist, samples, examples = task.action != WriteAction.CONTINUE) else ""
+                        WritePrompts.system(work.title, assist, pack) to
+                            WritePrompts.edit(task.action, task.original, context, after, title, task.instruction, voice)
                     }
                     is WriteAiTask.Idea -> {
                         val recent = (if (text.length < 6_000 && previous.isNotBlank()) previous.takeLast(6_000 - text.length) + "\n【" + title + "】\n" else "") + text.takeLast(6_000)
@@ -317,7 +326,7 @@ class WritingAi(
                 val answer = if (task == WriteAiTask.Review) ask(label, workId, system, prompt, meter = meter, onText = onPiece)
                 else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
                     confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
-                    stable = samples, meter = meter,
+                    meter = meter,
                     onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false, usage = meter.usage, cost = meter.cost) ?: s }
@@ -422,7 +431,7 @@ class WritingAi(
         val launched = scope.launch {
             val assist = assistOf(workId)
             if (!assist.realtime) return@launch
-            val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k } }.toSet()
+            val kinds = assist.suggestKinds.mapNotNull { k -> SuggestKind.entries.firstOrNull { it.name == k && it.realtime } }.toSet()
             if (kinds.isEmpty()) return@launch
             // 省钱：两次至少隔几秒，一天最多几次（按作品、按日期记在盘上）。
             val today = java.time.LocalDate.now().toString()
@@ -531,7 +540,71 @@ class WritingAi(
         realtimeGeneration++
         pendingRealtime = null
         realtimeJob?.cancel()
+        clicheJob?.cancel()
         _realtime.value = RealtimeState()
+    }
+
+    // ---------- 去 AI 腔 ----------
+
+    private var clicheJob: Job? = null
+
+    /**
+     * 去 AI 腔：[ranges] 是正文 [text] 里本机标出的 AI 腔、黑名单命中，把含它们的段落（最多 [CLICHE_BATCH] 段）发给 AI，
+     * 只改标出的说法和它所在的那一句。结果放进写作建议的列表（[SuggestKind.CLICHE]），作者一条条改或忽略；
+     * 上一次去 AI 腔的结果换成这一次的。写作建议没开也能用：这是作者自己点的。定稿的章不给。
+     */
+    fun decliche(workId: String, chapterId: String, text: String, ranges: List<IntRange>) {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        val picked = AiCliche.paragraphs(text, ranges, CLICHE_BATCH)
+        if (picked.isEmpty()) {
+            message("这一章没有标出的 AI 腔")
+            return
+        }
+        clicheJob?.cancel()
+        _realtime.update { r -> (if (r.chapterId != chapterId) RealtimeState(chapterId, today = r.today) else r).copy(cliche = true, clicheError = null, clicheNote = null) }
+        clicheJob = scope.launch {
+            try {
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+                if (work.chapter(chapterId)?.locked == true) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val assist = assistOf(workId)
+                val paragraphs = picked.map { it.first }
+                // 只看这几段，不带设定包、不给工具：一问一答。写法要求（含黑名单）照样接在最后。
+                val answer = ask("去 AI 腔", workId, WritePrompts.system(work.title, assist),
+                    WritePrompts.withVoice(WritePrompts.decliche(picked), WritePrompts.voiceTail(assist, null)),
+                    whole = true, meter = AiMeter(AiFeature.CLICHE, workId))
+                val found = WritePrompts.parseIssues(answer, paragraphs)
+                    .map { it.copy(kind = SuggestKind.CLICHE.name, source = AiCliche.DOC) }
+                    .filter { (it.paragraph to it.wrong) !in dismissed }
+                _realtime.update { r ->
+                    if (r.chapterId != chapterId) r
+                    else r.copy(
+                        issues = (r.issues.filter { it.kind != SuggestKind.CLICHE.name } + found).distinctBy { it.paragraph to it.wrong },
+                        cliche = false,
+                        clicheNote = if (found.isEmpty()) "AI 觉得标出的这几处不用改" else null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                _realtime.update { r -> if (r.chapterId == chapterId) r.copy(cliche = false) else r }
+                throw e
+            } catch (e: Exception) {
+                _realtime.update { r -> if (r.chapterId == chapterId) r.copy(cliche = false, clicheError = e.message ?: "请求失败") else r }
+            }
+        }
+    }
+
+    /** 收起去 AI 腔的提示（出错、不用改）。 */
+    fun clearClicheNote() {
+        _realtime.update { it.copy(clicheError = null, clicheNote = null) }
+    }
+
+    /** 作者点“改”采纳了一条去 AI 腔：记进采纳过的修改（那一句的前后），以后当例子学。 */
+    fun acceptCliche(workId: String, issue: WriteIssue) {
+        val before = AiCliche.sentence(issue.paragraph, issue.wrong)
+        val after = before.replaceFirst(issue.wrong, issue.right)
+        updateAssist(workId) { WritePrompts.remember(it, "去 AI 腔", before, after, System.currentTimeMillis()) }
     }
 
     // ---------- 在编辑器里写 ----------
@@ -585,15 +658,17 @@ class WritingAi(
                 val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
                 val after = text.substring(cursor).take(800)
                 val samples = samplesFor(workId, chapterId)
-                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples) +
+                val assist = assistOf(workId)
+                val system = WritePrompts.system(work.title, assist, pack.ifEmpty { null }) +
                     (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
-                val prompt = WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules) +
-                    (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: "")
+                val prompt = withReference(reference, WritePrompts.voiceTail(assist, samples)) { voice ->
+                    WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules, voice)
+                }
                 if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
                 var shown = 0L
                 val answer = askWithPack(
-                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens?.coerceAtMost(8_192), stable = samples, meter = meter,
+                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens?.coerceAtMost(8_192), meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
                     requireTools = taskSnapshot?.project == true,
                     onReset = {
@@ -797,6 +872,7 @@ class WritingAi(
     /** 请求的名字对应的功能（按功能累计用量）。 */
     private fun featureOf(label: String): AiFeature = when (label) {
         "写作建议" -> AiFeature.SUGGEST
+        "去 AI 腔" -> AiFeature.CLICHE
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
@@ -875,7 +951,8 @@ class WritingAi(
                     out
                 },
                 cachePrefix = pack.prefix.length,
-                // 文风范例紧跟在知识库后面、本身也稳定：Anthropic 上在它后面再标一处缓存。
+                // 系统提示里知识库之后还有一段稳定的文字时（[stable]），Anthropic 上在它后面再标一处缓存。
+                // 文风范例已经挪到请求最后（写法要求），现在没有调用处传它。
                 cacheExtra = stable?.let { s -> system.indexOf(s).takeIf { it >= 0 }?.plus(s.length) } ?: 0,
                 whole = whole,
                 maxTokens = maxTokens,
@@ -918,7 +995,15 @@ class WritingAi(
         }
     }
 
-    /** 拼进系统提示的文风范例；没有、挑的时候出错（读不出正文）都不带，不耽误请求。 */
+    /**
+     * 生成正文的请求：范本的要求接在正文请求后面，写法要求 [voice]（[WritePrompts.voiceTail]）永远在最末尾。
+     * [build] 拿到要接在最后的写法要求，组出请求；有范本时先不接，等范本的要求接上以后再接。
+     */
+    private fun withReference(reference: ReferenceWritingMaterial?, voice: String, build: (String) -> String): String =
+        if (reference == null) build(voice)
+        else WritePrompts.withVoice(build("") + "\n\n" + ReferenceWriting.prompt(reference), voice)
+
+    /** 接在请求最后的文风范例；没有、挑的时候出错（读不出正文）都不带，不耽误请求。 */
     private suspend fun samplesFor(workId: String, chapterId: String): String? = try {
         StyleSamples.render(stylePick(workId, chapterId).samples)
     } catch (e: CancellationException) {
@@ -1422,15 +1507,17 @@ class WritingAi(
                         taskSnapshot?.targetLength ?: targetLength.ifBlank { lengthOf(workId) },
                     )
                 }
-                val prompt = (if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction)
-                else WritePrompts.draftMore(chapter.title, prefix, rules, length)) +
-                    (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: "")
                 val samples = samplesFor(workId, chapterId)
-                val system = WritePrompts.system(work.title, assistOf(workId), pack.ifEmpty { null }, examples = true, samples = samples) +
+                val assist = assistOf(workId)
+                val prompt = withReference(reference, WritePrompts.voiceTail(assist, samples)) { voice ->
+                    if (prefix.isEmpty()) WritePrompts.draft(chapter.title, previous, rules, length, instruction, voice)
+                    else WritePrompts.draftMore(chapter.title, prefix, rules, length, voice)
+                }
+                val system = WritePrompts.system(work.title, assist, pack.ifEmpty { null }) +
                     (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
                 if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 val answer = askWithPack(
-                    if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, stable = samples, meter = meter,
+                    if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
                     requireTools = taskSnapshot?.project == true,
                     onReset = {
@@ -1543,9 +1630,10 @@ class WritingAi(
         val reference = referenceAnalysisId?.let { id ->
             withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, id) }
         }
-        val (context, prompt) = if (workflow) {
+        val voice = WritePrompts.voiceTail(assist, samples)
+        val (context, build) = if (workflow) {
             val rules = withContext(Dispatchers.IO) { writingRules(workId, chapterId, "") }
-            task.render() to WritePrompts.projectDraft(task, rules)
+            task.render() to { v: String -> WritePrompts.projectDraft(task, rules, v) }
         } else withContext(Dispatchers.IO) {
             val body = store.text(workId, chapterId)
             val index = work.chapters.indexOfFirst { it.id == chapterId }
@@ -1553,18 +1641,18 @@ class WritingAi(
                 else work.chapters.getOrNull(index - 1)?.let { store.text(workId, it.id).takeLast(6_000) }.orEmpty()
             val rules = writingRules(workId, chapterId, body)
             val context = chapterContext(workId, chapterId, body).orEmpty()
-            context to WritePrompts.draft(chapter.title, previous, rules, task.targetLength, instruction)
+            context to { v: String -> WritePrompts.draft(chapter.title, previous, rules, task.targetLength, instruction, v) }
         }
-        val rest = WritePrompts.system(work.title, assist, context.ifEmpty { null }, examples = true, samples = samples) +
+        val rest = WritePrompts.system(work.title, assist, context.ifEmpty { null }) +
             (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
-        val fullPrompt = prompt + (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: "")
+        val fullPrompt = withReference(reference, voice, build)
         val budget = knowledgeBudget(workId)
         val pack = withContext(Dispatchers.IO) { store.aiPack(workId, budget, WritingPhase.CREATE) }
         val system = pack.prefix + "\n\n=== 这次的工作 ===\n" + rest.trim() + "\n\n" + WritePrompts.TOOL_GUIDE
-        val cacheExtra = samples?.let { sample -> system.indexOf(sample).takeIf { it >= 0 }?.plus(sample.length) } ?: 0
+        // 文风范例在请求最后（写法要求里），系统提示里只有知识库这一处缓存边界，和真发的请求一样。
         return withContext(Dispatchers.Default) {
             AiRequestBudget.preview(ai.currentConfig, system, fullPrompt, PackTools.TOOLS, draftTokens, workflow,
-                cachePrefix = pack.prefix.length, cacheExtra = cacheExtra)
+                cachePrefix = pack.prefix.length)
         }
     }
 
@@ -1720,7 +1808,9 @@ class WritingAi(
                 val proseRules = withContext(Dispatchers.IO) { writingRules(workId, chapterId, "") }
                 val assist = assistOf(workId)
                 val samples = samplesFor(workId, chapterId)
-                val system = WritePrompts.system(work.title, assist, task.render(), examples = true, samples = samples) +
+                // 创作和修订都接上写法要求：修订时也不能写回 AI 腔。审读不带。
+                val voice = WritePrompts.voiceTail(assist, samples)
+                val system = WritePrompts.system(work.title, assist, task.render()) +
                     (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
                 val reviewer = WritePrompts.system(work.title, assist, task.render())
                 val saved = before?.text?.takeIf { it.isNotBlank() } ?: withContext(Dispatchers.IO) {
@@ -1735,14 +1825,15 @@ class WritingAi(
                 val result = DraftWorkflow.run(
                     task = task, rules = rules, evidence = reviewEvidence, initial = saved.takeIf { reviewOnly },
                     create = {
-                        val prompt = (if (prefix.isBlank()) WritePrompts.projectDraft(task, proseRules)
-                        else WritePrompts.draftMore(task.title, prefix, proseRules, task.targetLength)) +
-                            (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: "")
+                        val prompt = withReference(reference, voice) { v ->
+                            if (prefix.isBlank()) WritePrompts.projectDraft(task, proseRules, v)
+                            else WritePrompts.draftMore(task.title, prefix, proseRules, task.targetLength, v)
+                        }
                         if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                         val answer = askWithPack(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                             toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
-                            stable = samples, meter = createMeter,
+                            meter = createMeter,
                             onReset = {
                                 written = ""
                                 newCandidateGenerated = false
@@ -1788,10 +1879,9 @@ class WritingAi(
                     revise = { manuscript, findings ->
                         if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                         WritePrompts.cleanDraft(askWithPack(
-                            "本稿修订", workId, system, WritePrompts.projectRevision(task, manuscript, findings, proseRules) +
-                                (reference?.let { "\n\n" + ReferenceWriting.prompt(it) } ?: ""),
+                            "本稿修订", workId, system, withReference(reference, voice) { v -> WritePrompts.projectRevision(task, manuscript, findings, proseRules, v) },
                             whole = true, maxTokens = draftTokens, toolsUpTo = chapterId, phase = WritingPhase.REVISE,
-                            confirmedOnly = true, requireTools = true, stable = samples, meter = reviseMeter,
+                            confirmedOnly = true, requireTools = true, meter = reviseMeter,
                         )).also { candidate ->
                             if (candidate.isNotBlank()) newCandidateGenerated = true
                             if (reference != null) {
@@ -2239,6 +2329,8 @@ class WritingAi(
     companion object {
         /** 写作建议一次最多发几段。 */
         const val REALTIME_BATCH = 6
+        /** 去 AI 腔一次最多发几段。 */
+        const val CLICHE_BATCH = 20
         /** 太短的段（一两个字、一句短对话）不查。 */
         const val MIN_PARAGRAPH = 8
         const val EXTRACT_CHARS = 15_000
