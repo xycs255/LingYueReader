@@ -331,13 +331,13 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                         )
                         Text(
                             "原文：${excerpt(item.text)}",
-                            color = if (blank || '\uFFFD' in item.text) c.warning else c.secondary,
+                            color = if (blank || item.garbled) c.warning else c.secondary,
                             fontSize = 12.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = 12.sp)
-                        if ('\uFFFD' in item.text) Text(
+                        if (item.garbled) Text(
                             "包含无法识别的字符，请核对原文件编码",
                             color = c.warning,
                             fontSize = 12.sp,
@@ -402,9 +402,9 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(item.text.lineSequence().take(6).joinToString("\n").take(500).ifBlank { "原文为空，请核对后再导入" },
-                    color = if (item.text.isBlank() || '\uFFFD' in item.text) c.warning else c.label,
+                    color = if (item.text.isBlank() || item.garbled) c.warning else c.label,
                     fontSize = 13.sp, lineHeight = 19.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                if ('\uFFFD' in item.text) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = 12.sp)
+                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = 12.sp)
             }
             if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = 13.sp)
             else SegmentedControl(listOf(true to "导入", false to "不导入"), include) { include = it }

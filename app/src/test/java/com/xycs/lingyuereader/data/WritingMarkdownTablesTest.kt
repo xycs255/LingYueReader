@@ -24,6 +24,49 @@ class WritingMarkdownTablesTest {
         assertEquals(listOf("沈默", "尚不知道", "第四章"), MdTable.parse(changed).single().rows[1])
     }
 
+    @Test fun separatorWithDifferentColumnCountStillMakesATable() {
+        // 手写表格的分隔行比表头少一格：仍然是表格，列以表头为准。
+        val fewer = "| 伏笔 | 埋下 | 回收 |\n|---|---|\n| 玉佩 | 第3章 | 第8章 |"
+        val table = MdTable.parse(fewer).single()
+        assertEquals(listOf("伏笔", "埋下", "回收"), table.header)
+        val f = ChapterBriefs.foreshadows(listOf("伏笔表" to fewer)).single()
+        assertEquals("玉佩", f.what)
+        assertEquals(3, f.planted)
+        assertEquals(8, f.payoff)
+
+        // 分隔行多一格、某行少一格或多一格，都照样认。
+        val ragged = "| 伏笔 | 埋下 | 回收 |\n| :-- | --- | --: | --- |\n| 渡口铜铃 | 第2章 |\n| 旧船票 | 第4章 | 第9章 | 备注 |"
+        val rows = MdTable.parse(ragged).single()
+        assertEquals(2, rows.rows.size)
+        assertEquals("", rows.cell(rows.rows[0], 2))
+        assertEquals(listOf("渡口铜铃", "旧船票"), ChapterBriefs.foreshadows(listOf("伏笔表" to ragged)).map { it.what })
+
+        // 只有横线、没有竖线的一行（分隔线、标题下划线）不是分隔行。
+        assertTrue(MdTable.parse("林月 | 沈默\n---\n渡口").isEmpty())
+    }
+
+    @Test fun proseLineWithAPipeAfterATableIsNotARow() {
+        val md = "| 伏笔 | 埋下 | 回收 |\n|---|---|---|\n| 玉佩 | 第3章 | 第8章 |\n注：A|B 两条线并行，第9章合流。"
+        val table = MdTable.parse(md).single()
+        assertEquals(listOf(listOf("玉佩", "第3章", "第8章")), table.rows)
+        assertEquals(listOf(2), table.lines)
+        assertEquals(listOf("玉佩"), ChapterBriefs.foreshadows(listOf("伏笔表" to md)).map { it.what })
+    }
+
+    @Test fun longLinesWithBackticksAndBackslashesParseInLinearTime() {
+        // 每行 10 万字符：反引号一个接一个、反斜杠一个接一个，都放在表格行里，切格和去转义都要走一遍。
+        val ticks = "| " + "`a".repeat(50_000) + " | 尾 |"
+        val slashes = "| " + "\\a".repeat(50_000) + " | 尾 |"
+        val md = "| 甲 | 乙 |\n|---|---|\n$ticks\n$slashes"
+        MdTable.parse("| 甲 | 乙 |\n|---|---|\n| `a`\\| | 尾 |") // 预热
+        val started = System.nanoTime()
+        val table = MdTable.parse(md).single()
+        val ms = (System.nanoTime() - started) / 1_000_000
+        assertEquals(listOf("尾", "尾"), table.rows.map { it[1] })
+        // 改成线性后本机只要几十毫秒；以前 10 万字符一行要几秒。上限留足余量，免得 CI 偶尔慢时误报。
+        assertTrue("10 万字符的行解析用了 $ms 毫秒", ms < 500)
+    }
+
     @Test fun fencedExampleTablesNeverBecomeForeshadowFacts() {
         val md = """
             # 伏笔表

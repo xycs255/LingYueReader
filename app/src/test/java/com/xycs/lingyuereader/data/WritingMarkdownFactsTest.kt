@@ -17,6 +17,24 @@ class WritingMarkdownFactsTest {
         assertFalse("察觉表" in item.text)
     }
 
+    @Test fun categoryLikeH1HeadingsAreNotPeople() {
+        // 封面标题和文档名不一样（改过标题，或者带书名“长夜”）：像资料分类名的仍是封面。
+        val people = "# 长夜人物\n本文件记录主要人物。\n\n## 林月\n药铺女儿。\n## 沈默\n捕快。"
+        assertEquals(listOf("林月", "沈默"), ChapterBriefs.characters(listOf("人物档案" to people)).map { it.name })
+        val villains = "# 反派\n以下是反派。\n## 赵三\n山匪。"
+        assertEquals(listOf("赵三"), ChapterBriefs.characters(listOf("人物档案" to villains)).map { it.name })
+        // 不在开头的分类标题、下面紧跟二级标题的一级标题，也不是人物。
+        val grouped = "# 林月\n药铺女儿。\n# 反派\n这几个人都不好惹。\n# 渡口众人\n## 沈默\n捕快。"
+        assertEquals(listOf("林月", "沈默"), ChapterBriefs.characters(listOf("人物档案" to grouped)).map { it.name })
+
+        // 三个解析器对封面的判断一致：封面不进分节目录和检索路径，人物卡片的一级标题留着。
+        assertEquals(listOf("林月", "沈默"), PackOutline.sections(people, "人物档案").map { it.path.joinToString(" › ") })
+        assertEquals(listOf(emptyList(), listOf("林月"), listOf("沈默")), PackUnits.split(people, documentTitle = "人物档案").map { it.path })
+        assertEquals(listOf("一、原则", "二、分卷"), PackOutline.sections("# 《长夜》总纲\n## 一、原则\nA\n## 二、分卷\nB", "全书总纲").map { it.path.joinToString(" › ") })
+        assertEquals(listOf("第二卷 对岸", "第二卷 对岸 › 一、主线"), PackOutline.sections("# 第二卷 对岸\n## 一、主线\n第3章渡船沉没。", "第二卷细纲").map { it.path.joinToString(" › ") })
+        assertEquals(listOf(listOf("第二卷 对岸", "一、主线")), PackUnits.split("# 第二卷 对岸\n## 一、主线\n第3章渡船沉没。", documentTitle = "第二卷细纲").map { it.path })
+    }
+
     @Test fun longMarkdownParagraphIsNotTruncatedWhenSplitForFacts() {
         val paragraph = "渡口暗号".repeat(700)
         val blocks = PackSections.split("# 第一卷\n$paragraph", chunk = 1_200)

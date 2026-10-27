@@ -112,6 +112,20 @@ class WritingDataFixTest {
     }
 
     @Test
+    fun sceneBreakInAFinalMarkdownManuscriptKeepsEveryChapterSeparate() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("长夜")
+        val text = "## 第一章 开端\n林月守渡口。\n~~~\n夜深了。\n## 第二章 夜归\n沈默回来。\n## 第三章 对岸\n渡船沉了。"
+        s.importPack(w.id, listOf(manuscript("已定正文_第1-3章.md", text), manuscript("未定稿_第4-4章.md", "## 第四章 天亮\n~~~\n雾散了。")))
+        val chapters = s.get(w.id)!!.chapters
+        assertEquals(listOf("第一章 开端", "第二章 夜归", "第三章 对岸", "第四章 天亮"), chapters.map { it.title })
+        assertEquals("林月守渡口。\n~~~\n夜深了。", s.text(w.id, chapters[0].id))
+        assertEquals("沈默回来。", s.text(w.id, chapters[1].id))
+        // 文件名写着“已定”的三章各自定稿；“未定稿”的不定稿。
+        assertEquals(listOf(true, true, true, false), chapters.map { it.locked })
+    }
+
+    @Test
     fun markingAForeshadowDoneAddsTheMissingStatusColumn() {
         val table = "| 伏笔 | 埋下 | 回收 |\n| --- | --- | --- |\n| 半块玉佩 | 第3章 | 第20章 |\n| 老周的账本 | 第5章 | 第30章 |"
         val list = ChapterBriefs.foreshadows(listOf("伏笔表" to table))

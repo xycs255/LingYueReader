@@ -154,6 +154,25 @@ class WritingOutlineTest {
     }
 
     @Test
+    fun separatorLinesAndUnclosedFencesNeverHideChapters() {
+        // TXT 导入的细纲用 ~~~~~~ 隔章：中间写着章号，不是代码块。
+        val tildes = "第一章 开端：林月守渡口。\n~~~~~~\n第二章 夜归：沈默回来。\n~~~~~~\n第三章 对岸：渡船沉了。\n~~~~~~\n第四章 尾声：天亮。"
+        assertEquals(listOf(1, 2, 3, 4), ChapterOutlines.parse(listOf("细纲" to tildes)).map { it.from })
+        val headed = "## 第一章\n事实：林月守渡口。\n```\n## 第二章\n事实：沈默回来。\n```\n## 第三章\n事实：渡船沉了。"
+        assertEquals(listOf(1, 2, 3), ChapterOutlines.parse(listOf("细纲" to headed)).map { it.from })
+
+        // 没闭合的围栏读到文末也不算围栏，后面的章照常认。
+        val unclosed = "## 第一章\n事实：林月守渡口。\n```\n## 第二章\n事实：沈默回来。\n## 第三章\n事实：渡船沉了。"
+        val entries = ChapterOutlines.parse(listOf("细纲" to unclosed))
+        assertEquals(listOf(1, 2, 3), entries.map { it.from })
+        assertEquals("渡船沉了。", ChapterOutlines.card(ChapterOutlines.match(entries, 3, 1, "第三章")).facts)
+
+        // 行内的三个反引号不开围栏。
+        val inline = "## 第一章\n事实：用```代码```示意。\n## 第二章\n事实：沈默回来。"
+        assertEquals(listOf(1, 2), ChapterOutlines.parse(listOf("细纲" to inline)).map { it.from })
+    }
+
+    @Test
     fun explicitOtherVolumeNeverSuppliesNamedExactOrGroupFacts() {
         val sameName = listOf(
             OutlineEntry(3, 3, "夜渡", "事实：第一卷渡口", "第一卷细纲", volume = 1),

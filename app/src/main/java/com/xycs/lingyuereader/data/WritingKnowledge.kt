@@ -95,17 +95,16 @@ object PackOutline {
     fun sections(text: String, documentTitle: String? = null): List<Section> {
         val lines = text.removePrefix("\uFEFF").lines()
         val marks = mutableListOf<Pair<Int, Pair<Int, String>>>()
-        val fences = MarkdownFenceTracker()
+        val fenced = MarkdownFences.mask(lines)
+        // 封面一级标题（见 [PackCover]）不算一节；别的一级标题管着卷、人物，要留在目录里。
+        val cover = PackCover.line(lines, fenced, documentTitle)
         lines.forEachIndexed { i, raw ->
-            if (fences.isInsideOrFence(raw)) return@forEachIndexed
+            if (fenced[i]) return@forEachIndexed
             val t = raw.trim()
             heading.matchEntire(raw.trimEnd())?.let { m ->
                 val level = m.groupValues[1].length
                 val title = m.groupValues[2].replace("*", "").trim()
-                // A leading H1 identical to the document title is a cover heading. Other H1s
-                // carry volume/person scope and must stay in the AI's section directory.
-                if (title.isNotEmpty() && !(level == 1 && marks.isEmpty() && documentTitle != null && key(title) == key(documentTitle)))
-                    marks += i to (level to title)
+                if (title.isNotEmpty() && i != cover) marks += i to (level to title)
                 return@forEachIndexed
             }
             if (raw.isNotEmpty() && raw[0] != ' ' && raw[0] != '\t' && !item.containsMatchIn(t)) {
@@ -230,9 +229,10 @@ class PackTools(
         val out = mutableListOf<Pair<Int, String>>()
         val buf = StringBuilder()
         var start = 0
-        val fences = MarkdownFenceTracker()
-        text.lines().forEachIndexed { i, raw ->
-            if (fences.isInsideOrFence(raw)) {
+        val lines = text.lines()
+        val fenced = MarkdownFences.mask(lines)
+        lines.forEachIndexed { i, raw ->
+            if (fenced[i]) {
                 if (buf.isNotEmpty()) { out += start to buf.toString().trim(); buf.setLength(0) }
                 return@forEachIndexed
             }

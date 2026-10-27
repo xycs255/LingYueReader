@@ -114,10 +114,7 @@ data class ChapterBrief(
 
 /** 从设定包的文档里认出人物、察觉、伏笔，再按章挑资料。 */
 object ChapterBriefs {
-    private fun fencedLines(lines: List<String>): BooleanArray {
-        val fence = MarkdownFenceTracker()
-        return BooleanArray(lines.size) { fence.isInsideOrFence(lines[it]) }
-    }
+    private fun fencedLines(lines: List<String>): BooleanArray = MarkdownFences.mask(lines)
     const val LIMIT = 12_000
 
     // ---------- 人物 ----------
@@ -215,12 +212,13 @@ object ChapterBriefs {
                 }
                 i++
             }
+            // 封面和资料分类的一级标题（“# 长夜人物”“# 反派”）不是人物。
+            val headingLines = text.removePrefix("\uFEFF").lines()
+            val cover = PackCover.line(headingLines, fenced, documentTitle)
             PackSections.split(text).forEach { s ->
                 val name = s.title.let { t -> cleanName(t)?.takeIf { t.replace(Regex("[（(].*"), "").trim().replace("*", "") == it } }
-                val cover = s.path.size == 1 && s.title.replace(Regex("[《》「」\\s]"), "") ==
-                    documentTitle.replace(Regex("\\.(?:md|markdown|txt)$", RegexOption.IGNORE_CASE), "")
-                        .replace(Regex("[《》「」\\s]"), "")
-                if (name != null && !cover && !s.text.trimStart().startsWith("|")) add(name, s.text)
+                val person = PackCover.mayBePerson(headingLines, fenced, s.line, cover)
+                if (name != null && person && !s.text.trimStart().startsWith("|")) add(name, s.text)
             }
         }
         val confirmed = found.keys.toSet()
@@ -295,7 +293,7 @@ object ChapterBriefs {
                 val coverTitle = documentTitle.replace(Regex("\\.(?:md|markdown|txt)$", RegexOption.IGNORE_CASE), "")
                     .replace(Regex("[《》「」\\s]"), "")
                 val owners = section?.path.orEmpty().filter {
-                    it.replace(Regex("[《》「」\\s]"), "") != coverTitle
+                    it.replace(Regex("[《》「」\\s]"), "") != coverTitle && !PackCover.looksLikeCategory(it)
                 }.mapNotNull { cleanName(it) }.toSet()
                 val timeCol = t.column("章", "卷", "时间", "从")
                 val secretCols = t.header.indices.filter { it != timeCol && secretColumn.containsMatchIn(t.header[it]) }.toSet()

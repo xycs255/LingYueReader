@@ -54,6 +54,8 @@ data class PackImportItem(
     val always: Boolean = kind.always,
     /** 导入后的标题：默认是去掉文件夹和扩展名的文件名。 */
     val title: String = fileName.substringAfterLast('/').substringBeforeLast('.').trim().ifEmpty { fileName },
+    /** 原文里有解不出的字（U+FFFD），预览时提示核对编码。解析导入时算一次，预览重组时不再扫全文。 */
+    val garbled: Boolean = '\uFFFD' in text,
 )
 
 /** 导入的结果：新加几份、替换几份（旧版进历史）、导入几章正文；[renamed] 是和同一次导入里前面的项重名、加了编号的标题。 */
@@ -138,21 +140,14 @@ object PackImport {
             body.setLength(0)
         }
         var preface: Pair<String, String>? = null
-        var fence: Char? = null
-        var fenceWidth = 0
-        for (raw in text.removePrefix("\uFEFF").lines()) {
+        val lines = text.removePrefix("\uFEFF").lines()
+        // Markdown \u7684\u4EE3\u7801\u5757\u6574\u5757\u7559\u5728\u6B63\u6587\u91CC\uFF0C\u91CC\u9762\u7684\u201C\u7B2CX\u7AE0\u201D\u4E0D\u62C6\u7AE0\u3002\u56F4\u680F\u89C4\u5219\u89C1 [MarkdownFences]\uFF1A\u6CA1\u95ED\u5408\u7684\u3001
+        // \u6CA1\u6709\u8BED\u8A00\u6807\u8BB0\u53C8\u5199\u7740\u7AE0\u53F7\u7684 ~~~ \u5F53\u573A\u666F\u5206\u9694\u7EBF\uFF0C\u7167\u5E38\u62C6\u7AE0\uFF1BTXT \u4E0D\u8BA4\u56F4\u680F\u3002
+        val fenced = if (markdown) MarkdownFences.mask(lines) else BooleanArray(lines.size)
+        for ((index, raw) in lines.withIndex()) {
             val line = raw.trim().trim('　').trim()
-            val marker = line.firstOrNull()?.takeIf { it == '`' || it == '~' }
-            val width = if (marker == null) 0 else line.takeWhile { it == marker }.length
-            if (markdown && fence != null) {
+            if (fenced[index]) {
                 if (line.isNotEmpty()) body.append(line).append('\n')
-                if (marker == fence && width >= fenceWidth && line.drop(width).isBlank()) fence = null
-                continue
-            }
-            if (markdown && marker != null && width >= 3) {
-                fence = marker
-                fenceWidth = width
-                body.append(line).append('\n')
                 continue
             }
             val heading = Regex("""^#{1,4}\s+(.+)$""").matchEntire(line)?.groupValues?.get(1)?.trim()

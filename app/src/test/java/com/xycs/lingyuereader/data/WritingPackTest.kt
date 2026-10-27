@@ -89,7 +89,7 @@ class WritingPackTest {
             |```markdown
             |## 第二章 假章
             |```
-            |~~~
+            |~~~text
             |第三章 也是假章
             |~~~
             |## 第二章 真章
@@ -100,6 +100,34 @@ class WritingPackTest {
         assertTrue(chapters[0].second.contains("## 第二章 假章"))
         assertTrue(chapters[0].second.contains("第三章 也是假章"))
         assertEquals("收尾。", chapters[1].second)
+    }
+
+    @Test
+    fun markdownSceneBreaksDoNotMergeLaterChapters() {
+        // 一个没闭合的 ~~~：读到文末也没闭合，不当围栏。
+        val odd = "## 第一章 开端\n林月守渡口。\n~~~\n夜深了。\n## 第二章 夜归\n沈默回来。\n## 第三章 对岸\n渡船沉了。"
+        val chapters = PackImport.chapters(odd, "备用", markdown = true)
+        assertEquals(listOf("第一章 开端", "第二章 夜归", "第三章 对岸"), chapters.map { it.first })
+        assertEquals("林月守渡口。\n~~~\n夜深了。", chapters[0].second)
+        assertEquals("渡船沉了。", chapters[2].second)
+
+        // 成对的 ~~~ 中间是正文或章名：是场景分隔线，不是代码块。
+        val paired = "## 第一章 开端\n林月守渡口。\n~~~\n夜深了。\n~~~\n天亮了。\n## 第二章 夜归\n沈默回来。\n~~~\n## 第三章 对岸\n渡船沉了。\n~~~\n尾声。"
+        assertEquals(
+            listOf("第一章 开端", "第二章 夜归", "第三章 对岸"),
+            PackImport.chapters(paired, "备用", markdown = true).map { it.first },
+        )
+        // 带语言标记的仍是代码块，里面的章名不拆章。
+        val tagged = "## 第一章 开端\n林月守渡口。\n~~~markdown\n## 第九章 示例\n~~~\n## 第二章 夜归\n沈默回来。"
+        assertEquals(listOf("第一章 开端", "第二章 夜归"), PackImport.chapters(tagged, "备用", markdown = true).map { it.first })
+    }
+
+    @Test
+    fun garbledTextIsFlaggedOnceWhenParsed() {
+        assertTrue(PackImport.classify("人物档案.txt", "林月\uFFFD沈默").garbled)
+        assertFalse(PackImport.classify("人物档案.txt", "林月与沈默").garbled)
+        // 改标题、类型时沿用解析时的结果。
+        assertTrue(PackImport.classify("人物档案.txt", "林月\uFFFD").copy(title = "人物").garbled)
     }
 
     @Test

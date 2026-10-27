@@ -15,7 +15,6 @@ object PackUnits {
     private val heading = Regex("^(#{1,6})\\s+(.+?)\\s*#*$")
     private val lead = Regex("^\\*\\*([^*\\n]{2,40}?)[：:]?\\*\\*")
     private val item = Regex("^(?:[-*+•]\\s+|\\d{1,3}[.、)）]\\s*)")
-    private val titlePunctuation = Regex("[《》「」\\s]")
 
     fun split(text: String, max: Int = 900, documentTitle: String? = null): List<PackUnit> {
         val out = mutableListOf<PackUnit>()
@@ -51,24 +50,12 @@ object PackUnits {
             if (piece.isNotEmpty()) buf.append(piece).append('\n')
         }
         val lines = text.removePrefix("\uFEFF").lines()
-        // Only the first H1 matching this document's title is a cover. A single-person card such
-        // as # 赵云 / ## 动机 must retain 赵云 in the retrieval path.
-        val headingFence = MarkdownFenceTracker()
-        val visible = lines.mapIndexedNotNull { i, line ->
-            if (headingFence.isInsideOrFence(line)) null else i to line.trim()
-        }
-        val h1 = visible.mapNotNull { (i, line) ->
-            heading.matchEntire(line)?.takeIf { it.groupValues[1].length == 1 }?.let { i to it.groupValues[2].trim() }
-        }
-        val firstVisible = visible.firstOrNull { it.second.isNotBlank() }?.first
-        val documentHeading = h1.firstOrNull()?.takeIf { (i, title) ->
-            i == firstVisible && documentTitle != null &&
-                title.replace(titlePunctuation, "") == documentTitle.replace(titlePunctuation, "")
-        }?.first
-        val fences = MarkdownFenceTracker()
+        // 只有封面一级标题（见 [PackCover]）不进标题链；“# 赵云 / ## 动机”这样的单人卡片要留着“赵云”。
+        val fenced = MarkdownFences.mask(lines)
+        val documentHeading = PackCover.line(lines, fenced, documentTitle)
         var skippingCode = false
         lines.forEachIndexed { i, raw ->
-            if (fences.isInsideOrFence(raw)) {
+            if (fenced[i]) {
                 if (!skippingCode) {
                     flush()
                     tableHead = null
