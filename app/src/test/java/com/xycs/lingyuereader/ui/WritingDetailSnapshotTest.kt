@@ -264,7 +264,13 @@ class WritingDetailSnapshotTest {
     private fun openChapterThree() {
         openWork()
         val row = hasText("第3章 夜渡") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
-        scrollWorkListTo(row)
+        // 规划树是异步读出来的：机器忙时列表里可能还没有这一章，滚不到就等一等再滚。
+        val deadline = System.nanoTime() + 15_000_000_000L
+        while (runCatching { scrollWorkListTo(row) }.isFailure) {
+            check(System.nanoTime() < deadline) { "作品页里一直找不到第 3 章" }
+            ShadowLooper.idleMainLooper()
+            Thread.sleep(50)
+        }
         compose.onNode(row).performScrollTo().performClick()
         waitForText("半块玉佩攥在手心")
         waitForDescription("打开四组工具")
