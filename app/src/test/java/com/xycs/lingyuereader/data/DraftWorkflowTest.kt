@@ -49,6 +49,97 @@ class DraftWorkflowTest {
         assertEquals(1, result.assessment.round)
     }
 
+    @Test fun fabricatedFactSourceStopsAutomaticRevision() = runBlocking {
+        val source = ReviewEvidence.task(task)
+        val evidence = ReviewEvidence(listOf(source))
+        var revised = false
+        val answer = """{"summary":[],"missing":[],"issues":[{"kind":"FACT","quote":"门外响起敲门声。","problem":"人物已经出门","basis":"本章细纲说人物必须出门","source_ref":"${source.ref}","source_quote":"人物必须出门","fix":"让人物出门","required":true}]}"""
+        val result = DraftWorkflow.run(task, RuleSet(), create = { clean }, review = { answer },
+            revise = { _, _ -> revised = true; clean }, evidence = evidence)
+        assertFalse(revised)
+        assertEquals(DraftStage.NEEDS_REVIEW, result.stage)
+        assertTrue(result.assessment.missing.single().contains("来源无法"))
+        assertFalse(result.assessment.findings.single().required)
+        assertEquals(false, result.assessment.findings.single().sourceLocated)
+        assertTrue(result.assessment.findings.single().render().startsWith("待核 · FACT"))
+        assertTrue(result.assessment.findings.single().render().contains("不能作为已核实的必改意见"))
+    }
+
+    @Test fun exactSourceQuotationCanSupportARequiredFactReview() = runBlocking {
+        val source = ReviewEvidence.task(task)
+        val evidence = ReviewEvidence(listOf(source))
+        val initial = "她看见了来客。"
+        val answer = """{"summary":[],"missing":[],"issues":[{"kind":"FACT","quote":"$initial","problem":"漏了开门动作","basis":"本章事实要求先开门","source_ref":"${source.ref}","source_quote":"客人抵达，主人决定开门","fix":"补开门动作","required":true}]}"""
+        var revised = false
+        val result = DraftWorkflow.run(task, RuleSet(), create = { initial },
+            review = { if (it == initial) answer else pass },
+            revise = { _, _ -> revised = true; clean }, evidence = evidence)
+        assertTrue(revised)
+        assertEquals(DraftStage.READY, result.stage)
+        assertTrue(evidence.locates(source.ref, "客人抵达，主人决定开门"))
+        assertFalse(evidence.locates(source.ref, "主人"))
+        assertFalse(evidence.locates("T_wrong", "客人抵达，主人决定开门"))
+    }
+
+    @Test fun unreferencedRequiredCraftCannotTriggerAutomaticRevision() = runBlocking {
+        val initial = "她看见了来客。"
+        val answer = """{"summary":[],"missing":[],"issues":[{"kind":"CRAFT","quote":"$initial","problem":"对白语气不合规范","basis":"写作规范要求换一种说法","fix":"重写对白","required":true}]}"""
+        var revised = false
+        val result = DraftWorkflow.run(task, RuleSet(), create = { initial }, review = { answer },
+            revise = { _, _ -> revised = true; clean }, evidence = ReviewEvidence(listOf(ReviewEvidence.task(task))))
+        assertFalse(revised)
+        assertEquals(DraftStage.NEEDS_REVIEW, result.stage)
+        assertTrue(result.assessment.missing.single().contains("写法意见的来源无法"))
+        assertTrue(result.assessment.findings.single().render().startsWith("待核 · CRAFT"))
+        assertTrue(result.assessment.findings.single().render().contains("不能作为已核实的必改意见"))
+    }
+
+    @Test fun requiredCraftCanCiteWritingRuleButFactCannotUseStyleAsEvidence() = runBlocking {
+        val style = ReviewEvidence.pack(PackDoc("style", PackKind.STYLE, "写作规范"), "对白要避免空泛总结，保留人物自己的语气。")
+        val rules = ReviewEvidence.pack(PackDoc("rules", PackKind.RULES, "检查规则"), "禁用空泛总结这句话。")
+        val evidence = ReviewEvidence(listOf(ReviewEvidence.task(task), style, rules))
+        val initial = "她看见了来客。"
+        fun answer(kind: String, ref: String, quote: String) = """{"summary":[],"missing":[],"issues":[{"kind":"$kind","quote":"$initial","problem":"写法不合要求","basis":"明确写法规则","source_ref":"$ref","source_quote":"$quote","fix":"局部改写","required":true}]}"""
+        val craft = DraftWorkflow.run(task, RuleSet(), create = { initial },
+            review = { if (it == initial) answer("CRAFT", style.ref, "对白要避免空泛总结") else pass },
+            revise = { _, _ -> clean }, evidence = evidence)
+        assertEquals(DraftStage.READY, craft.stage)
+        assertEquals(1, craft.assessment.round)
+        assertTrue(evidence.locates(rules.ref, "禁用空泛总结这句话", "CRAFT"))
+
+        val wrongType = DraftChecks.parse(answer("FACT", style.ref, "对白要避免空泛总结"), initial,
+            task.fingerprint, evidence)
+        assertFalse(wrongType.passed)
+        assertTrue(wrongType.missing.single().contains("事实意见的来源无法"))
+        assertFalse(wrongType.findings.single().required)
+    }
+
+    @Test fun craftCannotTreatFactCardFinalProseOrCharacterProfileAsWritingRule() {
+        val brief = task.copy(instruction = "对白必须保留人物自己的语气", previous = "前章陈青已经收起了令牌。")
+        val taskSource = ReviewEvidence.task(brief)
+        val character = ReviewEvidence.pack(PackDoc("character", PackKind.CHARACTER, "人物档案"), "陈青一直害怕夜里的雨声。")
+        val past = ReviewEvidence.chapter(WorkChapter("past", "第一章", 0, 0, ChapterStatus.FINAL),
+            "前章陈青已经收起了令牌。")
+        val evidence = ReviewEvidence(listOf(taskSource, character, past))
+        val initial = "她看见了来客。"
+        fun craft(ref: String, sourceQuote: String) = """{"summary":[],"missing":[],"issues":[{"kind":"CRAFT","quote":"$initial","problem":"应改写这一句","basis":"声称这是写法硬要求","source_ref":"$ref","source_quote":"$sourceQuote","fix":"改写","required":true}]}"""
+        for ((ref, sourceQuote) in listOf(
+            taskSource.ref to "客人抵达，主人决定开门",
+            taskSource.ref to "前章陈青已经收起了令牌",
+            past.ref to "前章陈青已经收起了令牌",
+            character.ref to "陈青一直害怕夜里的雨声",
+        )) {
+            val report = DraftChecks.parse(craft(ref, sourceQuote), initial, brief.fingerprint, evidence)
+            assertFalse(report.passed)
+            assertTrue(report.missing.single().contains("写法意见的来源无法"))
+            assertFalse(report.findings.single().required)
+        }
+        val explicit = DraftChecks.parse(craft(taskSource.ref, "对白必须保留人物自己的语气"), initial,
+            brief.fingerprint, evidence)
+        assertTrue(explicit.findings.single().required)
+        assertTrue(explicit.missing.isEmpty())
+    }
+
     @Test fun missingMaterialStopsRevisionInsteadOfInventingAFact() = runBlocking {
         var revised = false
         val result = DraftWorkflow.run(task, RuleSet(), create = { clean }, review = { """{"summary":[],"missing":["尚未给出主人是否有权开门"],"issues":[]}""" }, revise = { _, _ -> revised = true; clean })

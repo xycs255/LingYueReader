@@ -63,7 +63,9 @@ class WritingKnowledgeTest {
         // 读一节：连同下面的粗体小标题一起。
         val part = call("read_doc", """{"title":"《全书总纲》","section":"分卷速查"}""")
         assertTrue(part.startsWith("## 四、分卷速查") && "第二卷《对岸》" in part)
-        assertEquals("**第二卷《对岸》**\n- 沈默在对岸立足。", call("read_doc", """{"title":"全书总纲","section":"第二卷"}""").substringBefore("备注").trim())
+        val section = call("read_doc", """{"title":"全书总纲","section":"第二卷"}""")
+        assertEquals("**第二卷《对岸》**\n- 沈默在对岸立足。", section.substringBefore("备注").trim())
+        assertTrue(section.endsWith("[来源 ${ReviewEvidence.ref("P", "o", outline)}]"))
         // 长文档分页，说清怎么接着读。
         val page = call("read_doc", """{"title":"全书总纲"}""")
         assertTrue(page.contains("用 offset=${PackTools.PAGE} 接着读"))

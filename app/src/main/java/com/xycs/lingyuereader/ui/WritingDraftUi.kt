@@ -37,9 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
@@ -52,6 +50,8 @@ import com.xycs.lingyuereader.data.ReferencePart
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.DraftStage
+import com.xycs.lingyuereader.ai.AiPricing
+import com.xycs.lingyuereader.ai.AiRequestBudgetPreview
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
@@ -65,6 +65,22 @@ private data class DraftStatus(val loading: Boolean, val lookup: String?, val hi
 
 /** 草稿页的主按钮是哪一个：停止、写本章、重写一版。 */
 private enum class DraftMode { STOP, WRITE, REWRITE }
+
+/** The preview covers the first call only; later review, revision and lookups have unknown sizes. */
+private fun draftBudgetCost(preview: AiRequestBudgetPreview, usdRate: Double): String = when {
+    preview.onDevice -> "本机离线模型，不产生接口费用"
+    preview.firstRequestLow == null -> "未设置此模型单价，费用暂不能估算"
+    preview.firstRequestHigh == null -> "输出未设置上限，首轮费用上界暂不能估算"
+    else -> {
+        val low = preview.firstRequestLow
+        val high = preview.firstRequestHigh
+        val native = "${AiPricing.money(low)}～${AiPricing.money(high)}"
+        val converted = if (low.usd > 0 || high.usd > 0) {
+            " · 按设置汇率约 ¥${AiPricing.amount(low.inCny(usdRate))}～¥${AiPricing.amount(high.inCny(usdRate))}"
+        } else ""
+        "首轮粗估：仅输入到用满输出上限 $native$converted"
+    }
+}
 
 /**
  * AI 写本章：按细纲卡、本章资料、上一章结尾、写作规范和检查规则写一版草稿。边写边显示，写完存成草稿；
@@ -87,6 +103,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val targetLength = targetLengthChoice ?: draft?.targetLength.orEmpty()
     var task by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
     var taskError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
+    var budgetPreview by remember(workId, chapterId) { mutableStateOf<AiRequestBudgetPreview?>(null) }
+    var budgetPreviewError by remember(workId, chapterId) { mutableStateOf(false) }
     var showTask by remember { mutableStateOf(false) }
     var planContinuationAccepted by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var pendingContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -94,6 +112,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var placing by remember { mutableStateOf(false) }
     var editingDraft by remember { mutableStateOf(false) }
     var editedDraft by remember { mutableStateOf("") }
+    var versionView by rememberSaveable(workId, chapterId) { mutableStateOf(DraftVersionView.CURRENT) }
     var directionDialog by remember { mutableStateOf(false) }
     var directionText by remember { mutableStateOf("") }
     var card by remember(chapterId) { mutableStateOf<ChapterCard?>(null) }
@@ -140,6 +159,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             .onFailure { taskError = it.message ?: "本章任务读取失败" }
     }
     val text = draft?.text.orEmpty()
+    val counterpart = draft?.alternateText ?: draft?.initialText
+    val counterpartLabel = if (draft?.alternateText != null) "对照修订稿" else "创作初稿"
     val loading = draft?.loading == true
     val savedWorkflowChoice = workflowChoice ?: draft?.workflowChoice
     val workflow = savedWorkflowChoice ?: (draft?.workflow == true || task?.project == true)
@@ -149,9 +170,26 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         // Persist only an actual author choice. The project default may still be loading here.
         vm.writingAi.saveDraftIntent(workId, chapterId, instruction, targetLength, savedWorkflowChoice)
     }
-    val canReview = draft != null && aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
+    val revisionWriteBlocked = draft?.revisionWarning?.contains("无法安全留底") == true
+    val canReview = draft != null && !revisionWriteBlocked && aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
     val canWrite = canReview &&
         (referenceId == null || !sourceLoading && sourceExcerpt != null && sourceError == null)
+    LaunchedEffect(workId, chapterId, instruction, targetLength, workflow, referenceId, text,
+        sourceExcerpt?.fingerprint, task?.fingerprint, aiConfig, loading) {
+        budgetPreview = null
+        budgetPreviewError = false
+        if (!aiConfig.ready || aiConfig.onDevice || loading || text.isNotBlank() || task == null || taskError != null ||
+            referenceId != null && (sourceLoading || sourceError != null || sourceExcerpt == null)) return@LaunchedEffect
+        delay(300)
+        try {
+            budgetPreview = vm.writingAi.previewDraftRequest(workId, chapterId, instruction, targetLength, workflow, referenceId)
+            if (budgetPreview == null) budgetPreviewError = true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            budgetPreviewError = true
+        }
+    }
     // A map belongs to an exact selected source. A completed graphic is shown only after
     // the store has rechecked both that source and the current chapter task.
     val activeMap = methodMapState?.takeIf { map ->
@@ -270,6 +308,36 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     header = if (text.isBlank()) "开始创作" else "继续处理",
                     footer = if (text.isBlank() && !loading) "AI 先写一版候选稿。你通读并审定后，才会进入正文。" else null,
                 ) {
+                    if (!loading && aiConfig.ready && task != null) {
+                        row {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                val preview = if (text.isBlank()) budgetPreview else null
+                                Text(if (text.isBlank()) "写本章请求预算" else "后续 AI 请求", color = c.label, fontSize = 13.sp)
+                                when {
+                                    text.isNotBlank() -> Text("接着写与审读会另行发送请求，当前暂未估算。", color = c.secondary, fontSize = 12.sp)
+                                    aiConfig.onDevice -> Text("本机离线模型，不产生接口费用；可写范围仍受设备性能和模型上下文限制。",
+                                        color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                    preview != null -> {
+                                        Text("${preview.provider} · ${preview.model} · 首轮输入约 ${AiPricing.tokens(preview.inputTokens)} token" +
+                                            (preview.outputTokenLimit?.let { " · 输出最多 ${AiPricing.tokens(it.toLong())} token（含思考）" } ?: ""),
+                                            color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                        Text(draftBudgetCost(preview, aiConfig.usdRate), color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                        Text("流程 ${preview.minimumStages}～${preview.maximumStages} 阶段" +
+                                            if (preview.tools) "；查资料时每阶段最多追加 ${preview.maxToolRounds} 次请求" else "",
+                                            color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                        if (preview.exceedsPlanningBudget) Text(
+                                            "输入与输出预留超出灵阅 ${AiPricing.tokens(preview.planningTokens.toLong())} token 的规划预算；建议减少常驻资料。不会自动截取或阻止发送。",
+                                            color = c.warning, fontSize = 12.sp, lineHeight = 18.sp,
+                                        )
+                                    }
+                                    budgetPreviewError -> Text("暂不能估算本次用量；仍可由你决定是否写作。", color = c.secondary, fontSize = 12.sp)
+                                    else -> Text("正在按本章资料估算……", color = c.secondary, fontSize = 12.sp)
+                                }
+                                if (text.isBlank() && !aiConfig.onDevice) Text("首轮费用含可能的缓存写入，仅为粗估范围，非封顶；缓存命中不保证。审读、修订与查阅还会产生费用。",
+                                    color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
+                            }
+                        }
+                    }
                     row {
                         val mode = when {
                             loading -> DraftMode.STOP
@@ -378,18 +446,17 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             }
                         }
                         draft?.error?.let { e -> row { ErrorText((if (draft.workflow) "本次流程未完成：" else "没写成：") + e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
+                        draft?.revisionWarning?.let { warning -> row { ErrorText(warning, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
                         if (text.isNotBlank()) {
+                            if (counterpart != null) row {
+                                SegmentedControl(listOf(DraftVersionView.CURRENT to "当前稿",
+                                    DraftVersionView.COUNTERPART to counterpartLabel,
+                                    DraftVersionView.DIFFERENCE to "对比"), versionView,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { versionView = it }
+                            }
                             row {
-                                SelectionContainer {
-                                    Text(
-                                        text,
-                                        color = c.label,
-                                        fontSize = 17.sp,
-                                        lineHeight = 30.sp,
-                                        style = androidx.compose.ui.text.TextStyle(textIndent = TextIndent(firstLine = 2.em)),
-                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                    )
-                                }
+                                DraftRevisionBody(if (counterpart == null) DraftVersionView.CURRENT else versionView,
+                                    text, counterpart, counterpartLabel)
                             }
                         }
                     }
@@ -415,10 +482,11 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }
                 if (text.isNotBlank() && !loading) {
                     val reviewed = draft?.workflow != true || (draft.stage == DraftStage.READY && draft.assessment?.passed == true && task?.fingerprint == draft.assessment.materials)
-                    val sourceChecked = draft?.let { !it.referenceProvenanceBlocked && (it.referenceAnalysisId == null || it.referenceValidated) } == true
+                    val sourceChecked = draft?.referenceProvenanceBlocked == false
                     val sourceSummary = when {
                         !sourceChecked -> "来源：范本片段待核验"
-                        draft.referenceAnalysisId != null -> "来源：范本片段已核验 · 本章任务资料"
+                        draft.referenceAnalysisId != null && draft.referenceValidated -> "来源：范本片段已核验 · 本章任务资料"
+                        draft.referenceAnalysisId != null -> "来源：范本片段将在采纳前核验"
                         else -> "来源：本章任务资料 · 未使用范本"
                     }
                     val reviewSummary = when {
@@ -433,14 +501,22 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 Text(reviewSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
                             }
                         }
-                        row { ActionRow("放进正文", enabled = !locked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
+                        row { ActionRow("放进正文", enabled = !locked && !revisionWriteBlocked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
                         if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                         if (!reviewed && draft.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
-                        row { ActionRow("修改此稿", enabled = !locked) { editedDraft = text; editingDraft = true } }
+                        row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
+                        if (draft?.initialText != null && draft.alternateText == null && text != draft.initialText)
+                            row { ActionRow("恢复创作初稿", enabled = !locked && !revisionWriteBlocked) {
+                                vm.writingAi.restoreInitialDraft(workId, chapterId)
+                            } }
+                        if (draft?.alternateText != null && text == draft.initialText)
+                            row { ActionRow("切回修订稿", enabled = !locked && !revisionWriteBlocked) {
+                                vm.writingAi.switchBackToRevisedDraft(workId, chapterId)
+                            } }
                         row { ActionRow("修改方向") { directionText = instruction; directionDialog = true } }
                         row { ActionRow("重写一版", enabled = canWrite) { startDraft() } }
-                        row { ActionRow("不要这版", destructive = true) { vm.writingAi.clearDraft(workId, chapterId) } }
+                        row { ActionRow("不要这版", destructive = true, enabled = !revisionWriteBlocked) { vm.writingAi.clearDraft(workId, chapterId) } }
                     }
                 }
             }

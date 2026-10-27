@@ -59,18 +59,20 @@ object PackKnowledge {
         else out.append("本次明确要求优先；目标章细纲与用户已定前文管章内事实和结果，总纲及合订本只核对实际涉及的跨章固定设定。硬事实冲突须列明出处；同版独立和内嵌细纲不叠加事件。规划、样章与待核增量不当作已发生事实。\n")
         if (instructions.isNotEmpty()) {
             out.append("\n=== 作者的工作说明 ===\n")
-            instructions.forEach { (d, t) -> out.append("\n【").append(d.title).append("】\n").append(t.trim()).append('\n') }
+            instructions.forEach { (d, t) -> out.append("\n【").append(d.title).append("】\n")
+                .append("[来源 ").append(ReviewEvidence.ref("P", d.id, t)).append("]\n").append(t.trim()).append('\n') }
         }
         if (always.isNotEmpty()) {
             out.append("\n=== 知识库（整份） ===\n")
-            always.forEach { (d, t) -> out.append("\n【").append(d.title).append("】（").append(d.kind.label).append("）\n").append(t.trim()).append('\n') }
+            always.forEach { (d, t) -> out.append("\n【").append(d.title).append("】（").append(d.kind.label).append("）\n")
+                .append("[来源 ").append(ReviewEvidence.ref("P", d.id, t)).append("]\n").append(t.trim()).append('\n') }
         }
         if (onDemand.isNotEmpty()) {
             out.append("\n=== 按需查阅的文档（没整份给出，要用时用 read_doc 读；可以只读某一节） ===\n")
             onDemand.forEach { (d, t) ->
                 out.append("\n《").append(d.title).append("》（").append(d.kind.label).append("，").append(t.length).append(" 字")
                 if (d.always) out.append("，是知识库文档，模型上下文放不下改为按需查")
-                out.append("）")
+                out.append("，来源 ").append(ReviewEvidence.ref("P", d.id, t)).append("）")
                 val heads = PackOutline.sections(t).map { it.title }.distinct().take(MAX_SECTIONS)
                 if (heads.isNotEmpty()) out.append("小节：").append(heads.joinToString("；"))
                 out.append('\n')
@@ -174,10 +176,11 @@ class PackTools(
         if (section.isNotBlank()) {
             val s = PackOutline.read(t, section)
             lookups += "读《${d.title}》 › $section" + if (s == null) "（没找到这一节）" else ""
-            return s?.let { page(it, offset, PAGE) } ?: "《${d.title}》里没有叫“$section”的小节。小节有：" + PackOutline.sections(t).joinToString("；") { it.title }.take(2_000)
+            return s?.let { page(it, offset, PAGE) + "\n[来源 ${ReviewEvidence.ref("P", d.id, t)}]" }
+                ?: "《${d.title}》里没有叫“$section”的小节。小节有：" + PackOutline.sections(t).joinToString("；") { it.title }.take(2_000)
         }
         lookups += "读《${d.title}》" + if (offset > 0) "（从第 $offset 字起）" else ""
-        return page(t, offset, PAGE)
+        return page(t, offset, PAGE) + "\n[来源 ${ReviewEvidence.ref("P", d.id, t)}]"
     }
 
     private fun search(query: String): String {
@@ -188,17 +191,22 @@ class PackTools(
         val hits = mutableListOf<Hit>()
         docs.forEach { (d, t) ->
             val sections = PackOutline.sections(t)
+            val sourceRef = ReviewEvidence.ref("P", d.id, t)
             paragraphs(t).forEach { (line, p) ->
                 val n = words.count { it in p }
                 if (n == 0) return@forEach
                 val s = sections.lastOrNull { line >= it.start && line < it.end }
-                hits += Hit("《${d.title}》" + (s?.let { " › " + it.path.joinToString(" › ") } ?: ""), snippet(p, words), n * 10 - p.length / 2_000)
+                hits += Hit("《${d.title}》" + (s?.let { " › " + it.path.joinToString(" › ") } ?: ""),
+                    snippet(p, words) + " [来源 $sourceRef]", n * 10 - p.length / 2_000)
             }
         }
         chapters.forEach { (c, text) ->
-            paragraphs(text()).forEach { (_, p) ->
+            val chapterText = text()
+            val sourceRef = ReviewEvidence.ref("C", c.id, chapterText)
+            paragraphs(chapterText).forEach { (_, p) ->
                 val n = words.count { it in p }
-                if (n > 0) hits += Hit("正文 ${c.title}", snippet(p, words), n * 10 - p.length / 2_000)
+                if (n > 0) hits += Hit("正文 ${c.title}", snippet(p, words) + " [来源 $sourceRef]",
+                    n * 10 - p.length / 2_000)
             }
         }
         val top = hits.sortedByDescending { it.score }.take(MAX_HITS)
@@ -246,7 +254,7 @@ class PackTools(
         val text = hit.second()
         lookups += "读正文 ${hit.first.title}" + if (offset > 0) "（从第 $offset 字起）" else ""
         if (text.isBlank()) return "${hit.first.title} 还没有正文。"
-        return page(text, offset, PAGE)
+        return page(text, offset, PAGE) + "\n[来源 ${ReviewEvidence.ref("C", hit.first.id, text)}]"
     }
 
     companion object {

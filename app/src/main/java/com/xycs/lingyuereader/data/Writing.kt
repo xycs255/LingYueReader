@@ -223,6 +223,10 @@ class WorkStore(
     private val clock: () -> Long = System::currentTimeMillis
     private val processLock = processLocks.computeIfAbsent(root.canonicalPath) { Any() }
 
+    /** Keep a read/validate/write sequence atomic with other stores rooted at the same directory. */
+    @Synchronized
+    internal fun <T> withProcessLock(block: () -> T): T = synchronized(processLock) { block() }
+
     init {
         synchronized(processLock) {
             recoverInterruptedRestore()
@@ -251,7 +255,7 @@ class WorkStore(
 
     private fun beginSave(workId: String, kind: String, componentId: String, bytes: ByteArray,
                           day: LocalDate? = null, statsBefore: Int? = null, statsAfter: Int? = null,
-                          draftSource: ByteArray? = null) {
+                          draftSource: ByteArray? = null, draftRevision: ByteArray? = null) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖作品" }
         val component = componentFile(workId, kind, componentId)
@@ -260,17 +264,23 @@ class WorkStore(
             .put("beforeDigest", digest(original))
         if (kind == "draft") {
             require(bytes.isEmpty() == (draftSource == null)) { "草稿正文与来源必须一起保存" }
+            require(bytes.isNotEmpty() || draftRevision == null) { "空草稿不能附带创作初稿" }
             val previous = draftPrevious(workId)
             check(!previous.exists() || previous.deleteRecursively()) { "无法清理旧草稿保存暂存区" }
             check(previous.mkdirs()) { "无法暂存原草稿" }
             val source = draftReferenceFile(workId, componentId)
             val oldSource = source.takeIf { it.isFile }?.readBytes()
+            val revision = draftRevisionFile(workId, componentId)
+            val oldRevision = revision.takeIf { it.isFile }?.readBytes()
             if (component.isFile) check(DurableFiles.write(File(previous, "body"), original)) { "无法暂存原草稿正文" }
             if (oldSource != null) check(DurableFiles.write(File(previous, "source"), oldSource)) { "无法暂存原草稿来源" }
+            if (oldRevision != null) check(DurableFiles.write(File(previous, "revision"), oldRevision)) { "无法暂存原稿版本" }
             marker.put("bodyExists", bytes.isNotEmpty()).put("sourceExists", draftSource != null)
                 .put("sourceDigest", digest(draftSource ?: byteArrayOf()))
                 .put("beforeBodyExists", component.isFile).put("beforeSourceExists", oldSource != null)
                 .put("beforeSourceDigest", digest(oldSource ?: byteArrayOf()))
+                .put("revisionExists", draftRevision != null).put("revisionDigest", digest(draftRevision ?: byteArrayOf()))
+                .put("beforeRevisionExists", oldRevision != null).put("beforeRevisionDigest", digest(oldRevision ?: byteArrayOf()))
         }
         if (day != null && statsBefore != null && statsAfter != null) {
             marker.put("day", day.toString()).put("statsBefore", statsBefore).put("statsAfter", statsAfter)
@@ -285,14 +295,16 @@ class WorkStore(
         if (previous.exists()) check(previous.deleteRecursively()) { "无法清理草稿保存暂存区" }
     }
 
-    /** Restore both previous draft files if an interruption left only half of the new pair. */
+    /** Restore all previous draft components if an interruption left a partial new version. */
     private fun recoverDraftPair(workId: String, chapterId: String, marker: JSONObject): Boolean {
         val body = draftFile(workId, chapterId)
         val source = draftReferenceFile(workId, chapterId)
+        val revision = draftRevisionFile(workId, chapterId)
         fun matches(file: File, exists: Boolean, hash: String): Boolean =
             if (!exists) !file.exists() else file.isFile && digest(file.readBytes()) == hash
         if (matches(body, marker.getBoolean("bodyExists"), marker.getString("digest")) &&
-            matches(source, marker.getBoolean("sourceExists"), marker.getString("sourceDigest"))) return true
+            matches(source, marker.getBoolean("sourceExists"), marker.getString("sourceDigest")) &&
+            (!marker.has("revisionDigest") || matches(revision, marker.getBoolean("revisionExists"), marker.getString("revisionDigest")))) return true
 
         val previous = draftPrevious(workId)
         fun previousBytes(name: String, exists: Boolean, hash: String): ByteArray? {
@@ -303,6 +315,8 @@ class WorkStore(
         }
         val oldBody = previousBytes("body", marker.getBoolean("beforeBodyExists"), marker.getString("beforeDigest"))
         val oldSource = previousBytes("source", marker.getBoolean("beforeSourceExists"), marker.getString("beforeSourceDigest"))
+        val oldRevision = if (marker.has("beforeRevisionDigest"))
+            previousBytes("revision", marker.getBoolean("beforeRevisionExists"), marker.getString("beforeRevisionDigest")) else null
         fun restore(file: File, old: ByteArray?) {
             if (old == null) check(!file.exists() || file.delete()) { "无法删除未完成的草稿组件" }
             else if (!file.isFile || !file.readBytes().contentEquals(old))
@@ -310,6 +324,7 @@ class WorkStore(
         }
         restore(body, oldBody)
         restore(source, oldSource)
+        if (marker.has("beforeRevisionDigest")) restore(revision, oldRevision)
         return false
     }
 
@@ -570,6 +585,7 @@ class WorkStore(
         reviewFile(workId, chapterId).delete()
         draftFile(workId, chapterId).delete()
         draftReferenceFile(workId, chapterId).delete()
+        draftRevisionFile(workId, chapterId).delete()
         return work
     }
 
@@ -781,6 +797,11 @@ class WorkStore(
         return File(dir(workId), "$chapterId.draft.reference.json")
     }
 
+    private fun draftRevisionFile(workId: String, chapterId: String): File {
+        require(ID.matches(chapterId)) { "章节 id 无效" }
+        return File(dir(workId), "$chapterId.draft.revision.json")
+    }
+
     /** AI 写的本章草稿（还没放进正文的；离开页面再回来还在）。 */
     @Synchronized
     fun draft(workId: String, chapterId: String): String = draftFile(workId, chapterId).takeIf { it.isFile }?.readText().orEmpty()
@@ -791,47 +812,75 @@ class WorkStore(
         val body = draft(workId, chapterId)
         if (body.isEmpty()) return DraftContent(body)
         val file = draftReferenceFile(workId, chapterId)
-        if (!file.isFile) return DraftContent(body,
+        val provenance = if (!file.isFile) DraftContent(body,
             provenanceError = "旧草稿缺少来源记录，无法核验范本，请重新生成后采纳", blocked = true)
-        return try {
+        else try {
             DraftReferenceCodec.decode(file.readText(), body)
         } catch (e: Exception) {
             DurableFiles.keepDamaged(file)
             DraftContent(body, provenanceError = "草稿的范本来源记录损坏或与正文不一致，请重新生成", blocked = true)
         }
+        val revision = draftRevisionFile(workId, chapterId)
+        if (!revision.exists()) return provenance
+        return try {
+            provenance.copy(revision = DraftRevisionCodec.decode(revision.readText(), body))
+        } catch (e: Exception) {
+            val kept = revision.isFile && runCatching { DurableFiles.keptDamaged(revision, revision.readBytes()) }.getOrDefault(false)
+            provenance.copy(revisionError = if (kept) "创作初稿或对照版本损坏，已另存问题文件；请检查备份"
+                else "创作初稿或对照版本损坏，无法安全留底；已阻止草稿覆盖")
+        }
     }
 
     @Synchronized
-    fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null, blocked: Boolean = false) =
-        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked) }
+    fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null,
+                  blocked: Boolean = false, revision: DraftRevisionSnapshot? = null) =
+        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked, revision) }
 
-    private fun saveDraftLocked(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance?, blocked: Boolean) {
+    private fun saveDraftLocked(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance?,
+                                blocked: Boolean, revision: DraftRevisionSnapshot?) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖草稿" }
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val file = draftFile(workId, chapterId)
         val source = draftReferenceFile(workId, chapterId)
+        val revisionFile = draftRevisionFile(workId, chapterId)
+        // A readable draft must not make its only damaged revision snapshot disappear.
+        // This guard also covers callers that never opened the draft screen.
+        if (revisionFile.exists()) {
+            check(revisionFile.isFile) { "创作初稿文件不是普通文件，已阻止覆盖" }
+            val oldBytes = revisionFile.readBytes()
+            val oldBody = file.takeIf { it.isFile }?.readText().orEmpty()
+            if (runCatching { DraftRevisionCodec.decode(oldBytes.toString(Charsets.UTF_8), oldBody) }.isFailure)
+                check(DurableFiles.keptDamaged(revisionFile, oldBytes)) { "损坏的创作初稿无法安全留底，已阻止覆盖" }
+        }
         if (text.isEmpty()) {
-            if (!file.exists() && !source.exists()) return
+            require(revision == null) { "空草稿不能附带创作初稿" }
+            if (!file.exists() && !source.exists() && !revisionFile.exists()) return
             beginSave(workId, "draft", chapterId, byteArrayOf(), draftSource = null)
             try {
                 check(!file.exists() || file.delete()) { "无法删除草稿" }
                 savePhaseHook?.invoke("draft-body")
                 check(!source.exists() || source.delete()) { "无法删除草稿范本来源" }
+                check(!revisionFile.exists() || revisionFile.delete()) { "无法删除创作初稿" }
             } catch (failure: Exception) {
                 runCatching { recoverPendingSave(workId) }
                 throw failure
             }
         } else {
             val provenance = DraftReferenceCodec.encode(text, reference, blocked).toString()
-            if (file.isFile && source.isFile && file.readText() == text && source.readText() == provenance) return
-            beginSave(workId, "draft", chapterId, text.toByteArray(), draftSource = provenance.toByteArray())
+            val snapshot = revision?.let { DraftRevisionCodec.encode(text, it.initialText, it.alternateText).toString() }
+            if (file.isFile && source.isFile && file.readText() == text && source.readText() == provenance &&
+                (if (snapshot == null) !revisionFile.exists() else revisionFile.isFile && revisionFile.readText() == snapshot)) return
+            beginSave(workId, "draft", chapterId, text.toByteArray(), draftSource = provenance.toByteArray(),
+                draftRevision = snapshot?.toByteArray())
             try {
                 if (!file.isFile || file.readText() != text) {
                     check(DurableFiles.write(file, text.toByteArray())) { "无法保存草稿" }
                 }
                 savePhaseHook?.invoke("draft-body")
                 check(DurableFiles.write(source, provenance.toByteArray())) { "无法保存草稿范本来源" }
+                if (snapshot == null) check(!revisionFile.exists() || revisionFile.delete()) { "无法清理旧创作初稿" }
+                else check(DurableFiles.write(revisionFile, snapshot.toByteArray())) { "无法保存创作初稿" }
             } catch (failure: Exception) {
                 runCatching { recoverPendingSave(workId) }
                 throw failure
@@ -1094,6 +1143,7 @@ class WorkStore(
      */
     @Synchronized
     fun pack(workId: String): List<PackDoc> {
+        synchronized(processLock) {
         readPack(workId)?.let { return it.sorted() }
         val entries = assist(workId).entries
         if (entries.isEmpty()) return emptyList()
@@ -1116,6 +1166,7 @@ class WorkStore(
         writePack(workId, docs)
         updateAssist(workId) { it.copy(entries = emptyList()) }
         return docs.sorted()
+        }
     }
 
     private fun List<PackDoc>.sorted() = sortedWith(compareBy({ it.priority }, { it.kind.ordinal }, { it.title }))
@@ -1126,16 +1177,19 @@ class WorkStore(
     /** 新建一份文档。 */
     @Synchronized
     fun addPackDoc(workId: String, kind: PackKind, title: String, text: String = "", priority: Int = kind.priority, always: Boolean = kind.always): PackDoc {
+        synchronized(processLock) {
         require(get(workId) != null) { "作品不在了" }
         val doc = PackDoc(newId(), kind, title.trim().ifEmpty { kind.label }, priority.coerceIn(1, 9), always, clock(), WordCount.of(text))
         check(DurableFiles.write(packFile(workId, doc.id).also { it.parentFile?.mkdirs() }, text.toByteArray())) { "无法保存设定" }
         writePack(workId, pack(workId) + doc)
         return doc
+        }
     }
 
     /** 改文档的类型、标题、优先级、常用与否。 */
     @Synchronized
     fun updatePackDoc(workId: String, docId: String, transform: (PackDoc) -> PackDoc): PackDoc? {
+        synchronized(processLock) {
         val docs = pack(workId)
         val old = docs.firstOrNull { it.id == docId } ?: return null
         val next = transform(old).let { it.copy(id = old.id, priority = it.priority.coerceIn(1, 9), title = it.title.trim().ifEmpty { old.title }) }
@@ -1143,6 +1197,7 @@ class WorkStore(
         val stamped = next.copy(updatedAt = maxOf(clock(), old.updatedAt + 1, next.updatedAt))
         writePack(workId, docs.map { if (it.id == docId) stamped else it })
         return stamped
+        }
     }
 
     /** 存文档正文。没变就不写。 */
@@ -1181,9 +1236,11 @@ class WorkStore(
     /** 换回文档的某个历史版本（现在的先存一版）。 */
     @Synchronized
     fun restorePackDoc(workId: String, docId: String, at: Long): PackDoc? {
+        synchronized(processLock) {
         val text = snapshotText(workId, docKey(docId), at) ?: return null
         snapshot(workId, docKey(docId), packText(workId, docId))
         return savePackText(workId, docId, text)
+        }
     }
 
     /**
@@ -1192,6 +1249,7 @@ class WorkStore(
      */
     @Synchronized
     fun importPack(workId: String, items: List<PackImportItem>): PackImportResult {
+        synchronized(processLock) {
         var added = 0
         var replaced = 0
         var chapters = 0
@@ -1253,6 +1311,7 @@ class WorkStore(
         val stillBlank = blank?.let { b -> get(workId)?.chapter(b.id)?.let { it.words == 0 && text(workId, it.id).isBlank() } } == true
         if (blank != null && stillBlank && chapters > 0 && (get(workId)?.chapters?.size ?: 0) > 1) deleteChapter(workId, blank.id)
         return PackImportResult(added, replaced, chapters, renamed)
+        }
     }
 
     // ---------- 码字统计 ----------
@@ -1390,6 +1449,7 @@ class WorkStore(
             val texts = JSONObject()
             val drafts = JSONObject()
             val draftSources = JSONObject()
+            val draftRevisions = JSONObject()
             w.chapters.forEach { c ->
                 val source = chapterFile(w.id, c.id)
                 if (!source.isFile && c.words > 0) skip(source.name, "「${c.title}」的正文文件不见了，备份里这一章是空的")
@@ -1398,6 +1458,13 @@ class WorkStore(
                 // 空字符串明确表示没有草稿（包括作者点了“不要这版”）；读不出的
                 // 草稿不放这个键，恢复时保留另一台手机上的原稿。
                 val draft = if (draftSource.isFile) component(draftSource, "「${c.title}」的 AI 草稿读不出，没有放进备份") { it } else ""
+                val revisionFile = draftRevisionFile(w.id, c.id)
+                val hadRevision = revisionFile.exists()
+                val revision = if (draft != null && hadRevision)
+                    component(revisionFile, "「${c.title}」的创作初稿快照损坏，草稿及初稿均未放进备份") { raw ->
+                        DraftRevisionCodec.decode(raw, draft)
+                        JSONObject(raw)
+                    } else null
                 val sourceFile = draftReferenceFile(w.id, c.id)
                 val provenance = if (draft != null && draft.isNotEmpty() && sourceFile.isFile) {
                     component(sourceFile, "「${c.title}」的范本来源记录损坏，已保留候选稿但恢复后禁止采纳") { raw ->
@@ -1405,7 +1472,7 @@ class WorkStore(
                         JSONObject(raw)
                     }
                 } else null
-                if (draft != null) {
+                if (draft != null && (!hadRevision || revision != null)) {
                     if (draft.isNotEmpty() && !sourceFile.isFile)
                         skip(sourceFile.name, "「${c.title}」的草稿来源记录缺失，已保留候选稿但恢复后禁止采纳")
                     // Keep readable prose while explicitly blocking adoption when the marker was lost or damaged.
@@ -1414,6 +1481,7 @@ class WorkStore(
                     else JSONObject.NULL
                     drafts.put(c.id, draft)
                     draftSources.put(c.id, safeProvenance)
+                    draftRevisions.put(c.id, revision ?: JSONObject.NULL)
                 }
             }
             val pack = if (!packReadable) null else JSONArray().apply { pack(w.id).forEach { d ->
@@ -1436,7 +1504,7 @@ class WorkStore(
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
             val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)
-                .put("draftSources", draftSources)
+                .put("draftSources", draftSources).put("draftRevisions", draftRevisions)
             assist?.let { entry.put("assist", it.toJson()) }
             pack?.let { entry.put("pack", it) }
             changes?.let { entry.put("changes", it) }
@@ -1491,6 +1559,7 @@ class WorkStore(
         val texts: Map<String, String>,
         val drafts: Map<String, String>?,
         val draftSources: Map<String, String?>?,
+        val draftRevisions: Map<String, String?>?,
         val cards: Map<String, ChapterCard>?,
         val changes: List<ChangeEntry>?,
         val ledger: List<LedgerEntry>?,
@@ -1537,6 +1606,19 @@ class WorkStore(
                 }
             }
         } else null // Backups made before this feature, or without a drafts component, preserve local drafts.
+        val draftRevisions = if (o.has("draftRevisions") && drafts != null) {
+            val raw = o.getJSONObject("draftRevisions")
+            require(raw.length() == drafts.size) { "备份草稿版本数量不符" }
+            raw.keys().asSequence().associateWith { id ->
+                require(id in drafts) { "备份草稿版本指向未知章节" }
+                val value = raw.get(id)
+                if (value == JSONObject.NULL) null else {
+                    require(value is JSONObject && drafts.getValue(id).isNotEmpty()) { "备份草稿版本格式无效" }
+                    DraftRevisionCodec.decode(value.toString(), drafts.getValue(id))
+                    value.toString()
+                }
+            }
+        } else null
         val cards = if (o.has("cards")) {
             val raw = o.getJSONObject("cards")
             raw.keys().asSequence().associateWith { id ->
@@ -1614,6 +1696,19 @@ class WorkStore(
             if (local.updatedAt > incoming.updatedAt) skipped += WritingSkip(local.title, "", "本机的比备份里的新，保留本机的")
             return null
         }
+        val removedDraftChapter = local?.chapters?.firstOrNull { chapter ->
+            if (incoming.chapter(chapter.id) != null) false else {
+                val revision = draftRevisionFile(incoming.id, chapter.id)
+                val draft = draftFile(incoming.id, chapter.id)
+                revision.exists() || draft.exists() &&
+                    (!draft.isFile || runCatching { draft.readText().isNotBlank() }.getOrDefault(true))
+            }
+        }
+        if (removedDraftChapter != null) {
+            skipped += WritingSkip(incoming.title, removedDraftChapter.id + ".draft.txt",
+                "备份删除的章节仍有本机候选稿或创作初稿；整部作品暂不恢复")
+            return null
+        }
         if (local != null) {
             val incomingDocs = pack?.associate { it.first.id to it.first }
             if (incomingDocs != null) {
@@ -1647,7 +1742,42 @@ class WorkStore(
                 }
             }
         }
-        return RestoreWork(incoming, local, texts, drafts, draftSources, cards, changes, ledger, pack, localPack, assist, references)
+        // The restore history does not archive AI candidate versions. Keep a local pair if
+        // either side of an incoming pair differs. A damaged local snapshot must be backed up
+        // before other components of this work can be restored over it.
+        val omittedDrafts = mutableSetOf<String>()
+        if (local != null && drafts != null) drafts.forEach { (id, incomingBody) ->
+            val revision = draftRevisionFile(incoming.id, id)
+            if (!revision.exists()) return@forEach
+            if (!revision.isFile) {
+                skipped += WritingSkip(incoming.title, revision.name, "本机创作初稿路径无效，无法留底；整部作品暂不恢复")
+                return null
+            }
+            val localBytes = runCatching { revision.readBytes() }.getOrNull()
+            val localBody = runCatching { draftFile(incoming.id, id).readText() }.getOrNull()
+            if (localBytes == null || localBody == null) {
+                skipped += WritingSkip(incoming.title, revision.name, "本机草稿或初稿读不出，无法留底；整部作品暂不恢复")
+                return null
+            }
+            val localSnapshot = runCatching { DraftRevisionCodec.decode(localBytes.toString(Charsets.UTF_8), localBody) }.getOrNull()
+            if (localSnapshot == null) {
+                if (!DurableFiles.keptDamaged(revision, localBytes)) {
+                    skipped += WritingSkip(incoming.title, revision.name, "损坏的本机创作初稿无法安全留底；整部作品暂不恢复")
+                    return null
+                }
+                omittedDrafts += id
+                skipped += WritingSkip(incoming.title, revision.name, "本机创作初稿损坏，已留底并保留本机草稿与初稿")
+                return@forEach
+            }
+            val incomingSnapshot = draftRevisions?.get(id)?.let { DraftRevisionCodec.decode(it, incomingBody) }
+            if (incomingBody != localBody || incomingSnapshot != null && incomingSnapshot != localSnapshot) {
+                omittedDrafts += id
+                skipped += WritingSkip(incoming.title, "$id.draft.txt", "备份候选稿与本机不同，且本机有创作初稿；保留本机草稿与初稿")
+            }
+        }
+        return RestoreWork(incoming, local, texts, drafts?.filterKeys { it !in omittedDrafts },
+            draftSources?.filterKeys { it !in omittedDrafts }, draftRevisions?.filterKeys { it !in omittedDrafts }, cards, changes, ledger,
+            pack, localPack, assist, references)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -1692,7 +1822,8 @@ class WorkStore(
         } else check(destination.mkdirs()) { "无法创建作品暂存区" }
         val incoming = plan.incoming
         plan.local?.chapters?.filter { incoming.chapter(it.id) == null }?.forEach { old ->
-            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt", old.id + ".draft.reference.json")
+            listOf(old.id + ".txt", old.id + ".card.json", old.id + ".review.json", old.id + ".draft.txt",
+                old.id + ".draft.reference.json", old.id + ".draft.revision.json")
                 .forEach { name -> check(!File(destination, name).exists() || File(destination, name).delete()) { "无法暂存章节删除" } }
         }
         plan.texts.forEach { (id, body) ->
@@ -1700,12 +1831,20 @@ class WorkStore(
         }
         plan.drafts?.forEach { (id, body) ->
             val file = File(destination, id + ".draft.txt")
+            val revision = File(destination, id + ".draft.revision.json")
+            val keepLocalRevision = plan.draftRevisions?.get(id) == null && revision.isFile && file.isFile && file.readText() == body
             if (body.isEmpty()) check(!file.exists() || file.delete()) { "无法暂存草稿删除" }
             else check(DurableFiles.write(file, body.toByteArray())) { "无法暂存 AI 草稿" }
             val provenance = File(destination, id + ".draft.reference.json")
             val source = plan.draftSources?.get(id)
             if (source == null) check(!provenance.exists() || provenance.delete()) { "无法暂存草稿来源删除" }
             else check(DurableFiles.write(provenance, source.toByteArray())) { "无法暂存草稿来源" }
+            val snapshot = plan.draftRevisions?.get(id)
+            when {
+                snapshot != null -> check(DurableFiles.write(revision, snapshot.toByteArray())) { "无法暂存创作初稿" }
+                keepLocalRevision -> Unit
+                else -> check(!revision.exists() || revision.delete()) { "无法暂存创作初稿删除" }
+            }
         }
         plan.cards?.forEach { (id, card) ->
             check(DurableFiles.write(File(destination, id + ".card.json"), card.toJson().toString().toByteArray())) { "无法暂存细纲卡" }

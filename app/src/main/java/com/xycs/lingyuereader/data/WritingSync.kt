@@ -1,5 +1,9 @@
 package com.xycs.lingyuereader.data
 
+import java.security.MessageDigest
+
+private val SHA256_HEX = Regex("[0-9a-f]{64}")
+
 /**
  * “写完一章，整理进设定包”：AI 读完一章，提出要补进设定包的新设定、和设定包对不上的冲突，
  * 以及随章变化、要记进故事账本的（人物状态、发生的事、谁知道了什么、埋下和收起的伏笔、故事里的时间），
@@ -58,6 +62,8 @@ data class SyncItem(
     val entry: LedgerEntry? = null,
     /** 收伏笔：收的是账本里的哪一条。 */
     val closes: LedgerEntry? = null,
+    /** A SECTION planned against an existing heading or bullet must not create a new section if it disappears. */
+    val plannedSectionExists: Boolean? = null,
 ) {
     /** 能写进去的（“正文写错了”的冲突只提示）。 */
     val writable: Boolean
@@ -106,6 +112,11 @@ object ChapterSyncs {
 
     /** 记“已整理”用的哈希：先规范化再算，只改标点、空行的排版不会让整章变回“未整理”。 */
     fun hash(text: String): Int = normalize(text).hashCode()
+
+    /** Exact in-memory source check (apart from CRLF/LF) for pending proposals; SyncMark keeps its older hash. */
+    fun digest(text: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(text.replace("\r\n", "\n").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 
     /** 这一章整理过、整理以后正文没改过（排版不算改过）。早先记的是正文直接的哈希，也认。 */
     fun isSynced(mark: SyncMark?, text: String): Boolean = mark != null && (mark.hash == hash(text) || mark.hash == text.hashCode())
@@ -366,7 +377,9 @@ object PackSync {
     }
 
     private fun SyncItem.into(doc: Pair<PackDoc, String>?, place: SyncPlace, text: String, anchor: String = ""): SyncItem =
-        copy(docId = doc?.first?.id, docTitle = doc?.first?.title ?: docTitle.ifBlank { kind.label }, kind = doc?.first?.kind ?: kind, place = place, text = text, anchor = anchor)
+        copy(docId = doc?.first?.id, docTitle = doc?.first?.title ?: docTitle.ifBlank { kind.label },
+            kind = doc?.first?.kind ?: kind, place = place, text = text, anchor = anchor,
+            plannedSectionExists = if (place == SyncPlace.SECTION && doc != null) section(doc.second.lines(), anchor) != null else null)
 
     /**
      * 给 AI 的提议定位置，写好要写进去的原文；设定包（或账本）里已经有的丢掉。察觉表、账本里已经有、但写的是更晚的章才知道的，改成冲突。
@@ -602,7 +615,10 @@ object PackSync {
             SyncPlace.END -> end(text)
             SyncPlace.REPLACE -> {
                 val at = text.indexOf(item.anchor)
-                if (item.anchor.isNotEmpty() && at >= 0 && text.indexOf(item.anchor, at + 1) < 0) text.replaceRange(at, at + item.anchor.length, add) else end(text)
+                check(item.anchor.isNotEmpty() && at >= 0 && text.indexOf(item.anchor, at + 1) < 0) {
+                    "《${item.docTitle}》原定要替换的文字已变化，请重新整理后核对"
+                }
+                text.replaceRange(at, at + item.anchor.length, add)
             }
             SyncPlace.ROW -> {
                 val base = if (text.isBlank() && item.kind == PackKind.AWARENESS) PackImport.template(PackKind.AWARENESS) else text
@@ -635,6 +651,7 @@ object PackSync {
                     lines[b] = lines[b].trimEnd() + "；" + parts.joinToString("；")
                     return lines.joinToString("\n")
                 }
+                check(item.plannedSectionExists != true) { "《${item.docTitle}》原定小节已变化，请重新整理后核对" }
                 // 还没有这一节：在末尾新起一节。
                 if (text.isBlank()) "## ${item.anchor}\n$add" else text.trimEnd() + "\n\n## ${item.anchor}\n" + add
             }
@@ -652,8 +669,28 @@ object PackSync {
  * （连同这一批前面刚记的）再查一遍（[PackSync.inLedger]），已经有的跳过，所以重试、几章提了同一件事都只记一次。
  * 账本有自己的历史版本，不再记变更登记。
  */
-fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int> {
+fun WorkStore.applySync(workId: String, items: List<SyncItem>, sourceResults: List<com.xycs.lingyuereader.ChapterSyncResult>): Map<String, Int> = withProcessLock {
+    if (items.isEmpty()) return@withProcessLock emptyMap()
+    check(sourceResults.isNotEmpty()) { "整理提议缺少原文快照，请重新整理后核对" }
     val work = requireNotNull(get(workId)) { "作品不在了" }
+    val chosenChapters = items.mapTo(HashSet()) { it.chapterId }
+    val selectedResults = sourceResults.filter { it.chapterId in chosenChapters }
+    check(selectedResults.map { it.chapterId }.toSet().size == selectedResults.size) {
+        "整理结果包含重复章节，请重新整理后核对"
+    }
+    check(selectedResults.size == chosenChapters.size) { "整理提议缺少对应章节的原文快照，请重新整理后核对" }
+    val byChapter = selectedResults.associateBy { it.chapterId }
+    check(items.all { item -> byChapter[item.chapterId]?.items?.any { it.key == item.key } == true }) {
+        "整理提议与章节原文快照不匹配，请重新整理后核对"
+    }
+    check(selectedResults.all { it.error == null }) { "选中的章节尚未整理完成，请重新整理后核对" }
+    selectedResults.forEach { result ->
+        check(SHA256_HEX.matches(result.sourceDigest)) { "《${result.title}》缺少有效原文快照，请重新整理后核对" }
+        val current = text(workId, result.chapterId)
+        check(work.chapter(result.chapterId) != null && ChapterSyncs.digest(current) == result.sourceDigest) {
+            "《${result.title}》正文已变化，本次整理提议已过时；请重新整理后核对"
+        }
+    }
     val docs = pack(workId)
     val changed = LinkedHashMap<String, String>()
     val created = LinkedHashMap<Pair<PackKind, String>, String>()
@@ -662,7 +699,10 @@ fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int>
     items.filter { it.writable && it.place != SyncPlace.LEDGER }.forEach { item ->
         val fallback = item.docTitle.ifBlank { item.kind.label }
         // 要新建的文档：上次写到一半出错时可能已经建好了，就写进那一份，不再建第二份。
-        val id = item.docId?.takeIf { id -> docs.any { it.id == id } } ?: docs.firstOrNull { it.kind == item.kind && it.title == fallback }?.id
+        check(item.docId == null || docs.any { it.id == item.docId }) {
+            "《${item.docTitle}》原定文档已删除，请重新整理后核对"
+        }
+        val id = item.docId ?: docs.firstOrNull { it.kind == item.kind && it.title == fallback }?.id
         val title = if (id != null) docs.first { it.id == id }.title else fallback
         if (id != null) {
             val before = changed[id] ?: packText(workId, id)
@@ -706,5 +746,5 @@ fun WorkStore.applySync(workId: String, items: List<SyncItem>): Map<String, Int>
         applyLedger(workId, ops, "整理第 ${key.first} 章")
         counts[PackSync.LEDGER] = (counts[PackSync.LEDGER] ?: 0) + ops.size
     }
-    return counts
+    counts
 }

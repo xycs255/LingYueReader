@@ -9,13 +9,20 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.data.DraftStage
 import com.xycs.lingyuereader.data.DraftReferenceProvenance
+import com.xycs.lingyuereader.data.DraftRevisionSnapshot
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.ReviewEvidence
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.writingTask
+import com.xycs.lingyuereader.data.importReference
+import com.xycs.lingyuereader.data.saveReferenceAnalysis
+import com.xycs.lingyuereader.data.selectedChapterExcerpt
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -56,6 +63,7 @@ class ProjectDraftFlowTest {
     private lateinit var workId: String
     private lateinit var chapterId: String
     private lateinit var reviewTemplateId: String
+    private lateinit var outlineSourceRef: String
     private val asked = CopyOnWriteArrayList<Request>()
     private val reviews = AtomicInteger()
     private val reviewEntered = CountDownLatch(1)
@@ -64,6 +72,7 @@ class ProjectDraftFlowTest {
     @Volatile private var reviewMode = ReviewMode.ISSUE_THEN_PASS
     @Volatile private var failCreate = false
     @Volatile private var streamFenceOnly = false
+    @Volatile private var streamFirstText = "```markdown\n"
     @Volatile private var holdFence = false
     @Volatile private var holdBeforeFence = false
     @Volatile private var fenceEntered = CountDownLatch(1)
@@ -83,6 +92,7 @@ class ProjectDraftFlowTest {
     private val reviewMarker = "REVIEW_STAGE_TEMPLATE_ONLY"
     private val reviseMarker = "REVISE_STAGE_TEMPLATE_ONLY"
     private val styleMarker = "STYLE_MATERIAL_SHARED"
+    private val outlineText = "# 第一卷\n### 第一章 借灯\n事实：陈青先打开门，再看清来客，并决定借出灯笼。\n视角：陈青\n边界：本章留在屋里，不追出来客。\n"
     private val pass = """{"summary":[],"missing":[],"issues":[]}"""
 
     @Before
@@ -125,7 +135,7 @@ class ProjectDraftFlowTest {
                             createEntered.countDown()
                             if (holdBeforeFence) first.await(15, TimeUnit.SECONDS)
                             val delta = JSONObject().put("choices", JSONArray().put(JSONObject().put("delta",
-                                JSONObject().put("content", "```markdown\n"))))
+                                JSONObject().put("content", streamFirstText))))
                             out.write("data: $delta\n\n".toByteArray())
                             out.flush()
                             entered.countDown()
@@ -172,10 +182,8 @@ class ProjectDraftFlowTest {
         chapterId = work.chapters.single().id
         store.renameChapter(workId, chapterId, "第一章 借灯")
         store.saveText(workId, chapterId, original)
-        store.addPackDoc(
-            workId, PackKind.VOLUME, "第一卷细纲",
-            "# 第一卷\n### 第一章 借灯\n事实：陈青先打开门，再看清来客，并决定借出灯笼。\n视角：陈青\n边界：本章留在屋里，不追出来客。\n",
-        )
+        val outline = store.addPackDoc(workId, PackKind.VOLUME, "第一卷细纲", outlineText)
+        outlineSourceRef = ReviewEvidence.ref("P", outline.id, outlineText.trim())
         store.addPackDoc(workId, PackKind.STYLE, "写作规范", "$styleMarker\n对白保持人物的自然语气，不写讲义。")
         store.addPackDoc(workId, PackKind.INSTRUCTION, "完整正文创作提示词", "$createMarker\n只输出本章完整正文。")
         reviewTemplateId = store.addPackDoc(workId, PackKind.INSTRUCTION, "章节审读提示词", "$reviewMarker\n只给有原句和资料依据的问题。").id
@@ -205,6 +213,8 @@ class ProjectDraftFlowTest {
             JSONObject().put("kind", "FACT").put("quote", candidate)
                 .put("problem", "门尚未打开，人物已看清屋外来客，因果承接缺了一步")
                 .put("basis", "第一卷细纲·第一章：陈青先打开门，再看清来客")
+                .put("source_ref", outlineSourceRef)
+                .put("source_quote", "陈青先打开门，再看清来客")
                 .put("fix", "在看清来客之前补回开门动作").put("required", true),
         )).toString()
 
@@ -551,5 +561,125 @@ class ProjectDraftFlowTest {
         assertNull(state.assessment)
         assertNotNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
         assertCounts(create = 1, review = 1, revise = 0)
+    }
+
+    @Test
+    fun automaticRevisionKeepsFirstDraftAcrossRestartAndRestorationInvalidatesReview() {
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        val ready = completed(vm)
+        assertEquals(revised, ready.text)
+        assertEquals(candidate, ready.initialText)
+        assertEquals(candidate, store.draftContent(workId, chapterId).revision?.initialText)
+
+        vm.writingAi.restoreInitialDraft(workId, chapterId)
+        waitUntil("创作初稿尚未安全恢复") { store.draft(workId, chapterId) == candidate }
+        val restored = vm.writingAi.drafts.value.getValue(workId to chapterId)
+        assertEquals(revised, restored.alternateText)
+        assertNull(restored.assessment)
+        assertEquals(DraftStage.IDLE, restored.stage)
+        assertNotNull(runBlocking { vm.writingAi.draftBlocked(workId, chapterId) })
+
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        waitUntil("重启后对照修订稿没有读取") {
+            restarted.writingAi.drafts.value[workId to chapterId]?.alternateText == revised
+        }
+        restarted.writingAi.switchBackToRevisedDraft(workId, chapterId)
+        waitUntil("修订稿尚未切回") { store.draft(workId, chapterId) == revised }
+        assertNull(restarted.writingAi.drafts.value.getValue(workId to chapterId).assessment)
+        assertEquals(candidate, store.draftContent(workId, chapterId).revision?.initialText)
+    }
+
+    @Test
+    fun failedFirstDraftSnapshotStopsRevisionAndShowsTheDiskCandidate() {
+        val sidecar = File(writingDir, "works/$workId/$chapterId.draft.revision.json")
+        val obstacle = File(sidecar.parentFile, sidecar.name + ".tmp")
+        assertTrue(obstacle.mkdir())
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        val state = completed(vm)
+
+        assertEquals(candidate, store.draft(workId, chapterId))
+        assertEquals(candidate, state.text)
+        assertNull(state.initialText)
+        assertNull(store.draftContent(workId, chapterId).revision)
+        assertTrue(state.error?.contains("保存失败") == true)
+        assertEquals(0, asked.count { it.phase == "REVISE" })
+        assertTrue(obstacle.delete())
+    }
+
+    @Test
+    fun stoppingAStreamingRewriteKeepsTheOldCompleteCandidateAndItsFirstDraft() {
+        streamFenceOnly = true
+        streamFirstText = "流出的新稿首段。"
+        holdFence = true
+        store.saveDraft(workId, chapterId, "原修订稿", revision = DraftRevisionSnapshot("原初稿"))
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("原候选稿尚未读出") { vm.writingAi.drafts.value[workId to chapterId]?.initialText == "原初稿" }
+
+        vm.writingAi.writeDraft(workId, chapterId, workflow = false)
+        waitUntil("新稿首段尚未流出") { vm.writingAi.drafts.value[workId to chapterId]?.text == streamFirstText }
+        vm.writingAi.stopDraft(workId, chapterId)
+        waitUntil("停止后旧稿尚未复原") {
+            store.draft(workId, chapterId) == "原修订稿" && vm.writingAi.drafts.value[workId to chapterId]?.loading == false
+        }
+        assertEquals("原初稿", WorkStore(writingDir).draftContent(workId, chapterId).revision?.initialText)
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        waitUntil("重启后旧初稿遗失") { restarted.writingAi.drafts.value[workId to chapterId]?.initialText == "原初稿" }
+        assertEquals("原修订稿", restarted.writingAi.drafts.value.getValue(workId to chapterId).text)
+    }
+
+    @Test
+    fun rejectedSourceCopyAfterFirstTokenKeepsOldCandidateAndSnapshot() {
+        val sourceText = "山门外的雪一直下到天明，旧驿站的灯还亮着，来人沿石阶走了三十步才终于抬手敲门。"
+        val book = store.importReference(workId, "合成范本.txt", "第一章 雪夜\n$sourceText")
+        val excerpt = store.selectedChapterExcerpt(workId, book.id, book.chapters.single().id, ReferencePart.OPENING, 100)!!
+        val analysis = store.saveReferenceAnalysis(workId, ReferenceAnalysis.from(excerpt, chapterId,
+            "原章节指纹", "先以天气和远处灯光建立等待感，再让人物走近门口。"))
+        store.saveDraft(workId, chapterId, "原修订稿", revision = DraftRevisionSnapshot("原初稿"))
+        streamFenceOnly = true
+        streamFirstText = sourceText
+        holdFence = true
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("原候选稿尚未读出") { vm.writingAi.drafts.value[workId to chapterId]?.initialText == "原初稿" }
+
+        vm.writingAi.writeDraft(workId, chapterId, workflow = false, referenceAnalysisId = analysis.id)
+        waitUntil("违规范本复制的首段尚未流出") { vm.writingAi.drafts.value[workId to chapterId]?.text == sourceText }
+        releaseFence.countDown()
+        waitUntil("范本拒绝后旧候选稿未恢复") {
+            vm.writingAi.drafts.value[workId to chapterId]?.let { !it.loading && it.text == "原修订稿" } == true
+        }
+        assertEquals("原修订稿", store.draft(workId, chapterId))
+        assertEquals("原初稿", WorkStore(writingDir).draftContent(workId, chapterId).revision?.initialText)
+        val restarted = model()
+        restarted.writingAi.loadDraft(workId, chapterId)
+        waitUntil("重启后首稿快照遗失") { restarted.writingAi.drafts.value[workId to chapterId]?.initialText == "原初稿" }
+    }
+
+    @Test
+    fun failedEditAndDeleteRestoreVisibleCandidateWhenSnapshotCannotBeRead() {
+        store.saveDraft(workId, chapterId, "原修订稿", revision = DraftRevisionSnapshot("原初稿"))
+        val vm = model()
+        vm.writingAi.loadDraft(workId, chapterId)
+        waitUntil("原候选稿尚未读出") { vm.writingAi.drafts.value[workId to chapterId]?.initialText == "原初稿" }
+        val sidecar = File(writingDir, "works/$workId/$chapterId.draft.revision.json")
+        assertTrue(sidecar.delete())
+        assertTrue(sidecar.mkdir())
+        File(sidecar, "unreadable").writeText("保留的原件")
+
+        vm.writingAi.updateDraftText(workId, chapterId, "覆盖稿")
+        waitUntil("失败的编辑没有反馈") { vm.messages.value?.contains("候选稿保存失败") == true }
+        assertEquals("原修订稿", vm.writingAi.drafts.value.getValue(workId to chapterId).text)
+        assertEquals("原修订稿", store.draft(workId, chapterId))
+
+        vm.writingAi.clearDraft(workId, chapterId)
+        waitUntil("失败的删除没有反馈") { vm.messages.value?.contains("删除草稿失败") == true }
+        assertEquals("原修订稿", vm.writingAi.drafts.value.getValue(workId to chapterId).text)
+        assertEquals("原修订稿", store.draft(workId, chapterId))
+        assertEquals("保留的原件", File(sidecar, "unreadable").readText())
     }
 }
