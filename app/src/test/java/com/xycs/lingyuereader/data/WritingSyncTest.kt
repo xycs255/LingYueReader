@@ -124,9 +124,14 @@ class WritingSyncTest {
         assertEquals(table, PackSync.apply(table, item))
         // 察觉表里已经有、而且不晚于这一章：不再提。
         assertTrue(PackSync.plan(listOf(knows("沈默", "知道林月是旧案遗孤")), docs).isEmpty())
-        // 账本里已经有：也不再提。
+        // 账本里已经有一模一样的（只差标点）：也不再提。
         val ledger = listOf(LedgerEntry(kind = LedgerKind.KNOW, text = "沈默是朝廷的卧底", subject = "林月", from = 10))
-        assertTrue(PackSync.plan(listOf(knows("林月", "沈默是朝廷派来的卧底")), docs, ledger).isEmpty())
+        assertTrue(PackSync.plan(listOf(knows("林月", "沈默是朝廷的卧底。")), docs, ledger).isEmpty())
+        // 只是看起来像：照常列出，标“可能重复”，默认不勾。
+        val alike = PackSync.plan(listOf(knows("林月", "沈默是朝廷派来的卧底")), docs, ledger).single()
+        assertEquals(ledger.single(), alike.maybeSame)
+        assertTrue(alike.writable)
+        assertFalse(alike.defaultOn)
     }
 
     @Test
@@ -175,15 +180,18 @@ class WritingSyncTest {
             ledgerItem(SyncGroup.TIME, "入冬第三天", entry(LedgerKind.TIME, "入冬第三天")),
         )
         val planned = PackSync.plan(items, emptyList(), ledger)
-        assertEquals(listOf("到了京城", "渡口的船停了", "收起：顾长风说三日后再来", "入冬第三天"), planned.map { it.title })
-        assertTrue(planned.all { it.place == SyncPlace.LEDGER && it.writable && it.defaultOn && it.where == "记进故事账本" })
+        // 完全一样的丢掉；“老周死在了渡口”和账本里的“老周死在渡口”只是像：照常列出，默认不勾。
+        assertEquals(listOf("到了京城", "老周死在了渡口", "渡口的船停了", "收起：顾长风说三日后再来", "入冬第三天"), planned.map { it.title })
+        assertTrue(planned.all { it.place == SyncPlace.LEDGER && it.writable && it.where == "记进故事账本" })
+        assertEquals(listOf(true, false, true, true, true), planned.map { it.defaultOn })
+        assertEquals(ledger[1], planned[1].maybeSame)
         // 生成的改动：加一条、收一条。
         assertEquals(LedgerOp.Add(planned[0].entry!!), PackSync.ledgerOp(planned[0], ledger))
-        assertEquals(LedgerOp.Close("p1", 12, "原句", "c"), PackSync.ledgerOp(planned[2], ledger))
+        assertEquals(LedgerOp.Close("p1", 12, "原句", "c"), PackSync.ledgerOp(planned[3], ledger))
     }
 
     @Test
-    fun ledgerItemsAreWrittenAsOneBatchPerChapterAndOnlyOnce() {
+    fun ledgerItemsAreWrittenAsOneBatchAndOnlyOnce() {
         val s = store()
         val w = s.create("长夜")
         val (_, two) = s.addChapter(w.id, w.volumes[0].id, "第二章")!!
@@ -204,9 +212,9 @@ class WritingSyncTest {
         val versions = s.ledgerVersions(w.id).size
         // 第二章重复的“老周死了”不再记；第一章三条、第二章两条。
         assertEquals(mapOf(PackSync.LEDGER to 5), s.applySyncWithSnapshot(w.id, items))
-        // 一章一批：账本的历史版本多了两个，按章号先后。
-        assertEquals(listOf("整理第 2 章", "整理第 1 章"), s.ledgerVersions(w.id).take(2).map { it.label })
-        assertEquals(versions + 2, s.ledgerVersions(w.id).size)
+        // 整次一批：账本的历史版本只多一个（批量整理前的样子），不会把更早的版本挤掉。
+        assertEquals("批量整理第 1–2 章（2 章）", s.ledgerVersions(w.id).first().label)
+        assertEquals(versions + 1, s.ledgerVersions(w.id).size)
         val ledger = s.ledger(w.id)
         assertEquals(1, ledger.count { it.kind == LedgerKind.EVENT })
         assertTrue(ledger.single { it.id == "p1" }.let { it.done && it.closed == 2 && it.quote == "顾长风推门进来" && it.chapterId == two.id })
@@ -216,7 +224,7 @@ class WritingSyncTest {
         // 重试：账本不变，也不再存历史版本；变更登记不记账本的。
         assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, items))
         assertEquals(ledger, s.ledger(w.id))
-        assertEquals(versions + 2, s.ledgerVersions(w.id).size)
+        assertEquals(versions + 1, s.ledgerVersions(w.id).size)
         assertTrue(s.changes(w.id).isEmpty())
     }
 
@@ -860,7 +868,8 @@ class WritingSyncTest {
                 listOf(
                     person("老周", "身份" to "渡口的船夫", "本章" to "撑船").copy(chapterId = c, chapter = n),
                     SyncItem(SyncGroup.NEW, "新地名：渡口", "原句", PackKind.CANON, section = "地名", name = "渡口", text = if (n == 3) "城东的渡口" else "城东渡口，常起雾", chapterId = c, chapter = n),
-                    knows("林月", if (n == 3) "沈默是朝廷的卧底" else "沈默是朝廷派来的卧底").copy(chapterId = c, chapter = n),
+                    // 写入前只认完全一样的（只差标点、空白）；措辞不同的在结果页标“前面章已有”，默认不勾。
+                    knows("林月", if (n == 3) "沈默是朝廷的卧底" else "沈默是朝廷的 卧底。").copy(chapterId = c, chapter = n),
                 ),
                 docs,
             )
@@ -973,5 +982,136 @@ class WritingSyncTest {
         assertEquals("船夫", zhou.field("身份"))
         assertEquals("杜娘的表哥", zhou.field("关系"))
         assertEquals("撑船送林月过河；在渡口等沈默", zhou.field("本章"))
+    }
+
+    @Test
+    fun aRevealOfAnImportedAuthorOnlyTruthIsProposedCheckedAndEndsTheSecret() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.addPackDoc(w.id, PackKind.CHARACTER, "人物档案", "| 人物 | 身份 |\n|---|---|\n| 林远 | 镖师 |\n| 赵四 | 船夫 |")
+        s.addPackDoc(w.id, PackKind.AWARENESS, "察觉表", "### 林远\n\n| 卷 | 线索 | 消息从哪来 | 真相 |\n| --- | --- | --- | --- |\n| 一 | 赵四常去渡口 | 自己看见 | 赵四是朝廷的密探 |")
+        // 导入：林远知道“赵四常去渡口”；“真相”那格另成一条只有作者知道的（林远还不知道）。
+        s.importLedger(w.id, s.ledgerImportPreview(w.id))
+        val secret = s.ledger(w.id).single { it.secret }
+        assertEquals(Pair("林远", "赵四是朝廷的密探"), secret.subject to secret.text)
+        // 第 30 章林远终于知道了。
+        val learned = SyncItem(
+            SyncGroup.AWARENESS, "林远：赵四是朝廷的密探", "原句", PackKind.AWARENESS, name = "林远",
+            fields = listOf("人物" to "林远", "知道什么" to "赵四是朝廷的密探", "从第几章起" to "第30章", "消息从哪来" to "杜娘"),
+            chapterId = c, chapter = 30,
+        )
+        val docs = s.pack(w.id).map { it to s.packText(w.id, it.id) }
+        val planned = PackSync.plan(listOf(learned), docs, s.ledger(w.id)).single()
+        assertEquals(SyncGroup.AWARENESS, planned.group)
+        assertEquals("林远从第30章起知道了（这条原本只有作者知道）", planned.title)
+        assertEquals(secret, planned.reveals)
+        assertNull(planned.maybeSame)
+        assertTrue(planned.defaultOn)
+        assertEquals(mapOf(PackSync.LEDGER to 1), s.applySyncWithSnapshot(w.id, listOf(planned)))
+        val ledger = s.ledger(w.id)
+        val known = ledger.single { !it.secret && it.text == "赵四是朝廷的密探" }
+        assertEquals(Triple("林远", 30, "杜娘"), Triple(known.subject, known.from, known.via))
+        // 那条秘密到第 30 章止：之前照旧要瞒着，之后不再要求 AI 隐瞒。
+        assertEquals(30, ledger.single { it.secret }.until)
+        assertEquals(listOf("赵四是朝廷的密探"), StoryLedger.snapshot(ledger, 29).secrets.map { it.text })
+        assertTrue(StoryLedger.snapshot(ledger, 29).known.none { it.text == "赵四是朝廷的密探" })
+        val after = StoryLedger.snapshot(ledger, 31)
+        assertTrue(after.secrets.isEmpty())
+        assertTrue(after.known.any { it.subject == "林远" && it.text == "赵四是朝廷的密探" })
+        assertFalse("只有作者知道" in after.render()!!)
+        // 再写一次、再整理一次：账本里已经有了。
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, listOf(planned)))
+        assertTrue(PackSync.plan(listOf(learned), docs, s.ledger(w.id)).isEmpty())
+    }
+
+    @Test
+    fun lookalikeLedgerItemsAreListedUncheckedAndOnlyIdenticalOnesAreSkipped() {
+        val ledger = listOf(
+            LedgerEntry(kind = LedgerKind.EVENT, text = "林远杀了赵四", from = 10),
+            LedgerEntry(kind = LedgerKind.PROMISE, text = "第三把钥匙的下落", from = 4),
+            LedgerEntry(kind = LedgerKind.EVENT, text = "下雨", from = 2),
+            LedgerEntry(kind = LedgerKind.KNOW, text = "老周是赵四的师父", subject = "林远山", from = 5),
+        )
+        fun event(text: String, group: SyncGroup = SyncGroup.EVENT, kind: LedgerKind = LedgerKind.EVENT) =
+            SyncItem(group, text, "原句", PackKind.CANON, text = text, chapterId = "c", chapter = 20, entry = LedgerEntry(kind = kind, text = text, from = 20, origin = LedgerOrigin.SYNC))
+        val planned = PackSync.plan(
+            listOf(
+                event("林远杀了赵五"),
+                event("林远杀了赵四。"),
+                event("第二把钥匙的下落", SyncGroup.PROMISE, LedgerKind.PROMISE),
+                event("傍晚下雨了，渡口封了"),
+                knows("林远", "老周是赵四的师父").copy(chapter = 20),
+                event("林远在渡口杀了赵四"),
+            ),
+            emptyList(), ledger,
+        )
+        // 只差一个字的人名、数目，换了人（林远不是林远山）：都是新的，默认勾上；只差标点的那条直接跳过。
+        assertEquals(listOf("林远杀了赵五", "第二把钥匙的下落", "傍晚下雨了，渡口封了", "林远：老周是赵四的师父", "林远在渡口杀了赵四"), planned.map { it.title })
+        assertEquals(listOf(true, true, true, true, false), planned.map { it.defaultOn })
+        // 多了几个字、说的可能是同一件事：照常列出，标出账本里像的那一条，让作者决定。
+        assertEquals(ledger[0], planned.last().maybeSame)
+        assertTrue(planned.dropLast(1).all { it.maybeSame == null })
+
+        assertFalse(PackSync.similar("林远杀了赵四", "林远杀了赵五"))
+        assertFalse(PackSync.similar("顾长风说三日后再来", "顾长风说五日后再来"))
+        assertFalse(PackSync.similar("老周第12章回到京城", "老周第13章回到京城"))
+        assertFalse(PackSync.similar("沈默把信交给了林月", "沈默把信交给了杜娘", setOf("林月", "杜娘")))
+        assertTrue(PackSync.similar("老周死在渡口", "老周死在了渡口"))
+        assertTrue(PackSync.same("老周死在渡口", "老周 死在渡口。"))
+        assertFalse(PackSync.same("老周死在渡口", "老周死在了渡口"))
+    }
+
+    @Test
+    fun bothKillingsAreWrittenAndARetryWritesNothing() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "林远杀了赵四", from = 10))), "手动")
+        fun event(text: String) = SyncItem(SyncGroup.EVENT, text, "原句", PackKind.CANON, text = text, chapterId = c, chapter = 20, place = SyncPlace.LEDGER,
+            entry = LedgerEntry(kind = LedgerKind.EVENT, text = text, from = 20, origin = LedgerOrigin.SYNC))
+        val items = listOf(event("林远杀了赵五"), event("林远杀了赵四。"), event("林远在渡口杀了赵四"))
+        // 作者勾上了“可能重复”的那条：确实是另一件事，写进去；只差标点的那条写之前再查一遍，跳过。
+        assertEquals(mapOf(PackSync.LEDGER to 2), s.applySyncWithSnapshot(w.id, items))
+        assertEquals(listOf("林远杀了赵四", "林远杀了赵五", "林远在渡口杀了赵四"), s.ledger(w.id).map { it.text })
+        // 重复调用：精确判定挡住同一条，账本不变。
+        val versions = s.ledgerVersions(w.id).size
+        assertEquals(emptyMap<String, Int>(), s.applySyncWithSnapshot(w.id, items))
+        assertEquals(3, s.ledger(w.id).size)
+        assertEquals(versions, s.ledgerVersions(w.id).size)
+    }
+
+    @Test
+    fun awarenessRecordedOnlyByVolumeIsComparedWithTheChaptersVolume() {
+        val ledger = listOf(LedgerEntry(id = "k3", kind = LedgerKind.KNOW, text = "赵四是朝廷的密探", subject = "林远", volume = 3, origin = LedgerOrigin.IMPORT))
+        val early = knows("林远", "赵四是朝廷的密探").copy(chapter = 10, volume = 1)
+        // 第一卷就知道了第三卷才该知道的事：提前说破，改成冲突。
+        val conflict = PackSync.plan(listOf(early), emptyList(), ledger).single()
+        assertEquals(SyncGroup.CONFLICT, conflict.group)
+        assertEquals("账本里写林远 第3卷才知道，正文第10章就知道了", conflict.title)
+        assertFalse(conflict.defaultOn)
+        assertEquals(LedgerOp.Update(ledger.single().copy(from = 10, volume = null, quote = "原句", chapterId = "c")), PackSync.ledgerOp(conflict, ledger))
+        // 到了第三卷：账本里已有，不再提。
+        assertTrue(PackSync.plan(listOf(early.copy(chapter = 40, volume = 3)), emptyList(), ledger).isEmpty())
+    }
+
+    @Test
+    fun aBatchOfMoreChaptersThanTheHistoryKeepsLeavesThePreSyncVersion() {
+        val s = store()
+        val w = s.create("长夜")
+        val c = w.chapters[0].id
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.STATE, text = "在渡口", subject = "林月", aspect = "位置", from = 1))), "手动添加")
+        s.applyLedger(w.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "老周的船沉了", from = 1))), "作者手工维护")
+        val manual = s.ledgerVersions(w.id).single()
+        val items = (1..35).map { n ->
+            SyncItem(SyncGroup.TIME, "时间：入冬第${n}天", "原句", PackKind.CANON, text = "入冬第${n}天", chapterId = c, chapter = n, place = SyncPlace.LEDGER,
+                entry = LedgerEntry(kind = LedgerKind.TIME, text = "入冬第${n}天", from = n, origin = LedgerOrigin.SYNC))
+        }
+        assertEquals(mapOf(PackSync.LEDGER to 35), s.applySyncWithSnapshot(w.id, items))
+        // 35 章只存一个“整理前”的版本，作者手工维护的那一版还在。
+        val versions = s.ledgerVersions(w.id)
+        assertEquals(listOf("批量整理第 1–35 章（35 章）", "作者手工维护"), versions.map { it.label })
+        assertEquals(manual, versions.last())
+        assertEquals(2, s.ledgerVersion(w.id, versions.first().at)!!.size)
     }
 }

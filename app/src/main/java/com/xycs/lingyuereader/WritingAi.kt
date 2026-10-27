@@ -47,9 +47,12 @@ import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.PackSync
 import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.SyncMark
+import com.xycs.lingyuereader.data.SyncPlace
 import com.xycs.lingyuereader.data.applySync
 import com.xycs.lingyuereader.data.chapterNo
 import com.xycs.lingyuereader.data.syncLedger
+import com.xycs.lingyuereader.data.syncNames
+import com.xycs.lingyuereader.data.volumeNumber
 import com.xycs.lingyuereader.data.unsynced
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.DraftAssessment
@@ -188,6 +191,9 @@ class WritingAi(
     private val prefs: SharedPreferences? = null,
     private val message: (String) -> Unit,
 ) {
+    /** 整理写进了故事账本（作品 id）：账本页据此重读。 */
+    var ledgerChanged: (String) -> Unit = {}
+
     val ready: Boolean get() = ai.currentConfig.ready
 
     /** 用的是本机模型：上下文短，资料、规范都少带。 */
@@ -1977,8 +1983,10 @@ class WritingAi(
         if (text.isBlank()) return base.copy(error = "这一章还没有正文")
         val hints = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, upTo = true) }
         val system = WritePrompts.system(work.title, assistOf(workId), hints)
-        // 到上一章为止的账本：开着的伏笔带编号，收伏笔时 AI 用编号指认。
-        val ledger = withContext(Dispatchers.IO) { store.syncLedger(workId, chapterId, number, text) }
+        // 到上一章为止的账本：开着的伏笔带编号，收伏笔时 AI 用编号指认。人名：核对原句不能只是人名。
+        val (ledger, names) = withContext(Dispatchers.IO) { store.syncLedger(workId, chapterId, number, text) to store.syncNames(workId) }
+        // 这一章在第几卷：账本里只写了“第几卷起”的知情按卷号判断到没到。
+        val volume = work.volumeNumber(chapterId)
         val parts = WritePrompts.syncParts(text)
         val meter = AiMeter(AiFeature.SYNC, workId)
         val found = mutableListOf<SyncItem>()
@@ -1994,8 +2002,8 @@ class WritingAi(
                     requireTools = true, meter = meter,
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
-                val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes)
-                found += parsed.items
+                val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names)
+                found += parsed.items.map { it.copy(volume = volume) }
                 dropped += parsed.dropped
                 answered++
             } catch (e: CancellationException) {
@@ -2147,6 +2155,8 @@ class WritingAi(
         scope.launch {
             try {
                 val counts = withContext(Dispatchers.IO) { store.applySync(workId, picked, session.results) }
+                // 账本页可能已经读过整理前的账本：重读，免得拿旧条目再改、再撤销。
+                if (picked.any { it.place == SyncPlace.LEDGER }) ledgerChanged(workId)
                 val now = System.currentTimeMillis()
                 // Unselected chapters may have changed since review; never mark those stale results as synced.
                 val successful = session.results.filter { it.error == null }

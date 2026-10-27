@@ -574,22 +574,52 @@ object WritePrompts {
     /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */
     data class SyncParse(val items: List<SyncItem>, val dropped: Int)
 
-    /** 正文里找原句：去掉两头的引号、书名号；末尾“……”省略的，按前面那截找。找不到返回空。 */
-    fun findQuote(text: String, quote: String): String? {
-        var q = quote.trim().trim('“', '”', '「', '」', '『', '』', '"', '\'').trim()
-        if (q.length < 2) return null
-        if (q in text) return q
-        q = q.removeSuffix("……").removeSuffix("...").removeSuffix("…").trim()
-        return q.takeIf { it.length >= 4 && it in text }
+    /** 原句至少要有几个字（不算标点、空白）；不到这么长的，得是正文里完整的一句。 */
+    const val QUOTE_CHARS = 6
+
+    /** 短句最少几个字：“渡口起了雾。”这样完整的一句可以，“他说”“林月”不行。 */
+    private const val QUOTE_SENTENCE_CHARS = 4
+
+    /** 一句开头前面、结尾后面的字（或者在段首、段尾）。 */
+    private const val SENTENCE_OPEN = "。！？!?…；;\n“「『：:"
+    private const val SENTENCE_CLOSE = "。！？!?…；;\n”」』"
+
+    /**
+     * 正文里找原句：去掉两头的引号、书名号；末尾“……”省略的，按前面那截找。找不到返回空。
+     * 依据要够长：去掉标点、空白至少 [QUOTE_CHARS] 字，或者是正文里完整的一句（至少 [QUOTE_SENTENCE_CHARS] 字）；
+     * 去掉人名（[names]）以后不能只剩一个字——只引一个名字、一句“他说”，正文里一定找得到，证明不了什么。
+     */
+    fun findQuote(text: String, quote: String, names: Collection<String> = emptyList()): String? {
+        val q = quote.trim().trim('“', '”', '「', '」', '『', '』', '"', '\'').trim()
+        val cut = q.removeSuffix("……").removeSuffix("...").removeSuffix("…").trim()
+        return listOf(q, cut).distinct().firstOrNull { enough(text, it, names) }
+    }
+
+    private fun enough(text: String, q: String, names: Collection<String>): Boolean {
+        val content = q.replace(Regex("[\\p{P}\\p{S}\\s]"), "")
+        if (content.length < QUOTE_SENTENCE_CHARS || q !in text) return false
+        val rest = names.filter { it.length >= 2 }.sortedByDescending { it.length }.fold(content) { s, n -> s.replace(n, "") }
+        if (rest.length < 2) return false
+        if (content.length >= QUOTE_CHARS) return true
+        // 短的：正文里有一处前后都是句子的边界（标点、段首段尾）。
+        var at = text.indexOf(q)
+        while (at >= 0) {
+            val opens = at == 0 || text[at - 1] in SENTENCE_OPEN
+            val end = at + q.length
+            val closes = q.last() in SENTENCE_CLOSE || end == text.length || text[end] in SENTENCE_CLOSE
+            if (opens && closes) return true
+            at = text.indexOf(q, at + 1)
+        }
+        return false
     }
 
     /**
      * 整理本章的回答：容忍 ``` 包裹、前后多余的话、字段缺失；一类都没有时当作没按格式回（报错，不当成“没什么要整理”）。
      * 只回了 new、conflicts、awareness 的（旧的回法）照样能用。
-     * 依据（quote）在正文 [text] 里找不到的丢掉，防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
+     * 依据（quote）在正文 [text] 里找不到、太短或只是人名（[names]）的丢掉（[findQuote]），防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
      * 认回账本里那一条，认不出的丢掉。
      */
-    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap()): SyncParse {
+    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap(), names: Collection<String> = emptyList()): SyncParse {
         val o = json(answer)
         fun arr(vararg keys: String): JSONArray? = keys.firstNotNullOfOrNull { o.optJSONArray(it) }
         val news = arr("new", "news", "新设定")
@@ -613,7 +643,7 @@ object WritePrompts {
         var dropped = 0
         val out = mutableListOf<SyncItem>()
         fun add(o: JSONObject, make: (String) -> SyncItem?) {
-            val q = findQuote(text, o.s("quote", "依据", "原句"))
+            val q = findQuote(text, o.s("quote", "依据", "原句"), names)
             if (q == null) {
                 dropped++
                 return

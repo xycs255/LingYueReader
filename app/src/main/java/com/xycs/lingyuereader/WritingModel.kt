@@ -580,8 +580,11 @@ class WritingModel(
         }
     }
 
-    /** 在写盘队列里改账本，改完重读刷新页面；[then] 拿到 [block] 的结果。 */
-    private fun <T> changeLedger(workId: String, failure: String, block: () -> T, then: (T) -> Unit = {}) {
+    /**
+     * 在写盘队列里改账本，改完重读刷新页面；[then] 拿到 [block] 的结果。没改成也重读一遍（条目可能已经被别处改过），
+     * 再调 [failed]。
+     */
+    private fun <T> changeLedger(workId: String, failure: String, block: () -> T, failed: () -> Unit = {}, then: (T) -> Unit = {}) {
         scope.launch {
             try {
                 val (result, list) = withContext(disk) { block() to store.ledger(workId) }
@@ -591,19 +594,24 @@ class WritingModel(
                 throw e
             } catch (e: Exception) {
                 message("$failure：${e.message ?: "写入出错"}")
+                runCatching { withContext(disk) { store.ledger(workId) } }.getOrNull()?.let { list -> _ledgers.update { it + (workId to list) } }
+                failed()
             }
         }
     }
 
-    /** 手动改账本（加、改、删一条）；[then] 拿到实际新加了几条（重复的不加）。 */
-    fun editLedger(workId: String, ops: List<LedgerOp>, label: String, then: (Int) -> Unit = {}) =
-        changeLedger(workId, "保存失败", { store.applyLedger(workId, ops, label) }, then)
+    /**
+     * 手动改账本（加、改、删一条）；[then] 拿到实际新加了几条（重复的不加）。改、删带着改之前的样子（[LedgerOp.Update.expected]）时，
+     * 那一条已经被改过就不写，提示刷新后再改，调 [failed]。
+     */
+    fun editLedger(workId: String, ops: List<LedgerOp>, label: String, failed: () -> Unit = {}, then: (Int) -> Unit = {}) =
+        changeLedger(workId, "保存失败", { store.applyLedger(workId, ops, label) }, failed, then)
 
     /** 设定包的察觉表、伏笔表里有、账本里还没有的条目（导入前给作者勾选）。 */
     suspend fun ledgerImportPreview(workId: String): List<LedgerEntry> = withContext(disk) { store.ledgerImportPreview(workId) }
 
     fun importLedger(workId: String, entries: List<LedgerEntry>, then: (Int) -> Unit) =
-        changeLedger(workId, "导入失败", { store.importLedger(workId, entries) }, then)
+        changeLedger(workId, "导入失败", { store.importLedger(workId, entries) }, then = then)
 
     /** 把账本导出成设定包里的一份资料；设定包也跟着刷新。 */
     fun exportLedger(workId: String, then: (PackDoc) -> Unit) {
