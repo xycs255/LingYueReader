@@ -54,6 +54,11 @@ class AiClientTest {
     private val base get() = "http://127.0.0.1:${server.address.port}"
     private fun openAi() = AiConfig(enabled = true, preset = AiPresets.CUSTOM, baseUrl = "$base/v1", model = "m").withKey("sk-1")
     private fun anthropic() = openAi().copy(protocol = AiProtocol.ANTHROPIC, model = "claude-opus-5-5")
+    private fun officialDeepSeek() = AiConfig(enabled = true).withKey("sk-test")
+    private fun officialDeepSeekClient() = AiClient { requested ->
+        assertEquals("api.deepseek.com", requested.host)
+        URL("$base/chat/completions").openConnection() as HttpURLConnection
+    }
 
     @Test
     fun connectionTestSendsBoundedNonThinkingRequestToOfficialDeepSeekV4() = runBlocking<Unit> {
@@ -163,6 +168,63 @@ class AiClientTest {
         assertTrue(whole.exceptionOrNull() is AiException)
         assertTrue(whole.exceptionOrNull()!!.message!!.contains("中断"))
         assertEquals(2, requests.size)
+    }
+
+    @Test
+    fun officialDeepSeekRejectsEofOrDoneWithoutFinalFinishReason() = runBlocking<Unit> {
+        val half = "data: {\"choices\":[{\"delta\":{\"content\":\"半章正文\"}}]}\n\n"
+        val endings = listOf(
+            half,
+            half + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            half + "data: [DONE]\n\n",
+        )
+        endings.forEach { body ->
+            reply = Triple(200, "text/event-stream", body)
+            val result = runCatching { officialDeepSeekClient().stream(
+                officialDeepSeek(), "", listOf(AiMessage("user", "写本章")), whole = true,
+            ) }
+            assertTrue(result.exceptionOrNull() is AiException)
+            assertTrue(result.exceptionOrNull()!!.message!!.contains("未完整结束"))
+        }
+        assertEquals(endings.size, requests.size)
+    }
+
+    @Test
+    fun officialDeepSeekRejectsMalformedStreamChunkAndWholeReplyWithoutFinishReason() = runBlocking<Unit> {
+        reply = Triple(200, "text/event-stream", """
+            data: {"choices":[{"delta":{"content":"半章正文"}}]}
+
+            data: {broken-json
+
+            data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+        """.trimIndent())
+        val malformed = runCatching { officialDeepSeekClient().stream(
+            officialDeepSeek(), "", listOf(AiMessage("user", "写本章")), whole = true,
+        ) }
+        assertTrue(malformed.exceptionOrNull() is AiException)
+        assertTrue(malformed.exceptionOrNull()!!.message!!.contains("无法解析"))
+
+        reply = Triple(200, "application/json", """{"choices":[{"message":{"content":"半章正文"}}]}""")
+        val missingFinish = runCatching { officialDeepSeekClient().stream(
+            officialDeepSeek(), "", listOf(AiMessage("user", "写本章")), whole = true,
+        ) }
+        assertTrue(missingFinish.exceptionOrNull() is AiException)
+        assertTrue(missingFinish.exceptionOrNull()!!.message!!.contains("缺少结束原因"))
+
+        reply = Triple(200, "application/json", """{"choices":[{"message":{"content":"完整正文"},"finish_reason":"stop"}]}""")
+        assertEquals("完整正文", officialDeepSeekClient().stream(
+            officialDeepSeek(), "", listOf(AiMessage("user", "写本章")), whole = true,
+        ))
+        reply = Triple(200, "application/json", """{"error":{"message":"模型正忙"}}""")
+        val providerError = runCatching { officialDeepSeekClient().stream(
+            officialDeepSeek(), "", listOf(AiMessage("user", "写本章")), whole = true,
+        ) }
+        assertTrue(providerError.exceptionOrNull() is AiException)
+        assertTrue(providerError.exceptionOrNull()!!.message!!.contains("模型正忙"))
+        assertEquals(4, requests.size)
     }
 
     @Test

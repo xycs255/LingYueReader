@@ -88,12 +88,17 @@ object AiToolWire {
     class Turn(val text: String, val calls: List<AiToolCall>, val message: JSONObject, val truncated: Boolean, val refused: Boolean, val usage: AiUsage? = null)
 
     /** 一轮流式回答的拼装器：一行行喂 `data:` 后面的内容，最后 [finish]。 */
-    class Collector(private val protocol: AiProtocol, private val onText: (String) -> Unit) {
+    class Collector(private val protocol: AiProtocol, private val strictOfficialDeepSeek: Boolean = false,
+                    private val onText: (String) -> Unit) {
         private val text = StringBuilder()
         private val reasoning = StringBuilder()
         private var truncated = false
         private var refused = false
         private var done = false
+
+        /** OpenAI 兼容流的末块必须有非空 finish_reason；只在官方 DeepSeek 校验。 */
+        var terminal: Boolean = false
+            private set
 
         /** 服务商在流里给的用量（OpenAI 兼容在最后一块，Anthropic 在 message_start 和 message_delta 里）。 */
         var usage: AiUsage? = null
@@ -122,7 +127,8 @@ object AiToolWire {
                 done = true
                 return
             }
-            val o = runCatching { JSONObject(d) }.getOrNull() ?: return
+            val o = runCatching { JSONObject(d) }.getOrNull()
+                ?: if (strictOfficialDeepSeek) throw AiException("DeepSeek 返回了无法解析的回答片段，本次内容不完整，请重试") else return
             o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").ifEmpty { it.toString() }.take(160)}") }
             when (protocol) {
                 AiProtocol.OPENAI -> {
@@ -146,6 +152,7 @@ object AiToolWire {
                         }
                     }
                     val finishReason = choice.optString("finish_reason").takeIf { !choice.isNull("finish_reason") }
+                    if (!finishReason.isNullOrEmpty()) terminal = true
                     AiWire.requireUninterruptedOpenAi(finishReason.orEmpty())
                     when (finishReason) {
                         "length" -> truncated = true

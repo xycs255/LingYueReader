@@ -85,6 +85,11 @@ object AiWire {
         return host in setOf("api.openai.com", "api.deepseek.com", "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com")
     }
 
+    /** 官方 DeepSeek 的 SSE 必须以非空 finish_reason 和 data: [DONE] 结束。 */
+    fun officialDeepSeek(c: AiConfig): Boolean = c.protocol == AiProtocol.OPENAI &&
+        runCatching { java.net.URI(c.baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }
+            .getOrDefault(false)
+
     fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true,
              maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false): String {
         val list = JSONArray()
@@ -93,9 +98,7 @@ object AiWire {
             AiProtocol.OPENAI -> {
                 if (stream && streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
                 if (maxTokens != null) o.put("max_tokens", maxTokens)
-                val officialDeepSeek = runCatching { java.net.URI(c.baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }
-                    .getOrDefault(false)
-                if (disableOfficialDeepSeekThinking && officialDeepSeek &&
+                if (disableOfficialDeepSeekThinking && officialDeepSeek(c) &&
                     c.model.trim().lowercase() in setOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH)) {
                     o.put("thinking", JSONObject().put("type", "disabled"))
                 }
@@ -115,14 +118,16 @@ object AiWire {
     }
 
     /** 流里的一条事件带来的东西；[usage] 是这条里带的用量（多半在最后一块）。 */
-    data class Delta(val text: String = "", val done: Boolean = false, val refused: Boolean = false, val truncated: Boolean = false, val usage: AiUsage? = null)
+    data class Delta(val text: String = "", val done: Boolean = false, val terminal: Boolean = false,
+                     val refused: Boolean = false, val truncated: Boolean = false, val usage: AiUsage? = null)
 
     /** 解析 SSE 里一行 `data:` 后面的内容。服务端在流里报错时抛 [AiException]。 */
-    fun delta(protocol: AiProtocol, data: String): Delta {
+    fun delta(protocol: AiProtocol, data: String, strictOfficialDeepSeek: Boolean = false): Delta {
         val d = data.trim()
         if (d.isEmpty()) return Delta()
         if (d == "[DONE]") return Delta(done = true)
-        val o = runCatching { JSONObject(d) }.getOrNull() ?: return Delta()
+        val o = runCatching { JSONObject(d) }.getOrNull()
+            ?: if (strictOfficialDeepSeek) throw AiException("DeepSeek 返回了无法解析的回答片段，本次内容不完整，请重试") else return Delta()
         o.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").ifEmpty { it.toString() }.take(160)}") }
         return when (protocol) {
             AiProtocol.OPENAI -> {
@@ -133,7 +138,7 @@ object AiWire {
                 val text = choice.optJSONObject("delta")?.optStringOrEmpty("content") ?: ""
                 val finish = choice.optStringOrEmpty("finish_reason")
                 requireUninterruptedOpenAi(finish)
-                Delta(text, refused = finish == "content_filter", truncated = finish == "length", usage = usage)
+                Delta(text, terminal = finish.isNotEmpty(), refused = finish == "content_filter", truncated = finish == "length", usage = usage)
             }
             AiProtocol.ANTHROPIC -> when (o.optString("type")) {
                 "message_start" -> Delta(usage = AiUsage.anthropic(o.optJSONObject("message")?.optJSONObject("usage")))
@@ -157,6 +162,15 @@ object AiWire {
             "aborted" -> throw AiException("服务商中断了回答，本次内容不完整，请重试")
             "insufficient_system_resource" -> throw AiException("服务商资源不足，中断了回答，本次内容不完整，请稍后重试")
         }
+    }
+
+    /** 官方 DeepSeek 非流式回复也必须明确声明本次生成如何结束。 */
+    fun requireOfficialDeepSeekWhole(config: AiConfig, body: String) {
+        if (!officialDeepSeek(config)) return
+        val reply = runCatching { JSONObject(body) }.getOrNull() ?: throw AiException("看不懂服务商的回复")
+        reply.optJSONObject("error")?.let { throw AiException("服务商报错：${it.optString("message").take(160)}") }
+        val finish = reply.optJSONArray("choices")?.optJSONObject(0)?.optStringOrEmpty("finish_reason").orEmpty()
+        if (finish.isEmpty()) throw AiException("DeepSeek 回答缺少结束原因，本次内容可能不完整，请重试")
     }
 
     /** 一整个 JSON 的回答是不是因为长度上限被截断了。 */
@@ -209,7 +223,8 @@ object AiWire {
             404 -> "接口地址或模型名不对"
             408, 504 -> "等太久没有回应"
             413 -> "发送的内容太长"
-            429 -> "请求太频繁，或额度用完了"
+            422 -> "请求参数无效，请检查模型与本次功能是否兼容"
+            429 -> "请求太频繁，或同时进行的请求太多"
             in 500..599 -> "服务商暂时出了问题（$code），稍后再试"
             else -> "请求失败（$code）"
         }
@@ -313,6 +328,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
             val out = StringBuilder()
             var usage: AiUsage? = null
             var reported = false
+            var sawDone = false
+            var sawFinish = false
+            val officialDeepSeek = AiWire.officialDeepSeek(config)
             val sent = { system + messages.joinToString("") { it.content } }
             try {
                 conn.requestMethod = "POST"
@@ -329,11 +347,13 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     throw AiException(AiWire.error(code, err))
                 }
                 val type = conn.contentType.orEmpty()
+                val wholeJson = type.contains("json") && !type.contains("event-stream")
                 var refused = false
                 var truncated = false
                 conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    if (type.contains("json") && !type.contains("event-stream")) {
+                    if (wholeJson) {
                         val body = reader.readText()
+                        AiWire.requireOfficialDeepSeekWhole(config, body)
                         usage = AiWire.wholeUsage(config.protocol, body)
                         val text = AiWire.whole(config.protocol, body)
                         truncated = AiWire.wholeTruncated(config.protocol, body)
@@ -345,7 +365,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                         coroutineContext.ensureActive()
                         val line = reader.readLine() ?: break
                         if (!line.startsWith("data:")) continue
-                        val d = AiWire.delta(config.protocol, line.removePrefix("data:"))
+                        val d = AiWire.delta(config.protocol, line.removePrefix("data:"), officialDeepSeek)
+                        if (d.terminal) sawFinish = true
                         usage = if (config.protocol == AiProtocol.ANTHROPIC) AiUsage.merge(usage, d.usage) else d.usage ?: usage
                         if (d.text.isNotEmpty()) {
                             out.append(d.text)
@@ -353,8 +374,11 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                         }
                         if (d.refused) refused = true
                         if (d.truncated) truncated = true
-                        if (d.done) break
+                        if (d.done) { sawDone = true; break }
                     }
+                }
+                if (officialDeepSeek && !wholeJson) {
+                    if (!sawDone || !sawFinish) throw AiException("DeepSeek 回答流未完整结束，本次内容可能不完整，请重试")
                 }
                 // 收完了就记用量（之后截断报错也照样花了钱）。
                 reported = true
@@ -421,6 +445,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     val allow = useTools.isNotEmpty() && round < maxRounds
                     val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra)
                     val turn = post(config, body, onText)
+                    if (turn.truncated && turn.calls.isNotEmpty()) {
+                        throw AiException("模型的工具调用被截断，本次没有执行，请缩短材料后重试")
+                    }
                     if (turn.calls.isEmpty() || !allow) {
                         val out = StringBuilder(turn.text)
                         if (turn.truncated) {
@@ -452,7 +479,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
 
     /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。 */
     private suspend fun post(config: AiConfig, body: String, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
-        val collector = AiToolWire.Collector(config.protocol, onText)
+        val collector = AiToolWire.Collector(config.protocol, AiWire.officialDeepSeek(config), onText)
         var reported = false
         val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
             ?: throw AiException("接口地址不对：要以 https:// 开头（局域网地址可以用 http://）")
@@ -477,9 +504,12 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 throw AiException(AiWire.error(code, err))
             }
             val type = conn.contentType.orEmpty()
+            val wholeJson = type.contains("json") && !type.contains("event-stream")
             conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                if (type.contains("json") && !type.contains("event-stream")) {
-                    collector.feedWhole(reader.readText())
+                if (wholeJson) {
+                    val response = reader.readText()
+                    AiWire.requireOfficialDeepSeekWhole(config, response)
+                    collector.feedWhole(response)
                     return@use
                 }
                 while (true) {
@@ -489,6 +519,10 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     collector.feed(line.removePrefix("data:"))
                     if (collector.finished) break
                 }
+            }
+            if (AiWire.officialDeepSeek(config) && !wholeJson &&
+                (!collector.finished || !collector.terminal)) {
+                throw AiException("DeepSeek 回答流未完整结束，本次内容可能不完整，请重试")
             }
             collector.finish().also { turn ->
                 reported = true

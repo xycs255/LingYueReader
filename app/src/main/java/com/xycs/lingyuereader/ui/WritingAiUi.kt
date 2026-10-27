@@ -646,8 +646,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         header = "设定包",
                         footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
                             "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
-                            "放得越多，AI 越不用查，但每次请求越大（相同的开头服务商会缓存，后面几次便宜很多）。" +
-                            "本章资料字数上限只给本机模型用：它不能自己查，按章挑着带。",
+                            "放得越多，AI 越不用查，但每次请求越大。DeepSeek 会尝试缓存相同的开头，实际命中以用量记录为准。" +
+                            "本章资料字数上限也影响联网项目写作；本机模型不能自己查，会按章挑着带。",
                     ) {
                         row {
                             PickerRow(
@@ -657,7 +657,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
                         }
                         row {
-                            PickerRow("本章资料字数上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                            PickerRow("本章资料上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
                                 vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
                             }
                         }

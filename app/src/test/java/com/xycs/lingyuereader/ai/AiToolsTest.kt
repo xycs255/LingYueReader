@@ -10,7 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.URL
 
 /** 带工具的对话：AI 先查再答，两种接口的格式都对，服务商不支持工具时去掉重发。 */
 class AiToolsTest {
@@ -26,7 +28,7 @@ class AiToolsTest {
             requests += JSONObject(ex.requestBody.readBytes().toString(Charsets.UTF_8))
             val (code, body) = replies.removeFirst()
             val bytes = body.toByteArray(Charsets.UTF_8)
-            ex.responseHeaders.add("Content-Type", if (code == 200) "text/event-stream" else "application/json")
+            ex.responseHeaders.add("Content-Type", if (code == 200 && !body.trimStart().startsWith("{")) "text/event-stream" else "application/json")
             ex.sendResponseHeaders(code, bytes.size.toLong())
             ex.responseBody.use { it.write(bytes) }
         }
@@ -38,6 +40,11 @@ class AiToolsTest {
 
     private val base get() = "http://127.0.0.1:${server.address.port}"
     private fun openAi() = AiConfig(enabled = true, preset = AiPresets.CUSTOM, baseUrl = "$base/v1", model = "deepseek-chat").withKey("sk-1")
+    private fun officialDeepSeek() = AiConfig(enabled = true).withKey("sk-test")
+    private fun officialDeepSeekClient() = AiClient { requested ->
+        assertEquals("api.deepseek.com", requested.host)
+        URL("$base/chat/completions").openConnection() as HttpURLConnection
+    }
     private fun anthropic() = openAi().copy(protocol = AiProtocol.ANTHROPIC, model = "claude-opus-5-5")
     private val tool = AiTool("read_chapter", "读一章", JSONObject().put("type", "object"))
 
@@ -60,6 +67,72 @@ class AiToolsTest {
         }
         assertEquals(1, requests.size)
         assertTrue(requests.single().has("tools"))
+    }
+
+    @Test
+    fun officialDeepSeekToolStreamRejectsMissingTerminationBeforeRunningTool() = runBlocking<Unit> {
+        val partialCall = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_chapter\",\"arguments\":\"{\\\"chapter\\\":\\\"34\\\"}\"}}]}}]}\n\n"
+        val endings = listOf(
+            partialCall,
+            partialCall + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            partialCall + "data: [DONE]\n\n",
+        )
+        endings.forEach { body ->
+            replies += 200 to body
+            val result = runCatching { officialDeepSeekClient().converse(
+                officialDeepSeek(), "设定包", "写一章", listOf(tool),
+                run = { fail("未完整结束时不应执行工具"); "" }, whole = true, requireTools = true,
+            ) }
+            assertTrue(result.exceptionOrNull() is AiException)
+            assertTrue(result.exceptionOrNull()!!.message!!.contains("未完整结束"))
+        }
+        assertEquals(endings.size, requests.size)
+    }
+
+    @Test
+    fun officialDeepSeekToolReplyRejectsMalformedChunkAndMissingWholeFinishReason() = runBlocking<Unit> {
+        replies += 200 to """
+            data: {"choices":[{"delta":{"content":"半章正文"}}]}
+
+            data: {broken-json
+
+            data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+        """.trimIndent()
+        val malformed = runCatching { officialDeepSeekClient().converse(
+            officialDeepSeek(), "设定包", "写一章", listOf(tool),
+            run = { fail("畸形流不应执行工具"); "" }, whole = true, requireTools = true,
+        ) }
+        assertTrue(malformed.exceptionOrNull() is AiException)
+        assertTrue(malformed.exceptionOrNull()!!.message!!.contains("无法解析"))
+
+        replies += 200 to """{"choices":[{"message":{"content":"半章正文"}}]}"""
+        val missingFinish = runCatching { officialDeepSeekClient().converse(
+            officialDeepSeek(), "设定包", "写一章", listOf(tool),
+            run = { fail("没有结束原因不应执行工具"); "" }, whole = true, requireTools = true,
+        ) }
+        assertTrue(missingFinish.exceptionOrNull() is AiException)
+        assertTrue(missingFinish.exceptionOrNull()!!.message!!.contains("缺少结束原因"))
+        assertEquals(2, requests.size)
+    }
+
+    @Test
+    fun truncatedToolArgumentsAreNeverExecuted() = runBlocking<Unit> {
+        replies += 200 to """
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_chapter","arguments":"{\"chapter\":"}}]},"finish_reason":"length"}]}
+
+            data: [DONE]
+
+        """.trimIndent()
+        val result = runCatching { officialDeepSeekClient().converse(
+            officialDeepSeek(), "设定包", "写一章", listOf(tool),
+            run = { fail("截断的工具参数不应被执行"); "" }, whole = true, requireTools = true,
+        ) }
+        assertTrue(result.exceptionOrNull() is AiException)
+        assertTrue(result.exceptionOrNull()!!.message!!.contains("工具调用被截断"))
+        assertEquals(1, requests.size)
     }
 
     @Test
@@ -135,9 +208,9 @@ class AiToolsTest {
             data: [DONE]
 
         """.trimIndent()
-        val config = openAi().copy(model = "deepseek-v4-pro")
+        val config = officialDeepSeek()
         var shown = ""
-        val answer = AiClient().converse(config, "设定包", "继续写", listOf(tool),
+        val answer = officialDeepSeekClient().converse(config, "设定包", "继续写", listOf(tool),
             run = { call ->
                 assertEquals("read_chapter", call.name)
                 assertEquals("34", call.arguments.getString("chapter"))

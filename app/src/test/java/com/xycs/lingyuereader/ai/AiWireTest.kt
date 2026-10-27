@@ -95,6 +95,8 @@ class AiWireTest {
         assertTrue(AiWire.error(401, """{"error":{"message":"Invalid API key"}}""").startsWith("密钥不对"))
         assertTrue(AiWire.error(401, """{"error":{"message":"Invalid API key"}}""").contains("Invalid API key"))
         assertEquals("接口地址或模型名不对", AiWire.error(404, "<html>"))
+        assertTrue(AiWire.error(422, "").startsWith("请求参数无效"))
+        assertTrue(AiWire.error(429, "").contains("同时进行的请求太多"))
         assertTrue(AiWire.error(503, "").contains("503"))
     }
 }
