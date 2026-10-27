@@ -7,6 +7,7 @@ import java.io.OutputStream
 import java.security.MessageDigest
 import java.time.LocalDate
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -220,12 +221,15 @@ class WorkStore(
     private val history = File(root, "history")
     private val statsFile = File(root, "stats.json")
     private val clock: () -> Long = System::currentTimeMillis
+    private val processLock = processLocks.computeIfAbsent(root.canonicalPath) { Any() }
 
     init {
-        recoverInterruptedRestore()
-        works.listFiles().orEmpty().filter { it.isDirectory && ID.matches(it.name) }.forEach { work ->
-            // A failed repair remains journaled. Restore must then leave this work alone.
-            runCatching { recoverPendingSave(work.name) }
+        synchronized(processLock) {
+            recoverInterruptedRestore()
+            works.listFiles().orEmpty().filter { it.isDirectory && ID.matches(it.name) }.forEach { work ->
+                // A failed repair remains journaled. Restore must then leave this work alone.
+                runCatching { recoverPendingSave(work.name) }
+            }
         }
     }
 
@@ -310,7 +314,9 @@ class WorkStore(
     }
 
     /** Repair a committed component; roll back a draft only when its body/source pair is incomplete. */
-    private fun recoverPendingSave(workId: String) {
+    private fun recoverPendingSave(workId: String) = synchronized(processLock) { recoverPendingSaveLocked(workId) }
+
+    private fun recoverPendingSaveLocked(workId: String) {
         val markerFile = pendingSave(workId)
         if (!markerFile.isFile) {
             if (markerFile.exists()) return // An invalid journal path must not discard a draft rollback snapshot.
@@ -515,7 +521,9 @@ class WorkStore(
     }
 
     @Synchronized
-    fun delete(workId: String) {
+    fun delete(workId: String) = synchronized(processLock) { deleteLocked(workId) }
+
+    private fun deleteLocked(workId: String) {
         dir(workId).deleteRecursively()
         File(history, workId).deleteRecursively()
         previewFile(workId).delete()
@@ -549,7 +557,9 @@ class WorkStore(
 
     /** 删一章：正文先存进历史版本（误删了还能从文件里找回），再删。 */
     @Synchronized
-    fun deleteChapter(workId: String, chapterId: String): Work? {
+    fun deleteChapter(workId: String, chapterId: String): Work? = synchronized(processLock) { deleteChapterLocked(workId, chapterId) }
+
+    private fun deleteChapterLocked(workId: String, chapterId: String): Work? {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能删除章节" }
         val text = text(workId, chapterId)
@@ -647,7 +657,10 @@ class WorkStore(
      * 返回实际新加了几条（重复的不加）。
      */
     @Synchronized
-    fun applyLedger(workId: String, ops: List<LedgerOp>, label: String): Int {
+    fun applyLedger(workId: String, ops: List<LedgerOp>, label: String): Int =
+        synchronized(processLock) { applyLedgerLocked(workId, ops, label) }
+
+    private fun applyLedgerLocked(workId: String, ops: List<LedgerOp>, label: String): Int {
         require(File(dir(workId), WORK).isFile) { "作品不在了" }
         val source = File(dir(workId), LEDGER)
         if (source.isFile) {
@@ -679,6 +692,7 @@ class WorkStore(
         val bytes = StoryLedger.toJson(after).toString().toByteArray()
         beginSave(workId, "ledger", workId, bytes)
         check(DurableFiles.write(File(dir(workId), LEDGER), bytes)) { "无法保存故事账本" }
+        savePhaseHook?.invoke("ledger-body")
         update(workId) { it }
         completeSave(workId)
     }
@@ -701,7 +715,9 @@ class WorkStore(
 
     /** 换回某个历史版本（现在的样子也存进历史，可以再换回来）。 */
     @Synchronized
-    fun restoreLedger(workId: String, at: Long): Boolean {
+    fun restoreLedger(workId: String, at: Long): Boolean = synchronized(processLock) { restoreLedgerLocked(workId, at) }
+
+    private fun restoreLedgerLocked(workId: String, at: Long): Boolean {
         val old = ledgerVersion(workId, at) ?: return false
         val now = ledger(workId)
         if (old == now) return true
@@ -786,7 +802,10 @@ class WorkStore(
     }
 
     @Synchronized
-    fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null, blocked: Boolean = false) {
+    fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null, blocked: Boolean = false) =
+        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked) }
+
+    private fun saveDraftLocked(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance?, blocked: Boolean) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖草稿" }
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
@@ -913,7 +932,10 @@ class WorkStore(
 
     /** 存一章正文，更新字数，并把净增的字数记到今天。返回改后的作品；正文没变返回原作品。 */
     @Synchronized
-    fun saveText(workId: String, chapterId: String, text: String, today: LocalDate = LocalDate.now(), count: Boolean = true): Work? {
+    fun saveText(workId: String, chapterId: String, text: String, today: LocalDate = LocalDate.now(), count: Boolean = true): Work? =
+        synchronized(processLock) { saveTextLocked(workId, chapterId, text, today, count) }
+
+    private fun saveTextLocked(workId: String, chapterId: String, text: String, today: LocalDate, count: Boolean): Work? {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖正文" }
         val work = get(workId) ?: return null
@@ -1125,7 +1147,9 @@ class WorkStore(
 
     /** 存文档正文。没变就不写。 */
     @Synchronized
-    fun savePackText(workId: String, docId: String, text: String): PackDoc? {
+    fun savePackText(workId: String, docId: String, text: String): PackDoc? = synchronized(processLock) { savePackTextLocked(workId, docId, text) }
+
+    private fun savePackTextLocked(workId: String, docId: String, text: String): PackDoc? {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖设定" }
         val file = packFile(workId, docId)
@@ -1143,7 +1167,9 @@ class WorkStore(
 
     /** 删一份文档：正文先存进历史版本。 */
     @Synchronized
-    fun deletePackDoc(workId: String, docId: String) {
+    fun deletePackDoc(workId: String, docId: String) = synchronized(processLock) { deletePackDocLocked(workId, docId) }
+
+    private fun deletePackDocLocked(workId: String, docId: String) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能删除设定文档" }
         val text = packText(workId, docId)
@@ -1318,7 +1344,9 @@ class WorkStore(
      * 读不出的文件都先另存一份（.damaged）。
      */
     @Synchronized
-    fun backupReport(): WritingBackup? {
+    fun backupReport(): WritingBackup? = synchronized(processLock) { backupReportLocked() }
+
+    private fun backupReportLocked(): WritingBackup? {
         works.listFiles().orEmpty().filter { it.isDirectory && ID.matches(it.name) }.forEach { work ->
             runCatching { recoverPendingSave(work.name) }
         }
@@ -1729,7 +1757,9 @@ class WorkStore(
 
     /** 同 [restoreBackup]，另外报告整部没有恢复的作品（本机的较新，或本机的文件读不出）。 */
     @Synchronized
-    fun restoreBackupReport(json: String): WritingRestore {
+    fun restoreBackupReport(json: String): WritingRestore = synchronized(processLock) { restoreBackupReportLocked(json) }
+
+    private fun restoreBackupReportLocked(json: String): WritingRestore {
         require(json.toByteArray().size.toLong() <= WritingReferenceBackup.MAX_WRITING_JSON_BYTES) { "备份写作数据超过 64 MB" }
         val backup = JSONObject(json)
         val preflight = preflightRestoreBackup(backup)
@@ -1794,6 +1824,8 @@ class WorkStore(
     }
 
     companion object {
+        /** Multiple WorkStore instances can share one directory (including multiwindow activities). */
+        private val processLocks = ConcurrentHashMap<String, Any>()
         const val DEFAULT_VOLUME = "正文"
         const val KEEP_SNAPSHOTS = 40
         private const val WORK = "work.json"

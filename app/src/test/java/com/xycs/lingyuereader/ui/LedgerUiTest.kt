@@ -48,6 +48,7 @@ class LedgerUiTest {
     private var workId = ""
     private var ch12 = ""
     private var ch15 = ""
+    private lateinit var store: WorkStore
 
     private val seed = object : ExternalResource() {
         override fun before() {
@@ -58,7 +59,7 @@ class LedgerUiTest {
             writingDir.deleteRecursively()
             context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
             context.getSharedPreferences("ai", Context.MODE_PRIVATE).edit().clear().commit()
-            val store = WorkStore(writingDir)
+            store = WorkStore(writingDir)
             val w = store.create("长夜")
             workId = w.id
             ch12 = w.chapters[0].id
@@ -71,7 +72,6 @@ class LedgerUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
-    private val store get() = WorkStore(writingDir)
     private val vm get() = ViewModelProvider(compose.activity)[AppViewModel::class.java]
 
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
@@ -205,16 +205,22 @@ class LedgerUiTest {
         seedLedger()
         open(Screen.WorkLedger(workId))
         showAllRecords()
-        waitForOne("在渡口，左臂伤未愈")
+        waitForStage("编辑前原条目唯一") { count("在渡口，左臂伤未愈") == 1 }
         compose.onNodeWithText("在渡口，左臂伤未愈").performClick()
-        waitForText("改一条")
+        waitForStage("编辑弹窗显示") { count("改一条", substring = true) > 0 }
         compose.onNode(hasSetTextAction() and hasText("在渡口，左臂伤未愈")).performTextReplacement("在石桥，左臂伤未愈")
+        waitForStage("编辑保存按钮启用") {
+            runCatching { compose.onNodeWithText("保存").assertIsEnabled(); true }.getOrDefault(false)
+        }
         compose.onNodeWithText("保存").performClick()
-        waitFor { store.ledger(workId).any { it.text == "在石桥，左臂伤未愈" } }
+        waitForStage("修改写入磁盘") { store.ledger(workId).any { it.text == "在石桥，左臂伤未愈" } }
         val e = store.ledger(workId).first { it.kind == LedgerKind.STATE }
         assertEquals(Triple("林月", "位置", 12), Triple(e.subject, e.aspect, e.from))
         assertEquals("手动修改", store.ledgerVersions(workId).first().label)
-        waitForOne("在石桥，左臂伤未愈")
+        waitForStage("ViewModel 与条目界面刷新") {
+            vm.writing.ledgers.value[workId]?.any { it.text == "在石桥，左臂伤未愈" } == true &&
+                count("在石桥，左臂伤未愈") == 1
+        }
     }
 
     @Test

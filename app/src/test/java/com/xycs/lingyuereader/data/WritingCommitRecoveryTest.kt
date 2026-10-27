@@ -3,12 +3,17 @@ package com.xycs.lingyuereader.data
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.time.LocalDate
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 class WritingCommitRecoveryTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -231,5 +236,56 @@ class WritingCommitRecoveryTest {
         assertEquals("渡口起火", afterLedger.ledger(work.id).single().text)
         assertEquals(0, afterLedger.restoreBackupReport(futureBackup(backup, afterLedger.get(work.id)!!.updatedAt)).restored)
         assertEquals("渡口起火", afterLedger.ledger(work.id).single().text)
+    }
+
+    @Test fun anotherStoreCannotRecoverAnActiveLedgerCommit() {
+        val root = tmp.newFolder()
+        val initial = WorkStore(root)
+        val work = initial.create("长夜")
+        val ledgerWritten = CountDownLatch(1)
+        val allowCommit = CountDownLatch(1)
+        val writerFailure = AtomicReference<Throwable?>()
+        val openerFailure = AtomicReference<Throwable?>()
+        val reopened = AtomicReference<WorkStore?>()
+        val writer = WorkStore(root, savePhaseHook = { phase ->
+            if (phase == "ledger-body") {
+                ledgerWritten.countDown()
+                check(allowCommit.await(10, TimeUnit.SECONDS)) { "账本提交测试等待超时" }
+            }
+        })
+        val writing = thread(name = "ledger-commit") {
+            try {
+                writer.applyLedger(work.id, listOf(LedgerOp.Add(LedgerEntry(kind = LedgerKind.EVENT, text = "渡口起火"))), "新事件")
+            } catch (failure: Throwable) {
+                writerFailure.set(failure)
+            }
+        }
+        var opening: Thread? = null
+        try {
+            assertTrue("账本正文未写入", ledgerWritten.await(5, TimeUnit.SECONDS))
+            assertTrue(File(root, "works/${work.id}/.pending-save.json").isFile)
+            val reopening = thread(name = "ledger-reopen") {
+                try {
+                    reopened.set(WorkStore(root))
+                } catch (failure: Throwable) {
+                    openerFailure.set(failure)
+                }
+            }
+            opening = reopening
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (reopening.state != Thread.State.BLOCKED && reopening.isAlive && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals("新实例须等当前提交结束", Thread.State.BLOCKED, reopening.state)
+        } finally {
+            allowCommit.countDown()
+            writing.join(5_000)
+            opening?.join(5_000)
+        }
+        assertFalse(writing.isAlive)
+        assertFalse(opening.isAlive)
+        assertNull(writerFailure.get())
+        assertNull(openerFailure.get())
+        assertEquals("渡口起火", reopened.get()!!.ledger(work.id).single().text)
+        assertFalse(File(root, "works/${work.id}/.pending-save.json").exists())
+        assertFalse(File(root, "works/${work.id}/.recovered-save.json").exists())
     }
 }
