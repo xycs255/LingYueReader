@@ -56,12 +56,35 @@ data class ChapterCard(
     val beats: String = "",
     /** 哪几拍已经写进正文（拍的序号，从 1 数）。节拍条数变了就清空，见 [withBeats]。 */
     val beatsDone: List<Int> = emptyList(),
+    /**
+     * 前六项是“AI 写整章草稿”一键写本章时 AI 拟的，作者还没确认：草稿页、细纲卡上挂“AI 拟的”小标签。
+     * 作者在细纲卡里改过这几项或点了确认就清掉。和 [auto] 分开：[auto] 是从细纲文档提取的指纹，文档改了要跟着变；
+     * AI 拟的是存死的一份，不跟细纲文档变，只等作者看。
+     */
+    val aiOutline: Boolean = false,
+    /** 节拍是一键写本章时 AI 拆的，作者还没确认（改过节拍或点了确认就清掉，见 [withBeats]）。 */
+    val aiBeats: Boolean = false,
 ) {
     /** 写之前的六项是不是都空着：判断要不要从细纲提取、算不算作者手写的细纲时看它。 */
     val outlineEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
 
     /** 细纲卡是不是空的：六项和节拍都没写；摘要不算。只写了节拍也算有内容。 */
     val isEmpty: Boolean get() = outlineEmpty && beats.isBlank()
+
+    /**
+     * 把 AI 拟的细纲补进来：[planned] 是写之前这一章实际用的细纲卡（含从细纲文档提取的项），已经有的项照旧，只补空着的；
+     * 补完就是一份存死的卡（[auto] 清零，不再跟细纲文档变），标成 AI 拟的、待作者确认。摘要、细纲章号、节拍不动。
+     */
+    fun withAiOutline(planned: ChapterCard, ai: ChapterCard): ChapterCard = copy(
+        facts = planned.facts.ifBlank { ai.facts },
+        boundary = planned.boundary.ifBlank { ai.boundary },
+        pov = planned.pov.ifBlank { ai.pov },
+        countdown = planned.countdown.ifBlank { ai.countdown },
+        hook = planned.hook.ifBlank { ai.hook },
+        threads = planned.threads.ifBlank { ai.threads },
+        auto = 0,
+        aiOutline = true,
+    )
 }
 
 /** 变更登记的种类。 */
@@ -183,6 +206,11 @@ data class WorkAssist(
     val beatVariants: Boolean = false,
     /** “这章写完了”收尾页上次的勾选。 */
     val finish: FinishOptions = FinishOptions(),
+    /**
+     * “AI 写整章草稿”点写本章时，细纲卡缺“本章事实与结果”先让 AI 拟一份、缺节拍先拆，存进细纲卡等作者确认，再逐拍写。
+     * 默认开；关了照原来：有什么写什么。
+     */
+    val draftPrep: Boolean = true,
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -1727,6 +1755,9 @@ class WorkStore(
                     val done = cardJson.opt("beatsDone")
                     require(done is JSONArray && (0 until done.length()).all { (done.opt(it) as? Number)?.toLong() in 1L..Beats.MAX.toLong() }) { "备份细纲卡节拍损坏" }
                 }
+                listOf("aiOutline", "aiBeats").forEach { key ->
+                    require(!cardJson.has(key) || cardJson.opt(key) is Boolean) { "备份细纲卡标记损坏" }
+                }
                 cardJson.checkedInteger("auto", Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份细纲卡指纹损坏")
                 cardJson.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份细纲卡时间损坏")
                 cardJson.toCard()
@@ -2135,12 +2166,14 @@ class WorkStore(
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
             .put("summary", summary).put("plan", plan).put("auto", auto).put("updatedAt", updatedAt)
             .put("beats", beats).put("beatsDone", JSONArray(beatsDone))
+            .put("aiOutline", aiOutline).put("aiBeats", aiBeats)
 
-        // 旧卡片没有节拍两项：读成空的。
+        // 旧卡片没有节拍两项、AI 拟的两个标记：读成空的、没标。
         private fun JSONObject.toCard() =
             ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"),
                 beats = optString("beats"),
-                beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty())
+                beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty(),
+                aiOutline = optBoolean("aiOutline"), aiBeats = optBoolean("aiBeats"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
@@ -2187,6 +2220,7 @@ class WorkStore(
             .put("thinking", thinking)
             .put("beatVariants", beatVariants)
             .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review))
+            .put("draftPrep", draftPrep)
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2275,6 +2309,8 @@ class WorkStore(
                     val d = FinishOptions()
                     FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review))
                 } ?: FinishOptions(),
+                // 旧数据没有这一项：一键写本章先补细纲、节拍（默认开）。
+                draftPrep = optBoolean("draftPrep", true),
             )
         }
 

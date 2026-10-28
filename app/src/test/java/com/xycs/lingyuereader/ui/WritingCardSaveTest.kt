@@ -134,4 +134,19 @@ class WritingCardSaveTest {
         assertEquals("沈默赶到渡口\n船不见了\n杜娘开门", threeBeats.beats)
         assertTrue(threeBeats.beatsDone.isEmpty())
     }
+
+    /** “AI 拟的 / AI 拆的”跟着各自的项合并：这一页确认过用这一页的，没动过用盘上最新的。 */
+    @Test
+    fun aiMarksMergeLikeTheFieldsTheyGuard() {
+        val opening = ChapterCard(facts = "林月入城", beats = "林月进城\n沈默开门", aiOutline = true, aiBeats = true)
+        val confirmed = mergeCard(opening, opening.copy(aiOutline = false), opening)
+        assertEquals(false, confirmed.aiOutline)
+        assertEquals(true, confirmed.aiBeats)
+        // 这一页只改了摘要；这期间节拍在别处确认了：用盘上的，不拿这一页的旧标记盖回去。
+        val disk = opening.copy(aiBeats = false)
+        val merged = mergeCard(opening, opening.copy(summary = "写完了"), disk)
+        assertEquals(true, merged.aiOutline)
+        assertEquals(false, merged.aiBeats)
+        assertEquals("写完了", merged.summary)
+    }
 }

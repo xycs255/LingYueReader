@@ -141,14 +141,15 @@ private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> =
     Triple("细纲章号", "发布章号顺延时填（比如拆成上下章）", { it.plan }),
 )
 
+/** 改一项。作者动了前六项，这份细纲就是作者认过的了：不再标“AI 拟的”。细纲章号不是 AI 拟的，改它不算。 */
 private fun ChapterCard.with(field: String, value: String) = when (field) {
-    "本章事实与结果" -> copy(facts = value)
-    "后文承接边界" -> copy(boundary = value)
-    "视角人物" -> copy(pov = value)
-    "倒计时" -> copy(countdown = value)
-    "章末钩子" -> copy(hook = value)
+    "本章事实与结果" -> copy(facts = value, aiOutline = false)
+    "后文承接边界" -> copy(boundary = value, aiOutline = false)
+    "视角人物" -> copy(pov = value, aiOutline = false)
+    "倒计时" -> copy(countdown = value, aiOutline = false)
+    "章末钩子" -> copy(hook = value, aiOutline = false)
     "细纲章号" -> copy(plan = value)
-    else -> copy(threads = value)
+    else -> copy(threads = value, aiOutline = false)
 }
 
 /**
@@ -184,6 +185,17 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
             edited.auto != base.auto -> edited.auto
             latest.auto != storedAtOpen.auto -> latest.auto
             else -> base.auto
+        },
+        // “AI 拟的 / AI 拆的”跟着它管的那几项走：这一页确认过（或改过）用这一页的，没动过用盘上最新的。
+        aiOutline = when {
+            edited.aiOutline != base.aiOutline -> edited.aiOutline
+            latest.aiOutline != storedAtOpen.aiOutline -> latest.aiOutline
+            else -> base.aiOutline
+        },
+        aiBeats = when {
+            edited.aiBeats != base.aiBeats -> edited.aiBeats
+            latest.aiBeats != storedAtOpen.aiBeats -> latest.aiBeats
+            else -> base.aiBeats
         },
     )
 }
@@ -357,6 +369,11 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 else -> null
                             }
                             if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            // 一键写本章时 AI 拟的：挂个小标签，看过没问题点一下确认；直接改哪一项也算确认。
+                            if (now.aiOutline) {
+                                row { AiDraftedNote("AI 拟的", "写本章时 AI 按本章及以前的资料拟的，还没确认。改哪一项都算确认。") }
+                                row { ActionRow("确认这份细纲") { card = (card ?: now).copy(aiOutline = false) } }
+                            }
                             if (failedAttempt != null && now != saved) row { ActionRow("细纲卡未保存 · 重试") { failedAttempt = null } }
                             // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
                             row {
@@ -403,6 +420,10 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                         modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 260.dp),
                                     )
                                 }
+                            }
+                            if (now.aiBeats) {
+                                row { AiDraftedNote("AI 拆的", "写本章时 AI 拆的，还没确认。改过节拍也算确认。") }
+                                row { ActionRow("确认这些节拍") { card = (card ?: now).copy(aiBeats = false) } }
                             }
                             row {
                                 BusyActionRow(splitting, busyText = "AI 正在拆节拍……", title = "AI 拆节拍", enabled = aiConfig.ready) {
@@ -458,7 +479,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }
             }
             proposal?.let { p ->
-                GlassDialog(show = true, title = "AI 拟的细纲", summary = "按总纲、前后几章和上一章结尾拟的，看过再用", onDismissRequest = { proposal = null }) {
+                GlassDialog(show = true, title = "AI 拟的细纲", summary = "按本章及以前的资料、本章细纲和上一章结尾拟的，看过再用", onDismissRequest = { proposal = null }) {
                     Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         CARD_FIELDS.dropLast(1).forEach { (label, _, get) ->
                             val v = get(p)
@@ -472,7 +493,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         onDismiss = { proposal = null },
                         onConfirm = {
                             proposal = null
-                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0)
+                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0, aiOutline = false)
                             info = info?.copy(source = null)
                         },
                         confirmText = "用这份",
@@ -546,6 +567,16 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }
             }
         }
+    }
+}
+
+/** 细纲卡、草稿页上“AI 拟的 / AI 拆的”那一行：左边小标签（提醒色，等作者确认），右边一句说明。 */
+@Composable
+internal fun AiDraftedNote(tag: String, text: String) {
+    val c = LocalGroupedColors.current
+    GroupedRow {
+        Tag(tag, c.warning)
+        Text(text, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f).padding(start = 8.dp))
     }
 }
 

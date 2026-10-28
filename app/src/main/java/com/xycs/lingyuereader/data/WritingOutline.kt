@@ -322,9 +322,9 @@ object ChapterOutlines {
 /** 细纲卡前六项的指纹：看作者改没改过提取出来的内容。 */
 internal fun ChapterCard.outlineHash(): Int = listOf(facts, boundary, pov, countdown, hook, threads).hashCode()
 
-/** 前六项换成从细纲提取的，记下指纹；摘要、细纲章号、节拍不动。 */
+/** 前六项换成从细纲提取的，记下指纹；摘要、细纲章号、节拍不动。换成细纲里的就不再是 AI 拟的。 */
 fun ChapterCard.withOutline(o: ChapterCard): ChapterCard =
-    copy(facts = o.facts, boundary = o.boundary, pov = o.pov, countdown = o.countdown, hook = o.hook, threads = o.threads, auto = o.outlineHash())
+    copy(facts = o.facts, boundary = o.boundary, pov = o.pov, countdown = o.countdown, hook = o.hook, threads = o.threads, auto = o.outlineHash(), aiOutline = false)
 
 private fun ChapterCard.sameFields(o: ChapterCard) = outlineHash() == o.outlineHash()
 
