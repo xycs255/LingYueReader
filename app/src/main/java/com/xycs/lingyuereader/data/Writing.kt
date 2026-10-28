@@ -1068,32 +1068,91 @@ class WorkStore(
         return update(workId) { w -> w.copy(volumes = w.volumes.filterNot { it.id == volumeId }) }
     }
 
-    /** 章往前（[delta] < 0）或往后挪一位；在卷首往前挪就挪到上一卷末尾，卷末往后挪就到下一卷开头。 */
-    fun moveChapter(workId: String, chapterId: String, delta: Int): Work? = update(workId) { w ->
+    /**
+     * 章往前（[delta] < 0）或往后挪一位；在卷首往前挪就挪到上一卷末尾，卷末往后挪就到下一卷开头。
+     * 和拖动一样走 [moveChapterTo]（章号会变的章固定细纲章号），返回改后的作品；到头了不动，返回原作品。
+     */
+    fun moveChapter(workId: String, chapterId: String, delta: Int): Work? {
+        val w = get(workId) ?: return null
         val vi = w.volumes.indexOfFirst { v -> v.chapters.any { it.id == chapterId } }
-        if (vi < 0) return@update w
-        val chapters = w.volumes[vi].chapters.toMutableList()
-        val ci = chapters.indexOfFirst { it.id == chapterId }
+        if (vi < 0) return w
+        val ci = w.volumes[vi].chapters.indexOfFirst { it.id == chapterId }
         val target = ci + delta.coerceIn(-1, 1)
-        val volumes = w.volumes.toMutableList()
-        when {
-            target in chapters.indices -> {
-                chapters.add(target, chapters.removeAt(ci))
-                volumes[vi] = volumes[vi].copy(chapters = chapters)
-            }
-            target < 0 && vi > 0 -> {
-                val c = chapters.removeAt(ci)
-                volumes[vi] = volumes[vi].copy(chapters = chapters)
-                volumes[vi - 1] = volumes[vi - 1].let { it.copy(chapters = it.chapters + c) }
-            }
-            target >= chapters.size && vi < volumes.lastIndex -> {
-                val c = chapters.removeAt(ci)
-                volumes[vi] = volumes[vi].copy(chapters = chapters)
-                volumes[vi + 1] = volumes[vi + 1].let { it.copy(chapters = listOf(c) + it.chapters) }
-            }
-            else -> return@update w
+        val size = w.volumes[vi].chapters.size
+        val (volume, index) = when {
+            target in 0 until size -> w.volumes[vi].id to target
+            target < 0 && vi > 0 -> w.volumes[vi - 1].id to w.volumes[vi - 1].chapters.size
+            target >= size && vi < w.volumes.lastIndex -> w.volumes[vi + 1].id to 0
+            else -> return w
         }
-        w.copy(volumes = volumes)
+        moveChapterTo(workId, chapterId, volume, index)
+        return get(workId)
+    }
+
+    /**
+     * 把一章移到 [volumeId] 卷的第 [index] 个（从 0 数，按去掉这一章后的那一卷算）：本卷内调顺序、跨卷都用它。
+     * 位置没变、章或卷不在了返回空，什么都不写。
+     *
+     * 按“第几章”引用章的记录（账本、设定包，见 [ChapterMove]）不能跟着改，所以章号会因为这次移动而变的章，
+     * 先把原来的章号写进细纲卡的细纲章号，再换目录顺序：两步都在作品锁里；卡片先写，中途断电时卡上的章号和旧顺序也一致。
+     * 定稿只锁正文，不锁顺序：定稿的章照样能移动，正文不动。
+     */
+    @Synchronized
+    fun moveChapterTo(workId: String, chapterId: String, volumeId: String, index: Int): ChapterMove? = withProcessLock {
+        val work = get(workId) ?: return@withProcessLock null
+        val chapter = work.chapter(chapterId) ?: return@withProcessLock null
+        val next = work.withChapterAt(chapterId, volumeId, index) ?: return@withProcessLock null
+        if (next.order() == work.order()) return@withProcessLock null
+        val pins = if (numberedRecords(workId)) numberPins(work, next) else emptyMap()
+        pins.forEach { (id, plan) ->
+            val old = card(workId, id)
+            val pinned = old.copy(plan = plan, updatedAt = maxOf(clock(), old.updatedAt + 1))
+            check(DurableFiles.write(cardFile(workId, id), pinned.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+        }
+        val saved = requireNotNull(update(workId) { w -> w.withChapterAt(chapterId, volumeId, index) ?: w }) { "作品不在了" }
+        ChapterMove(chapterId, chapter.title, work.order(), saved.order(), pins, saved.chapters.indexOfFirst { it.id == chapterId } + 1)
+    }
+
+    /**
+     * 撤销一次移动：目录还是移动后的样子（[ChapterMove.after]）才换回原来的顺序，否则抛 [ChapterMoveConflict]，不覆盖后来的修改。
+     * 这次写进去的细纲章号，卡上还是那个值的清掉；作者之后自己改过的留着。章名、字数、状态都用现在的。
+     */
+    @Synchronized
+    fun undoChapterMove(workId: String, move: ChapterMove): Work = withProcessLock {
+        val work = requireNotNull(get(workId)) { "作品不在了" }
+        if (work.order() != move.after) throw ChapterMoveConflict()
+        move.pinned.forEach { (id, plan) ->
+            val old = card(workId, id)
+            if (old.plan == plan) {
+                val cleared = old.copy(plan = "", updatedAt = maxOf(clock(), old.updatedAt + 1))
+                check(DurableFiles.write(cardFile(workId, id), cleared.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+            }
+        }
+        requireNotNull(update(workId) { w ->
+            val byId = w.chapters.associateBy { it.id }
+            val titles = w.volumes.associate { it.id to it.title }
+            w.copy(volumes = move.before.map { (vid, ids) -> Volume(vid, titles.getValue(vid), ids.map { byId.getValue(it) }) })
+        }) { "作品不在了" }
+    }
+
+    /** 作品里有没有按章号引用章的记录：账本里写了章号的条目，或者设定包里有文档（细纲、伏笔表、察觉表常按“第几章”写）。读不出时按有算。 */
+    private fun numberedRecords(workId: String): Boolean =
+        pack(workId).isNotEmpty() || runCatching {
+            ledger(workId).any { it.from != null || it.until != null || it.payoff != null || it.closed != null }
+        }.getOrDefault(true)
+
+    /**
+     * 从 [before] 换成 [after] 时章号会变的章（细纲章号空着、章名里没写第几章、目录位置变了），
+     * 返回章 id → 原来的章号，写进细纲卡就能保持不变。
+     */
+    private fun numberPins(before: Work, after: Work): Map<String, String> {
+        val old = before.chapters.withIndex().associate { it.value.id to it.index }
+        val new = after.chapters.withIndex().associate { it.value.id to it.index }
+        return before.chapters.filter { old[it.id] != new[it.id] && card(before.id, it.id).plan.isBlank() }
+            .mapNotNull { c ->
+                val was = before.chapterNumber(c.id) ?: return@mapNotNull null
+                if (after.chapterNumber(c.id) == was) null else c.id to was.toString()
+            }.toMap()
     }
 
     // ---------- 正文 ----------

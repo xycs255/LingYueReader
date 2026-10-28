@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -139,6 +141,7 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
+import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -400,6 +403,15 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     // 长按哪一章 / 点了哪一卷弹出菜单；菜单里选了改名、删除再弹对话框。
     var chapterMenu by remember { mutableStateOf<String?>(null) }
     var volumeMenu by remember { mutableStateOf<String?>(null) }
+    // 作品页色块长按弹出的菜单（和规划树长按同一份菜单，弹在那一格上）。
+    var mapMenu by remember { mutableStateOf<String?>(null) }
+    // 规划树每章的小标记（细纲卡、节拍、伏笔），作品或账本变了重读。
+    var treeMarks by remember { mutableStateOf<Map<String, com.xycs.lingyuereader.data.ChapterTreeMarks>>(emptyMap()) }
+    val stats by vm.writing.stats.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    val drag = remember(listState) { TreeDragController(listState) }
+    val scope = rememberCoroutineScope()
     var collapsedVolumeIds by rememberWritingTreeIds(workId, "volumes")
     var reorderMode by rememberSaveable(workId) { mutableStateOf(false) }
     var renamingChapter by remember { mutableStateOf<WorkChapter?>(null) }
@@ -411,7 +423,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val pendingChanges = allChanges[workId].orEmpty().count { it.pending }
     // 检查规则有几条（设定包改过就重读）；改状态时顺便看看这一章合不合规则。
     var ruleCount by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
+    // 检查规则里写的篇幅：规划树每章的字数小条按它画。
+    var lengthRule by remember { mutableStateOf<CheckRule.Length?>(null) }
+    LaunchedEffect(workId, pack) {
+        val rules = vm.writing.rules(workId).rules
+        ruleCount = rules.size
+        lengthRule = rules.filterIsInstance<CheckRule.Length>().firstOrNull()
+    }
     val summaryProgress by vm.writingAi.summaries.collectAsStateWithLifecycle()
     // 整理进设定包：批量整理的进度、哪些章还没整理（正文改过的也算），标为定稿后的提示。
     val syncAll by vm.writingAi.sync.collectAsStateWithLifecycle()
@@ -441,9 +459,46 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val lastSummary = remember { arrayOfNulls<SummaryProgress>(1) }
     if (summary != null) lastSummary[0] = summary
 
+    LaunchedEffect(workId, work, ledgers[workId]) { treeMarks = vm.writing.treeMarks(workId) }
+
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
     if (work == null) return
+    drag.resolve = { ch, y -> treeDropAt(work, ch.id, collapsedVolumeIds, drag.slots(), y) }
+
+    val treeActions = WritingTreeActions(
+        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
+        onToggleVolume = { id ->
+            collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
+        },
+        onOpenVolumeMenu = { volumeMenu = it.id },
+        onDismissVolumeMenu = { volumeMenu = null },
+        onRenameVolume = { renamingVolume = it },
+        onDeleteVolume = { deletingVolume = it },
+        onOpenChapter = { vm.open(Screen.Editor(workId, it.id)) },
+        onOpenCard = { vm.open(Screen.ChapterCard(workId, it.id)) },
+        onOpenChapterMenu = { chapterMenu = it.id },
+        onDismissChapterMenu = { chapterMenu = null },
+        onRenameChapter = { renamingChapter = it },
+        onStatusChapter = { statusFor = it },
+        onMoveChapter = { ch, delta -> vm.writing.moveChapter(workId, ch.id, delta) },
+        onDeleteChapter = { deletingChapter = it },
+        onAddChapter = { v ->
+            vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
+        },
+        onToggleReorder = { reorderMode = !reorderMode },
+        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
+        onDropChapter = { ch, volumeId, index ->
+            vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
+                scope.launch {
+                    // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。
+                    val pinned = if (move.pinned.isEmpty()) "" else "（${move.pinned.size} 章固定了细纲章号）"
+                    val result = snackbar.showSnackbar("已把《${move.title}》移到第 ${move.position} 章$pinned", actionLabel = "撤销")
+                    if (result == SnackbarResult.ActionPerformed) vm.writing.undoChapterMove(workId, move) { vm.showMessage("已撤销移动") }
+                }
+            }
+        },
+    )
 
     val launchers = ExportFormat.entries.associateWith { f ->
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(f.mime)) { uri -> uri?.let { vm.exportWork(workId, f, it) } }
@@ -490,9 +545,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     ) { padding ->
         // 配色在骨架提供的配色里面读。
         val c = LocalGroupedColors.current
+        val density = LocalDensity.current
+        drag.topInset = with(density) { padding.calculateTopPadding().toPx() }
+        drag.bottomInset = with(density) { padding.calculateBottomPadding().toPx() }
+        TreeDragAutoScroll(drag)
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
+                Modifier.fillMaxSize().overScrollVertical().onGloballyPositioned { drag.listCoordinates = it },
+                state = listState,
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
                 overscrollEffect = null,
             ) {
@@ -540,6 +600,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         foreshadowNote = foreshadowNote,
                         ruleCount = ruleCount,
                         busy = busy,
+                        unsyncedIds = if (pack?.isNotEmpty() == true) unsynced else emptySet(),
+                        openPromises = ledgers[workId]?.count { it.kind == com.xycs.lingyuereader.data.LedgerKind.PROMISE && !it.done },
+                        aiProvider = aiConfig.takeIf { it.ready }?.providerLabel,
+                        todayWords = stats.on(LocalDate.now()),
+                        dailyGoal = stats.goal,
+                        mapMenuId = mapMenu,
+                        chapterMenu = { ch -> ChapterMenuPopup(true, ch, treeActions, onDismiss = { mapMenu = null }) },
                         actions = WritingWorkOverviewActions(
                             openChapter = { ch -> vm.open(Screen.Editor(workId, ch.id)) },
                             newChapter = {
@@ -562,6 +629,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                     else -> syncConfirm = true
                                 }
                             },
+                            openChapterMenu = { mapMenu = it.id },
                         ),
                     )
                 }
@@ -573,30 +641,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     reorderMode = reorderMode,
                     volumeMenuId = volumeMenu,
                     chapterMenuId = chapterMenu,
-                    actions = WritingTreeActions(
-                        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
-                        onToggleVolume = { id ->
-                            collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
-                        },
-                        onOpenVolumeMenu = { volumeMenu = it.id },
-                        onDismissVolumeMenu = { volumeMenu = null },
-                        onRenameVolume = { renamingVolume = it },
-                        onDeleteVolume = { deletingVolume = it },
-                        onOpenChapter = { vm.open(Screen.Editor(workId, it.id)) },
-                        onOpenCard = { vm.open(Screen.ChapterCard(workId, it.id)) },
-                        onOpenChapterMenu = { chapterMenu = it.id },
-                        onDismissChapterMenu = { chapterMenu = null },
-                        onRenameChapter = { renamingChapter = it },
-                        onStatusChapter = { statusFor = it },
-                        onMoveChapter = { ch, delta -> vm.writing.moveChapter(workId, ch.id, delta) },
-                        onDeleteChapter = { deletingChapter = it },
-                        onAddChapter = { v ->
-                            vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
-                        },
-                        onToggleReorder = { reorderMode = !reorderMode },
-                    ),
+                    actions = treeActions,
+                    marks = treeMarks,
+                    length = lengthRule,
+                    drag = drag,
                 )
             }
+            // 规划树拖着的那一章浮在列表上面跟手。
+            TreeDragGhost(drag)
             // 预览、导出时的忙碌条浮在标题栏下面，不占地方：出现、消失时页面不被往下顶。
             AnimatedVisibility(
                 visible = busy,

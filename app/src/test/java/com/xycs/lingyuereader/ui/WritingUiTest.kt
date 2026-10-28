@@ -124,6 +124,9 @@ class WritingUiTest {
 
         // 返回作品页，字数跟着变；离开时存了一个历史版本。
         compose.onNodeWithContentDescription("返回").performClick()
+        // 作品页顶上多了进度环和色块带，规划树里的这一章可能在屏幕下面：先滚到它。
+        waitForText("作品进度")
+        scrollToChapter("第1章")
         waitForText("13 字")
         compose.waitUntil(10_000) { store.history(work.id, work.chapters[0].id).isNotEmpty() }
         // 今天的码字数。

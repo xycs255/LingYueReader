@@ -5,6 +5,9 @@ import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterMove
+import com.xycs.lingyuereader.data.ChapterMoveConflict
+import com.xycs.lingyuereader.data.ChapterTreeMarks
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.Foreshadow
@@ -167,6 +170,29 @@ class WritingModel(
     fun deleteChapter(workId: String, chapterId: String) = change("删除失败", { store.deleteChapter(workId, chapterId) })
     fun deleteVolume(workId: String, volumeId: String) = change("删除失败", { store.deleteVolume(workId, volumeId) })
     fun moveChapter(workId: String, chapterId: String, delta: Int) = change("移动失败", { store.moveChapter(workId, chapterId, delta) })
+
+    /**
+     * 拖动规划树：把一章移到 [volumeId] 卷的第 [index] 个（见 [WorkStore.moveChapterTo]）。真的动了才调 [then]，
+     * 带着撤销用的记录；拖回原位什么都不写，也不调。
+     */
+    fun moveChapterTo(workId: String, chapterId: String, volumeId: String, index: Int, then: (ChapterMove) -> Unit = {}) {
+        var move: ChapterMove? = null
+        change("移动失败", {
+            move = store.moveChapterTo(workId, chapterId, volumeId, index)
+            if (move != null) store.get(workId) else null
+        }) { move?.let(then) }
+    }
+
+    /** 撤销一次拖动；目录之后又改过时不撤（[ChapterMoveConflict]），提示作者。 */
+    fun undoChapterMove(workId: String, move: ChapterMove, then: () -> Unit = {}) =
+        change("没有撤销", { store.undoChapterMove(workId, move) }) { then() }
+
+    /** 规划树上每章的小标记（细纲卡、节拍、AI 拟的、账本里的伏笔），按章 id。 */
+    suspend fun treeMarks(workId: String): Map<String, ChapterTreeMarks> = withContext(disk) {
+        val work = store.get(workId) ?: return@withContext emptyMap()
+        val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
+        work.chapters.associate { c -> c.id to ChapterTreeMarks.of(store.card(workId, c.id), store.chapterNo(work, c.id), ledger) }
+    }
 
     // ---------- 正文 ----------
 

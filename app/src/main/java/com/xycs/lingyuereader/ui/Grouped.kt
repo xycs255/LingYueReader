@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
@@ -54,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
@@ -63,6 +65,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
@@ -70,6 +73,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -1766,4 +1771,113 @@ internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
         lineHeight = 18.sp,
         modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
     )
+}
+
+// ---------- 进度与入口卡片 ----------
+
+/**
+ * 一个比例第一次出现时从 0 填到 [target]（[Motion.LONG] 标准缓动），之后变了用 [Motion.MEDIUM] 过去；减少动效、墨水屏时直接到位。
+ * 记在可保存状态里：放在懒列表的行里，滚出去再滚回来不再从 0 填一遍。
+ */
+@Composable
+internal fun animatedFraction(target: Float): Float {
+    val goal = target.coerceIn(0f, 1f)
+    var filled by rememberSaveable { mutableStateOf(false) }
+    val value = remember { Animatable(if (filled || Effects.noMotion) goal else 0f) }
+    LaunchedEffect(goal) {
+        value.animateTo(goal, Motion.standard(if (filled) Motion.MEDIUM else Motion.LONG))
+        filled = true
+    }
+    return value.value
+}
+
+/**
+ * 进度环：底圈是 [GroupedColors.fill]，进度用 [color]（默认强调色）、圆头，从 12 点顺时针；中间放 [content]（总字数这类）。
+ * 第一次出现填一次（[animatedFraction]）。读屏念 [description]，并按进度条报比例。
+ */
+@Composable
+internal fun ProgressRing(
+    fraction: Float,
+    description: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 96.dp,
+    stroke: Dp = 8.dp,
+    color: Color = LocalGroupedColors.current.tint,
+    content: @Composable () -> Unit = {},
+) {
+    val c = LocalGroupedColors.current
+    val shown = animatedFraction(fraction)
+    Box(
+        modifier.size(size).semantics {
+            contentDescription = description
+            progressBarRangeInfo = ProgressBarRangeInfo(fraction.coerceIn(0f, 1f), 0f..1f)
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = stroke.toPx()
+            val topLeft = Offset(w / 2, w / 2)
+            val arc = Size(this.size.width - w, this.size.height - w)
+            drawArc(c.fill, 0f, 360f, false, topLeft, arc, style = Stroke(w))
+            if (shown > 0f) drawArc(color, -90f, 360f * shown, false, topLeft, arc, style = Stroke(w, cap = StrokeCap.Round))
+        }
+        content()
+    }
+}
+
+/**
+ * 细进度条：[fraction] 那一截用 [color]（默认强调色），底是 [GroupedColors.fill]，两头圆。
+ * [animate] 为真时第一次出现填一次（[animatedFraction]）；一屏有很多条的（规划树每章的字数小条）传假，直接画。
+ */
+@Composable
+internal fun FillBar(
+    fraction: Float,
+    modifier: Modifier = Modifier,
+    color: Color = LocalGroupedColors.current.tint,
+    height: Dp = 4.dp,
+    animate: Boolean = true,
+) {
+    val c = LocalGroupedColors.current
+    val shown = if (animate) animatedFraction(fraction) else fraction.coerceIn(0f, 1f)
+    Canvas(modifier.height(height)) {
+        val r = CornerRadius(this.size.height / 2)
+        drawRoundRect(c.fill, cornerRadius = r)
+        if (shown > 0f) drawRoundRect(color, size = Size(maxOf(this.size.height, this.size.width * shown), this.size.height), cornerRadius = r)
+    }
+}
+
+/**
+ * 大入口卡片（作品页的 2×2）：左上一个淡底图标（同 [RowIcon]），右上小箭头；下面名字（15sp 半粗）和要紧的状态（次要色 12sp，最多两行）。
+ * 卡片底色、16dp 圆角、至少 84dp 高，整张能点，按下有和行一样的灰底；读屏把名字和状态连成一句念。
+ */
+@Composable
+internal fun EntryCard(
+    title: String,
+    value: String?,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Column(
+        modifier
+            .heightIn(min = 84.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.cell)
+            .background(pressHighlight(pressed))
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RowIcon(icon, c.tint)
+            Spacer(Modifier.weight(1f))
+            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(title, color = if (enabled) c.label else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (value != null) Text(value, color = c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
 }
