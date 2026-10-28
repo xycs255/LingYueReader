@@ -199,7 +199,7 @@ class ProseRequestTest {
         assertTrue("这一章现在的稿子：" in revise.user)
         assertTrue("按审读意见修订这一章" in revise.system)
         assertFalse("正文创作提示词" in revise.system)
-        assertEquals(1.3, revise.body.getDouble("temperature"), 0.001)
+        assertEquals(1.1, revise.body.getDouble("temperature"), 0.001)
         // 审读的判断标准照旧，本章任务只给一次（系统提示里）。
         val review = sent.first { "【当前阶段：审读】" in it.user }
         assertTrue("核时地、在场与知情" in review.user)

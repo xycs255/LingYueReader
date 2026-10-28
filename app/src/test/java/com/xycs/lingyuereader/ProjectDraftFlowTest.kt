@@ -292,8 +292,8 @@ class ProjectDraftFlowTest {
         val state = completed(vm)
         assertEquals(state.error, DraftStage.READY, state.stage)
         assertCounts(create = 1, review = 2, revise = 1)
-        assertEquals(listOf(1.3), asked.filter { it.phase == "CREATE" }.map { it.temperature })
-        assertEquals(listOf(1.3), asked.filter { it.phase == "REVISE" }.map { it.temperature })
+        assertEquals(listOf(1.1), asked.filter { it.phase == "CREATE" }.map { it.temperature })
+        assertEquals(listOf(1.1), asked.filter { it.phase == "REVISE" }.map { it.temperature })
         assertTrue(asked.filter { it.phase == "REVIEW" }.all { it.temperature == null })
     }
 
