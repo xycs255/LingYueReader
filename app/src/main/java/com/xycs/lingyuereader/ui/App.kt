@@ -240,6 +240,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.ChapterFinish -> ChapterFinishScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkFormatSettings -> WorkFormatSettingsScreen(vm, screen.workId)
             is Screen.WorkBanned -> WorkBannedScreen(vm, screen.workId)
+            is Screen.WorkLearned -> WorkLearnedScreen(vm, screen.workId)
             is Screen.WorkFormat -> WorkFormatScreen(vm, screen.workId)
             Screen.CrashLog -> CrashLogScreen(vm)
         }

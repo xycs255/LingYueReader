@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader
 
 import com.xycs.lingyuereader.data.FinishOptions
+import com.xycs.lingyuereader.data.LearnCandidate
 import com.xycs.lingyuereader.data.SyncGroup
 
 /**
@@ -13,8 +14,8 @@ enum class FinishStage { SETUP, RUNNING, REVIEW_FOUND, AI_FAILED, CONFIRM, APPLY
 /** 收尾里的一步现在怎样：等着、在做、好了、出错，或者这次不做（没勾）。 */
 enum class StepState(val label: String) { WAITING("等着"), RUNNING("在做"), DONE("好了"), FAILED("出错"), SKIPPED("不做") }
 
-/** 点“完成收尾”后依次写的三样；写成了的记在 [FinishRun.wrote] 里，重试时跳过，不重复写。 */
-enum class FinishWrite(val label: String) { SYNC("写入整理条目"), SUMMARY("把摘要写进细纲卡"), FINAL("定稿") }
+/** 点“完成收尾”后依次写的几样；写成了的记在 [FinishRun.wrote] 里，重试时跳过，不重复写。 */
+enum class FinishWrite(val label: String) { SYNC("写入整理条目"), SUMMARY("把摘要写进细纲卡"), LEARN("记下学到的"), FINAL("定稿") }
 
 /**
  * 一章的收尾（存在 [WritingAi] 里：中途离开页面再回来还在；进程被杀就从头来）。
@@ -42,6 +43,14 @@ data class FinishRun(
     /** 写入时没成的那一步和原因（“把摘要写进细纲卡没成：……”）；重试成功后清掉。 */
     val failedWrite: FinishWrite? = null,
     val writeError: String? = null,
+    /** 这章有没有采纳进正文的 AI 原稿：没有就不显示“从这章的改稿里学”（打开收尾页时在后台读）。 */
+    val learnable: Boolean = false,
+    val learn: StepState = StepState.WAITING,
+    /** 改稿学习没做全的原因（AI 归纳没成、段落对不齐）：照实给作者看，本机比对出的照样能勾。 */
+    val learnError: String? = null,
+    /** 提给作者的候选和勾了的（[LearnCandidate.key]）。 */
+    val candidates: List<LearnCandidate> = emptyList(),
+    val learnPicked: Set<String> = emptySet(),
 ) {
     /**
      * 这一章的收尾手上有东西：在跑、在写入、审出问题等着选、没成等着重试、等着确认。这时换一章收尾会把它丢掉

@@ -249,7 +249,22 @@ object WritePrompts {
             append('\n')
         }
         if (assist.banned.isNotEmpty()) append("下面这些说法一个都不要用：").append(assist.banned.joinToString("、") { "「$it」" }).append('\n')
+        append(learned(assist))
     }.trim().let { if (it.isEmpty()) it else "$VOICE_HEADER\n$it" }
+
+    /** 学到的规则那一节的标题：测试、发送内容里认它。 */
+    const val LEARNED_HEADER = "作者改稿里学到的（作者反复这样改过，照着写）："
+
+    /**
+     * 从改稿学到的写法规则（[WorkAssist.learned] 最近 [WorkAssist.PROMPT_LEARNED] 条）：接在写法要求后面；没有为空。
+     * 写正文（[proseTail]）和改稿（[voiceTail]）带，审稿、拟细纲、整理不带。
+     */
+    private fun learned(assist: WorkAssist): String = assist.learned.takeLast(WorkAssist.PROMPT_LEARNED).let { list ->
+        if (list.isEmpty()) "" else buildString {
+            append('\n').append(LEARNED_HEADER).append('\n')
+            list.forEach { append("- ").append(it.trim()).append('\n') }
+        }
+    }
 
     /** 作者以前采纳过的修改、没采纳的改法（最近几条，太长的不要），各一段；都没有为空。 */
     private fun examples(assist: WorkAssist): String = buildString {
@@ -591,6 +606,7 @@ object WritePrompts {
         voiceRules(norms + "\n" + assist.style, assist.flavor).forEach { append("- ").append(it).append('\n') }
         if (assist.aiCliche) append("- 避开“嘴角勾起”“眼中闪过”这类套话。\n")
         if (assist.banned.isNotEmpty()) append("- 下面这些说法一个都不要用：").append(assist.banned.joinToString("、") { "「$it」" }).append('\n')
+        append(learned(assist))
     }.trim()
 
 
@@ -645,6 +661,38 @@ object WritePrompts {
         append("保留全部关键情节、推动局面的对话和章末钩子，不添新情节，不改人称和口吻，段落顺序照原稿。\n")
         append("只输出精简后的完整正文。")
     }, voice)
+
+    /**
+     * 草稿页“这段不行”：只重写 [target] 这一段，[before]、[after] 是它前后各一段（只作语境）。[fixes] 是作者选的原因换成的具体改法
+     * （[com.xycs.lingyuereader.data.FixReason.fix]），[voice] 是写正文的写法要求（[proseTail]），接在最后。
+     */
+    fun fixParagraph(title: String, target: String, before: String, after: String, fixes: List<String>, voice: String = ""): String = withVoice(buildString {
+        if (title.isNotBlank()) append("章节：").append(title).append('\n')
+        if (before.isNotBlank()) append("前一段（只作语境，不要改）：\n").append(before.trim()).append("\n\n")
+        append("要重写的这一段：\n").append(target.trim()).append("\n\n")
+        if (after.isNotBlank()) append("后一段（只作语境，不要改）：\n").append(after.trim()).append("\n\n")
+        append("作者觉得这一段不行，按下面的要求重写它：\n")
+        fixes.filter { it.isNotBlank() }.forEach { append("- ").append(it.trim()).append('\n') }
+        append("不改情节、人物和这段交代的事实，和前后两段接得上，人称、口吻照原稿。只输出重写好的这一段。")
+    }, voice)
+
+    /**
+     * 从改稿里学：[pairs] 是几对“AI 原段 → 作者改后”（改后是 [com.xycs.lingyuereader.data.EditLearning.DELETED] 的是整段删了），
+     * 让 AI 归纳作者反复的改法，最多 5 条；[known] 是已经记下的（黑名单和学到的规则），不要重复。只要 JSON，
+     * 按 [com.xycs.lingyuereader.data.EditLearning.parseAi] 读。求稳：不带温度、能关思考的模型关掉思考。
+     */
+    fun learnRules(pairs: List<Pair<String, String>>, known: List<String>): String = buildString {
+        append("下面是 AI 写的小说段落和作者改过以后的样子，每对前面是编号：\n\n")
+        pairs.forEachIndexed { i, (b, a) ->
+            append(i + 1).append(". AI 原来写的：").append(b.trim()).append('\n')
+            append("   作者改成：").append(a.trim()).append("\n\n")
+        }
+        if (known.isNotEmpty()) append("这些已经记下了，不要重复：").append(known.joinToString("；")).append("\n\n")
+        append("请归纳作者反复的改法，写成以后写正文时照着做的规则，最多 5 条，宁缺毋滥：只写几对里都看得出来的，一对里偶然的不写。\n")
+        append("每条二选一：kind 是 ban 时，text 是作者一再删掉的一个说法（原段里一字不差的两到二十个字）；")
+        append("kind 是 rule 时，text 是一句写法要求（三十字以内，说怎么写，不要照抄正文）。p 是最能说明这条的那一对的编号。\n")
+        append("只输出 JSON：{\"rules\":[{\"kind\":\"rule\",\"text\":\"\",\"p\":1}]}，看不出来就输出 {\"rules\":[]}。")
+    }
 
     /** 灵感：[recent] 是写到这里的原文（本章已写的部分，前面接上一章的结尾）。 */
     fun idea(kind: IdeaKind, recent: String, chapterTitle: String, extra: String = ""): String = buildString {

@@ -881,7 +881,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     GroupedSection(
                         header = "AI 腔",
                         footer = "本机按内置清单标出套话，不花钱；AI 写正文、改稿时也叮嘱它别这样写。" +
-                            "“我的黑名单”里的说法正文里出现就标出（对白里也算），AI 写的时候一个都不用。",
+                            "“我的黑名单”里的说法正文里出现就标出（对白里也算），AI 写的时候一个都不用。" +
+                            "“从改稿学到的”是收尾时从你的改稿里学到、你勾过的写法规则，AI 写正文、改稿时照着写。",
                     ) {
                         row {
                             ToggleRow("查 AI 腔", assist.aiCliche) { on ->
@@ -891,6 +892,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         row {
                             NavRow("我的黑名单", value = if (assist.banned.isEmpty()) "空" else "${assist.banned.size} 条") {
                                 vm.open(Screen.WorkBanned(workId))
+                            }
+                        }
+                        row {
+                            NavRow("从改稿学到的", value = if (assist.learned.isEmpty()) "空" else "${assist.learned.size} 条") {
+                                vm.open(Screen.WorkLearned(workId))
                             }
                         }
                     }
@@ -1138,6 +1144,69 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
                                 Text(b, color = c.label, fontSize = 15.sp, modifier = Modifier.weight(1f))
                                 IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unban(b) } }) {
                                     Icon(LingYueIcons.Delete, contentDescription = "从黑名单删去「$b」", tint = c.destructive)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 从改稿学到的：“这章写完了”时从作者的改稿里学到、作者勾过的写法规则。这里能看、能删、能手动加（照“我的黑名单”）。
+ * 最近加的排在最上面；AI 写正文、改稿时带最近的 [WorkAssist.PROMPT_LEARNED] 条。
+ */
+@Composable
+fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val learned = assists[workId]?.learned.orEmpty()
+    var input by remember(workId) { mutableStateOf("") }
+    val rule = input.trim()
+    val canAdd = rule.isNotEmpty() && rule !in learned
+    fun add() {
+        if (!canAdd) return
+        vm.writingAi.updateAssist(workId) { it.learn(rule) }
+        input = ""
+    }
+    SubPageScaffold("从改稿学到的", onBack = { vm.back() }) { padding ->
+        val c = LocalGroupedColors.current
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            item(key = "add") {
+                GroupedSection(
+                    header = "加一条",
+                    footer = "写一句写法要求（比如“对白后面不要再解释人物的心思”），AI 写正文、改稿时照着写，审稿、拟细纲、整理不用。" +
+                        "带最近的 ${WorkAssist.PROMPT_LEARNED} 条，最多记 ${WorkAssist.KEEP_LEARNED} 条，满了丢最早的。" +
+                        "“这章写完了”时勾上“从这章的改稿里学”，学到的你勾了也记在这里。",
+                ) {
+                    row {
+                        TextField(
+                            value = input,
+                            // 一条规则不跨段：换行去掉。
+                            onValueChange = { input = it.replace("\n", "") },
+                            label = "一条写法规则",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        )
+                    }
+                    row { ActionRow("加进去", enabled = canAdd) { add() } }
+                }
+            }
+            item(key = "list") {
+                GroupedSection(header = if (learned.isEmpty()) null else "${learned.size} 条") {
+                    if (learned.isEmpty()) row { EmptyRow("还没有。") }
+                    learned.asReversed().forEach { r ->
+                        row {
+                            GroupedRow {
+                                Text(r, color = c.label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unlearn(r) } }) {
+                                    Icon(LingYueIcons.Delete, contentDescription = "删去「$r」", tint = c.destructive)
                                 }
                             }
                         }

@@ -31,6 +31,8 @@ import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.FinishOptions
+import com.xycs.lingyuereader.data.EditLearning
+import com.xycs.lingyuereader.data.LearnKind
 import com.xycs.lingyuereader.data.SyncItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -143,12 +145,13 @@ private fun FinishBlocked(title: String, other: FinishRun, onOpen: () -> Unit, o
     }
 }
 
-/** 开始前：四个勾选项、本机检查的提醒、“开始”。 */
+/** 开始前：几个勾选项（这章有 AI 原稿时多一项“从这章的改稿里学”）、本机检查的提醒、“开始”。 */
 @Composable
 private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?, onBack: () -> Unit) {
     val c = LocalGroupedColors.current
     val o = run.options
     val syncBlocked = vm.writingAi.syncBlocked
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val aiBlocked = vm.writingAi.finishAiBlocked
     fun set(options: FinishOptions) = vm.writingAi.setFinishOptions(options)
     Column {
@@ -183,6 +186,16 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
                     enabled = aiBlocked == null,
                     dimChecked = false,
                 ) { set(o.copy(review = it)) }
+            }
+            // 这章有采纳进正文的 AI 原稿才有得比。
+            if (run.learnable) row {
+                CheckboxRow(
+                    "从这章的改稿里学",
+                    checked = o.learn,
+                    subtitle = "把 AI 原稿和你改后的定稿逐段比对，提出几条黑名单词和写法规则；你勾了才记下，以后写正文照着写" +
+                        if (aiBlocked == null && !aiConfig.onDevice) "（另发一次请求请 AI 归纳）" else "（只在本机比对）",
+                    dimChecked = false,
+                ) { set(o.copy(learn = it)) }
             }
         }
         val (rules, cliche) = local ?: (0 to 0)
@@ -223,6 +236,7 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
             }
             row { StepRow("整理入账", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
             row { StepRow("写本章摘要", run.summary.mark(), run.summary.label, run.summaryError) }
+            if (run.options.learn) row { StepRow("从改稿里学", run.learn.mark(), run.learn.label, run.learnError.takeIf { run.learn == StepState.FAILED }) }
             row { StepRow("定稿", StepMark.WAITING, StepState.WAITING.label, "确认以后再做") }
         }
         when (run.stage) {
@@ -319,6 +333,40 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                             onAspect = { vm.writingAi.editFinishSyncAspect(item.key, it) },
                             onPayoff = { vm.writingAi.editFinishSyncPayoff(item.key, it) },
                             onJump = { onJump(item) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (run.options.learn) item(key = "learn") {
+        val c = LocalGroupedColors.current
+        val written = FinishWrite.LEARN in run.wrote
+        GroupedSection(
+            header = "从改稿里学到的",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提。都能在作品 AI 设置里看、删。",
+        ) {
+            run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
+            if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }
+            run.candidates.forEach { cand ->
+                row {
+                    Column {
+                        CheckboxRow(
+                            (if (cand.kind == LearnKind.BAN) "黑名单词：「${cand.text}」" else "写法规则：${cand.text}"),
+                            checked = cand.key in run.learnPicked,
+                            subtitle = cand.source,
+                            enabled = !busy && !written,
+                            dimChecked = false,
+                        ) { vm.writingAi.toggleFinishLearn(cand.key, it) }
+                        // 例子：一行“原来 → 你改成”，看得懂为什么提这条。
+                        if (cand.before.isNotBlank()) Text(
+                            when {
+                                cand.after == EditLearning.DELETED -> "原来「${cand.before}」→ 你整段删掉了"
+                                cand.after.isBlank() -> "原来「${cand.before}」→ 你点了“这段不行”"
+                                else -> "原来「${cand.before}」→ 你改成「${cand.after}」"
+                            },
+                            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                            modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
                         )
                     }
                 }

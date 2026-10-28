@@ -143,8 +143,9 @@ data class DraftIntent(val instruction: String = "", val targetLength: String = 
 /**
  * “这章写完了”收尾页上的勾选项（按作品记住）：整理入账（账本和设定包）、写本章摘要、顺带三道审稿。
  * 定稿是收尾本身，总要做，不在这里。前两项默认勾，审稿要花时间和钱，默认不勾。
+ * [learn] 是“从这章的改稿里学”（这章有 AI 原稿时才显示）：本机比对不花钱，默认勾。
  */
-data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false)
+data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false, val learn: Boolean = true)
 
 /**
  * 一部作品的 AI 设置和资料：写作建议开没开（默认关，开了才会自动把刚写的段落发给服务商）、
@@ -211,6 +212,11 @@ data class WorkAssist(
      * 默认开；关了照原来：有什么写什么。
      */
     val draftPrep: Boolean = true,
+    /**
+     * 从改稿学到的写法规则（最旧的在前，最多 [KEEP_LEARNED] 条）：收尾时作者勾了才进来，也能在作品 AI 设置里看、删、手动加。
+     * 写正文、改稿时带最近 [PROMPT_LEARNED] 条（见 [com.xycs.lingyuereader.ai.WritePrompts.proseTail]）。
+     */
+    val learned: List<String> = emptyList(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -221,12 +227,25 @@ data class WorkAssist(
     /** 从黑名单里去掉 [phrase]。 */
     fun unban(phrase: String): WorkAssist = copy(banned = banned - phrase)
 
+    /** 记一条学到的写法规则：已有的挪到最后，超过上限丢最旧的。 */
+    fun learn(rule: String): WorkAssist = copy(learned = cleanLearned(learned.filter { it != rule.trim() } + rule))
+
+    /** 去掉一条学到的规则。 */
+    fun unlearn(rule: String): WorkAssist = copy(learned = learned - rule)
+
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
         const val KEEP_REJECTED = 10
         /** 黑名单最多记这么多条。 */
         const val KEEP_BANNED = 200
+        /** 学到的写法规则最多记这么多条；写正文时只带最近的 [PROMPT_LEARNED] 条（多了模型顾不过来，也挤占篇幅）。 */
+        const val KEEP_LEARNED = 50
+        const val PROMPT_LEARNED = 12
+
+        /** 学到的规则整理：同黑名单，去空白、去重、超过上限丢最旧的。 */
+        fun cleanLearned(list: List<String>): List<String> =
+            list.map { it.trim() }.filter { it.isNotEmpty() }.asReversed().distinct().asReversed().takeLast(KEEP_LEARNED)
 
         /** 黑名单整理：去掉两头空白和空的、去重（留后加的那个位置），超过 [KEEP_BANNED] 条丢最旧的。 */
         fun cleanBanned(list: List<String>): List<String> =
@@ -685,6 +704,8 @@ class WorkStore(
         draftRevisionFile(workId, chapterId).delete()
         // 指向这章的范本分析一起清掉；清不掉也不挡删章，备份和恢复会跳过这类孤儿分析。
         runCatching { WritingReferences.forgetTarget(File(dir(workId), WritingReferences.DIRECTORY), chapterId) }
+        // 这章的 AI 原稿和改法计数也清掉；清不掉也不挡删章（备份时按现有的章过滤）。
+        runCatching { if (File(dir(workId), LEARN).isFile) updateLearning(workId) { EditLearning.forgetChapter(it, chapterId) } }
         return work
     }
 
@@ -1196,6 +1217,42 @@ class WorkStore(
         return updateAssist(workId) { it.copy(draftIntents = intents) }
     }
 
+    // ---------- 从改稿里学 ----------
+
+    /** 这部作品的改稿学习数据（[EditLearning]）：没有为空；读不出时坏文件另存一份，当作空的。 */
+    @Synchronized
+    fun learning(workId: String): LearnData {
+        val file = File(dir(workId), LEARN)
+        if (!file.isFile) return LearnData()
+        return try {
+            EditLearning.fromJson(JSONObject(file.readText()))
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            LearnData()
+        }
+    }
+
+    /** 改学习数据：读、改、整份写临时文件再改名。不改作品的修改时间（原稿是跟着正文一起变的，正文保存时已经改过）。 */
+    @Synchronized
+    fun updateLearning(workId: String, transform: (LearnData) -> LearnData): LearnData {
+        val d = dir(workId)
+        require(File(d, WORK).isFile) { "作品不在了" }
+        val old = learning(workId)
+        val next = transform(old)
+        if (next != old) check(DurableFiles.write(File(d, LEARN), EditLearning.toJson(next).toString().toByteArray())) { "无法保存改稿学习的记录" }
+        return next
+    }
+
+    /**
+     * 记一段采纳进 [chapterId] 正文的 AI 原稿（三个入口：草稿页放进正文、编辑器里“AI 写”的采纳、逐拍写的采纳）。
+     * [replace] 为真是整章替换，这章以前记的作废。章不在了不记。
+     */
+    @Synchronized
+    fun recordAiText(workId: String, chapterId: String, text: String, replace: Boolean = false) {
+        if (get(workId)?.chapter(chapterId) == null) return
+        updateLearning(workId) { EditLearning.record(it, chapterId, text, clock(), replace) }
+    }
+
     // ---------- 文风范例的挑选缓存 ----------
 
     /** 挑好的文风范例（[StyleSamples.encodeCache] 的格式）；没有或读不出为空。不进备份：丢了就重挑。 */
@@ -1651,6 +1708,10 @@ class WorkStore(
             val ledgerSource = File(dir(w.id), LEDGER)
             if (ledgerSource.isFile) component(ledgerSource, "故事账本读不出，没有放进备份") { StoryLedger.parse(it) }
                 ?.let { entry.put("ledger", StoryLedger.toJson(it).getJSONArray("entries")) }
+            // 改稿学习（AI 原稿、改法计数、不再提的）：只带还在的章。读不出就不放这个键，恢复时保留那台手机上原来的。
+            val learnSource = File(dir(w.id), LEARN)
+            if (learnSource.isFile) component(learnSource, "改稿学习的记录读不出，没有放进备份") { EditLearning.fromJson(JSONObject(it)) }
+                ?.let { entry.put("learn", EditLearning.toJson(it.keep(w.chapters.map { c -> c.id }.toSet()))) }
             array.put(entry)
         }
         val backup = JSONObject().put("format", 1).put("works", array)
@@ -1708,6 +1769,8 @@ class WorkStore(
         val localPack: List<PackDoc>,
         val assist: WorkAssist?,
         val references: ReferenceArchive?,
+        /** 改稿学习的数据；旧备份没有这一项（空），恢复时保留本机的。 */
+        val learn: LearnData? = null,
     )
 
     /**
@@ -1811,6 +1874,7 @@ class WorkStore(
             }
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
+        val learn = if (o.has("learn")) EditLearning.fromJson(o.getJSONObject("learn")).keep(chapterIds.toSet()) else null
         val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) { title, reason ->
             skipped += WritingSkip(incoming.title, "${WritingReferences.DIRECTORY}/$title", reason)
         } else null
@@ -1944,7 +2008,7 @@ class WorkStore(
         }
         return RestoreWork(incoming, local, texts, drafts?.filterKeys { it !in omittedDrafts },
             draftSources?.filterKeys { it !in omittedDrafts }, draftRevisions?.filterKeys { it !in omittedDrafts }, cards, changes, ledger,
-            pack, localPack, assist, references)
+            pack, localPack, assist, references, learn)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -2045,6 +2109,13 @@ class WorkStore(
         plan.assist?.let {
             check(DurableFiles.write(File(destination, ASSIST), it.toJson().toString().toByteArray())) { "无法暂存设定" }
         }
+        // 改稿学习：备份里有就用备份的；没有（旧备份）就留本机的，只去掉恢复后不在了的章。本机的读不出就原样留着。
+        val learnTarget = File(destination, LEARN)
+        val chapterIds = incoming.chapters.map { it.id }.toSet()
+        val learn = plan.learn ?: learnTarget.takeIf { it.isFile }?.let { f ->
+            runCatching { EditLearning.fromJson(JSONObject(f.readText())).keep(chapterIds) }.getOrNull()
+        }
+        learn?.let { check(DurableFiles.write(learnTarget, EditLearning.toJson(it).toString().toByteArray())) { "无法暂存改稿学习的记录" } }
         // 中断修复的标记只留在换下来的旧目录里：提交后恢复的作品不再带着它；回滚时旧目录连同标记一起换回来。
         val guard = File(destination, RECOVERED_SAVE)
         check(!guard.exists() || guard.delete()) { "无法清理中断修复标记" }
@@ -2152,6 +2223,7 @@ class WorkStore(
         /** 文风范例的挑选缓存。 */
         private const val SAMPLES = "style-samples.json"
         private const val LEDGER = "ledger.json"
+        private const val LEARN = "learn.json"
         private const val LEDGER_HISTORY = "ledger-history"
         /** 账本留几个历史版本。 */
         private const val LEDGER_KEEP = 30
@@ -2236,8 +2308,9 @@ class WorkStore(
             .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
             .put("thinking", thinking)
             .put("beatVariants", beatVariants)
-            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review))
+            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review).put("learn", finish.learn))
             .put("draftPrep", draftPrep)
+            .put("learned", JSONArray(learned))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2324,10 +2397,12 @@ class WorkStore(
                 // 旧数据没有收尾的勾选：按默认（整理、摘要勾上，审稿不勾）。
                 finish = optJSONObject("finish")?.let { f ->
                     val d = FinishOptions()
-                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review))
+                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review), f.optBoolean("learn", d.learn))
                 } ?: FinishOptions(),
                 // 旧数据没有这一项：一键写本章先补细纲、节拍（默认开）。
                 draftPrep = optBoolean("draftPrep", true),
+                // 旧数据没有这一项：还没学到什么。
+                learned = WorkAssist.cleanLearned(optJSONArray("learned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
             )
         }
 

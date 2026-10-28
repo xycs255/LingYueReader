@@ -62,6 +62,10 @@ import com.xycs.lingyuereader.data.SamplePick
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.StyleSamples
 import com.xycs.lingyuereader.data.FinishOptions
+import com.xycs.lingyuereader.data.EditLearning
+import com.xycs.lingyuereader.data.FixReason
+import com.xycs.lingyuereader.data.LearnCandidate
+import com.xycs.lingyuereader.data.LearnKind
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.WorkStore
@@ -430,6 +434,7 @@ class WritingAi(
         draftJobs.values.forEach { it.cancel() }
         draftJobs.clear()
         _drafts.value = emptyMap()
+        dropParagraphFix()
     }
 
     private suspend fun assistOf(workId: String): WorkAssist =
@@ -1081,6 +1086,8 @@ class WritingAi(
                 withContext(Dispatchers.IO) {
                     if (current.isNotBlank()) store.snapshot(d.workId, d.chapterId, current)
                     store.saveText(d.workId, d.chapterId, text, count = false)
+                    // 记下采纳的 AI 原稿（编辑器里写、逐拍写都走这里），收尾时和定稿比对学作者的改法。记不上不影响正文。
+                    runCatching { store.recordAiText(d.workId, d.chapterId, d.text) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1246,7 +1253,8 @@ class WritingAi(
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
-        "整理本章" -> AiFeature.SYNC
+        "整理本章", "从改稿学" -> AiFeature.SYNC
+        "重写这段" -> AiFeature.DRAFT
         "拟细纲", "章节摘要", "拆节拍" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
         else -> AiFeature.OTHER
@@ -3123,6 +3131,137 @@ class WritingAi(
         }
     }
 
+    // ---------- 草稿页“这段不行” ----------
+
+    private val _paragraphFix = MutableStateFlow<ParagraphFix?>(null)
+    /** 草稿页上正在重写（或等作者采纳）的那一段；同一时间只有一段。 */
+    val paragraphFix: StateFlow<ParagraphFix?> = _paragraphFix.asStateFlow()
+    private var paragraphJob: Job? = null
+
+    /** 把 [text] 的第 [index] 行换成 [paragraph]（可以是几行）。 */
+    private fun replaceLine(text: String, index: Int, paragraph: String): String =
+        text.split('\n').toMutableList().also { it[index] = paragraph }.joinToString("\n")
+
+    /**
+     * 这一稿是写这章时用的范本：读出来，和这一稿写的时候是同一份才往下走（变了按 [DraftReferenceIssue.CHANGED] 报）。
+     * 不挂范本为空。重写一段、采纳重写都要过这一关，范本核验不能被绕过去。
+     */
+    private suspend fun draftReference(d: DraftState): ReferenceWritingMaterial? {
+        val id = d.referenceAnalysisId ?: return null
+        val reference = loadForCandidate(d.workId, d.chapterId, id, candidate = true)
+        if (reference.excerpt.fingerprint != d.referenceFingerprint || reference.excerpt.chapterLength != d.referenceChapterLength)
+            throw RejectedReferenceWriting("范本在这一稿写完以后变了，没法按原来的范本核验", DraftReferenceIssue.CHANGED)
+        return reference
+    }
+
+    /**
+     * 草稿页“这段不行”：AI 只重写第 [index] 行那一段，按作者选的原因 [reasons]（“其他”时是 [note]）换成具体的改法要求，
+     * 前后各带一段作语境。走写正文的路径（写正文的系统提示、写法要求、温度和思考开关）。草稿正在写、正在审读时不做。
+     * 照范本写的稿子：请求前确认范本没变，写回来把换好的整稿再核一遍有没有照抄范本（照逐拍写），没过就照实报错。
+     * 点了就给各原因记一次数（按作品存），同一个原因点够几次，收尾学习时提成写法规则。
+     */
+    fun fixParagraph(workId: String, chapterId: String, index: Int, reasons: Set<FixReason>, note: String = "") {
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        val d = _drafts.value[workId to chapterId] ?: return
+        if (d.loading || d.text.isBlank() || d.referenceProvenanceBlocked || reasons.isEmpty()) return
+        if (_paragraphFix.value?.loading == true) return
+        val lines = d.text.split('\n')
+        val target = lines.getOrNull(index)?.trim().orEmpty()
+        if (target.isEmpty()) return
+        val before = lines.take(index).lastOrNull { it.isNotBlank() }.orEmpty().trim()
+        val after = lines.drop(index + 1).firstOrNull { it.isNotBlank() }.orEmpty().trim()
+        paragraphJob?.cancel()
+        val fix = ParagraphFix(workId, chapterId, index, target, d.text, reasons, note.trim())
+        _paragraphFix.value = fix
+        val meter = AiMeter(AiFeature.DRAFT, workId)
+        // 只改这一次的：放弃了、又点了别的段，旧请求回来不再动它。
+        fun update(transform: (ParagraphFix) -> ParagraphFix) = _paragraphFix.update { f -> if (f === fix) transform(f) else f }
+        paragraphJob = scope.launch {
+            try {
+                // 记不上不挡重写。
+                withContext(Dispatchers.IO) { runCatching { store.updateLearning(workId) { EditLearning.countReasons(it, reasons, target) } } }
+                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+                val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+                if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+                val reference = draftReference(d)
+                if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
+                val task = writingTask(workId, chapterId, d.taskInstruction ?: d.instruction, d.taskTargetLength ?: d.targetLength)
+                val body = withContext(Dispatchers.IO) { store.text(workId, chapterId) }
+                val kit = proseKit(workId, chapterId, body, task, chapterLengthOf(workId, task), reference != null, WritingPhase.REVISE)
+                val fixes = reasons.sortedBy { it.ordinal }.map { r ->
+                    if (r != FixReason.OTHER) r.fix
+                    else if (fix.note.isNotEmpty()) "作者的意见：${fix.note}" else "作者说不出具体哪里不对：换个写法重写，意思不变"
+                }
+                val prompt = WritePrompts.fixParagraph(chapter.title, target, before, after, fixes, kit.tail)
+                val answer = askWithPack("重写这段", workId, kit.system, prompt, whole = true, maxTokens = draftTokens, useTools = false,
+                    toolsUpTo = chapterId, phase = WritingPhase.REVISE, meter = meter, prose = proseOf(assistOf(workId)),
+                    lean = true, stable = kit.stable)
+                val text = WritePrompts.cleanDraft(answer).split('\n').map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+                check(text.isNotBlank()) { emptyProseMessage(truncated = false, suggestThinkingOff = false) }
+                if (reference != null) {
+                    verifyOffMain(replaceLine(d.text, index, text), reference)
+                    withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
+                }
+                update { it.copy(loading = false, text = text, usage = meter.usage, cost = meter.cost) }
+                log(workId, chapterId, "重写这段", reasons.joinToString("、") { it.label }, text, meter)
+            } catch (e: CancellationException) {
+                update { it.copy(loading = false) }
+                throw e
+            } catch (e: Throwable) {
+                update { it.copy(loading = false, error = failure(e), usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+            }
+        }
+    }
+
+    /** 不要这次重写（在写就停下）。 */
+    fun dropParagraphFix() {
+        paragraphJob?.cancel()
+        paragraphJob = null
+        _paragraphFix.value = null
+    }
+
+    /**
+     * 采纳重写：草稿只换那一段，存一版（原来那版留底在 [DraftState.initialText]，能换回，同压篇幅），审读要重新做。
+     * 草稿在这期间变了就不换。照范本写的稿子换好以后整稿再核一遍、确认范本没变，过了才标已核验。
+     */
+    fun acceptParagraphFix() {
+        val fix = _paragraphFix.value?.takeIf { !it.loading && it.error == null && it.text.isNotBlank() } ?: return
+        val key = fix.workId to fix.chapterId
+        val before = _drafts.value[key] ?: return
+        if (before.loading || before.text != fix.base) {
+            _paragraphFix.value = fix.copy(error = "草稿在这期间变了，这段重写对不上了：放弃以后再点一次“这段不行”")
+            return
+        }
+        val text = replaceLine(fix.base, fix.index, fix.text)
+        val run = ++draftSeq
+        draftRuns[key] = run
+        draftJobs.remove(key)?.cancel()
+        _paragraphFix.value = null
+        _drafts.update { it + (key to before.copy(loading = true, notice = null)) }
+        draftJobs[key] = scope.launch {
+            try {
+                val reference = draftReference(before)
+                if (reference != null) {
+                    verifyOffMain(text, reference)
+                    withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, fix.workId, fix.chapterId, reference) }
+                }
+                updateDraft(key, run) { it.copy(text = text, loading = false, error = null, assessment = null, stage = DraftStage.IDLE,
+                    referenceValidated = reference != null, initialText = before.text, alternateText = null, revisionWarning = null,
+                    referenceIssue = null, notice = "按“${fix.reasons.sortedBy { r -> r.ordinal }.joinToString("、") { r -> r.label }}”换了一段，可以换回原来那一版") }
+                persistDraft(key, run, text, before.workflow)
+                withContext(Dispatchers.IO) { runCatching { store.updateLearning(fix.workId) { EditLearning.reasonExample(it, fix.reasons, fix.original, fix.text) } } }
+            } catch (e: CancellationException) {
+                if (draftRuns[key] == run) updateDraft(key, run) { before.copy(loading = false) }
+                throw e
+            } catch (e: Throwable) {
+                updateDraft(key, run) { before.copy(loading = false, notice = "这段没换：${failure(e)}，草稿没动") }
+            }
+        }
+    }
+
     /** 草稿放进正文以后（或作者不要了）：清掉。 */
     fun clearDraft(workId: String, chapterId: String) {
         val key = workId to chapterId
@@ -3134,6 +3273,7 @@ class WritingAi(
         draftBaselines.remove(key)
         draftRevisionSaved.remove(key)
         draftJobs.remove(key)?.cancel()
+        if (_paragraphFix.value?.let { it.workId == workId && it.chapterId == chapterId } == true) dropParagraphFix()
         _drafts.update { it + (key to DraftState(workId, chapterId, "")) }
         scope.launch {
             try { withContext(NonCancellable) { persistDraft(key, run, "", workflow = false) } }
@@ -3446,12 +3586,17 @@ class WritingAi(
     val finishAiBlocked: String?
         get() = if (!ready) "没设置 AI：先在“我的 → AI 助手”里填好服务商和密钥" else null
 
-    /** 这次实际能做的：AI 没配置（或本机模型不能整理）时去掉做不了的。 */
-    private fun usable(options: FinishOptions) = options.copy(
+    /** 这次实际能做的：AI 没配置（或本机模型不能整理）时去掉做不了的；这章没有 AI 原稿时不学。 */
+    private fun usable(options: FinishOptions, learnable: Boolean) = options.copy(
         sync = options.sync && syncBlocked == null,
         summary = options.summary && ready,
         review = options.review && ready,
+        learn = options.learn && learnable,
     )
+
+    /** 这章有没有采纳进正文的 AI 原稿（读盘，在后台读）。 */
+    private suspend fun hasOriginals(workId: String, chapterId: String): Boolean =
+        withContext(Dispatchers.IO) { runCatching { store.learning(workId).originals[chapterId].orEmpty().isNotEmpty() }.getOrDefault(false) }
 
     /**
      * 打开收尾页：同一章接着上次的；上次已经收完或没开始的从头来，勾选项用作品记住的。
@@ -3460,13 +3605,21 @@ class WritingAi(
      */
     fun openFinish(workId: String, chapterId: String): Boolean {
         val now = _finish.value
-        if (now != null && now.workId == workId && now.chapterId == chapterId && now.stage != FinishStage.DONE) return true
+        if (now != null && now.workId == workId && now.chapterId == chapterId && now.stage != FinishStage.DONE) {
+            // 还在勾选：回编辑器又采纳了 AI 的字（或原稿被清掉）再回来，“从这章的改稿里学”那一项跟着变。
+            if (now.stage == FinishStage.SETUP) scope.launch {
+                val learnable = hasOriginals(workId, chapterId)
+                _finish.update { r -> if (r?.workId == workId && r.chapterId == chapterId && r.stage == FinishStage.SETUP) r.copy(learnable = learnable) else r }
+            }
+            return true
+        }
         if (now != null && now.busy) return false
         finishJob?.cancel()
         _finish.value = FinishRun(workId, chapterId, _assists.value[workId]?.finish ?: FinishOptions())
         scope.launch {
             val saved = assistOf(workId).finish
-            _finish.update { r -> if (r?.workId == workId && r.chapterId == chapterId && r.stage == FinishStage.SETUP) r.copy(options = saved) else r }
+            val learnable = hasOriginals(workId, chapterId)
+            _finish.update { r -> if (r?.workId == workId && r.chapterId == chapterId && r.stage == FinishStage.SETUP) r.copy(options = saved, learnable = learnable) else r }
         }
         return true
     }
@@ -3485,9 +3638,10 @@ class WritingAi(
     /** 点“开始”：按勾选的依次审稿（勾了才审）、整理入账和写摘要（合成一次请求）；只勾了定稿就直接到确认。 */
     fun startFinish() {
         val run = _finish.value?.takeIf { it.stage == FinishStage.SETUP } ?: return
-        val o = usable(run.options)
+        val o = usable(run.options, run.learnable)
         fun state(on: Boolean) = if (on) StepState.WAITING else StepState.SKIPPED
-        val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary))
+        val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary),
+            learnable = run.learnable, learn = state(o.learn))
         _finish.value = next
         finishJob = scope.launch {
             if (o.review && !finishReview(next.workId, next.chapterId)) return@launch
@@ -3543,7 +3697,7 @@ class WritingAi(
         if (run.stage == FinishStage.APPLYING) return
         finishJob?.cancel()
         if (run.review == StepState.RUNNING) stopReview(run.workId, run.chapterId)
-        _finish.value = FinishRun(run.workId, run.chapterId, _assists.value[run.workId]?.finish ?: run.options)
+        _finish.value = FinishRun(run.workId, run.chapterId, _assists.value[run.workId]?.finish ?: run.options, learnable = run.learnable)
     }
 
     /**
@@ -3594,6 +3748,8 @@ class WritingAi(
             }
             summaryText?.let { t -> updateFinish(workId, chapterId) { it.copy(summary = StepState.DONE, draft = t) } }
         }
+        // 从改稿里学：本机比对加（有 AI 时）AI 归纳。没做全也不拦收尾，原因写在确认页上。
+        if (o.learn && run.learn != StepState.DONE) finishLearn(workId, chapterId)
         val now = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
         if (now.sync == StepState.FAILED || now.summary == StepState.FAILED) {
             updateFinish(workId, chapterId) { it.copy(stage = FinishStage.AI_FAILED) }
@@ -3602,6 +3758,76 @@ class WritingAi(
         // 确认前读一次细纲卡：已经有摘要的，确认页上给“用新的 / 留旧的”，默认留旧的，不盖掉作者写的。
         val old = if (o.summary) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrDefault("") } else ""
         updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, oldSummary = old, keepOld = old.isNotBlank()) }
+    }
+
+    /**
+     * 收尾里的“从这章的改稿里学”：把这章的 AI 原稿和存盘的定稿按段对齐、数出作者的改法（在后台算），记进跨章的累积数；
+     * 有 AI（不是本机模型）时再挑几对“原段 → 改后”请 AI 归纳。候选里本机比对和“这段不行”来的默认勾上（统计站得住），
+     * AI 归纳的默认不勾（等作者看过）。AI 归纳没成只记原因，本机的照样给。
+     */
+    private suspend fun finishLearn(workId: String, chapterId: String) {
+        updateFinish(workId, chapterId) { it.copy(learn = StepState.RUNNING, learnError = null) }
+        try {
+            val (data, text) = withContext(Dispatchers.IO) { store.learning(workId) to store.text(workId, chapterId) }
+            val assist = assistOf(workId)
+            val edits = withContext(Dispatchers.Default) { EditLearning.compare(data.originals[chapterId].orEmpty(), text) }
+            val observed = if (edits == null) emptyList() else withContext(Dispatchers.Default) { EditLearning.observe(edits, text) }
+            val now = System.currentTimeMillis()
+            val updated = withContext(Dispatchers.IO) { store.updateLearning(workId) { EditLearning.tally(it, chapterId, observed, now) } }
+            val notes = mutableListOf<String>()
+            if (edits == null) notes += "AI 原稿和定稿对不齐（改动太多或正文是空的），这一章没法逐段比对"
+            var ai = emptyList<LearnCandidate>()
+            if (edits != null && ready && !localModel) {
+                val pairs = EditLearning.pairsForAi(edits)
+                if (pairs.isNotEmpty()) try {
+                    ai = learnByAi(workId, pairs, assist)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    notes += "AI 归纳没成：${finishError(e, "请求失败")}"
+                }
+            }
+            val list = EditLearning.candidates(updated, assist, ai)
+            updateFinish(workId, chapterId) {
+                it.copy(learn = StepState.DONE, candidates = list, learnError = notes.joinToString("；").ifEmpty { null },
+                    learnPicked = list.filter { c -> c.source != EditLearning.FROM_AI }.map { c -> c.key }.toSet())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // 学不成不拦收尾：停在“出错”，确认页上照实说。
+            updateFinish(workId, chapterId) { it.copy(learn = StepState.FAILED, learnError = finishError(e, "比对出错")) }
+        }
+    }
+
+    /** 请 AI 归纳改法：不走写正文的路径，不带温度，能关思考的官方 V4 关掉思考（[quiet]）。回的不是约定的 JSON 就照实报错。 */
+    private suspend fun learnByAi(workId: String, pairs: List<Pair<String, String>>, assist: WorkAssist): List<LearnCandidate> {
+        val title = withContext(Dispatchers.IO) { store.get(workId)?.title.orEmpty() }
+        val known = (assist.banned.takeLast(30).map { "「$it」" } + assist.learned.takeLast(WorkAssist.PROMPT_LEARNED))
+        val answer = ask("从改稿学", workId, WritePrompts.system(title, assist), WritePrompts.learnRules(pairs, known), whole = true, noThinking = true)
+        return EditLearning.parseAi(answer, pairs)
+    }
+
+    /** 确认页上勾、不勾一条学到的；写进去以后不能再改。 */
+    fun toggleFinishLearn(key: String, on: Boolean) = _finish.update { r ->
+        if (r != null && r.stage == FinishStage.CONFIRM && FinishWrite.LEARN !in r.wrote)
+            r.copy(learnPicked = if (on) r.learnPicked + key else r.learnPicked - key) else r
+    }
+
+    /** 把勾了的记进黑名单、学到的规则，没勾的记进“不再提”。返回一句说明（什么都没提时为空）。 */
+    private suspend fun commitLearn(workId: String, run: FinishRun): String? {
+        if (run.candidates.isEmpty()) return null
+        val picked = run.candidates.filter { it.key in run.learnPicked }
+        val rest = run.candidates.filter { it.key !in run.learnPicked }.map { it.key }
+        val saved = withContext(Dispatchers.IO) {
+            val a = if (picked.isEmpty()) store.assist(workId) else store.updateAssist(workId) { assist ->
+                picked.fold(assist) { acc, c -> if (c.kind == LearnKind.BAN) acc.ban(c.text) else acc.learn(c.text) }
+            }
+            if (rest.isNotEmpty()) store.updateLearning(workId) { EditLearning.dismiss(it, rest) }
+            a
+        }
+        _assists.update { it + (workId to saved) }
+        return if (picked.isEmpty()) "学到的这次都没要，以后不再提" else "从改稿里学到 ${picked.size} 条"
     }
 
     /** 收尾里一步没成的原因：平常的出错照原话；程序的毛病、内存不够这类记进闪退记录，只说出了意外。 */
@@ -3644,6 +3870,8 @@ class WritingAi(
             val notes = mutableListOf<String>()
             for (step in FinishWrite.entries) {
                 if (step in run.wrote) continue
+                // 没勾“从这章的改稿里学”：这一步不算做过。
+                if (step == FinishWrite.LEARN && !run.options.learn) continue
                 try {
                     when (step) {
                         FinishWrite.SYNC -> run.session?.takeIf { run.options.sync }?.let { notes += commitSync(workId, it) }
@@ -3661,6 +3889,7 @@ class WritingAi(
                             }
                             notes += "摘要写进了细纲卡"
                         }
+                        FinishWrite.LEARN -> commitLearn(workId, run)?.let { notes += it }
                         FinishWrite.FINAL -> finalize(workId, chapterId)
                     }
                 } catch (e: CancellationException) {
@@ -3746,6 +3975,25 @@ data class ReviewRun(val workId: String, val chapterId: String, val running: Rev
 data class SummaryProgress(val workId: String, val done: Int, val total: Int, val title: String)
 
 /** AI 写的本章草稿。 */
+/**
+ * 草稿页“这段不行”：作者点了草稿第 [index] 行那一段（[original]），选了原因 [reasons]（“其他”时写了 [note]），AI 只重写这一段（[text]）。
+ * [base] 是点的时候的整份草稿：采纳时草稿没变才换。结果以“原段 / 新段”对比给作者看，采纳或放弃。
+ */
+data class ParagraphFix(
+    val workId: String,
+    val chapterId: String,
+    val index: Int,
+    val original: String,
+    val base: String,
+    val reasons: Set<FixReason>,
+    val note: String = "",
+    val loading: Boolean = true,
+    val text: String = "",
+    val error: String? = null,
+    val usage: AiUsage? = null,
+    val cost: AiCost? = null,
+)
+
 data class DraftState(
     val workId: String,
     val chapterId: String,

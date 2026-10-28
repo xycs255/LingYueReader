@@ -725,7 +725,10 @@ class WritingModel(
             val old = store.text(workId, chapterId)
             if (old.isNotBlank()) store.snapshot(workId, chapterId, old)
             val text = if (replace || old.isBlank()) draft.trim() else old.trimEnd() + "\n" + draft.trim()
-            store.saveText(workId, chapterId, text, count = false)
+            store.saveText(workId, chapterId, text, count = false).also {
+                // 记下放进正文的 AI 原稿，收尾时和定稿比对学作者的改法；替换整章时以前记的作废。记不上不影响正文。
+                runCatching { store.recordAiText(workId, chapterId, draft, replace = replace || old.isBlank()) }
+            }
         }) { then() }
 
     // ---------- 检查规则 ----------
