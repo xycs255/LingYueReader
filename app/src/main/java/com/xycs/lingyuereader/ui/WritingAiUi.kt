@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -708,8 +709,39 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
 
 // ---------- 作品的 AI 设置 ----------
 
+/** “这部书的口味”的占位提示。 */
+internal const val FLAVOR_EXAMPLE = "轻松带吐槽的穿越历史爽文，主角爱用历史知识算计人，叙述者偶尔玩梗。"
+
 /**
- * 一部作品的 AI 设置：常用的直接列出（服务商、设定包、文风、温度、AI 腔、写作建议、记录），其余收进“高级设置”。
+ * 作品 AI 设置里边打边存的一段文字：停一下再写盘；粘贴后立即返回、切后台、离开这页时不等防抖，立即补存。
+ * 只存这一项（[read] 读、[write] 写），不覆盖同时改的其他选项。
+ */
+@Composable
+private fun rememberAssistText(vm: AppViewModel, workId: String, read: (WorkAssist) -> String, write: (WorkAssist, String) -> WorkAssist): MutableState<String> {
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    val loaded = assists[workId]
+    val field = remember(workId, loaded != null) { mutableStateOf(loaded?.let(read).orEmpty()) }
+    LaunchedEffect(field.value) {
+        val saved = vm.writingAi.assists.value[workId] ?: return@LaunchedEffect
+        if (field.value == read(saved)) return@LaunchedEffect
+        delay(600)
+        vm.writingAi.updateAssist(workId) { write(it, field.value) }
+    }
+    val latest by rememberUpdatedState(field)
+    fun saveNow() {
+        val saved = vm.writingAi.assists.value[workId] ?: return
+        val text = latest.value
+        if (text != read(saved)) vm.writingAi.updateAssist(workId) { write(it, text) }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { saveNow() }
+    DisposableEffect(workId) {
+        onDispose { saveNow() }
+    }
+    return field
+}
+
+/**
+ * 一部作品的 AI 设置：常用的直接列出（服务商、设定包、文风、口味、温度、AI 腔、写作建议、记录），其余收进“高级设置”。
  */
 @Composable
 fun WorkAiScreen(vm: AppViewModel, workId: String) {
@@ -743,6 +775,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     DisposableEffect(workId) {
         onDispose { saveStyleNow() }
     }
+    var flavor by rememberAssistText(vm, workId, { it.flavor }) { a, text -> a.copy(flavor = text) }
 
     ProvideGroupedColors {
         val c = LocalGroupedColors.current
@@ -795,10 +828,21 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             )
                         }
                     }
+                    GroupedSection(header = "这部书的口味", footer = "一两句话说清这部书读起来是什么味道。AI 写正文时照这个口味写。") {
+                        row {
+                            TextField(
+                                value = flavor,
+                                onValueChange = { flavor = it },
+                                label = FLAVOR_EXAMPLE,
+                                useLabelAsPlaceholder = true,
+                                modifier = Modifier.fillMaxWidth().padding(12.dp).heightIn(min = 64.dp, max = 160.dp),
+                            )
+                        }
+                    }
                     StyleSamplesSection(vm, workId, assist)
                     GroupedSection(
                         header = "写正文",
-                        footer = "温度越高越不套路，也越容易跑偏。这两项只影响写正文和改稿（AI 写、AI 写整章草稿、润色扩写这类），审稿、修订、整理不受影响；" +
+                        footer = "温度越高越不套路，也越容易跑偏。这两项只影响写正文和改稿（AI 写、AI 写整章草稿、项目包流程的修订、润色扩写这类），审稿、整理不受影响；" +
                             "推理和思考模式的模型可能不认温度。",
                     ) {
                         row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }

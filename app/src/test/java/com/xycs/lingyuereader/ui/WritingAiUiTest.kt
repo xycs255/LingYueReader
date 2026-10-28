@@ -475,6 +475,25 @@ class WritingAiUiTest {
         assertTrue(prompts.isEmpty())
     }
 
+    /** 作品 AI 设置里“这部书的口味”：文风旁边，空着时显示例子；边打边存，离开也补存。 */
+    @Test
+    fun theBooksFlavorIsSavedNextToTheStyle() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitFor { vm.writingAi.assists.value[workId] != null }
+        compose.onNodeWithText("这部书的口味").performScrollTo()
+        compose.onNodeWithText(FLAVOR_EXAMPLE).assertExists()
+        val flavor = "合成样本：轻松带吐槽，主角爱算计，叙述者偶尔玩梗。"
+        compose.onAllNodes(hasSetTextAction())[1].performSemanticsAction(SemanticsActions.SetText) { set ->
+            set(AnnotatedString(flavor))
+            vm.back()
+        }
+        waitFor { WorkStore(writingDir).assist(workId).flavor == flavor }
+        // 文风要求没被动过。
+        assertEquals("", WorkStore(writingDir).assist(workId).style)
+        assertTrue(prompts.isEmpty())
+    }
+
     @Test
     fun dialogsOpenOnTheWorkAndBiblePages() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
