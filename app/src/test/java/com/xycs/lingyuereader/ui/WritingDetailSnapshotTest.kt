@@ -55,7 +55,7 @@ import java.net.InetSocketAddress
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本。只截图供设计复核，不做像素断言；
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
 @RunWith(AndroidJUnit4::class)
@@ -475,5 +475,70 @@ class WritingDetailSnapshotTest {
         waitForText("fēng háng")
         waitForText("复习 3")
         capture("detail-vocabulary-cards")
+    }
+
+    /** 第 3 章细纲卡加三拍、第 1 拍写过：“AI 写”面板列节拍，推荐“写第 2 拍”。 */
+    private fun seedBeats() {
+        val store = WorkStore(File(context.filesDir, "writing"))
+        store.saveCard(workId, chapterThree, store.card(workId, chapterThree).copy(
+            beats = "林月求老周夜里渡河\n沈默出现，替她付了船钱\n船行到河心，沈默问起玉佩", beatsDone = listOf(1)))
+    }
+
+    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、书灵（问主意、选范本）。 */
+    private fun aiWriteAndCompanion(prefix: String) {
+        seedBeats()
+        openChapterThree()
+        waitForDescription("智能推荐：写第 2 拍")
+        capture("$prefix-editor-bottom-beat")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
+        waitForText("从光标处往下写")
+        waitForText("写第 2 拍")
+        capture("$prefix-ai-write-panel")
+        compose.onNodeWithText("出 3 个方向的版本（花费约 3 倍）").performScrollTo()
+        capture("$prefix-ai-write-panel-bottom")
+        compose.onNodeWithText("取消").performClick()
+        waitForGone("从光标处往下写")
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("AI 写整章草稿")
+        capture("$prefix-editor-more-menu")
+        // 菜单点“细纲卡”收起，再返回编辑器。
+        compose.onNodeWithText("细纲卡").performClick()
+        waitForText("沈默的来意不点破")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForDescription("打开四组工具")
+        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForText("问主意")
+        waitForText("没选范本")
+        capture("$prefix-companion")
+    }
+
+    @Test
+    fun simplifyAiWritePanelAndCompanion() = aiWriteAndCompanion("simplify")
+
+    @Test
+    fun inkSimplifyAiWritePanelAndCompanion() = aiWriteAndCompanion("ink-simplify")
+
+    /** 作品 AI 设置分两层、高级设置、排版设置默认只露两样和展开后。 */
+    @Test
+    fun simplifyAiSettingsAndFormat() {
+        openWork()
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitForText("写作范本")
+        capture("simplify-work-ai-top")
+        compose.onNodeWithText("高级设置").performScrollTo()
+        capture("simplify-work-ai-bottom")
+        compose.onNodeWithText("高级设置").performClick()
+        waitForText("知识库上限")
+        capture("simplify-work-ai-advanced")
+        compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo()
+        capture("simplify-work-ai-advanced-bottom")
+        compose.runOnUiThread { vm.open(Screen.WorkFormatSettings(workId)) }
+        waitForText("输入时自动排版")
+        waitForText("更多排版规则")
+        capture("simplify-format")
+        compose.onNodeWithText("更多排版规则").performClick()
+        waitForText("段首段尾空白")
+        capture("simplify-format-more")
     }
 }
