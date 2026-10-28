@@ -19,7 +19,7 @@ internal enum class EditorToolGroup(val label: String) {
 internal data class EditorToolShortcut(val label: String, val icon: ImageVector, val onClick: () -> Unit)
 
 internal enum class EditorRecommendationKind {
-    PENDING_AI, UNLOCK, CONFIGURE_AI, DRAFT_CHAPTER, REVISE_SELECTION, REVIEW_CHAPTER, WRITE_BEAT, CONTINUE
+    PENDING_AI, UNLOCK, CONFIGURE_AI, DRAFT_CHAPTER, REVISE_SELECTION, REVIEW_CHAPTER, WRITE_BEAT, FINISH_CHAPTER, CONTINUE
 }
 
 internal data class EditorRecommendation(
@@ -40,6 +40,8 @@ internal fun editorRecommendation(
     aiState: WriteAiState? = null,
     /** 本章细纲卡里第一拍没写的（序号和这一拍写什么）；没有节拍、都写过了为空。 */
     nextBeat: Beat? = null,
+    /** 看着像写完了（细纲卡的节拍都写过了，或字数到了目标篇幅的下限）：为什么这么看，见 [finishHint]；不像为空。 */
+    finished: String? = null,
 ): EditorRecommendation {
     if (inline != null) {
         val label = when {
@@ -91,7 +93,19 @@ internal fun editorRecommendation(
     if (status == ChapterStatus.REVISION) return EditorRecommendation(EditorRecommendationKind.REVIEW_CHAPTER, "三道审稿", "本章正在修订")
     // 细纲卡还有没写的拍：一点就从光标处写下一拍，不弹面板（3 个方向、范本按记住的来）。
     if (nextBeat != null) return EditorRecommendation(EditorRecommendationKind.WRITE_BEAT, "写第 ${nextBeat.index} 拍", nextBeat.text)
+    // 没有可写的拍了，看着也写完了：一点进收尾页（定稿、整理入账、写摘要一起做）。
+    if (finished != null) return EditorRecommendation(EditorRecommendationKind.FINISH_CHAPTER, "这章写完了", finished)
     return EditorRecommendation(EditorRecommendationKind.CONTINUE, "AI 接着写", "打开 AI 写面板，从光标处写")
+}
+
+/**
+ * 这一章看着写完了没有（推荐“这章写完了”用）：细纲卡有节拍且都写过了，或字数到了目标篇幅的下限
+ * （检查规则里写的“字数”；按汉字算的按汉字数）。都不满足为空。正文空的、已定稿的由 [editorRecommendation] 先挡掉。
+ */
+internal fun finishHint(beatCount: Int, beatsLeft: Boolean, words: Int, minWords: Int?): String? = when {
+    beatCount > 0 && !beatsLeft -> "细纲卡的 $beatCount 拍都写完了"
+    minWords != null && minWords > 0 && words >= minWords -> "已写 $words 字，到了目标篇幅"
+    else -> null
 }
 
 /**

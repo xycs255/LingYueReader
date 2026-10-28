@@ -168,7 +168,7 @@ class WritingBeatsUiTest {
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
     }
 
-    /** 本章有没写的拍：智能推荐写着“写第 N 拍”，一点就写，不弹面板；采纳后推荐换成下一拍，都写完了回到“AI 接着写”。 */
+    /** 本章有没写的拍：智能推荐写着“写第 N 拍”，一点就写，不弹面板；采纳后推荐换成下一拍，都写完了推荐“这章写完了”。 */
     @Test
     fun theSmartRecommendationWritesTheNextBeatInOneTap() {
         setBeats("沈默赶到渡口，发现船不见了\n杜娘开门\n老周的信", done = listOf(1))
@@ -189,7 +189,7 @@ class WritingBeatsUiTest {
         waitForText("AI 写了")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2, 3) }
-        waitFor { compose.onAllNodesWithContentDescription("智能推荐：AI 接着写", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        waitFor { compose.onAllNodesWithContentDescription("智能推荐：这章写完了，细纲卡的 3 拍都写完了", substring = true).fetchSemanticsNodes().isNotEmpty() }
         assertEquals(text + "\n" + beatText.getValue(2) + "\n" + beatText.getValue(3), store.text(workId, chapterId))
     }
 

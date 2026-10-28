@@ -363,13 +363,7 @@ class WritingModel(
     fun setStatus(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null, then: () -> Unit = {}) {
         scope.launch {
             try {
-                val (work, stats) = withContext(disk) {
-                    val updated = requireNotNull(store.setStatus(workId, chapterId, status, reason, canon, currentText)) { "章节不在了" }
-                    refreshChanges(workId)
-                    updated to store.stats()
-                }
-                publish(work)
-                _stats.value = stats
+                setStatusNow(workId, chapterId, status, reason, canon, currentText)
                 then()
             } catch (e: CancellationException) {
                 throw e
@@ -377,6 +371,19 @@ class WritingModel(
                 message("改状态失败：${e.message ?: "写入出错"}")
             }
         }
+    }
+
+    /**
+     * 同 [setStatus]，但等它写完、失败时抛出来（不另提示）：“这章写完了”收尾要知道定稿这一步成没成，没成可以重试。
+     */
+    suspend fun setStatusNow(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null) {
+        val (work, stats) = withContext(disk) {
+            val updated = requireNotNull(store.setStatus(workId, chapterId, status, reason, canon, currentText)) { "章节不在了" }
+            refreshChanges(workId)
+            updated to store.stats()
+        }
+        publish(work)
+        _stats.value = stats
     }
 
     /** 手动登记一条设定变更（和章节无关的也行）。 */

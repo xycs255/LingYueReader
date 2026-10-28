@@ -204,6 +204,9 @@ sealed interface Screen {
     /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
     data class ChapterSync(val workId: String) : Screen
 
+    /** “这章写完了”：一页里收尾（审稿、整理入账、写摘要、定稿），确认后一次写完。 */
+    data class ChapterFinish(val workId: String, val chapterId: String) : Screen
+
     /** 一部作品的排版设置：各条规则、引号风格、输入时自动排版。 */
     data class WorkFormatSettings(val workId: String) : Screen
 

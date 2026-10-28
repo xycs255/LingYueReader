@@ -45,6 +45,7 @@ import com.xycs.lingyuereader.data.SampleChapter
 import com.xycs.lingyuereader.data.SamplePick
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.StyleSamples
+import com.xycs.lingyuereader.data.FinishOptions
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WriteRecord
@@ -1269,7 +1270,7 @@ class WritingAi(
      * 按次序审 [text]（存盘的正文）：事实关、写法关请 AI（没设置 AI 就跳过），规则关在本机算。
      * 每道审完就显示出来；全部审完存下，下次打开还在。
      */
-    fun startReview(workId: String, chapterId: String, text: String) {
+    fun startReview(workId: String, chapterId: String, text: String): Job {
         val key = workId to chapterId
         reviewJobs[key]?.cancel()
         // 上次标了“不改”的，这次再挑出来还是“不改”。
@@ -1285,7 +1286,7 @@ class WritingAi(
             _reviews.update { it + (key to run) }
         }
         publish(ReviewGate.FACT)
-        reviewJobs[key] = scope.launch {
+        val job = scope.launch {
             val work = withContext(Dispatchers.IO) { store.get(workId) } ?: return@launch
             val title = work.chapter(chapterId)?.title.orEmpty()
             val assist = assistOf(workId)
@@ -1344,6 +1345,8 @@ class WritingAi(
             val done = _reviews.value[key]?.review ?: return@launch
             withContext(Dispatchers.IO) { runCatching { store.saveReview(workId, chapterId, done) } }
         }
+        reviewJobs[key] = job
+        return job
     }
 
     /** AI 的回答读不出问题列表时如实报错：不能当成“没发现问题”。 */
@@ -2483,7 +2486,7 @@ class WritingAi(
      * 太长的章（超过 [WritePrompts.CHAPTER_CHARS] 字）在段落处分几段，每段一次请求（带上前一段的末尾），合起来去重；
      * 花费记在同一个计量器上。有一段没整理成：其余几段的提议仅供核对；整章重试成功前不写入。
      */
-    private suspend fun syncOne(workId: String, chapterId: String, text: String): ChapterSyncResult {
+    private suspend fun syncOne(workId: String, chapterId: String, text: String, summary: Boolean = false): ChapterSyncResult {
         if (!canUsePack) throw IllegalStateException("本机模型上下文太小、不能查设定包，整理本章要用联网的 AI 服务商")
         val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
         val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
@@ -2497,6 +2500,9 @@ class WritingAi(
         // 这一章在第几卷：账本里只写了“第几卷起”的知情按卷号判断到没到。
         val volume = work.volumeNumber(chapterId)
         val parts = WritePrompts.syncParts(text)
+        // 顺带写摘要（[summary]）只在整章一次发完时：分了段的，最后一段概括不了全章，摘要由调用处另发一次。
+        val withSummary = summary && parts.size == 1
+        var summaryText = ""
         val meter = AiMeter(AiFeature.SYNC, workId)
         val found = mutableListOf<SyncItem>()
         var dropped = 0
@@ -2509,14 +2515,15 @@ class WritingAi(
                 // 不要求工具：设定包的常用部分整份在系统提示里，本章资料也带着，模型不支持工具时去掉工具照样能整理；
                 // 只是没法按需查，结果页提示“没能查设定包”，由作者勾选前核对。
                 val answer = askWithPack(
-                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text),
-                    whole = true, maxTokens = SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
+                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text, summary = withSummary),
+                    whole = true, maxTokens = if (withSummary) SYNC_TOKENS + SUMMARY_TOKENS else SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
                     meter = meter, onToolsDropped = { noTools = true },
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
                 val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names)
                 found += parsed.items.map { it.copy(volume = volume) }
                 dropped += parsed.dropped
+                if (withSummary) summaryText = parsed.summary
                 answered++
             } catch (e: CancellationException) {
                 throw e
@@ -2530,7 +2537,7 @@ class WritingAi(
         val (docs, entries) = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } to store.ledger(workId) }
         val planned = PackSync.plan(merged, docs, entries)
         return base.copy(
-            items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size, noTools = noTools,
+            items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size, noTools = noTools, summary = summaryText,
             error = failed?.let { (i, e) -> "第 $i 段（共 ${parts.size} 段）没整理成：${e.message ?: "请求失败"}；这一章先不记为已整理" },
         )
     }
@@ -2663,39 +2670,285 @@ class WritingAi(
      */
     fun applySync(workId: String, failed: () -> Unit = {}, then: (String) -> Unit = {}) {
         val session = _sync.value?.takeIf { it.workId == workId && it.running == null } ?: return
-        val picked = session.chosen
         scope.launch {
             try {
-                val counts = withContext(Dispatchers.IO) { store.applySync(workId, picked, session.results) }
-                // 账本页可能已经读过整理前的账本：重读，免得拿旧条目再改、再撤销。
-                if (picked.any { it.place == SyncPlace.LEDGER }) ledgerChanged(workId)
-                val now = System.currentTimeMillis()
-                // Unselected chapters may have changed since review; never mark those stale results as synced.
-                val successful = session.results.filter { it.error == null }
-                val currentResults = withContext(Dispatchers.IO) {
-                    val work = store.get(workId)
-                    successful.filter { result ->
-                        work?.chapter(result.chapterId) != null && store.text(workId, result.chapterId).let { body ->
-                            result.sourceDigest.matches(Regex("[0-9a-f]{64}")) &&
-                                ChapterSyncs.digest(body) == result.sourceDigest
-                        }
-                    }
-                }
-                val marks = currentResults.associate { it.chapterId to SyncMark(it.hash, now) }
-                val staleCount = successful.size - currentResults.size
-                updateAssist(workId) { it.copy(synced = it.synced + marks) }
+                val summary = commitSync(workId, session)
                 _sync.value = null
-                val summary = if (counts.isEmpty()) "没有写进设定包，${marks.size} 章记为已整理"
-                    else "写进了 ${counts.values.sum()} 条：" + counts.entries.joinToString("、") { (k, n) ->
-                        if (k == PackSync.LEDGER) "$k $n 条" else "《$k》$n 条"
-                    }
-                then(summary + if (staleCount > 0) "；$staleCount 章正文已变化，未记为已整理" else "")
+                then(summary)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 message("写进设定包失败：${e.message ?: "写入出错"}")
                 failed()
             }
+        }
+    }
+
+    /**
+     * 把一次整理里勾选的写进去（[applySync] 和“这章写完了”共用）：写设定包、记账本，各章（没出错、正文没变的）记成已整理。
+     * 返回一句“写了几条进哪几份文档”；写失败抛出来。
+     */
+    private suspend fun commitSync(workId: String, session: SyncSession): String {
+        val picked = session.chosen
+        val counts = withContext(Dispatchers.IO) { store.applySync(workId, picked, session.results) }
+        // 账本页可能已经读过整理前的账本：重读，免得拿旧条目再改、再撤销。
+        if (picked.any { it.place == SyncPlace.LEDGER }) ledgerChanged(workId)
+        val now = System.currentTimeMillis()
+        // Unselected chapters may have changed since review; never mark those stale results as synced.
+        val successful = session.results.filter { it.error == null }
+        val currentResults = withContext(Dispatchers.IO) {
+            val work = store.get(workId)
+            successful.filter { result ->
+                work?.chapter(result.chapterId) != null && store.text(workId, result.chapterId).let { body ->
+                    result.sourceDigest.matches(Regex("[0-9a-f]{64}")) &&
+                        ChapterSyncs.digest(body) == result.sourceDigest
+                }
+            }
+        }
+        val marks = currentResults.associate { it.chapterId to SyncMark(it.hash, now) }
+        val staleCount = successful.size - currentResults.size
+        updateAssist(workId) { it.copy(synced = it.synced + marks) }
+        val summary = if (counts.isEmpty()) "没有写进设定包，${marks.size} 章记为已整理"
+            else "写进了 ${counts.values.sum()} 条：" + counts.entries.joinToString("、") { (k, n) ->
+                if (k == PackSync.LEDGER) "$k $n 条" else "《$k》$n 条"
+            }
+        return summary + if (staleCount > 0) "；$staleCount 章正文已变化，未记为已整理" else ""
+    }
+
+    // ---------- 这章写完了 ----------
+
+    private val _finish = MutableStateFlow<FinishRun?>(null)
+    /** 正在收尾的一章（同一时间只有一章）：离开收尾页再回来还在，写完、换一章收尾才换掉。 */
+    val finish: StateFlow<FinishRun?> = _finish.asStateFlow()
+    private var finishJob: Job? = null
+
+    /** 收尾里能不能写摘要、审稿（要 AI）：不能时是原因，能时为空。整理入账另看 [syncBlocked]。 */
+    val finishAiBlocked: String?
+        get() = if (!ready) "没设置 AI：先在“我的 → AI 助手”里填好服务商和密钥" else null
+
+    /** 这次实际能做的：AI 没配置（或本机模型不能整理）时去掉做不了的。 */
+    private fun usable(options: FinishOptions) = options.copy(
+        sync = options.sync && syncBlocked == null,
+        summary = options.summary && ready,
+        review = options.review && ready,
+    )
+
+    /** 打开收尾页：同一章接着上次的；别的章（或上次已经收完）从头来，勾选项用作品记住的。 */
+    fun openFinish(workId: String, chapterId: String) {
+        val now = _finish.value
+        if (now != null && now.workId == workId && now.chapterId == chapterId && now.stage != FinishStage.DONE) return
+        finishJob?.cancel()
+        _finish.value = FinishRun(workId, chapterId, _assists.value[workId]?.finish ?: FinishOptions())
+        scope.launch {
+            val saved = assistOf(workId).finish
+            _finish.update { r -> if (r?.workId == workId && r.chapterId == chapterId && r.stage == FinishStage.SETUP) r.copy(options = saved) else r }
+        }
+    }
+
+    /** 改勾选项：这一次用，也按作品记住。 */
+    fun setFinishOptions(options: FinishOptions) {
+        val run = _finish.value?.takeIf { it.stage == FinishStage.SETUP } ?: return
+        _finish.value = run.copy(options = options)
+        updateAssist(run.workId) { it.copy(finish = options) }
+    }
+
+    private fun updateFinish(workId: String, chapterId: String, transform: (FinishRun) -> FinishRun) {
+        _finish.update { r -> if (r != null && r.workId == workId && r.chapterId == chapterId) transform(r) else r }
+    }
+
+    /** 点“开始”：按勾选的依次审稿（勾了才审）、整理入账和写摘要（合成一次请求）；只勾了定稿就直接到确认。 */
+    fun startFinish() {
+        val run = _finish.value?.takeIf { it.stage == FinishStage.SETUP } ?: return
+        val o = usable(run.options)
+        fun state(on: Boolean) = if (on) StepState.WAITING else StepState.SKIPPED
+        val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary))
+        _finish.value = next
+        finishJob = scope.launch {
+            if (o.review && !finishReview(next.workId, next.chapterId)) return@launch
+            finishAi(next.workId, next.chapterId)
+        }
+    }
+
+    /**
+     * 审稿这一步：用现有的三道审稿，审完结果照常存下（审稿页上能看到）。审出还没处理的问题时停在 [FinishStage.REVIEW_FOUND]，
+     * 返回假；没问题（或几道都跳过了）返回真，接着收尾。
+     */
+    private suspend fun finishReview(workId: String, chapterId: String): Boolean {
+        updateFinish(workId, chapterId) { it.copy(review = StepState.RUNNING) }
+        val text = withContext(Dispatchers.IO) { store.text(workId, chapterId) }
+        val job = startReview(workId, chapterId, text)
+        try {
+            job.join()
+        } catch (e: CancellationException) {
+            stopReview(workId, chapterId)
+            throw e
+        }
+        val review = _reviews.value[workId to chapterId]?.review
+        val open = review?.gates.orEmpty().sumOf { g -> g.issues.count { it.open } }
+        // 某一道没审成（不是“没设置、没规范”那种跳过）：记下来给作者看，不拦着收尾。
+        val failed = review?.gates.orEmpty().filter { g -> g.error?.let { "跳过" !in it } == true }
+        updateFinish(workId, chapterId) {
+            it.copy(
+                review = StepState.DONE, reviewIssues = open,
+                reviewError = failed.takeIf { f -> f.isNotEmpty() }?.joinToString("；") { g -> "${g.gate.label}没审成：${g.error}" },
+                stage = if (open > 0) FinishStage.REVIEW_FOUND else it.stage,
+            )
+        }
+        return open == 0
+    }
+
+    /** 审出问题后选了“不管，继续收尾”。 */
+    fun continueFinish() {
+        val run = _finish.value?.takeIf { it.stage == FinishStage.REVIEW_FOUND } ?: return
+        _finish.value = run.copy(stage = FinishStage.RUNNING)
+        finishJob = scope.launch { finishAi(run.workId, run.chapterId) }
+    }
+
+    /** 有一步没成（整理、摘要）：只重做没成的。 */
+    fun retryFinish() {
+        val run = _finish.value?.takeIf { it.stage == FinishStage.AI_FAILED } ?: return
+        _finish.value = run.copy(stage = FinishStage.RUNNING)
+        finishJob = scope.launch { finishAi(run.workId, run.chapterId) }
+    }
+
+    /** 停下、从头来：正在发的请求取消，回到勾选（勾选项用作品记住的）。正在写入时不能停。 */
+    fun stopFinish() {
+        val run = _finish.value ?: return
+        if (run.stage == FinishStage.APPLYING) return
+        finishJob?.cancel()
+        if (run.review == StepState.RUNNING) stopReview(run.workId, run.chapterId)
+        _finish.value = FinishRun(run.workId, run.chapterId, _assists.value[run.workId]?.finish ?: run.options)
+    }
+
+    /**
+     * 整理入账和写摘要：两样都要时合成一次请求（整理的提示词里多要一个 summary）；章太长、分了段整理的，
+     * 摘要另发一次（照单独写摘要的办法）；只要摘要时只发摘要请求。存盘的正文为准（进收尾页前已经存了）。
+     * 已经好了的不再做：重试只补没成的。
+     */
+    private suspend fun finishAi(workId: String, chapterId: String) {
+        val run = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
+        val o = run.options
+        val needSync = o.sync && run.sync != StepState.DONE
+        val needSummary = o.summary && run.summary != StepState.DONE
+        var summaryText: String? = null
+        if (needSync) {
+            updateFinish(workId, chapterId) {
+                it.copy(
+                    sync = StepState.RUNNING, syncError = null,
+                    summary = if (needSummary) StepState.RUNNING else it.summary, summaryError = if (needSummary) null else it.summaryError,
+                )
+            }
+            val text = withContext(Dispatchers.IO) { store.text(workId, chapterId) }
+            try {
+                val result = syncOne(workId, chapterId, text, summary = needSummary)
+                summaryText = result.summary.takeIf { it.isNotBlank() }
+                updateFinish(workId, chapterId) {
+                    if (result.error != null) it.copy(sync = StepState.FAILED, syncError = result.error)
+                    else it.copy(sync = StepState.DONE, session = SyncSession(workId, total = 1, done = 1).with(result))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updateFinish(workId, chapterId) { it.copy(sync = StepState.FAILED, syncError = e.message ?: "请求失败") }
+            }
+        }
+        if (needSummary) {
+            if (summaryText == null) {
+                // 分了段整理、整理没成、或者模型没回 summary：另发一次写摘要的请求。
+                updateFinish(workId, chapterId) { it.copy(summary = StepState.RUNNING, summaryError = null) }
+                summaryText = try {
+                    summarize(workId, chapterId).takeIf { it.isNotBlank() } ?: throw IllegalStateException("AI 没写出摘要")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    updateFinish(workId, chapterId) { it.copy(summary = StepState.FAILED, summaryError = e.message ?: "请求失败") }
+                    null
+                }
+            }
+            summaryText?.let { t -> updateFinish(workId, chapterId) { it.copy(summary = StepState.DONE, draft = t) } }
+        }
+        val now = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
+        if (now.sync == StepState.FAILED || now.summary == StepState.FAILED) {
+            updateFinish(workId, chapterId) { it.copy(stage = FinishStage.AI_FAILED) }
+            return
+        }
+        // 确认前读一次细纲卡：已经有摘要的，确认页上给“用新的 / 留旧的”，默认留旧的，不盖掉作者写的。
+        val old = if (o.summary) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrDefault("") } else ""
+        updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, oldSummary = old, keepOld = old.isNotBlank()) }
+    }
+
+    /** 确认页上改摘要。 */
+    fun editFinishSummary(text: String) = _finish.update { r -> r?.takeIf { it.stage == FinishStage.CONFIRM }?.copy(draft = text) ?: r }
+
+    /** 细纲卡里已经有摘要时：留旧的（真）还是用新的（假）。 */
+    fun keepOldSummary(keep: Boolean) = _finish.update { r -> r?.takeIf { it.stage == FinishStage.CONFIRM }?.copy(keepOld = keep) ?: r }
+
+    /** 确认页上改整理结果（勾选、改文字、改方面、改计划收章），和整理页一样的几样；已经写进去了就不能再改。 */
+    private fun editFinishSync(transform: (SyncSession) -> SyncSession) = _finish.update { r ->
+        val s = r?.session
+        if (r != null && s != null && r.stage == FinishStage.CONFIRM && FinishWrite.SYNC !in r.wrote) r.copy(session = transform(s)) else r
+    }
+
+    fun toggleFinishSync(key: String, on: Boolean) = editFinishSync { s ->
+        if (on && s.results.any { result -> result.error != null && result.items.any { it.key == key } }) s
+        else s.copy(picked = if (on) s.picked + key else s.picked - key)
+    }
+
+    fun editFinishSyncText(key: String, text: String) = editFinishSync { it.copy(edits = it.edits + (key to text)) }
+
+    fun editFinishSyncAspect(key: String, aspect: String) = editFinishSync { it.copy(aspects = it.aspects + (key to aspect)) }
+
+    fun editFinishSyncPayoff(key: String, payoff: Int?) = editFinishSync { it.copy(payoffs = it.payoffs + (key to payoff)) }
+
+    /**
+     * 点“完成收尾”：依次写入勾选的整理条目（同整理页，变更登记、记为已整理照旧）、把摘要写进细纲卡（只改摘要这一项，
+     * 别的项用最新的）、定稿（[finalize]，存历史版本、记登记照旧）。哪一步没成就停下，报出哪步没成；再点只做剩下的，
+     * 已经写成的不重复写。全部写完调 [then]，拿到一句说明。
+     */
+    fun applyFinish(finalize: suspend (workId: String, chapterId: String) -> Unit, then: (String) -> Unit = {}) {
+        val run = _finish.value?.takeIf { it.stage == FinishStage.CONFIRM } ?: return
+        val (workId, chapterId) = run.workId to run.chapterId
+        _finish.value = run.copy(stage = FinishStage.APPLYING, failedWrite = null, writeError = null)
+        finishJob = scope.launch {
+            val notes = mutableListOf<String>()
+            for (step in FinishWrite.entries) {
+                if (step in run.wrote) continue
+                try {
+                    when (step) {
+                        FinishWrite.SYNC -> run.session?.takeIf { run.options.sync }?.let { notes += commitSync(workId, it) }
+                        FinishWrite.SUMMARY -> if (run.options.summary && !run.keepOld && run.draft.isNotBlank()) {
+                            val text = run.draft.trim()
+                            withContext(Dispatchers.IO) {
+                                // 在同一把锁里读改写：只填摘要，别的项（作者等待时在细纲卡页改的）用最新的。
+                                // 进确认以后摘要又被改过的，不盖掉，请作者再选一次。
+                                store.updateCard(workId, chapterId) { latest ->
+                                    check(latest.summary.isBlank() || latest.summary == run.oldSummary || latest.summary == text) {
+                                        "细纲卡里的摘要刚被改过，看一眼再选用新的还是留旧的"
+                                    }
+                                    latest.copy(summary = text)
+                                }
+                            }
+                            notes += "摘要写进了细纲卡"
+                        }
+                        FinishWrite.FINAL -> finalize(workId, chapterId)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 摘要被改过：把细纲卡里现在的摘要读回来，确认页上重新给“用新的 / 留旧的”。
+                    val latest = if (step == FinishWrite.SUMMARY) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrNull() } else null
+                    updateFinish(workId, chapterId) {
+                        it.copy(
+                            stage = FinishStage.CONFIRM, failedWrite = step, writeError = "${step.label}没成：${e.message ?: "写入出错"}",
+                            oldSummary = latest ?: it.oldSummary, keepOld = if (!latest.isNullOrBlank() && latest != it.oldSummary) true else it.keepOld,
+                        )
+                    }
+                    return@launch
+                }
+                updateFinish(workId, chapterId) { it.copy(wrote = it.wrote + step) }
+            }
+            updateFinish(workId, chapterId) { it.copy(stage = FinishStage.DONE) }
+            then((listOf("这一章定稿了") + notes).joinToString("；"))
         }
     }
 
@@ -2718,6 +2971,8 @@ class WritingAi(
         /** 整理本章：回答最长多少 token、最多查几轮设定包。 */
         const val SYNC_TOKENS = 4_096
         const val SYNC_ROUNDS = 2
+        /** 整理时顺带写摘要（150 到 300 字）多留的 token。 */
+        const val SUMMARY_TOKENS = 1_024
 
         /** AI 在编辑器里写时，流式的字最多隔这么久刷新一次显示（每次都要整章重排）。 */
         const val INLINE_REFRESH_MS = 150L
@@ -2815,6 +3070,8 @@ data class ChapterSyncResult(
     val sourceDigest: String = "",
     /** 模型不支持工具，这次没带工具整理：没能按需查设定包，结果可能漏掉冲突。 */
     val noTools: Boolean = false,
+    /** 顺带写的本章摘要（“这章写完了”才要；没要、分了段、模型没回都是空的）。 */
+    val summary: String = "",
 ) {
     companion object {
         /** 没带工具整理时结果页的提示。 */

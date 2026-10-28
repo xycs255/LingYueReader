@@ -98,6 +98,7 @@ import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.withBeatDone
 import com.xycs.lingyuereader.data.ChapterSyncs
+import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.ai.SuggestKind
@@ -1063,6 +1064,20 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         vm.open(Screen.ChapterSync(workId))
     }
 
+    /**
+     * 这章写完了：先把编辑框里的正文存下，存好再进收尾页（收尾页按存盘的正文审稿、整理、写摘要）。
+     * 定稿的章没有这个入口；AI 写的还没采纳或撤回时先处理它。
+     */
+    fun openFinish() {
+        val text = current?.text?.toString() ?: return
+        when {
+            locked -> vm.showMessage("这一章已经定稿了")
+            inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再收尾")
+            text.isBlank() -> vm.showMessage("这一章还没有内容")
+            else -> vm.writing.save(workId, chapterId, text, onSaved = { vm.open(Screen.ChapterFinish(workId, chapterId)) })
+        }
+    }
+
     /** 标为定稿时要不要问：作品里没关提示、AI 能整理、这一章有正文且还没整理过。 */
     fun wantsSyncTip(): Boolean {
         val text = current?.text?.toString().orEmpty()
@@ -1114,6 +1129,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     val index = chapters.indexOfFirst { it.id == chapterId }
     val currentAi = aiState?.takeIf { it.workId == workId && it.chapterId == chapterId }
     val pendingAi = inline != null || currentAi != null
+    // 推荐“这章写完了”：节拍都写过了，或字数到了检查规则里写的下限（按汉字算的按汉字数）。
+    val lengthRule = ruleSet?.rules?.filterIsInstance<CheckRule.Length>()?.firstOrNull { it.min != null }
+    val finished = finishHint(
+        beatCount = beatCard?.let { beats(it).size } ?: 0,
+        beatsLeft = beatCard?.let { Beats.firstUndone(it) } != null,
+        words = report?.stats?.let { if (lengthRule?.han == true) it.han else it.words } ?: 0,
+        minWords = lengthRule?.min,
+    )
     val recommendation = editorRecommendation(
         text = current?.text ?: "",
         selection = current?.selection ?: TextRange(0),
@@ -1122,6 +1145,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         inline = inline,
         aiState = currentAi,
         nextBeat = beatCard?.let { card -> Beats.firstUndone(card)?.let { n -> beats(card).firstOrNull { it.index == n } } },
+        finished = finished,
     )
     val scheme = MiuixTheme.colorScheme
 
@@ -1177,6 +1201,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         // 常用的在前：这一章的细纲和状态，再是 AI，最后是预览、历史、改名。
                                         add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
+                                        // 一处收尾：审稿、整理入账、写摘要、定稿。定稿的章不显示。
+                                        if (!locked) add("这章写完了" to { openFinish() })
                                         // 在光标处写（接着写、写这一拍、写到本章结尾）都在“AI 写”面板里，这里只留进草稿页的入口。
                                         add("AI 写整章草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
@@ -1491,7 +1517,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         toolsOpen = false; vm.open(Screen.WorkPack(workId))
                                     },
                                 )
-                                EditorToolGroup.ORGANIZE -> listOf(
+                                EditorToolGroup.ORGANIZE -> listOfNotNull(
+                                    // 第一格：写完一章一处收尾；定稿的章不显示。
+                                    EditorToolShortcut("这章写完了", LingYueIcons.Check) {
+                                        toolsOpen = false; openFinish()
+                                    }.takeIf { !locked },
                                     EditorToolShortcut("整理入账", LingYueIcons.Download) {
                                         toolsOpen = false; startSync()
                                     },
@@ -1779,6 +1809,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                             saveNow(); vm.open(Screen.ChapterReview(workId, chapterId))
                                         }
                                         EditorRecommendationKind.WRITE_BEAT -> writeNextBeat(effects)
+                                        EditorRecommendationKind.FINISH_CHAPTER -> openFinish()
                                         EditorRecommendationKind.CONTINUE -> openAiWrite()
                                     }
                                 } else Modifier

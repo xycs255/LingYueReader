@@ -236,6 +236,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WritingReference -> WritingReferenceScreen(vm, screen.workId, screen.chapterId)
             is Screen.AiUsage -> AiUsageScreen(vm, screen.workId)
             is Screen.ChapterSync -> ChapterSyncScreen(vm, screen.workId)
+            is Screen.ChapterFinish -> ChapterFinishScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkFormatSettings -> WorkFormatSettingsScreen(vm, screen.workId)
             is Screen.WorkBanned -> WorkBannedScreen(vm, screen.workId)
             is Screen.WorkFormat -> WorkFormatScreen(vm, screen.workId)

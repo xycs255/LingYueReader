@@ -1402,6 +1402,53 @@ internal fun ErrorText(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+/** 流程里一步的记号：等着、在做、好了、出错、不做。 */
+internal enum class StepMark { WAITING, RUNNING, DONE, FAILED, SKIPPED }
+
+/**
+ * 流程里的一步（“这章写完了”的进度）：左边 20dp 的记号——等着是第三级灰空心圈，在做是 [Spinner]，好了是成功色勾，
+ * 出错是删除色叉，不做是第三级灰短横；中间名字（不做的变灰），右边一个状态字（[label]），出错时下面一行 [detail] 写原因。
+ * 读屏把名字、状态、原因连成一句念；状态变了（在做 → 好了）礼貌地念出来。
+ */
+@Composable
+internal fun StepRow(title: String, mark: StepMark, label: String, detail: String? = null) {
+    val c = LocalGroupedColors.current
+    val tone = when (mark) {
+        StepMark.DONE -> c.success
+        StepMark.FAILED -> c.destructive
+        StepMark.RUNNING -> c.tint
+        StepMark.WAITING, StepMark.SKIPPED -> c.tertiary
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clearAndSetSemantics {
+                contentDescription = "$title：$label" + (detail?.let { "，$it" } ?: "")
+                liveRegion = LiveRegionMode.Polite
+            }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            when (mark) {
+                StepMark.RUNNING -> Spinner(size = 18.dp)
+                StepMark.DONE -> Icon(LingYueIcons.Check, contentDescription = null, tint = tone, modifier = Modifier.size(18.dp))
+                StepMark.FAILED -> Icon(LingYueIcons.Close, contentDescription = null, tint = tone, modifier = Modifier.size(18.dp))
+                StepMark.WAITING -> Canvas(Modifier.size(12.dp)) {
+                    drawCircle(tone, radius = size.minDimension / 2 - 1.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+                }
+                StepMark.SKIPPED -> Box(Modifier.size(width = 10.dp, height = 2.dp).clip(CircleShape).background(tone))
+            }
+        }
+        Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = if (mark == StepMark.SKIPPED) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            if (detail != null) Text(detail, color = if (mark == StepMark.FAILED) c.destructive else c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Text(label, color = tone, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
 // ---------- 面板、页面骨架 ----------
 
 /** 面板右上角的关闭钮：32dp 的圆底灰叉，能点的范围 48dp（目录面板、编辑器浮层面板）。 */
