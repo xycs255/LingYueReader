@@ -565,6 +565,7 @@ internal fun CheckRow(
 /**
  * 勾选框一行：左边 miuix 勾选框，右边名字（最多 [titleMaxLines] 行）和一行灰色说明，整行都能点。
  * 勾上的名字淡一点（第三级灰），像清单里做完的事。可以各自勾、不互斥的清单用它（细纲卡的节拍“已写”）；单选用 [CheckRow]。
+ * 当选项开关用（对话框里“出 3 个方向的版本”）时 [dimChecked] 传假：勾上不淡。
  */
 @Composable
 internal fun CheckboxRow(
@@ -573,6 +574,7 @@ internal fun CheckboxRow(
     subtitle: String? = null,
     titleMaxLines: Int = Int.MAX_VALUE,
     enabled: Boolean = true,
+    dimChecked: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
     val c = LocalGroupedColors.current
@@ -590,7 +592,7 @@ internal fun CheckboxRow(
         // 勾选框只是样子：点按和读屏都交给整行。
         Box(Modifier.clearAndSetSemantics {}) { Checkbox(state = ToggleableState(checked), onClick = { onChange(!checked) }, enabled = enabled) }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = if (checked || !enabled) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+            Text(title, color = if ((checked && dimChecked) || !enabled) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp)
         }

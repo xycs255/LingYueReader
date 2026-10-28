@@ -160,6 +160,13 @@ data class WorkAssist(
     val aiCliche: Boolean = true,
     /** 我的黑名单：作者不想再看到的说法（最旧的在前，最多 [KEEP_BANNED] 条）。本机全文禁用，生成时也告诉 AI 别用。 */
     val banned: List<String> = emptyList(),
+    /**
+     * 写正文的温度：只用在写正文、改正文的请求上（接着写、写本章、项目包的创作、润色扩写这类改稿、多方向版本），
+     * 审稿、修订、整理、拟细纲这些求稳的不用。空是服务商默认（请求里不带这个参数）。见 [TEMPERATURES]。
+     */
+    val temperature: Float? = null,
+    /** 编辑器“写这一拍…”里勾了“出 3 个方向的版本”：按作品记住，下次打开还是这样。 */
+    val beatVariants: Boolean = false,
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -185,6 +192,11 @@ data class WorkAssist(
         val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
         val SUGGEST_GAPS = listOf(10, 20, 40, 60, 120)
         val SUGGEST_CAPS = listOf(50, 100, 200, 500, 0)
+        /** 写正文的温度可选的几档（空是服务商默认）。DeepSeek 建议创作类用 1.5 左右。 */
+        val TEMPERATURES: List<Float?> = listOf(null, 0.7f, 1.0f, 1.3f, 1.5f)
+
+        /** 读进来的温度：不是 0 到 2 之间的数（坏数据）当作服务商默认。 */
+        fun cleanTemperature(t: Double?): Float? = t?.takeIf { it.isFinite() && it in 0.0..2.0 }?.toFloat()
     }
 }
 
@@ -2119,6 +2131,8 @@ class WorkStore(
             .put("draftWorkflows", JSONArray(draftWorkflows.sorted()))
             .put("aiCliche", aiCliche)
             .put("banned", JSONArray(banned))
+            .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
+            .put("beatVariants", beatVariants)
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2184,6 +2198,9 @@ class WorkStore(
                 // 旧数据没有这两项：默认查 AI 腔、黑名单空着。
                 aiCliche = optBoolean("aiCliche", true),
                 banned = WorkAssist.cleanBanned(optJSONArray("banned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
+                // 旧数据没有这两项：温度按服务商默认，“3 个方向”不勾。
+                temperature = WorkAssist.cleanTemperature(if (has("temperature") && !isNull("temperature")) optDouble("temperature") else null),
+                beatVariants = optBoolean("beatVariants", false),
             )
         }
 

@@ -26,6 +26,7 @@ import com.xycs.lingyuereader.data.withBeatDone
 import com.xycs.lingyuereader.ai.AiProtocol
 import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.InlineMode
+import com.xycs.lingyuereader.ai.WriteDirection
 import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.PackKnowledge
 import com.xycs.lingyuereader.data.PackTools
@@ -162,7 +163,54 @@ data class InlineWrite(
     val beat: Int? = null,
     /** 写的时候细纲卡一共几拍：采纳时条数变了（节拍改过）就不记，免得记错拍。 */
     val beatTotal: Int = 0,
-)
+    /**
+     * 一拍出几个方向的版本时的各版（空是只写一版）。这时上面的 [text]、[loading]、[error]、[note]、[referenceValidated]
+     * 是选中那一版（[selected]）的，[usage]、[cost] 是各版合计；采纳、重写都对选中的那一版。
+     */
+    val variants: List<InlineVariant> = emptyList(),
+    val selected: Int = 0,
+) {
+    /** 要改的是哪一版：只写一版时为空，出几个版本时是选中的那一版。 */
+    val slot: Int? get() = if (variants.isEmpty()) null else selected
+
+    /** 还有在写的（出几个版本时任一版在写）：“停止”要能停下它们。 */
+    val anyLoading: Boolean get() = if (variants.isEmpty()) loading else variants.any { it.loading }
+
+    /** 改第 [slot] 版（空是只写一版时的那一版），再把选中那一版同步到上面。 */
+    fun edit(slot: Int?, transform: (InlineVariant) -> InlineVariant): InlineWrite {
+        if (slot == null) {
+            val v = transform(InlineVariant(null, text, loading, error, note, usage, cost, referenceValidated))
+            return copy(text = v.text, loading = v.loading, error = v.error, note = v.note, usage = v.usage, cost = v.cost,
+                referenceValidated = v.referenceValidated)
+        }
+        if (slot !in variants.indices) return this
+        return copy(variants = variants.mapIndexed { i, v -> if (i == slot) transform(v) else v }).synced()
+    }
+
+    /** 上面那几项换成选中那一版的，用量和花费是各版合计（三版按三次算钱）。 */
+    fun synced(): InlineWrite {
+        val v = variants.getOrNull(selected) ?: return this
+        val usages = variants.mapNotNull { it.usage }
+        val costs = variants.mapNotNull { it.cost }
+        return copy(text = v.text, loading = v.loading, error = v.error, note = v.note, referenceValidated = v.referenceValidated,
+            usage = usages.takeIf { it.isNotEmpty() }?.reduce { a, b -> a + b },
+            cost = costs.takeIf { it.isNotEmpty() }?.reduce { a, b -> a + b })
+    }
+}
+
+/** 一拍出几个版本时的一版：哪个方向（只写一版时为空）、写了什么、在写没有、出的错、写完的说明、这一版的用量。 */
+data class InlineVariant(
+    val direction: WriteDirection?,
+    val text: String = "",
+    val loading: Boolean = true,
+    val error: String? = null,
+    val note: String? = null,
+    val usage: AiUsage? = null,
+    val cost: AiCost? = null,
+    val referenceValidated: Boolean = false,
+) {
+    val label: String get() = direction?.label.orEmpty()
+}
 
 /** 写作建议的状态：哪一章、找出的问题、正在查没有、上次出的错。 */
 data class RealtimeState(
@@ -337,6 +385,8 @@ class WritingAi(
                 else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
                     confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
                     meter = meter,
+                    // 润色、扩写、续写这类改正文的用作品设的温度；挑错只改错，求稳，不用。灵感、矛盾检查也不用。
+                    temperature = assist.temperature.takeIf { task is WriteAiTask.Edit && task.action != WriteAction.PROOFREAD },
                     onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false, usage = meter.usage, cost = meter.cost) ?: s }
@@ -622,111 +672,182 @@ class WritingAi(
     private val _inline = MutableStateFlow<InlineWrite?>(null)
     /** 在编辑器里正在写（或写完等作者采纳）的那一段。 */
     val inline: StateFlow<InlineWrite?> = _inline.asStateFlow()
-    private var inlineJob: Job? = null
+    /** 正在写的请求：键是第几版（只写一版时是空）。准备资料时几版共用一个，发出去以后各版一个。 */
+    private val inlineJobs = HashMap<Int?, Job>()
     /** 第几次让 AI 在编辑器里写：每次写只认自己这一次。 */
     private var inlineRun = 0
+    /** 各版这一次写的编号：只重写一版时，那一版旧的请求不能再改它。 */
+    private val inlineSlots = HashMap<Int?, Int>()
+    private var inlineSlotSeq = 0
+
+    /** 写之前算好、几版共用的东西：系统提示、光标前后、规范、篇幅、写法要求、这一拍、范本、温度。 */
+    private class InlinePrep(
+        val title: String,
+        val system: String,
+        val before: String,
+        val after: String,
+        val length: String,
+        val rules: String,
+        val voice: String,
+        val beat: BeatTask?,
+        val reference: ReferenceWritingMaterial?,
+        val project: Boolean,
+        val temperature: Float?,
+    )
 
     /**
      * 从光标 [at] 处接着写：[text] 是编辑框里现在的全文。带设定包、细纲卡、写作规范和检查规则；
-     * 写的字一段段显示在光标处，作者采纳才进正文。
+     * 写的字一段段显示在光标处，作者采纳才进正文。[variants] 为真时按 [WriteDirection] 的三个方向各写一版（并发，各自显示），作者挑一版采纳。
      */
-    fun writeInline(workId: String, chapterId: String, text: String, at: Int, mode: InlineMode, instruction: String = "", referenceAnalysisId: String? = null, beat: Int? = null) {
+    fun writeInline(workId: String, chapterId: String, text: String, at: Int, mode: InlineMode, instruction: String = "", referenceAnalysisId: String? = null, beat: Int? = null,
+                    variants: Boolean = false) {
         if (!ready) {
             message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
             return
         }
-        inlineJob?.cancel()
+        cancelInline()
         // 这一次的编号：旧的那次被取消（停下的说明）、出错时，不能去改新的这一次。
         val run = ++inlineRun
-        fun update(transform: (InlineWrite) -> InlineWrite) {
-            if (run == inlineRun) _inline.update { d -> d?.let(transform) }
-        }
         val cursor = at.coerceIn(0, text.length)
-        _inline.value = InlineWrite(workId, chapterId, cursor, text, mode, instruction, referenceAnalysisId = referenceAnalysisId, beat = beat)
-        val head = text.substring(0, cursor)
-        var written = ""
-        val meter = AiMeter(AiFeature.INLINE, workId)
-        inlineJob = scope.launch {
-            try {
-                val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
-                val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
-                if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
-                val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, instruction) }
-                val reference = referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
-                if (reference != null) update { it.copy(referenceFingerprint = reference.excerpt.fingerprint,
-                    referenceChapterLength = reference.excerpt.chapterLength) }
-                val (pack, rules, length, previous) = withContext(Dispatchers.IO) {
-                    val i = work.chapters.indexOfFirst { it.id == chapterId }
-                    listOf(
-                        chapterContext(workId, chapterId, text).orEmpty(),
-                        writingRules(workId, chapterId, text),
-                        taskSnapshot?.takeIf { it.project }?.targetLength ?: lengthOf(workId),
-                        if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(3_000) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
-                    )
-                }
-                // 写某一拍：按现在细纲卡里的节拍算这一拍、前后两拍和篇幅；节拍改过、这一拍没了就不写。
-                val beatTask = beat?.let { n ->
-                    val list = withContext(Dispatchers.IO) { beats(store.plannedCard(workId, chapterId).card) }
-                    if (n !in 1..list.size) throw IllegalStateException("细纲卡的节拍改过了，没有第 $n 拍，重新选一拍")
-                    update { it.copy(beatTotal = list.size) }
-                    Beats.task(list, n, length)
-                }
-                // 光标前不够长：前面接上一章的结尾。
-                val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
-                val after = text.substring(cursor).take(800)
-                val samples = samplesFor(workId, chapterId)
-                val assist = assistOf(workId)
-                val system = WritePrompts.system(work.title, assist, pack.ifEmpty { null }) +
-                    (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
-                val prompt = withReference(reference, WritePrompts.voiceTail(assist, samples)) { voice ->
-                    WritePrompts.continueAt(chapter.title, before, after, mode, length, instruction, rules, voice = voice, beat = beatTask)
-                }
-                if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
-                // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
-                var shown = 0L
-                val answer = askWithPack(
-                    "在编辑器里写", workId, system, prompt, maxTokens = draftTokens?.coerceAtMost(8_192), meter = meter,
-                    toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
-                    requireTools = taskSnapshot?.project == true,
-                    onReset = {
-                        written = ""
-                        shown = 0L
-                        update { it.copy(text = "") }
-                    },
-                ) { piece ->
-                    written += piece
-                    val now = System.currentTimeMillis()
-                    if (now - shown >= INLINE_REFRESH_MS) {
-                        shown = now
-                        update { it.copy(text = joinAt(head, written)) }
-                    }
-                }
-                val note = when {
-                    answer.endsWith(TRUNCATED_NOTE) -> "写到长度上限停了，可以采纳后再接着写"
-                    answer.endsWith(STOPPED_NOTE) -> "模型中途停了"
-                    else -> null
-                }
-                val clean = WritePrompts.cleanDraft(answer.removeSuffix(TRUNCATED_NOTE).removeSuffix(STOPPED_NOTE))
-                if (reference != null) {
-                    ReferenceWriting.verifyProse(clean, reference)
-                    withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
-                }
-                update { it.copy(text = joinAt(head, clean), loading = false, note = note,
-                    referenceValidated = reference != null, usage = meter.usage, cost = meter.cost) }
-                log(workId, chapterId, "在编辑器里写", (beatTask?.let { "写第 ${it.beat.index} 拍：${it.beat.text}" } ?: mode.label) +
-                    instruction.let { if (it.isBlank()) "" else "：$it" }, clean, meter)
+        val d = InlineWrite(workId, chapterId, cursor, text, mode, instruction, referenceAnalysisId = referenceAnalysisId, beat = beat,
+            variants = if (variants) WriteDirection.entries.map { InlineVariant(it) } else emptyList())
+        _inline.value = d
+        startInline(run, d, if (variants) d.variants.indices.toList() else listOf(null))
+    }
+
+    /** 改第 [slot] 版（空是只写一版）：只认这一次、这一版最新的请求。 */
+    private fun updateInline(run: Int, slot: Int?, token: Int, transform: (InlineVariant) -> InlineVariant) {
+        if (run == inlineRun && inlineSlots[slot] == token) _inline.update { d -> d?.edit(slot, transform) }
+    }
+
+    /** 写 [slots] 这几版：先准备一次资料，再各版各发一个请求（并发）；一版出错不影响别的版。 */
+    private fun startInline(run: Int, d: InlineWrite, slots: List<Int?>) {
+        val tokens = slots.associateWith { ++inlineSlotSeq }
+        inlineSlots.putAll(tokens)
+        val head = d.base.substring(0, d.at)
+        val prepJob = scope.launch {
+            val prep = try {
+                prepareInline(run, d)
             } catch (e: CancellationException) {
-                // 停下：已经写出来的（可能还没显示出来）留着。
-                val shownText = joinAt(head, written)
-                update { it.copy(text = shownText, loading = false, note = if (shownText.isEmpty()) null else "停下了", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+                slots.forEach { s -> updateInline(run, s, tokens.getValue(s)) { it.copy(loading = false) } }
                 throw e
-            } catch (e: RejectedReferenceWriting) {
-                written = ""
-                update { it.copy(text = "", loading = false, error = e.message, usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
             } catch (e: Exception) {
-                update { it.copy(loading = false, error = e.message ?: "请求失败", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+                slots.forEach { s -> updateInline(run, s, tokens.getValue(s)) { it.copy(loading = false, error = e.message ?: "请求失败") } }
+                return@launch
+            }
+            if (run != inlineRun) return@launch
+            slots.forEach { s ->
+                if (inlineSlots[s] != tokens.getValue(s)) return@forEach
+                inlineJobs[s] = scope.launch { writeVersion(run, s, tokens.getValue(s), d, head, prep) }
             }
         }
+        slots.forEach { inlineJobs[it] = prepJob }
+    }
+
+    /** 几版共用的资料：作品、本章、细纲卡、规范、上一章结尾、文风范例、范本。章定稿了、节拍改过了就报错。 */
+    private suspend fun prepareInline(run: Int, d: InlineWrite): InlinePrep {
+        val workId = d.workId
+        val chapterId = d.chapterId
+        val text = d.base
+        val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
+        val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+        if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
+        val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, d.instruction) }
+        val reference = d.referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
+        if (reference != null && run == inlineRun) _inline.update { w -> w?.copy(referenceFingerprint = reference.excerpt.fingerprint,
+            referenceChapterLength = reference.excerpt.chapterLength) }
+        val (pack, rules, length, previous) = withContext(Dispatchers.IO) {
+            val i = work.chapters.indexOfFirst { it.id == chapterId }
+            listOf(
+                chapterContext(workId, chapterId, text).orEmpty(),
+                writingRules(workId, chapterId, text),
+                taskSnapshot?.takeIf { it.project }?.targetLength ?: lengthOf(workId),
+                if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(3_000) else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(3_000) }.orEmpty(),
+            )
+        }
+        // 写某一拍：按现在细纲卡里的节拍算这一拍、前后两拍和篇幅；节拍改过、这一拍没了就不写。
+        val beatTask = d.beat?.let { n ->
+            val list = withContext(Dispatchers.IO) { beats(store.plannedCard(workId, chapterId).card) }
+            if (n !in 1..list.size) throw IllegalStateException("细纲卡的节拍改过了，没有第 $n 拍，重新选一拍")
+            if (run == inlineRun) _inline.update { w -> w?.copy(beatTotal = list.size) }
+            Beats.task(list, n, length)
+        }
+        val head = text.substring(0, d.at)
+        // 光标前不够长：前面接上一章的结尾。
+        val before = (if (head.length < 4_000 && previous.isNotBlank()) "（上一章结尾）\n" + previous + "\n（本章）\n" else "") + head.takeLast(8_000)
+        val after = text.substring(d.at).take(800)
+        val samples = samplesFor(workId, chapterId)
+        val assist = assistOf(workId)
+        val system = WritePrompts.system(work.title, assist, pack.ifEmpty { null }) +
+            (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
+        return InlinePrep(chapter.title, system, before, after, length, rules, WritePrompts.voiceTail(assist, samples), beatTask, reference,
+            taskSnapshot?.project == true, assist.temperature)
+    }
+
+    /** 写一版：[slot] 是第几版（空是只写一版）。停下、出错只改这一版。 */
+    private suspend fun writeVersion(run: Int, slot: Int?, token: Int, d: InlineWrite, head: String, prep: InlinePrep) {
+        val direction = slot?.let { d.variants.getOrNull(it)?.direction }
+        val reference = prep.reference
+        var written = ""
+        val meter = AiMeter(AiFeature.INLINE, d.workId)
+        fun update(transform: (InlineVariant) -> InlineVariant) = updateInline(run, slot, token, transform)
+        try {
+            val prompt = withReference(reference, prep.voice) { voice ->
+                WritePrompts.continueAt(prep.title, prep.before, prep.after, d.mode, prep.length, d.instruction, prep.rules, voice = voice, beat = prep.beat,
+                    direction = direction)
+            }
+            if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
+            // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
+            var shown = 0L
+            val answer = askWithPack(
+                "在编辑器里写" + (direction?.let { " · ${it.label}" } ?: ""), d.workId, prep.system, prompt,
+                maxTokens = draftTokens?.coerceAtMost(8_192), meter = meter,
+                toolsUpTo = d.chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
+                requireTools = prep.project, temperature = prep.temperature,
+                onReset = {
+                    written = ""
+                    shown = 0L
+                    update { it.copy(text = "") }
+                },
+            ) { piece ->
+                written += piece
+                val now = System.currentTimeMillis()
+                if (now - shown >= INLINE_REFRESH_MS) {
+                    shown = now
+                    update { it.copy(text = joinAt(head, written)) }
+                }
+            }
+            val note = when {
+                answer.endsWith(TRUNCATED_NOTE) -> "写到长度上限停了，可以采纳后再接着写"
+                answer.endsWith(STOPPED_NOTE) -> "模型中途停了"
+                else -> null
+            }
+            val clean = WritePrompts.cleanDraft(answer.removeSuffix(TRUNCATED_NOTE).removeSuffix(STOPPED_NOTE))
+            if (reference != null) {
+                ReferenceWriting.verifyProse(clean, reference)
+                withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
+            }
+            update { it.copy(text = joinAt(head, clean), loading = false, note = note,
+                referenceValidated = reference != null, usage = meter.usage, cost = meter.cost) }
+            log(d.workId, d.chapterId, "在编辑器里写", (prep.beat?.let { "写第 ${it.beat.index} 拍：${it.beat.text}" } ?: d.mode.label) +
+                (direction?.let { "（${it.label}）" } ?: "") + d.instruction.let { if (it.isBlank()) "" else "：$it" }, clean, meter)
+        } catch (e: CancellationException) {
+            // 停下：已经写出来的（可能还没显示出来）留着。
+            val shownText = joinAt(head, written)
+            update { it.copy(text = shownText, loading = false, note = if (shownText.isEmpty()) null else "停下了", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+            throw e
+        } catch (e: RejectedReferenceWriting) {
+            written = ""
+            update { it.copy(text = "", loading = false, error = e.message, usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+        } catch (e: Exception) {
+            update { it.copy(loading = false, error = e.message ?: "请求失败", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+        }
+    }
+
+    /** 取消正在写的各版（准备资料的、各版的请求）。 */
+    private fun cancelInline() {
+        inlineJobs.values.toSet().forEach { it.cancel() }
+        inlineJobs.clear()
     }
 
     /**
@@ -740,25 +861,43 @@ class WritingAi(
         return if (done && !w.startsWith("\n")) "\n" + w else w
     }
 
-    /** 停下：已经写出来的留着，作者可以采纳或撤回。 */
+    /** 停下：已经写出来的留着，作者可以采纳或撤回。出几个版本时几版一起停。 */
     fun stopInline() {
-        inlineJob?.cancel()
+        cancelInline()
     }
 
-    /** 撤回：AI 写的不要了。 */
+    /** 撤回：AI 写的不要了（几个版本都不要）。 */
     fun discardInline() {
-        inlineJob?.cancel()
+        cancelInline()
         _inline.value = null
     }
 
-    /** 重写：同样的位置、同样的要求再写一次。 */
+    /** 出几个版本时换看哪一版：正文里的浅色预览、采纳、重写都跟着换。 */
+    fun selectInline(index: Int) {
+        _inline.update { d -> d?.takeIf { index in it.variants.indices }?.copy(selected = index)?.synced() ?: d }
+    }
+
+    /** 重写：同样的位置、同样的要求再写一次。出几个版本时只重写选中的那一版，别的版留着。 */
     fun retryInline() {
         val d = _inline.value ?: return
-        writeInline(d.workId, d.chapterId, d.base, d.at, d.mode, d.instruction, d.referenceAnalysisId, d.beat)
+        if (d.variants.isEmpty()) {
+            writeInline(d.workId, d.chapterId, d.base, d.at, d.mode, d.instruction, d.referenceAnalysisId, d.beat)
+            return
+        }
+        if (!ready) {
+            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            return
+        }
+        val slot = d.selected
+        // 这一版的旧请求（准备资料时几版共用一个，那时别的版还要它，不取消）。
+        inlineJobs.remove(slot)?.takeIf { job -> inlineJobs.values.none { it === job } }?.cancel()
+        val restarted = d.edit(slot) { InlineVariant(it.direction) }
+        _inline.value = restarted
+        startInline(inlineRun, restarted, listOf(slot))
     }
 
     /**
-     * 采纳：AI 写的插进正文，存一版（采纳前的正文先存进历史），AI 写的字不算码字数。
+     * 采纳：AI 写的（出几个版本时是选中的那一版）插进正文，存一版（采纳前的正文先存进历史），AI 写的字不算码字数。
      * 返回插好以后的全文和光标位置；正文已经变了、插不进去时返回空。
      */
     fun acceptInline(current: String): Pair<String, Int>? {
@@ -770,11 +909,13 @@ class WritingAi(
                 ReferenceWriting.ensureSnapshot(store, d.workId, d.chapterId, d.referenceAnalysisId,
                     d.referenceFingerprint ?: return null, d.referenceChapterLength ?: return null)
             } catch (e: Exception) {
-                _inline.value = d.copy(error = e.message ?: "范本来源已变化，请重新生成", referenceValidated = false)
+                _inline.value = d.edit(d.slot) { it.copy(error = e.message ?: "范本来源已变化，请重新生成", referenceValidated = false) }
                 return null
             }
         }
         val text = current.substring(0, d.at) + d.text + current.substring(d.at)
+        // 别的版还在写：不要了，停下。
+        cancelInline()
         _inline.value = null
         scope.launch {
             try {
@@ -884,12 +1025,14 @@ class WritingAi(
         prompt: String,
         whole: Boolean = false,
         meter: AiMeter = AiMeter(featureOf(label), workId),
+        /** 写正文的温度（[WorkAssist.temperature]）：只有写正文、改正文的请求才传，别的都空着。 */
+        temperature: Float? = null,
         onText: (String) -> Unit = {},
     ): String {
         val sent = SentRequest(label, system, prompt, System.currentTimeMillis())
         _lastRequest.value = sent
         try {
-            return withContext(meter) { ai.ask(system, prompt, whole, onText) }
+            return withContext(meter) { ai.ask(system, prompt, whole, temperature, onText) }
         } finally {
             noteUsage(sent.id, meter)
         }
@@ -951,12 +1094,17 @@ class WritingAi(
         meter: AiMeter = AiMeter(featureOf(label), workId),
         /** 模型不支持工具、这次没带工具就答了（只有 [requireTools] 为假时会发生）。 */
         onToolsDropped: () -> Unit = {},
+        /**
+         * 写正文的温度（[WorkAssist.temperature]）。只有写正文、改正文的请求传它：编辑器里接着写、写本章、项目包的创作、
+         * 润色扩写这类改稿；审稿、修订、拟细纲、拆节拍、整理、写作建议、去 AI 腔都不传（空是服务商默认）。
+         */
+        temperature: Float? = null,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
         if (!canUsePack) {
             if (requireTools) throw AiException("本次项目任务需要设定包查阅工具；本机模型无法完成，请选支持工具调用的模型")
-            return ask(label, workId, rest, prompt, whole, meter, onText)
+            return ask(label, workId, rest, prompt, whole, meter, temperature, onText)
         }
         val budget = knowledgeBudget(workId)
         val stage = phase ?: when (label) {
@@ -992,6 +1140,7 @@ class WritingAi(
                 requireTools = requireTools,
                 onToolsDropped = onToolsDropped,
                 onLookup = { onReset() },
+                temperature = temperature,
                 onText = onText,
             ) }
         } finally {
@@ -1658,7 +1807,7 @@ class WritingAi(
                             askWithPack(
                                 if (first) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                                 toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
-                                requireTools = taskSnapshot?.project == true, onReset = onReset, onText = onText,
+                                requireTools = taskSnapshot?.project == true, temperature = assist.temperature, onReset = onReset, onText = onText,
                             )
                         },
                         onCommitted = { committed, progress -> beatsCommitted = committed to progress },
@@ -1674,7 +1823,7 @@ class WritingAi(
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
-                    requireTools = taskSnapshot?.project == true,
+                    requireTools = taskSnapshot?.project == true, temperature = assist.temperature,
                     onReset = {
                         written = ""
                         newCandidateGenerated = false
@@ -2015,7 +2164,7 @@ class WritingAi(
                                     askWithPack(
                                         "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                                         toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
-                                        meter = createMeter, onReset = onReset, onText = onText,
+                                        meter = createMeter, temperature = assist.temperature, onReset = onReset, onText = onText,
                                     )
                                 },
                                 onCommitted = { text, progress ->
@@ -2032,7 +2181,8 @@ class WritingAi(
                         val answer = askWithPack(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                             toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
-                            meter = createMeter,
+                            // 只有创作阶段用作品设的温度；审读、修订求稳，不带。
+                            meter = createMeter, temperature = assist.temperature,
                             onReset = {
                                 written = ""
                                 newCandidateGenerated = false

@@ -987,7 +987,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
-    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null, beat: Int? = null) {
+    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null, beat: Int? = null, variants: Boolean = false) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -995,7 +995,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val text = st.text.toString()
         val at = if (atEnd) text.length else st.selection.max
-        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat)
+        vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat, variants)
     }
 
     /** 预览、审稿、草稿页要使用这一刻的编辑框，而不是等 800ms 自动保存。 */
@@ -1236,7 +1236,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val formatNow by rememberUpdatedState(formatSettings.takeIf { !readOnly })
                 val typing = remember(current) { current?.let { st -> TypingFormatInput(st, effects) { formatNow } } }
                 // AI 写的字：新来的一截淡入；采纳后那一段从浅色过渡到正文色。
-                val inlineFade = remember(current) { InlineFade(effects) }
+                // 出几个版本时换一版：浅色预览整段重新淡入。
+                val inlineFade = remember(current, inline?.selected) { InlineFade(effects) }
                 val inlineLength = inline?.text?.length ?: 0
                 SideEffect { inlineFade.update(inlineLength) }
                 val pendingStyle = SpanStyle(color = scheme.primary, background = scheme.primary.copy(alpha = 0.08f))
@@ -1534,6 +1535,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             onRetry = { vm.writingAi.retryInline() },
                             onDiscard = { vm.writingAi.discardInline() },
                             cliche = inlineCliche,
+                            onSelect = { vm.writingAi.selectInline(it) },
                         )
                         EditorPanel.Format -> FormatPanel(
                             formatResult,
@@ -1911,17 +1913,22 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             }
             if (beatDialog) {
                 beatCard?.let { card ->
-                    BeatPickDialog(card, onDismiss = { beatDialog = false }) { n ->
+                    BeatPickDialog(
+                        card,
+                        variants = assists[workId]?.beatVariants == true,
+                        onVariants = { on -> vm.writingAi.updateAssist(workId) { it.copy(beatVariants = on) } },
+                        onDismiss = { beatDialog = false },
+                    ) { n, variants ->
                         beatDialog = false
-                        startInline(InlineMode.BEAT, beat = n)
+                        startInline(InlineMode.BEAT, beat = n, variants = variants)
                     }
                 }
             }
             if (inlineDialog) {
-                InlineModeDialog(onDismiss = { inlineDialog = false }) { mode ->
+                InlineModeDialog(onDismiss = { inlineDialog = false }) { mode, variants ->
                     inlineDialog = false
                     if (mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> startInline(mode, req) }
-                    else startInline(mode)
+                    else startInline(mode, variants = variants)
                 }
             }
             if (ideas) {

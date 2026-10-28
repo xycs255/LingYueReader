@@ -80,6 +80,16 @@ enum class InlineMode(val label: String) {
     BEAT("写这一拍…"),
 }
 
+/**
+ * 一拍出几个版本时的方向：同样的资料、节拍、细纲和写法要求，各按一个方向写一版，作者挑。
+ * [rule] 写进提示词，放在节拍、模式要求之后、写法要求之前。
+ */
+enum class WriteDirection(val label: String, val rule: String) {
+    CONFLICT("冲突升级", "让这一段里的矛盾更尖锐：人物更主动地顶上去，把话说重、把事做绝一点，冲突在这一段里往上走一级。"),
+    RESTRAIN("按下不发", "写得克制：情绪和信息压着不说破，用动作、细节和留白让读者自己读出来，不替人物把心里话说出来。"),
+    SURPRISE("意外插入", "插入一个合理的小意外（一个人、一件东西或一个消息），改变这一段的走向；意外要在细纲卡的事实边界之内，不提前写后面的事。"),
+}
+
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
 data class BibleProposal(val name: String, val text: String, val existing: Boolean)
 
@@ -329,7 +339,8 @@ object WritePrompts {
      * 在编辑器里接着光标往下写：[before] 是光标前的正文（前面不够时接上一章结尾），[after] 是光标后面已经写了的。
      * [length] 是全章篇幅要求，[instruction] 是作者这次的要求，[voice] 是写法要求（[voiceTail]），接在最后。
      */
-    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
+    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String, voice: String = "", beat: BeatTask? = null,
+                   direction: WriteDirection? = null): String = withVoice(buildString {
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
         append("这一章「").append(title).append("」写到光标处的正文：\n").append(before).append("\n【光标在这里】\n")
         if (after.isNotBlank()) append("光标后面已经写了（只作语境，不要重复它，写的内容要能接上它）：\n").append(after).append('\n')
@@ -347,7 +358,12 @@ object WritePrompts {
         append("\n- 接着上文最后一个字写：上文最后一段没写完就接着写这一段，要另起一段就换行。不要重复上文。")
         append("\n- 细纲卡里的事实、人物知道什么不知道什么，以设定资料为准；拿不准就先用工具查。")
         append("\n- 只输出接下去的正文：一行一段，段首不空格；不要章名、小标题、解释。")
+        if (direction != null) append("\n\n").append(directionRule(direction))
     }, voice)
+
+    /** 一拍出几个版本时这一版的方向要求（[continueAt] 用）：方向之外，节拍、细纲卡和写法要求照旧。 */
+    fun directionRule(direction: WriteDirection): String =
+        "【这一版的方向：${direction.label}】${direction.rule}方向只管这一段怎么写，上面的节拍、细纲卡的事实边界和后面的写法要求都照旧遵守。"
 
     fun proofread(paragraphs: List<String>): String = buildString {
         append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")

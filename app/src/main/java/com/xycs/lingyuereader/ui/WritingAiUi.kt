@@ -513,6 +513,8 @@ internal fun SuggestTag(kind: String, c: GroupedColors, modifier: Modifier = Mod
 /**
  * AI 在编辑器里写：键盘上方一条——在写（或在查设定）时能停，写完能采纳、重写、撤回。
  * 写的字显示在正文的光标处（浅色），采纳前不算正文。在写、写好、出错之间原地淡过去；写的时候带一个小转圈。
+ * 出几个方向的版本时，上面一排分段控件切换各版（每段带“写着、写好、出错”）；采纳、重写对选中的那一版，
+ * 别的版还在写时也能“停止”，撤回几版都不要；花费是几版合计。
  */
 @Composable
 internal fun InlineBar(
@@ -522,8 +524,9 @@ internal fun InlineBar(
     onAccept: () -> Unit,
     onRetry: () -> Unit,
     onDiscard: () -> Unit,
-    /** AI 写的字里有几处 AI 腔、黑名单命中（本机算的）；只提醒，不拦采纳。 */
+    /** AI 写的字里有几处 AI 腔、黑名单命中（本机算的）；只提醒，不拦采纳。出几个版本时按选中的那一版算。 */
     cliche: Int = 0,
+    onSelect: (Int) -> Unit = {},
 ) {
     val c = LocalGroupedColors.current
     val phase = when {
@@ -543,10 +546,20 @@ internal fun InlineBar(
                     enabled = inline.text.isNotBlank() && inline.error == null &&
                         (inline.referenceAnalysisId == null || inline.referenceValidated))
                 PillButton("重写", onRetry)
+                // 出几个版本时这一版写好了、别的版还在写：也能停下它们。
+                if (inline.anyLoading) PillButton("停止", onStop)
             }
             PillButton("撤回", onDiscard)
         },
     ) {
+        if (inline.variants.isNotEmpty()) {
+            SegmentedControl(
+                inline.variants.mapIndexed { i, v -> i to "${v.label}·${variantStatus(v)}" },
+                inline.selected,
+                modifier = Modifier.padding(bottom = 4.dp),
+                onSelect = onSelect,
+            )
+        }
         AnimatedContent(phase, transitionSpec = { Motion.fadeThrough() using null }, label = "inlinePhase") { p ->
             val words = WordCount.of(inline.text)
             val line = Modifier.fillMaxWidth().padding(bottom = 4.dp)
@@ -588,12 +601,29 @@ internal fun UsageNote(usage: com.xycs.lingyuereader.ai.AiUsage?, cost: com.xycs
     Text(text, color = LocalGroupedColors.current.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
 }
 
-/** 选写多少：写下一场、写到本章结尾、写 500 字左右、按要求写。 */
+/** 出几个版本时一版的状态，跟在分段控件的方向名后面。 */
+private fun variantStatus(v: com.xycs.lingyuereader.InlineVariant): String = when {
+    v.error != null -> "出错"
+    v.loading -> "写着"
+    else -> "写好"
+}
+
+/** 出 3 个方向的版本：选项后面的说明。 */
+internal const val VARIANTS_NOTE = "冲突升级、按下不发、意外插入各写一版，你挑一版采纳；花费约 3 倍"
+
+/** 选写多少：写下一场、写下一场 · 3 个方向、写到本章结尾、写 500 字左右、按要求写。[onPick] 的第二项为真是出 3 个方向的版本。 */
 @Composable
-internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Unit) {
+internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode, Boolean) -> Unit) {
     GlassDialog(show = true, title = "AI 接着写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
-        // “写这一拍…”要先挑拍，从编辑器菜单进，不放在这里。
-        DialogOptionList(InlineMode.entries.filter { it != InlineMode.BEAT }.map { it to it.label }, onPick = onPick)
+        // “写这一拍…”要先挑拍，从编辑器菜单进，不放在这里。“写下一场”紧跟一项出 3 个方向的。
+        val options = buildList {
+            InlineMode.entries.filter { it != InlineMode.BEAT }.forEach { m ->
+                add((m to false) to m.label)
+                if (m == InlineMode.SCENE) add((m to true) to "${m.label} · 3 个方向")
+            }
+        }
+        DialogOptionList(options, onPick = { (m, variants) -> onPick(m, variants) },
+            description = { (_, variants) -> VARIANTS_NOTE.takeIf { variants } })
         TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
     }
 }
@@ -603,10 +633,18 @@ internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode) -> Uni
  * 选好从光标处只写这一拍，写的字先显示，采纳后这一拍记成已写。
  */
 @Composable
-internal fun BeatPickDialog(card: ChapterCard, onDismiss: () -> Unit, onPick: (Int) -> Unit) {
+internal fun BeatPickDialog(
+    card: ChapterCard,
+    /** 上次勾没勾“出 3 个方向的版本”（按作品记住），[onVariants] 在勾、取消时记下来。 */
+    variants: Boolean = false,
+    onVariants: (Boolean) -> Unit = {},
+    onDismiss: () -> Unit,
+    onPick: (Int, Boolean) -> Unit,
+) {
     val list = beats(card)
     val done = card.beatsDone.toSet()
     var chosen by remember(card) { mutableStateOf(Beats.firstUndone(card) ?: 1) }
+    var several by remember { mutableStateOf(variants) }
     GlassDialog(show = true, title = "写这一拍", summary = "从光标处只写细纲卡里的这一拍，写到它收住就停；采纳后记成已写", onDismissRequest = onDismiss) {
         Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
             list.forEach { b ->
@@ -618,7 +656,12 @@ internal fun BeatPickDialog(card: ChapterCard, onDismiss: () -> Unit, onPick: (I
                 ) { chosen = b.index }
             }
         }
-        DialogButtons(onDismiss = onDismiss, onConfirm = { onPick(chosen) }, confirmText = "写第 $chosen 拍")
+        // 关键的一拍：按三个方向各写一版，作者挑。默认不勾，勾了按作品记住。
+        CheckboxRow("出 3 个方向的版本（花费约 3 倍）", several, subtitle = VARIANTS_NOTE.substringBefore("；"), dimChecked = false) { on ->
+            several = on
+            onVariants(on)
+        }
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onPick(chosen, several) }, confirmText = "写第 $chosen 拍")
     }
 }
 
@@ -722,6 +765,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     var style by styleField
     var clearing by remember { mutableStateOf(false) }
     var showSent by remember { mutableStateOf(false) }
+    var temperatureOpen by remember { mutableStateOf(false) }
     val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
     // 文风要求边打边存（停一下再写盘）。
     LaunchedEffect(style) {
@@ -871,6 +915,13 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                     }
+                    GroupedSection(
+                        header = "温度",
+                        footer = "越高越不套路，也越容易跑偏。只影响写正文和改稿（接着写、写本章、润色扩写这类），审稿、修订、整理不受影响；" +
+                            "推理和思考模式的模型可能不起作用。",
+                    ) {
+                        row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }
+                    }
                     GroupedSection(header = "文风", footer = "AI 改稿、续写时都按这里写的来，比如“第一人称，口语化，少用成语”“对话多、短句为主”。") {
                         row {
                             TextField(
@@ -910,8 +961,32 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 }
             }
             if (showSent) sent?.let { SentDialog(it) { showSent = false } }
+            if (temperatureOpen) {
+                GlassDialog(show = true, title = "写正文的温度", summary = "越高越不套路，也越容易跑偏；只用在写正文、改稿上", onDismissRequest = { temperatureOpen = false }) {
+                    DialogOptionList(
+                        WorkAssist.TEMPERATURES.map { it to temperatureLabel(it) },
+                        selected = assist.temperature,
+                        description = { t -> if (t == 1.5f) "DeepSeek 推荐的创作值" else null },
+                        onPick = { t ->
+                            temperatureOpen = false
+                            vm.writingAi.updateAssist(workId) { it.copy(temperature = t) }
+                        },
+                    )
+                    TextButton(text = "取消", onClick = { temperatureOpen = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                }
+            }
         }
     }
+}
+
+/** 写正文的温度给人看的说法：空是服务商默认，几档常用的带一句；别的（备份里来的）只写数。 */
+internal fun temperatureLabel(t: Float?): String = when (t) {
+    null -> "服务商默认"
+    0.7f -> "稳一点 0.7"
+    1.0f -> "标准 1.0"
+    1.3f -> "放开些 1.3"
+    1.5f -> "很放开 1.5"
+    else -> t.toString()
 }
 
 /** AI 整理出的人物：勾选要加的（默认全选），已有的标“更新”。 */
