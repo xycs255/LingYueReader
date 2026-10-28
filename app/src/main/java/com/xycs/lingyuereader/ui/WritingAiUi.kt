@@ -359,15 +359,34 @@ private val ClicheDark = Color(0xFF5CC8BA)
  * 删除色、提醒色在配色里已经和强调色转开了（[distinctFrom]），口吻再和这三种转开，两两色差都 ≥ [SEMANTIC_MIN_DELTA]。
  * 都调到卡片底和页面底上读得清（≥ 4.5:1），深色、Monet、自选强调色下也一样。颜色之外还有 [suggestShape] 和文字标签。
  */
-internal fun suggestColor(kind: String, c: GroupedColors): Color {
+internal fun suggestColor(kind: String, c: GroupedColors): Color = suggestPalette(c).getValue(SuggestKind.of(kind))
+
+/**
+ * 一套配色下五类建议的颜色，按配色记住（只跟主题有关）：每打一个字，正文标记、问题面板的每一行都要取一次，
+ * 现算一次口吻、AI 腔要试几十个色相、每个都算色差和对比度，自选青色、紫色强调色时一次上百微秒。
+ */
+internal fun suggestPalette(c: GroupedColors): Map<SuggestKind, Color> =
+    synchronized(suggestPalettes) { suggestPalettes[c] } ?: computeSuggestPalette(c).also { fresh ->
+        synchronized(suggestPalettes) { suggestPalettes[c] = fresh }
+    }
+
+/** 最近用过的几套配色（浅色、深色、阅读面板、换强调色时的前后两套）。 */
+private val suggestPalettes = object : LinkedHashMap<GroupedColors, Map<SuggestKind, Color>>(8, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<GroupedColors, Map<SuggestKind, Color>>?) = size > 8
+}
+
+private fun computeSuggestPalette(c: GroupedColors): Map<SuggestKind, Color> {
     val cards = listOf(c.cell, c.background)
-    return when (SuggestKind.of(kind)) {
-        SuggestKind.TYPO -> c.destructive
-        SuggestKind.CANON -> c.warning
-        SuggestKind.STYLE -> c.tint
-        SuggestKind.VOICE -> voiceColor(c, cards)
-        SuggestKind.CLICHE -> (if (c.dark) ClicheDark else ClicheLight).distinctFrom(listOf(c.tint, c.destructive, c.warning, voiceColor(c, cards)), cards)
-    }.readableOn(cards)
+    val voice = voiceColor(c, cards)
+    return SuggestKind.entries.associateWith { k ->
+        when (k) {
+            SuggestKind.TYPO -> c.destructive
+            SuggestKind.CANON -> c.warning
+            SuggestKind.STYLE -> c.tint
+            SuggestKind.VOICE -> voice
+            SuggestKind.CLICHE -> (if (c.dark) ClicheDark else ClicheLight).distinctFrom(listOf(c.tint, c.destructive, c.warning, voice), cards)
+        }.readableOn(cards)
+    }
 }
 
 private fun voiceColor(c: GroupedColors, cards: List<Color>): Color =
@@ -585,6 +604,8 @@ internal fun AiWriteDialog(
     useReference: Boolean,
     onUseReference: (Boolean) -> Unit,
     onDismiss: () -> Unit,
+    /** 本章还没有节拍时“先拆节拍”：去细纲卡拆（拆好的给作者看过再用）。空时不显示。 */
+    onSplitBeats: (() -> Unit)? = null,
     onPick: (AiWriteChoice) -> Unit,
 ) {
     val list = card?.let(::beats).orEmpty()
@@ -607,6 +628,11 @@ internal fun AiWriteDialog(
                         doneLabel = "已写",
                     ) { chosen = InlineMode.BEAT to b.index }
                 }
+            }
+            // 还没有节拍：给一个“先拆节拍”，拆好以后这里就能一拍一拍写；不拆也照样按下面的写法写。
+            if (list.isEmpty() && onSplitBeats != null) {
+                DialogSectionLabel("写这一拍")
+                ActionRow("本章还没有节拍 · 先拆节拍") { onSplitBeats() }
             }
             DialogSectionLabel("写多少")
             AI_WRITE_MODES.forEach { m ->

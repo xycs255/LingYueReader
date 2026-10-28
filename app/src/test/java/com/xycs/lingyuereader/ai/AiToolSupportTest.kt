@@ -133,4 +133,12 @@ class AiToolSupportTest {
         ).forEach { assertFalse(it, AiToolWire.unsupported(it)) }
         assertFalse(AiToolWire.unsupported(null))
     }
+
+    /** 只是不支持并行调用工具：工具本身能用，不能当成“不支持工具”去掉工具重发。 */
+    @Test
+    fun parallelToolCallsUnsupportedIsNotToolsUnsupported() {
+        assertFalse(AiToolWire.unsupported("parallel tool calls are not supported for this model"))
+        assertFalse(AiToolWire.unsupported("Parallel tool calls is not supported"))
+        assertTrue(AiToolWire.unsupported("tool calls are not supported for this model"))
+    }
 }

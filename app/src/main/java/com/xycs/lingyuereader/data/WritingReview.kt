@@ -59,9 +59,10 @@ data class ChapterReview(val textHash: Int, val at: Long, val gates: List<GateRe
                     val issues = g.optJSONArray("issues") ?: JSONArray()
                     GateResult(
                         gate,
+                        // 旧版本把模型重复输出的同一条问题原样存了下来；问题面板按“原文 + 问题”认条目，重复的会让列表撞键闪退，读的时候去掉。
                         (0 until issues.length()).mapNotNull { j ->
                             issues.optJSONObject(j)?.let { ReviewIssue(it.optString("quote"), it.optString("problem"), it.optString("fix"), it.optString("state")) }
-                        },
+                        }.distinctBy { it.quote to it.problem },
                         if (g.isNull("error")) null else g.optString("error"),
                         g.optLong("at"),
                     )

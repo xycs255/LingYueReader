@@ -985,9 +985,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     // 本章所有的问题：状态行的“N 处问题”和问题面板用同一份，数目对得上。
+    // 在后台算：每条建议、每条审稿原句都要在全文里找一遍再整张排序。正文在变（作者在打字）时停笔一会儿再算，
+    // 检查结果、建议、审稿变了马上算。
     val problemText = current?.text?.toString().orEmpty()
-    val problems = remember(problemText, report, shownRealtime.issues, chapterReview) {
-        collectProblems(problemText, report, shownRealtime.issues, chapterReview)
+    var problems by remember(workId, chapterId) { mutableStateOf<List<Problem>>(emptyList()) }
+    val problemsFor = remember(workId, chapterId) { arrayOfNulls<String>(1) }
+    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview) {
+        if (problemsFor[0] != null && problemsFor[0] != problemText) delay(PROBLEMS_DEBOUNCE_MS)
+        val issues = shownRealtime.issues
+        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview) }
+        problemsFor[0] = problemText
     }
 
     /** 打开问题面板，看 [filter] 这一类；别的面板收起。 */
@@ -1125,6 +1132,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 去 AI 腔：按现在的正文重新数一遍标出的 AI 腔、黑名单（停笔检查可能还没跟上），把那几段发给 AI。 */
+    val clicheScope = rememberCoroutineScope()
     fun startCliche() {
         val st = current ?: return
         if (locked) {
@@ -1132,13 +1140,17 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             return
         }
         val text = st.text.toString()
-        val ranges = CheckRules.check(text, voiceRules).hits.filter(AiCliche::isVoice).flatMap { it.ranges }
-        // 去 AI 腔的改法和写作建议一样，在问题面板的“建议”里一条条改或忽略。
-        if (ranges.isNotEmpty() && vm.writingAi.ready) {
-            problemsOpen = true
-            problemFilter = ProblemFilter.SUGGEST
+        val rules = voiceRules
+        clicheScope.launch {
+            // 整章按内置清单、黑名单查一遍（八十来个说法各跑一遍正则）：几万字的章要几十毫秒，不放在主线程上。
+            val ranges = withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits.filter(AiCliche::isVoice).flatMap { it.ranges } }
+            // 去 AI 腔的改法和写作建议一样，在问题面板的“建议”里一条条改或忽略。
+            if (ranges.isNotEmpty() && vm.writingAi.ready) {
+                problemsOpen = true
+                problemFilter = ProblemFilter.SUGGEST
+            }
+            vm.writingAi.decliche(workId, chapterId, text, ranges)
         }
-        vm.writingAi.decliche(workId, chapterId, text, ranges)
     }
 
     fun onAiItem(item: AiBarItem) {
@@ -1178,6 +1190,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         aiState = currentAi,
         nextBeat = beatCard?.let { card -> Beats.firstUndone(card)?.let { n -> beats(card).firstOrNull { it.index == n } } },
         finished = finished,
+        cardMissing = beatCard?.let { it.facts.isBlank() || beats(it).isEmpty() } ?: false,
     )
     val scheme = MiuixTheme.colorScheme
 
@@ -1317,9 +1330,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     // 审稿页的规则关：规则的命中只在问题面板里列，从那里点过来直接看“规则”。
                     LaunchedEffect(current) {
                         vm.writing.showProblems.collect { id ->
-                            if (id != chapterId) return@collect
+                            if (id == null) return@collect
+                            // 一次性的：到了哪一章的编辑器都清掉。不是这一章的就作废，免得过后打开那一章时面板自己弹出来。
                             vm.writing.showProblems.value = null
-                            openProblems(ProblemFilter.RULE)
+                            if (id == chapterId) openProblems(ProblemFilter.RULE)
                         }
                     }
                 }
@@ -1354,9 +1368,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val typing = remember(current) { current?.let { st -> TypingFormatInput(st, effects) { formatNow } } }
                 // AI 写的字：新来的一截淡入；采纳后那一段从浅色过渡到正文色。
                 // 出几个版本时换一版：浅色预览整段重新淡入。
-                val inlineFade = remember(current, inline?.selected) { InlineFade(effects) }
+                val inlineFade = remember(current) { InlineFade(effects) }
                 val inlineLength = inline?.text?.length ?: 0
-                SideEffect { inlineFade.update(inlineLength) }
+                val inlineVersion = inline?.selected
+                SideEffect { inlineFade.update(inlineLength, inlineVersion) }
                 val fadeNow by rememberUpdatedState(inlineFade)
                 val pendingStyle = SpanStyle(color = scheme.primary, background = scheme.primary.copy(alpha = 0.08f))
                 val inlineNow by rememberUpdatedState(inline)
@@ -2059,6 +2074,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     useReference = useReference,
                     onUseReference = { useReference = it },
                     onDismiss = { aiWriteOpen = false },
+                    onSplitBeats = {
+                        aiWriteOpen = false
+                        saveNow(); vm.open(Screen.ChapterCard(workId, chapterId))
+                    },
                 ) { choice ->
                     aiWriteOpen = false
                     if (choice.mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> writeChoice(choice, req) }
@@ -2236,8 +2255,19 @@ private class MarkFades(private val scope: CoroutineScope) {
 private class InlineFade(private val scope: CoroutineScope) {
     private val chunks = mutableStateListOf<Pair<Int, Animatable<Float, AnimationVector1D>>>()
     private var seen = 0
+    /** 正在跑的淡入：换版本时一起停掉（以前每换一版新建一个，旧的动画还在作用域里跑完）。 */
+    private val jobs = mutableListOf<kotlinx.coroutines.Job>()
+    private var version: Any? = null
 
-    fun update(length: Int) {
+    /** [length] 是 AI 写的字现在多长；[version] 是看的哪一版（出几个版本时），换了一版整段重新淡入。 */
+    fun update(length: Int, version: Any? = null) {
+        if (version != this.version) {
+            this.version = version
+            jobs.forEach { it.cancel() }
+            jobs.clear()
+            chunks.clear()
+            seen = 0
+        }
         if (length < seen) chunks.clear()
         if (length <= seen || Effects.noMotion) {
             seen = length
@@ -2246,13 +2276,16 @@ private class InlineFade(private val scope: CoroutineScope) {
         val chunk = seen to Animatable(0f)
         seen = length
         chunks += chunk
-        scope.launch {
+        lateinit var job: kotlinx.coroutines.Job
+        job = scope.launch {
             try {
                 chunk.second.animateTo(1f, Motion.standard(Motion.SHORT))
             } finally {
                 chunks -= chunk
+                jobs -= job
             }
         }
+        jobs += job
     }
 
     /** 还在淡入的每一截：在 AI 写的字里的 [from, to) 和现在的透明度。 */
@@ -2390,3 +2423,6 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
         }
     }
 }
+
+/** 问题清单在作者打字时停笔多久再重算（检查规则也是停笔 400 毫秒才查）。 */
+internal const val PROBLEMS_DEBOUNCE_MS = 300L

@@ -24,6 +24,20 @@ data class ChapterWritingTask(
     val fingerprint: String,
     val context: String = "",
 ) {
+    companion object {
+        /**
+         * 项目包里本章没有“事实与结果”时的那条硬缺项。一键写本章（[WorkAssist.draftPrep]）会先让 AI 拟一份补上，
+         * 所以写本章时不拿它拦；别的缺项照旧。
+         */
+        const val NO_FACTS = "本章尚无明确的事实与结果，请补齐细纲卡或导入现行目标章细纲。"
+
+        /** 只有章组时，一键写本章拦下后补的一句：说清楚为什么不替作者拟、该怎么做。 */
+        const val GROUP_HINT = "一键写本章不会替你在章组里划定本章：可以在细纲卡点“AI 拟这一章的细纲”，看过、用了再写，或自己写明本章的起止与结果。"
+    }
+
+    /** 一键写本章时还拦着的硬缺项：没有事实与结果那条会先由 AI 拟细纲补上，不算。 */
+    val prepBlocking: List<String> get() = blocking.filter { it != NO_FACTS }
+
     fun render(): String = buildString {
         append("【本次章节任务】\n第 ").append(volume).append(" 卷，第 ").append(chapter ?: "待核").append(" 章：").append(title).append('\n')
         append("本次额外要求：").append(instruction.ifBlank { "无" }).append('\n')
@@ -197,8 +211,9 @@ fun WorkStore.writingTask(
     val warnings = mutableListOf<String>()
     warnings += material.warnings
     if (volume != catalogVolume) warnings += "作品目录与细纲的卷次不同，本次按目标细纲定位第 $volume 卷；请核对卷章归属。"
-    if (project && card.facts.isBlank()) blocking += "本章尚无明确的事实与结果，请补齐细纲卡或导入现行目标章细纲。"
-    val manual = this.card(workId, chapterId).let { !it.outlineEmpty && it.auto == 0 }
+    if (project && card.facts.isBlank()) blocking += ChapterWritingTask.NO_FACTS
+    // AI 拟的、作者还没确认的不算作者划定的本章范围：章组那条照旧拦着。
+    val manual = this.card(workId, chapterId).let { !it.outlineEmpty && it.auto == 0 && !it.aiOutline }
     if (project && found.isNotEmpty() && found.none { it.single } && !manual) {
         blocking += "目前只有第 ${found.first().from}—${found.first().to} 章章组，请先在细纲卡划定本章的起止与结果。"
     }
@@ -241,7 +256,7 @@ fun WorkStore.writingTask(
             docs.filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null },
             text = "", card = briefCard,
             chapter = briefChapter, volume = volume, limit = writingAssist.briefLimit,
-            summaries = confirmedSummaries, style = true, ledger = currentLedger,
+            summaries = confirmedSummaries, style = true, ledger = currentLedger, prep = material.prep,
         )
     }.render().orEmpty()
     checkpoint()

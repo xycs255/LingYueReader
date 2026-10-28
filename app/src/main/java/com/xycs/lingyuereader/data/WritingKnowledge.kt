@@ -402,10 +402,12 @@ fun WorkStore.packTools(workId: String, upTo: String? = null, phase: WritingPhas
  * 写某一章时随请求带的（每次不一样的部分，放在设定包后面）：这一章是第几章、细纲里写这一章的原文、出场人物、
  * 前情、故事账本到这一章为止的快照、伏笔、到这一章还不该知道的事、只有作者知道的，以及已写的章目录（用 read_chapter 读）。
  * [upTo] 为真时章目录只列到这一章为止（和只能读到这一章的查阅工具一致，防剧透）。
+ * [noAhead] 为真时本章资料也不带后文（拟细纲用）：后面章节的细纲、全书结局、“只有作者知道的”、察觉表里后面才发生的都不给，
+ * 只剩本章和以前的，加上设定包里写这一章的原文（见 [brief] 的 `prose`）。
  */
-fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo: Boolean = false): String {
+fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo: Boolean = false, noAhead: Boolean = false): String {
     val work = get(workId) ?: return ""
-    val b = brief(workId, chapterId, text, limit = 4_000)
+    val b = brief(workId, chapterId, text, limit = 4_000, prose = noAhead)
     val entries = outlineEntries(workId)
     val number = chapterNo(work, chapterId)
     val chapter = work.chapter(chapterId)

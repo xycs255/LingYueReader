@@ -43,6 +43,12 @@ data class FinishRun(
     val failedWrite: FinishWrite? = null,
     val writeError: String? = null,
 ) {
+    /**
+     * 这一章的收尾手上有东西：在跑、在写入、审出问题等着选、没成等着重试、等着确认。这时换一章收尾会把它丢掉
+     * （写入阶段被打断还会写进去一半），所以同一时间只收一章，别的章要等它完成或先停下。
+     */
+    val busy: Boolean get() = stage != FinishStage.SETUP && stage != FinishStage.DONE
+
     /** 整理结果里新设定、记进账本的、冲突各几条（条目多时确认页折叠成这一行）。 */
     val syncCounts: Triple<Int, Int, Int>
         get() {

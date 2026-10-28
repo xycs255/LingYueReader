@@ -241,7 +241,8 @@ object PackImport {
         val manifest = JSONArray()
         ZipOutputStream(out).use { zip ->
             docs.forEach { (doc, text) ->
-                val base = doc.title.replace(Regex("""[\\/:*?"<>|]"""), "_").ifBlank { "未命名" }
+                // 开头的点换成“_”：“._备忘.md”导入时会当成 macOS 的资源文件跳过，整包导不回来（标题照 pack.json 还原）。
+                val base = doc.title.replace(Regex("""[\\/:*?"<>|]"""), "_").replace(Regex("^\\.+"), "_").ifBlank { "未命名" }
                 var name = "$base.md"
                 var n = 2
                 while (!used.add(name)) name = "$base（${n++}）.md"

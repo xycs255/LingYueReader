@@ -14,6 +14,7 @@ import com.xycs.lingyuereader.data.FinishOptions
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.WorkStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -217,5 +218,58 @@ class ChapterFinishFlowTest {
         assertEquals(listOf(LedgerKind.EVENT), store.ledger(workId).map { it.kind })
         assertTrue(store.get(workId)!!.chapter(chapterId)!!.locked)
         assertFalse(store.assist(workId).synced[chapterId] == null)
+    }
+
+    /** 写入时出了 Error（大设定包上内存不够）：退回确认、说哪步没成；再点只做剩下的，写成了的不重复写。 */
+    @Test
+    fun anErrorWhileWritingGoesBackToConfirmAndRetriesTheRest() {
+        val vm = model()
+        runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        vm.writingAi.applyFinish(finalize = { _, _ -> throw OutOfMemoryError("测试：定稿时内存不够") })
+        waitUntil("没退回确认，卡在了正在写入") { vm.writingAi.finish.value?.stage == FinishStage.CONFIRM }
+        val failed = vm.writingAi.finish.value!!
+        assertEquals(FinishWrite.FINAL, failed.failedWrite)
+        assertTrue(failed.writeError!!, failed.writeError!!.startsWith("定稿没成"))
+        assertEquals(setOf(FinishWrite.SYNC, FinishWrite.SUMMARY), failed.wrote)
+        assertFalse(store.get(workId)!!.chapter(chapterId)!!.locked)
+        // 再点“完成收尾”：只定稿，整理条目、摘要不重复写。
+        var said = ""
+        vm.writingAi.applyFinish(finalize = { w, c -> vm.writing.setStatusNow(w, c, ChapterStatus.FINAL) }) { said = it }
+        waitUntil("重试没收完") { vm.writingAi.finish.value?.stage == FinishStage.DONE }
+        assertEquals("这一章定稿了", said)
+        assertTrue(store.get(workId)!!.chapter(chapterId)!!.locked)
+        assertEquals(listOf(LedgerKind.EVENT), store.ledger(workId).map { it.kind })
+        assertEquals(combined, store.card(workId, chapterId).summary)
+    }
+
+    /** 在 B 章开收尾：A 章正在写入时不掐掉它，A 写完 B 才打开；A 等着确认时也不悄悄丢掉。 */
+    @Test
+    fun openingAnotherChapterNeverCutsOffOneThatIsFinishing() {
+        val other = store.addChapter(workId, store.get(workId)!!.volumes[0].id)!!.second.id
+        store.saveText(workId, other, "第二天，雾散了。", count = false)
+        val vm = model()
+        val ai = vm.writingAi
+        runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        // A 等着确认：打开 B 不换掉 A。
+        ai.openFinish(workId, other)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(chapterId, ai.finish.value?.chapterId)
+        assertEquals(FinishStage.CONFIRM, ai.finish.value?.stage)
+        // A 写入到定稿这一步时停住，这时打开 B。
+        val gate = CompletableDeferred<Unit>()
+        ai.applyFinish(finalize = { w, c -> gate.await(); vm.writing.setStatusNow(w, c, ChapterStatus.FINAL) })
+        waitUntil("没到定稿这一步") { ai.finish.value?.let { it.stage == FinishStage.APPLYING && FinishWrite.SUMMARY in it.wrote } == true }
+        ai.openFinish(workId, other)
+        ai.stopFinish()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(chapterId, ai.finish.value?.chapterId)
+        assertEquals(FinishStage.APPLYING, ai.finish.value?.stage)
+        gate.complete(Unit)
+        waitUntil("A 没写完") { ai.finish.value?.stage == FinishStage.DONE }
+        assertTrue(store.get(workId)!!.chapter(chapterId)!!.locked)
+        assertEquals(listOf(LedgerKind.EVENT), store.ledger(workId).map { it.kind })
+        // A 收完了：B 这才打开。
+        ai.openFinish(workId, other)
+        waitUntil("B 没打开") { ai.finish.value?.let { it.chapterId == other && it.stage == FinishStage.SETUP } == true }
     }
 }

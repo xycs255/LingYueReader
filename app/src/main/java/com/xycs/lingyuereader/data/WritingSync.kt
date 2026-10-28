@@ -388,9 +388,15 @@ object PackSync {
         val y = norm(b)
         if (x.isEmpty() || y.isEmpty()) return false
         if (x == y) return true
-        fun numbers(s: String) = NUMBER.findAll(s).map { it.value }.toSet()
         if (numbers(x) != numbers(y)) return false
         if (names.any { n -> n.length >= 2 && (n in x) != (n in y) }) return false
+        return similarShape(x, y)
+    }
+
+    private fun numbers(s: String) = NUMBER.findAll(s).map { it.value }.toSet()
+
+    /** [similar] 的后半段：两边已经规范化、不相同，数目和人名已经一致。 */
+    private fun similarShape(x: String, y: String): Boolean {
         val short = minOf(x.length, y.length)
         var head = 0
         while (head < short && x[head] == y[head]) head++
@@ -404,6 +410,41 @@ object PackSync {
         val gy = grams(y)
         if (gx.isEmpty() || gy.isEmpty()) return false
         return 2.0 * gx.intersect(gy).size / (gx.size + gy.size) >= 0.7
+    }
+
+    /**
+     * 账本的查重索引：[plan] 里一次建好，每条提议只和可能像的比。以前每条提议都和账本里同类的每一条比，
+     * 每比一次都跑两遍正则、把人名表扫一遍；账本几千条、人名几百个时整理一章要卡几秒。
+     * - 完全一样（[same]）：按规范化以后的文字建表，直接查；
+     * - 看起来像（[similar]）：数目要一样、各个人名在不在要一样，按这两样分组，只和同一组的比。
+     * 结果和逐条比一样：同一组里按账本原来的顺序找第一条。
+     */
+    internal class LedgerIndex(val ledger: List<LedgerEntry>, names: Collection<String> = emptyList()) {
+        private val keyNames = names.filter { it.length >= 2 }.distinct()
+        private val norms: Array<String> = Array(ledger.size) { norm(ledger[it].text) }
+        private val exact: Map<String, List<Int>> by lazy { ledger.indices.filter { norms[it].isNotEmpty() }.groupBy { norms[it] } }
+        private val groups: Map<List<Any>, List<Int>> by lazy { ledger.indices.filter { norms[it].isNotEmpty() }.groupBy { signature(norms[it]) } }
+
+        private fun signature(x: String): List<Any> = listOf(numbers(x), keyNames.filter { it in x })
+
+        /** 账本里有没有和 [text] 完全一样（[same]）、又满足 [accept] 的一条。 */
+        fun anySame(text: String, accept: (LedgerEntry) -> Boolean): Boolean {
+            val y = norm(text)
+            if (y.isEmpty()) return false
+            return exact[y]?.any { accept(ledger[it]) } == true
+        }
+
+        /** 账本里第一条和 [text] 看起来像（[similar]，带着建索引时的人名）、又满足 [accept] 的。 */
+        fun firstSimilar(text: String, accept: (LedgerEntry) -> Boolean): LedgerEntry? {
+            val y = norm(text)
+            if (y.isEmpty()) return null
+            val candidates = groups[signature(y)] ?: return null
+            for (i in candidates) {
+                val e = ledger[i]
+                if (accept(e) && (norms[i] == y || similarShape(norms[i], y))) return e
+            }
+            return null
+        }
     }
 
     /** 挑写进哪份文档：AI 说的标题对得上就用它，否则这一类的第一份，没有就新建（返回 null）。 */
@@ -429,14 +470,15 @@ object PackSync {
         val allText = docs.joinToString("\n") { it.second }
         // 认“像不像同一条”时要一致的人名：人物档案里的（连同别名）、账本里记过的。
         val names = people + ledger.map { it.subject.trim() }.filter { it.length >= 2 }
+        val index = LedgerIndex(ledger, names)
         return items.mapNotNull { item ->
             when (item.group) {
                 SyncGroup.NEW -> planNew(item, docs, people, characterText, allText)
-                SyncGroup.AWARENESS -> planAwareness(item, docs, ledger, names)
+                SyncGroup.AWARENESS -> planAwareness(item, docs, index)
                 SyncGroup.CONFLICT -> planConflict(item, docs)
                 SyncGroup.STATE, SyncGroup.EVENT, SyncGroup.PROMISE, SyncGroup.TIME ->
-                    item.takeIf { (it.entry != null || it.closes != null) && !inLedger(it, ledger) }
-                        ?.let { it.copy(place = SyncPlace.LEDGER, maybeSame = alike(it, ledger, names)) }
+                    item.takeIf { (it.entry != null || it.closes != null) && !inLedger(it, index) }
+                        ?.let { it.copy(place = SyncPlace.LEDGER, maybeSame = alike(it, index)) }
             }
         }.distinctBy { it.key }
     }
@@ -491,7 +533,7 @@ object PackSync {
      * 账本里也一样，写的是后面的章（后面的卷）的改成冲突，勾上把账本那一条改成从这一章起。
      * 账本里只有作者知道的那几条（[LedgerEntry.secret]）不算谁已经知道：正文里有人知道了，是揭晓，照常提、默认勾上。
      */
-    private fun planAwareness(item: SyncItem, docs: List<Pair<PackDoc, String>>, ledger: List<LedgerEntry>, names: Collection<String>): SyncItem? {
+    private fun planAwareness(item: SyncItem, docs: List<Pair<PackDoc, String>>, index: LedgerIndex): SyncItem? {
         val who = item.field("人物").ifBlank { item.name }.trim()
         val what = item.field("知道什么").trim()
         if (who.isEmpty() || what.isEmpty()) return null
@@ -532,18 +574,17 @@ object PackSync {
             via = item.field("消息从哪来"), quote = item.quote, chapterId = item.chapterId, origin = LedgerOrigin.SYNC,
         )
         val planned = item.copy(place = SyncPlace.LEDGER, text = what, entry = entry, docId = null, docTitle = LEDGER)
-        val later = ledger.firstOrNull {
-            it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, who) && similar(it.text, what, names) && !it.reached(item.chapter, item.volume)
+        val later = index.firstSimilar(what) {
+            it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, who) && !it.reached(item.chapter, item.volume)
         }
         if (later == null) {
-            if (inLedger(planned, ledger)) return null
+            if (inLedger(planned, index)) return null
             // 账本里记着这件事只有作者知道（导入时察觉表“真相”那一格）：这一章他知道了。
-            val secret = ledger.firstOrNull {
-                it.kind == LedgerKind.KNOW && it.secret && (it.subject.isBlank() || sameWho(it.subject, who)) &&
-                    similar(it.text, what, names) && it.validAt(item.chapter, item.volume)
+            val secret = index.firstSimilar(what) {
+                it.kind == LedgerKind.KNOW && it.secret && (it.subject.isBlank() || sameWho(it.subject, who)) && it.validAt(item.chapter, item.volume)
             }
             if (secret != null) return planned.copy(title = "${who}从第${entry.from ?: item.chapter}章起知道了（这条原本只有作者知道）", reveals = secret)
-            return planned.copy(maybeSame = alike(planned, ledger, names))
+            return planned.copy(maybeSame = alike(planned, index))
         }
         val at = later.from?.let { "第${it}章" } ?: later.volume?.let { "第${it}卷" } ?: "后面"
         return planned.copy(
@@ -568,7 +609,10 @@ object PackSync {
      * 收伏笔：那一条已经收了（或者账本里已经没有那一条了）。改账本已有一条的（冲突里改章号的）：已经改成这一章了。
      * 只是看起来像的不算有（[alike]），照常列出给作者看。
      */
-    fun inLedger(item: SyncItem, ledger: List<LedgerEntry>): Boolean {
+    fun inLedger(item: SyncItem, ledger: List<LedgerEntry>): Boolean = inLedger(item, LedgerIndex(ledger))
+
+    private fun inLedger(item: SyncItem, index: LedgerIndex): Boolean {
+        val ledger = index.ledger
         item.closes?.let { c -> return ledger.firstOrNull { it.id == c.id }?.done ?: true }
         val e = item.entry ?: return true
         ledger.firstOrNull { it.id == e.id }?.let { return it.from == e.from && it.volume == e.volume }
@@ -580,10 +624,10 @@ object PackSync {
                 if (e.aspect.isBlank()) same.any { sameState(it.text, text) }
                 else same.filter { it.aspect == e.aspect }.maxWithOrNull(compareBy<LedgerEntry>({ it.from ?: -1 }, { it.updatedAt }))?.let { sameState(it.text, text) } == true
             }
-            LedgerKind.EVENT -> ledger.any { it.kind == LedgerKind.EVENT && same(it.text, text) }
-            LedgerKind.KNOW -> ledger.any { it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, e.subject) && same(it.text, text) }
-            LedgerKind.PROMISE -> ledger.any { it.kind == LedgerKind.PROMISE && same(it.text, text) }
-            LedgerKind.TIME -> ledger.any { it.kind == LedgerKind.TIME && it.from == e.from && same(it.text, text) }
+            LedgerKind.EVENT -> index.anySame(text) { it.kind == LedgerKind.EVENT }
+            LedgerKind.KNOW -> index.anySame(text) { it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, e.subject) }
+            LedgerKind.PROMISE -> index.anySame(text) { it.kind == LedgerKind.PROMISE }
+            LedgerKind.TIME -> index.anySame(text) { it.kind == LedgerKind.TIME && it.from == e.from }
         }
     }
 
@@ -591,18 +635,20 @@ object PackSync {
      * 账本里看起来像同一条、又不完全一样的那一条（[similar]，[names] 是要一致的人名），没有是 null。
      * 人物状态、收伏笔不比：它们有各自精确的判定（[inLedger]）。知情只和同一个人已经知道了的比，只有作者知道的不算。
      */
-    internal fun alike(item: SyncItem, ledger: List<LedgerEntry>, names: Collection<String> = emptyList()): LedgerEntry? {
+    internal fun alike(item: SyncItem, ledger: List<LedgerEntry>, names: Collection<String> = emptyList()): LedgerEntry? = alike(item, LedgerIndex(ledger, names))
+
+    private fun alike(item: SyncItem, index: LedgerIndex): LedgerEntry? {
         if (item.closes != null) return null
         val e = item.entry ?: return null
         val text = item.text.ifBlank { e.text }
         return when (e.kind) {
             LedgerKind.STATE -> null
-            LedgerKind.EVENT -> ledger.firstOrNull { it.kind == LedgerKind.EVENT && similar(it.text, text, names) }
-            LedgerKind.KNOW -> ledger.firstOrNull {
-                it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, e.subject) && it.reached(item.chapter, item.volume) && similar(it.text, text, names)
+            LedgerKind.EVENT -> index.firstSimilar(text) { it.kind == LedgerKind.EVENT }
+            LedgerKind.KNOW -> index.firstSimilar(text) {
+                it.kind == LedgerKind.KNOW && !it.secret && sameWho(it.subject, e.subject) && it.reached(item.chapter, item.volume)
             }
-            LedgerKind.PROMISE -> ledger.firstOrNull { it.kind == LedgerKind.PROMISE && similar(it.text, text, names) }
-            LedgerKind.TIME -> ledger.firstOrNull { it.kind == LedgerKind.TIME && it.from == e.from && similar(it.text, text, names) }
+            LedgerKind.PROMISE -> index.firstSimilar(text) { it.kind == LedgerKind.PROMISE }
+            LedgerKind.TIME -> index.firstSimilar(text) { it.kind == LedgerKind.TIME && it.from == e.from }
         }
     }
 

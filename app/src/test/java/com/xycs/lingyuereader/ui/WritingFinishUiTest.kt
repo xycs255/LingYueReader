@@ -25,6 +25,7 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.FinishStage
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.FinishOptions
 import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
@@ -325,5 +326,27 @@ class WritingFinishUiTest {
         assertEquals(changes + 1, store.changes(workId).size)
         assertEquals(1, store.changes(workId).count { it.kind == ChangeKind.FINALIZE })
         assertEquals(1, asked.size)
+    }
+
+    /** A 章收尾还没完（等着确认）时进 B 章的收尾页：不悄悄掐掉 A，说一声，可以去看看或先停下它。 */
+    @Test
+    fun anotherChapterWaitsForTheOneThatIsFinishing() {
+        val other = store.addChapter(workId, store.get(workId)!!.volumes[0].id)!!.second.id
+        store.renameChapter(workId, other, "第十三章 雾散")
+        compose.runOnUiThread {
+            vm.writingAi.openFinish(workId, chapterId)
+            vm.writingAi.setFinishOptions(FinishOptions(sync = true, summary = true))
+            vm.writingAi.startFinish()
+        }
+        waitFor { stage() == FinishStage.CONFIRM }
+        compose.runOnUiThread { vm.open(Screen.ChapterFinish(workId, other)) }
+        waitForText("《第十二章 渡口》正在收尾，等它完成或先停下")
+        assertEquals(chapterId, vm.writingAi.finish.value?.chapterId)
+        assertEquals(FinishStage.CONFIRM, stage())
+        // 先停下它：A 回到勾选，B 打开。
+        press("先停下它")
+        waitForText("收尾要做的")
+        assertEquals(other, vm.writingAi.finish.value?.chapterId)
+        assertEquals(FinishStage.SETUP, stage())
     }
 }

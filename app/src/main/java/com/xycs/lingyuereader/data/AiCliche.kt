@@ -65,7 +65,7 @@ object AiCliche {
 
     /** 黑名单变成一条“禁用”规则；一个说法一个词（不按顿号拆，说法里可以带逗号）。 */
     fun banned(phrases: List<String>): RuleSet {
-        val terms = phrases.filter { it.isNotBlank() }.map { RuleTerm(listOf(it)) }
+        val terms = phrases.filter { it.isNotBlank() }.distinct().map { RuleTerm(listOf(it)) }
         if (terms.isEmpty()) return RuleSet()
         return RuleSet(listOf(CheckRule.Count(terms, null, 0, false, RuleScope.ALL, RuleSource(BANNED_DOC, 1, "禁用：" + phrases.joinToString("、")))))
     }

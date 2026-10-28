@@ -74,6 +74,23 @@ data class ChapterBrief(
     /** 账本快照拼成的文字；没有为 null。 */
     val ledgerText: String? get() = ledger?.render(ledgerLimit)
 
+    /** 账本快照拼成的文字，[prose] 为真时是写正文的说法（见 [LedgerSnapshot.render]）。 */
+    fun ledgerText(prose: Boolean): String? = ledger?.render(ledgerLimit, prose)
+
+    /**
+     * 这一章可以埋的伏笔（写进任务卡）：账本里、伏笔表里还没收的，挑和这一章出场人物、所在地点相关的，最多 [max] 条。
+     * 计划这一章收的、过了期该收的不算（那是要收的，不是要埋的）；只有作者知道的不在里面。
+     */
+    fun seeds(max: Int = SEEDS): List<String> {
+        val places = ledger?.states.orEmpty().filter { it.aspect == "位置" && it.text.length in 2..12 }.map { it.text.trimEnd('。') }
+        val keys = (present + places).filter { it.length >= 2 }.distinct()
+        fun related(subject: String, text: String) = subject in present || keys.any { it in text || it in subject }
+        val fromLedger = ledger?.let { s -> s.open - s.due.toSet() - s.overdue.toSet() }.orEmpty()
+            .filter { related(it.subject, it.text) }.map { it.text }
+        val fromPack = (open - due.toSet()).filter { f -> f.payoff == null || f.payoff > chapter }.filter { related("", it.what) }.map { it.what }
+        return (fromLedger + fromPack).map { it.trim().trimEnd('。') }.filter { it.isNotEmpty() }.distinct().take(max)
+    }
+
     /**
      * 拼成给 AI 的文字。[prose] 为真时是写正文用的（见 [ChapterBriefs.build] 的 `ahead`）：开头一句只说这是什么，
      * 不讲优先级——写正文的模型拿到“以前面的为准”这类话，只会多一层核对的心思。
@@ -86,7 +103,7 @@ data class ChapterBrief(
         )
         if (present.isNotEmpty()) out.append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
         // 账本是最新进展：放在前情之后、察觉和伏笔之前。
-        val ledgerText = ledgerText
+        val ledgerText = ledgerText(prose)
         items.forEachIndexed { i, it ->
             if (i == ledgerAt && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
             out.append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n')
@@ -97,12 +114,16 @@ data class ChapterBrief(
             due.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
         val waiting = open - due.toSet()
-        if (waiting.isNotEmpty()) {
+        if (waiting.isNotEmpty() && prose) {
+            // 写正文：不说计划哪章收（那是后文），只说这一章能做到哪一步。
+            out.append("\n【已经埋下、还没回收的伏笔（后面才收：这一章可以轻轻提一笔，别收、别揭开）】\n")
+            waiting.forEach { out.append("- ").append(it.what).append(it.planted?.let { p -> "（第${p}章埋下）" }.orEmpty()).append('\n') }
+        } else if (waiting.isNotEmpty()) {
             out.append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n")
             waiting.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
         if (notYet.isNotEmpty()) {
-            out.append(if (prose) "\n【人物现在还不知道的（别让他们提前知道或说破）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
+            out.append(if (prose) "\n【人物现在还不知道的（后面才会知道：这一章别让他们知道或说破，可以留个引子）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
             notYet.forEach { out.append("- ").append(it).append('\n') }
         }
         if (hidden.isNotEmpty()) {
@@ -113,6 +134,9 @@ data class ChapterBrief(
     }
 
     companion object {
+        /** 任务卡里“这一章可以埋的伏笔”最多几条。 */
+        const val SEEDS = 5
+
         fun foreshadowWhen(f: Foreshadow): String = listOfNotNull(f.planted?.let { "第${it}章埋下" }, f.payoff?.let { "计划第${it}章回收" })
             .joinToString("，").let { if (it.isEmpty()) "" else "（$it）" }
     }
@@ -435,7 +459,7 @@ object ChapterBriefs {
     private const val PROSE_MIN_SCORE = 3.5
 
     /** 写全书结局、后文走向的小节标题。 */
-    private val endingTitle = Regex("结局|终局|尾声|大结局|后文走向|全书走向")
+    internal val endingTitle = Regex("结局|终局|尾声|大结局|后文走向|全书走向")
 
     /** 写结局、谜底的句子。 */
     private val endingWords = Regex("结局|终局|谜底|最后的真相")
@@ -461,6 +485,22 @@ object ChapterBriefs {
     private val upToSentence = Regex("[^。；;\n]+[。；;]?\n?")
     private val blankLines = Regex("\n{2,}")
 
+    /** 挑资料时文档的先后：优先级、类别、标题。 */
+    internal fun sortDocs(docs: List<Pair<PackDoc, String>>): List<Pair<PackDoc, String>> =
+        docs.filter { it.second.isNotBlank() }.sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
+
+    /** 人物从人物档案认；称谓与语气文档里写到的人（怎么说话、怎么称呼）也并进来。[sorted] 是 [sortDocs] 排好的。 */
+    internal fun characterList(sorted: List<Pair<PackDoc, String>>, prep: BriefPrep? = null): List<CharacterEntry> {
+        val input = sorted.filter { it.first.kind == PackKind.CHARACTER || it.first.kind == PackKind.VOICE }.map { it.first.title to it.second }
+        return prep?.memo("characters", input, null) { characters(input) } ?: characters(input)
+    }
+
+    /** 本章出场的人物和出现次数（细纲卡加正文里数），多的在前。挑资料只用到正文的这一点（加上结尾那段比用词）。 */
+    internal fun presence(characters: List<CharacterEntry>, card: String, text: String): List<Pair<CharacterEntry, Int>> {
+        val scope = "$card\n$text"
+        return characters.map { it to mentions(it, scope) }.filter { it.second > 0 }.sortedByDescending { it.second }
+    }
+
     /**
      * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认），
      * [query] 是拿来比用词的（细纲卡、前一两章的细纲或摘要、正文结尾），[skip] 是细纲卡里已经有的段落（不再重复带）。
@@ -485,15 +525,15 @@ object ChapterBriefs {
          * 总纲、卷纲细纲整份不挑（本章细纲在任务卡里，前面的章有前情），别的资料里只写到后面的句子也去掉。
          */
         ahead: Boolean = true,
+        /** 只跟设定包这一版有关的中间结果（切块、二元组、人物表），[PackSources.prep] 里记着；为空时现算。 */
+        prep: BriefPrep? = null,
     ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
         val hidden = mutableListOf<String>()
         var left = limit
-        val sorted = docs.filter { it.second.isNotBlank() }.sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
-        // 人物从人物档案认；称谓与语气文档里写到的人（怎么说话、怎么称呼）也并进来。
-        val characters = characters(sorted.filter { it.first.kind == PackKind.CHARACTER || it.first.kind == PackKind.VOICE }.map { it.first.title to it.second })
-        val scope = "$card\n$text"
-        val present = characters.map { it to mentions(it, scope) }.filter { it.second > 0 }.sortedByDescending { it.second }.map { it.first }
+        val sorted = sortDocs(docs)
+        val characters = characterList(sorted, prep)
+        val present = presence(characters, card, text).map { it.first }
         val presentNames = present.map { it.name }
 
         // 一、短的常用文档整份带上；长的切块和别的文档一起挑（只截开头多半是说明和原则，用不上）。
@@ -540,7 +580,7 @@ object ChapterBriefs {
         val ledgerAt = items.size
         val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
-        val ledgerText = shown?.render(ledgerLimit)
+        val ledgerText = shown?.render(ledgerLimit, prose = !ahead)
         ledgerText?.let { left -= it.length }
         if (ahead) snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
         // 只用本章实际展示的快照替代察觉表。快照被预算截短时，保守保留察觉表，避免删掉恰好没列出的那条。
@@ -574,7 +614,8 @@ object ChapterBriefs {
             .map { canonical[it] ?: it }.toSet()
         fun holders(k: KnowledgeItem): Set<String> = people(k.holders).ifEmpty { people(k.who) }
         fun subject(e: LedgerEntry): Set<String> = people(e.subject.split('、', '，', ',', '／', '/', '；', ';'))
-        val knowledge = knowledge(sorted.filter { it.first.kind == PackKind.AWARENESS }.map { it.first.title to it.second }, allNames)
+        val knowledgeDocs = sorted.filter { it.first.kind == PackKind.AWARENESS }.map { it.first.title to it.second }
+        val knowledge = prep?.memo("knowledge", knowledgeDocs, allNames) { knowledge(knowledgeDocs, allNames) } ?: knowledge(knowledgeDocs, allNames)
         fun reached(k: KnowledgeItem) = k.chapter?.let { it <= chapter } ?: k.volume?.let { it <= volume } ?: true
         val presentAll = present.flatMap { it.names }.toSet()
         // 同一事实由不同人物知道，不能互相替代；一行写了多人时，只有每个人都已在快照中才整行省去。
@@ -619,7 +660,8 @@ object ChapterBriefs {
         left -= notYet.sumOf { it.length }
 
         // 四、伏笔：埋下了还没回收的；计划这一章回收的另列。
-        val foreshadows = foreshadows(sorted.filter { it.first.kind == PackKind.FORESHADOW }.map { it.first.title to it.second })
+        val foreshadowDocs = sorted.filter { it.first.kind == PackKind.FORESHADOW }.map { it.first.title to it.second }
+        val foreshadows = (prep?.memo("foreshadows", foreshadowDocs, null) { foreshadows(foreshadowDocs) } ?: foreshadows(foreshadowDocs))
             .filter { f -> ledgerPromise.none { same(it, f.what) } }
         val open = foreshadows.filter { !it.done && (it.planted ?: 0) <= chapter }
         val due = open.filter { it.payoff == chapter }
@@ -630,28 +672,29 @@ object ChapterBriefs {
         // 账本导出的那份资料和上面的快照重复，账本不空时不再挑。
         val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds && (ledger.isEmpty() || d.title != LEDGER_EXPORT_TITLE) &&
             (ahead || d.kind !in plans) }.flatMap { (d, t) ->
-            PackUnits.split(t, documentTitle = d.title).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }
-                .let { units -> if (ahead) units else units.filter { u -> !endingTitle.containsMatchIn(u.path.joinToString(" ")) } }
-                .map { d to it }
+            // 切块、每块的二元组、章号卷号只跟设定包有关，按版本记住（[BriefPrep]）：以前每次请求都把整包重切、重算一遍。
+            (prep?.units(d, t) ?: BriefPrep.unitsOf(d, t)).filter { u -> skipKeys.none { it in u.flat } }
+                .let { units -> if (ahead) units else units.filter { u -> !u.ending } }
         }
-        val grams = pool.map { (_, u) -> PackRanking.bigrams(u.text) }
-        val lexicon = PackRanking.Lexicon(grams)
-        val asked = PackRanking.bigrams(query)
-        val ranked = pool.mapIndexedNotNull { i, (d, u) ->
-            val head = u.path.joinToString(" ")
-            val refs = PackRanking.refs(head + "\n" + u.text)
+        val lexicon = prep?.lexicon(pool) ?: BriefPrep.UnitLexicon(pool)
+        val asked = BriefPrep.codes(query)
+        val ranked = pool.mapNotNull { p ->
+            val d = p.doc
+            val u = p.unit
+            val head = p.head
+            val refs = p.refs
             val (chapterScore, chapterWhy) = PackRanking.chapterScore(refs, chapter)
             val names = presentNames.filter { it in u.text }.take(3)
-            val similar = minOf(4.0, lexicon.overlap(grams[i], asked) * 2.0)
+            val similar = minOf(4.0, lexicon.overlap(p.grams, asked) * 2.0)
             var score = chapterScore + names.size * 0.8 + similar + (7 - d.priority) * 0.2 + if (d.always) 0.5 else 0.0
             // 别的卷（标题、粗体小标题里写着“第七卷”）：前面的卷少算，后面隔了一卷以上的是后文，不带。
-            val volumes = PackRanking.volumes(head)
+            val volumes = p.headVolumes
             if (volumes.isNotEmpty() && volume !in volumes) {
-                if (volumes.all { it > volume + 1 }) return@mapIndexedNotNull null
+                if (volumes.all { it > volume + 1 }) return@mapNotNull null
                 score -= if (volumes.all { it < volume }) 1.5 else 0.5
             }
             // 正文里只说到后面隔了一卷以上的（“第十一至十二卷”），多半是后文。
-            val mentioned = PackRanking.volumes(u.text)
+            val mentioned = p.textVolumes
             if (volumes.isEmpty() && mentioned.isNotEmpty() && mentioned.all { it > volume + 1 }) score -= 1.5
             // 只写到远处几章的：离这一章远的少算，只写后面几章的多半是后文，也少算。
             if (chapterScore == 0.0 && refs.isNotEmpty()) {
@@ -659,8 +702,8 @@ object ChapterBriefs {
                 if (refs.all { it.first > chapter + 3 }) score -= 2.0
             }
             // 写正文：只写到后面的章、后面的卷的块不带。
-            if (!ahead && ((refs.isNotEmpty() && refs.all { it.first > chapter }) || (volumes.isNotEmpty() && volumes.all { it > volume }))) return@mapIndexedNotNull null
-            if (score < if (ahead) MIN_SCORE else PROSE_MIN_SCORE) return@mapIndexedNotNull null
+            if (!ahead && ((refs.isNotEmpty() && refs.all { it.first > chapter }) || (volumes.isNotEmpty() && volumes.all { it > volume }))) return@mapNotNull null
+            if (score < if (ahead) MIN_SCORE else PROSE_MIN_SCORE) return@mapNotNull null
             val why = chapterWhy ?: if (names.isNotEmpty()) "写到" + names.joinToString("、") else "和本章细纲相关"
             Triple(score, d to u, why)
         }.sortedWith(compareByDescending<Triple<Double, Pair<PackDoc, PackUnit>, String>> { it.first }.thenBy { it.second.first.priority })
@@ -802,7 +845,117 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     val skip = own.map { it.text }
     val ledger = ledger(workId)
     // 同样的输入（设定包同一版）只挑一次：写正文的一次流程里要拿好几次。
-    return sources.brief(listOf("brief", prose, style, body, card, number, volume, budget, summaries, query, skip, ledger)) {
-        ChapterBriefs.build(docs, body, card, number, volume, budget, summaries, query, skip, style && !prose, ledger, ahead = !prose)
+    // 键里不放整章正文：挑资料只用到正文里各出场人物出现几次（排谁在前）和结尾那段（在 query 里），别的字改了结果一样。
+    val presence = ChapterBriefs.presence(ChapterBriefs.characterList(ChapterBriefs.sortDocs(docs), sources.prep), card, body)
+        .map { (c, n) -> c.name to n }
+    return sources.brief(listOf("brief", prose, style, presence, card, number, volume, budget, summaries, query, skip, ledger)) {
+        ChapterBriefs.build(docs, body, card, number, volume, budget, summaries, query, skip, style && !prose, ledger, ahead = !prose, prep = sources.prep)
+    }
+}
+
+/**
+ * 本章出场人物（出现多的在前），和 [brief] 不写正文时（`prose = false`）算出来的 `present` 一样，但不挑资料：
+ * 写正文时节选写作规范只要这个，以前为它另挑一整份本章资料。
+ */
+fun WorkStore.briefPresent(workId: String, chapterId: String, text: String? = null): List<String> {
+    val work = get(workId) ?: return emptyList()
+    chapterNo(work, chapterId) ?: return emptyList()
+    val sources = packSources(workId)
+    val card = plannedCard(workId, chapterId, outlineEntries(workId)).card
+        .let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
+    val characters = ChapterBriefs.characterList(ChapterBriefs.sortDocs(sources.raw), sources.prep)
+    return ChapterBriefs.presence(characters, card, text ?: text(workId, chapterId)).map { it.first.name }
+}
+
+/**
+ * 挑本章资料时只跟设定包这一版有关的中间结果：每份文档切的块、每块的二元组和章号卷号、人物表、察觉表、伏笔表，
+ * 以及一批块合起来的区分度表。记在 [PackSources.prep] 里，设定包一变整份换掉。
+ *
+ * 为什么要记：写正文时每次请求都要挑一次本章资料（正文一改就是新的输入），以前每次都把整包重新切块、
+ * 每块建一个字符串二元组集合。一百多万字的设定包挑一次要分配三百多 MB，真机上和内存溢出是同一类问题。
+ * 二元组改用整数编码（两个字的 UTF-16 码拼成一个 Int），排好序存成数组，比字符串集合小一个数量级。
+ */
+class BriefPrep internal constructor() {
+    /** 一块：所在文档、块本身，和挑的时候要用、只跟这块文字有关的几样。 */
+    class Piece internal constructor(val doc: PackDoc, val unit: PackUnit) {
+        val head: String = unit.path.joinToString(" ")
+        val refs: List<IntRange> = PackRanking.refs(head + "\n" + unit.text)
+        val headVolumes: Set<Int> = PackRanking.volumes(head)
+        val textVolumes: Set<Int> = PackRanking.volumes(unit.text)
+        /** 去掉空白的文字：和细纲卡里已有的段落比，重复的不带。 */
+        val flat: String = unit.text.replace(SPACE, "")
+        /** 写结局、后文走向的小节：写正文时不带。 */
+        val ending: Boolean = ChapterBriefs.endingTitle.containsMatchIn(head)
+        val grams: IntArray = codes(unit.text)
+    }
+
+    /** 一批块里各二元组的区分度，算法同 [PackRanking.Lexicon]。 */
+    class UnitLexicon(units: List<Piece>) {
+        private val df = HashMap<Int, Int>()
+        private val n = units.size.coerceAtLeast(1)
+
+        init {
+            units.forEach { u -> u.grams.forEach { df[it] = (df[it] ?: 0) + 1 } }
+        }
+
+        private fun idf(code: Int): Double = kotlin.math.ln((n + 1.0) / ((df[code] ?: 0) + 0.5))
+
+        /** 这一块和 [query] 用词重合多少（按区分度加权，长块不占便宜）。两边都是排好序的，一趟走完。 */
+        fun overlap(unit: IntArray, query: IntArray): Double {
+            if (unit.isEmpty() || query.isEmpty()) return 0.0
+            var s = 0.0
+            var i = 0
+            var j = 0
+            while (i < unit.size && j < query.size) {
+                val a = unit[i]
+                val b = query[j]
+                when {
+                    a == b -> { s += idf(a); i++; j++ }
+                    a < b -> i++
+                    else -> j++
+                }
+            }
+            return s / kotlin.math.sqrt(unit.size + 20.0)
+        }
+    }
+
+    private val units = HashMap<PackDoc, Pair<String, List<Piece>>>()
+    private val memos = HashMap<List<Any?>, Any>()
+    private val lexicons = object : LinkedHashMap<List<Piece>, UnitLexicon>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Piece>, UnitLexicon>?) = size > 4
+    }
+
+    /** 一份文档切好的块（同一份文字只切一次）。 */
+    fun units(doc: PackDoc, text: String): List<Piece> =
+        synchronized(units) { units[doc]?.takeIf { it.first === text || it.first == text }?.second }
+            ?: unitsOf(doc, text).also { fresh -> synchronized(units) { units[doc] = text to fresh } }
+
+    /** 一批块的区分度表：同一批块（写正文时多半每次都一样）只算一次。 */
+    fun lexicon(pool: List<Piece>): UnitLexicon =
+        synchronized(lexicons) { lexicons[pool] } ?: UnitLexicon(pool).also { fresh -> synchronized(lexicons) { lexicons[pool] = fresh } }
+
+    /** 人物表、察觉表、伏笔表这类按文档解析的结果：同样的输入只算一次。 */
+    @Suppress("UNCHECKED_CAST")
+    fun <T : Any> memo(kind: String, input: List<Pair<String, String>>, extra: Any?, compute: () -> T): T {
+        val key = listOf(kind, input, extra)
+        return synchronized(memos) { memos[key] as T? } ?: compute().also { fresh -> synchronized(memos) { memos[key] = fresh } }
+    }
+
+    companion object {
+        private val SPACE = Regex("\\s")
+
+        fun unitsOf(doc: PackDoc, text: String): List<Piece> = PackUnits.split(text, documentTitle = doc.title).map { Piece(doc, it) }
+
+        /** 字的二元组（只取汉字、字母、数字连着的部分），同 [PackRanking.bigrams]，编成 Int 排好序。 */
+        fun codes(text: String): IntArray {
+            val out = HashSet<Int>()
+            var prev = ' '
+            for (ch in text) {
+                val ok = Character.isLetterOrDigit(ch)
+                if (ok && Character.isLetterOrDigit(prev)) out += (prev.code shl 16) or ch.code
+                prev = if (ok) ch else ' '
+            }
+            return out.toIntArray().also { it.sort() }
+        }
     }
 }

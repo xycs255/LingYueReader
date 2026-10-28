@@ -110,10 +110,11 @@ fun beats(card: ChapterCard): List<Beat> = Beats.parse(card.beats)
 
 /**
  * 改节拍文字：条数变了，原来记的“第几拍已写”可能对不上了，简单起见清空；条数没变就留着
- * （多半是改了措辞或篇幅）。
+ * （多半是改了措辞或篇幅）。作者改过节拍，就不再是“AI 拆的、待确认”。
  */
 fun ChapterCard.withBeats(text: String): ChapterCard =
-    if (Beats.parse(text).size == Beats.parse(beats).size) copy(beats = text) else copy(beats = text, beatsDone = emptyList())
+    if (Beats.parse(text).size == Beats.parse(beats).size) copy(beats = text, aiBeats = false)
+    else copy(beats = text, beatsDone = emptyList(), aiBeats = false)
 
 /** 标第 [number] 拍写没写（作者手动勾，或采纳了 AI 写的这一拍）。序号超出现在的拍数就不记。 */
 fun ChapterCard.withBeatDone(number: Int, done: Boolean): ChapterCard {

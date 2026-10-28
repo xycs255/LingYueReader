@@ -36,6 +36,9 @@ class PackSources internal constructor(
     val fingerprintSources: List<Pair<PackDoc, String>> by lazy { ProjectSources.fingerprintOf(::forPhase) }
     val outlineEntries: List<OutlineEntry> by lazy { outlineEntriesOf(workId, forPhase(WritingPhase.CREATE)) }
 
+    /** 挑本章资料用的切块、二元组、人物表：跟着这一版设定包走，每次挑资料不再整包重算。 */
+    val prep = BriefPrep()
+
     /** 挑好的本章资料：同样的参数（[key] 里是挑资料用到的全部输入）只挑一次。最多记几份，旧的丢掉。 */
     private val briefs = object : LinkedHashMap<List<Any?>, ChapterBrief>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Any?>, ChapterBrief>?) = size > BRIEFS
@@ -74,11 +77,17 @@ internal class PackSourceCache {
 
     fun cached(workId: String, version: List<Any>): PackSources? = current?.takeIf { it.workId == workId && it.version == version }
 
+    /** 每部作品一把锁：同一部作品的设定包同时只读一份（打开草稿页时判断项目包和编本章任务几乎同时，以前各读一整份）。 */
+    private val reading = HashMap<String, Any>()
+
+    fun readLock(workId: String): Any = synchronized(reading) { reading.getOrPut(workId) { Any() } }
+
     /** 读文档放在锁外（读的时候要拿 [WorkStore] 的锁），读完再放进来；两边同时读了同一版，留先放进来的那份。 */
     fun put(fresh: PackSources): PackSources = synchronized(this) {
         cached(fresh.workId, fresh.version) ?: fresh.also { current = it; PackSources.remember(it) }
     }
 
+    /** 放掉记着的设定包（系统内存紧张、应用退到后台时）：下次用到再读。 */
     fun clear() { current = null }
 }
 

@@ -181,4 +181,17 @@ class TaskCardTest {
         val style = "## 篇幅\n- 每章3000-4000字。不注水，不为凑字加插曲。\n- 开头三百字内进入事件。\n按本章细纲写一章完整正文，3000-4000字。\n字数：3000-4000\n至多 1：仿佛\n短段：12 字以内至多 5 处"
         assertEquals("## 篇幅\n- 不注水，不为凑字加插曲。\n- 开头三百字内进入事件。\n至多 1：仿佛\n短段：12 字以内至多 5 处", ProseLengths.strip(style))
     }
+
+    /** 写到本章结尾、各拍都写过了（拍数加一）：各拍全标已写，只收住这一章，不让模型重写最后一拍。 */
+    @Test
+    fun everyBeatWrittenOnlyWrapsUpTheChapter() {
+        val c = WritePrompts.taskCard(task(ProseScope.TO_END, 4))
+        assertTrue(c, "全章节拍（各拍都写了）：" in c)
+        assertEquals(3, Regex("（已写）").findAll(c).count())
+        assertTrue(c, "写到哪里停：各拍都写了，别再重写哪一拍；把这一章收住，停在章末钩子上" in c)
+        assertFalse("把剩下的各拍都写完" in c)
+        // 编辑器里勾的“已写”不该标到候选稿上：整章写时任务卡里不出现“（已写）”。
+        val fresh = WritePrompts.taskCard(ProseTask(3, "第3章 空船", card.copy(beatsDone = emptyList()), ProseScope.CHAPTER))
+        assertFalse("（已写）" in fresh)
+    }
 }

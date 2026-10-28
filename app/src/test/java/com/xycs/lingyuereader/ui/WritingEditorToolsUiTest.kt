@@ -119,6 +119,16 @@ class WritingEditorToolsUiTest {
         assertEquals(EditorRecommendationKind.CONFIGURE_AI, editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.DRAFT, false, finished = done).kind)
     }
 
+    /** 空章、细纲卡缺事实或节拍：照样推荐写整章草稿，说一句 AI 会先补上；有字的章照旧接着写，不硬推拆节拍。 */
+    @Test fun aChapterWithoutPlanOrBeatsIsStillRecommendedTheOneClickDraft() {
+        val missing = editorRecommendation("", TextRange(0), ChapterStatus.DRAFT, true, cardMissing = true)
+        assertEquals(EditorRecommendationKind.DRAFT_CHAPTER, missing.kind)
+        assertEquals("AI 写整章草稿", missing.label)
+        assertEquals("缺细纲、节拍也行：AI 先拟、先拆，再逐拍写", missing.reason)
+        assertEquals("先看细纲，再生成候选稿", editorRecommendation("", TextRange(0), ChapterStatus.DRAFT, true).reason)
+        assertEquals(EditorRecommendationKind.CONTINUE, editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.DRAFT, true, cardMissing = true).kind)
+    }
+
     @Test fun selectionIsClampedAfterTextEdits() {
         assertEquals(EditorRecommendationKind.REVISE_SELECTION, recommend(text = "主角", selection = TextRange(0, 200)))
         assertEquals(EditorRecommendationKind.CONTINUE, recommend(text = "主角", selection = TextRange(200)))

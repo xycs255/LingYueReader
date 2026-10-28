@@ -157,6 +157,17 @@ class WritingPackTest {
         assertEquals("## 林月\n想要：一个家", character.text)
     }
 
+    /** 标题以“._”开头的文档：导出的文件名不再像 macOS 的资源文件，导得回来，标题照原样。 */
+    @Test
+    fun aTitleStartingWithDotUnderscoreRoundTrips() {
+        val docs = listOf(PackDoc("a", PackKind.CANON, "._备忘") to "老周的船停在渡口。", PackDoc("b", PackKind.CANON, ".隐藏") to "沈默的旧事。")
+        val out = ByteArrayOutputStream()
+        PackImport.writeZip(docs, out)
+        val items = PackImport.readZip { out.toByteArray().inputStream() }
+        assertEquals(listOf("._备忘", ".隐藏"), items.map { it.title }.sorted())
+        assertEquals("老周的船停在渡口。", items.single { it.title == "._备忘" }.text)
+    }
+
     @Test
     fun zipWithoutManifestIsClassifiedAndGbkNamesWork() {
         val out = ByteArrayOutputStream()

@@ -49,6 +49,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.time.LocalDate
 import java.util.Collections
+import com.xycs.lingyuereader.data.writingTask
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
@@ -126,6 +127,8 @@ class WritingDraftUiTest {
             store.saveCard(w.id, two.id, ChapterCard(facts = "杜娘开门，门外来了人", hook = "门外的人不说话"))
             store.addPackDoc(w.id, PackKind.RULES, "检查规则", "字数：至少 10\n")
             store.addPackDoc(w.id, PackKind.STYLE, "写作规范", "对白要短。")
+            // 这里测的是整章一次写：关掉“缺细纲、节拍时 AI 先补上”（一键写本章另见 WritingOneClickUiTest）。
+            store.updateAssist(w.id) { it.copy(draftPrep = false) }
             workId = w.id
             c1 = w.chapters[0].id
             c2 = two.id
@@ -429,5 +432,30 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c1) == "沈默走进雪里。" }
         assertFalse(vm.writingAi.drafts.value.getValue(workId to c1).loading)
         waitForText("放进正文")
+    }
+
+    /** 审读过的稿子：作者改下一次写的要求时，审读用的任务（审读时的要求没变）不跟着页面上的任务一遍遍重编。 */
+    @Test
+    fun editingTheRequestDoesNotRecompileTheReviewTaskEveryTime() {
+        validWorkflowReview = true
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "保留杜娘的迟疑", workflow = true) }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.assessment?.passed == true } == true }
+        val compiled: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        vm.writingAi.compiler = { w, c, i, t, check -> compiled += i; store.writingTask(w, c, i, t, check) }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("审读：已通过，上方可展开证据")
+        var field = "保留杜娘的迟疑"
+        listOf("改成林月先开口", "改成沈默先开口", "改成老周先开口").forEach { ask ->
+            compose.onNode(hasSetTextAction() and hasText(field)).performTextReplacement(ask)
+            field = ask
+            waitFor { compiled.contains(ask) }
+            // 等审读用的任务也跟着跑完（以前这里每次都按审读时的要求再编一遍）。
+            compose.mainClock.advanceTimeBy(1_000)
+            waitForText("审读：已通过，上方可展开证据")
+        }
+        assertEquals("审读时的要求只编了 ${compiled.count { it == "保留杜娘的迟疑" }} 次：$compiled", 1, compiled.count { it == "保留杜娘的迟疑" })
+        assertNull(kotlinx.coroutines.runBlocking { vm.writingAi.draftBlocked(workId, c2) })
     }
 }

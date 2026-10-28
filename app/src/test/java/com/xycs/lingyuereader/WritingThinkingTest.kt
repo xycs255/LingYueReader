@@ -159,11 +159,32 @@ class WritingThinkingTest {
         assertNull(task(WriteAiTask.Edit(WriteAction.PROOFREAD, "杜娘抬头看他。", 10, 17)).thinking)
         assertNull(task(WriteAiTask.Idea(IdeaKind.NEXT)).thinking)
         assertNull(task(WriteAiTask.Review).thinking)
-        // 拟细纲、摘要：不是写正文，什么都不写。
+        // 拟细纲：不是写正文，什么都不写。
         var planned = false
         assertNull(requestsOf("拟细纲", { runBlocking { runCatching { writing.planCard(workId, chapterId) }; planned = true } }) { planned }.single().thinking)
+        // 摘要只是概括一段：关思考（见 summariesAndSyncNeverThink）。
         var summarized = false
-        assertNull(requestsOf("章节摘要", { runBlocking { writing.summarize(workId, chapterId) }; summarized = true }) { summarized }.single().thinking)
+        assertEquals("disabled", requestsOf("章节摘要", { runBlocking { writing.summarize(workId, chapterId) }; summarized = true }) { summarized }.single().thinking)
+    }
+
+    /**
+     * 整理入账、写摘要：要完整的 JSON 或一段短答，用不着先想。V4 默认开着思考，思考的 token 也算进上限，
+     * 收尾那次整理加摘要的上限只有 5120，以前会被思考吃光、报“回答太长”。作品开着“写正文时先思考”也一样关；不带温度。
+     */
+    @Test
+    fun summariesAndSyncNeverThink() {
+        store.updateAssist(workId) { it.copy(thinking = true, temperature = 1.3f) }
+        val sync = requestsOf("整理本章", { writing.syncChapter(workId, chapterId) }) {
+            writing.sync.value?.let { it.running == null && it.results.isNotEmpty() } == true
+        }
+        assertTrue(sync.isNotEmpty())
+        assertTrue(sync.all { it.thinking == "disabled" && !it.body.has("temperature") })
+        var summarized = false
+        val summary = requestsOf("章节摘要", { runBlocking { writing.summarize(workId, chapterId) }; summarized = true }) { summarized }.single()
+        assertEquals("disabled", summary.thinking)
+        assertFalse(summary.body.has("temperature"))
+        // 审稿照服务商默认（要判断前后矛盾，思考有用，也不设上限）。
+        assertNull(task(WriteAiTask.Review).thinking)
     }
 
     @Test

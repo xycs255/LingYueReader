@@ -109,7 +109,8 @@ internal fun collectProblems(text: String, report: RuleReport?, suggestions: Lis
             out += Problem.Review(g.gate, i, i.quote.takeIf { it.isNotBlank() }?.let { q -> text.indexOf(q).takeIf { it >= 0 } })
         }
     }
-    return out.sortedWith(compareBy({ it.order }, { it.filter.ordinal }))
+    // 列表按键认条目，键重复 LazyColumn 直接闪退：上面几个来源各自已经去了重，这里再兜一次（旧盘上的、以后新加的来源）。
+    return out.distinctBy { it.key }.sortedWith(compareBy({ it.order }, { it.filter.ordinal }))
 }
 
 /** 每类几条（[ProblemFilter.ALL] 是合计）。 */

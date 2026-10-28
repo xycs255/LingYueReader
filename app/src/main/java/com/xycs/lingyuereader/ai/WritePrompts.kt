@@ -121,6 +121,7 @@ data class ProseTask(
     val title: String,
     val card: ChapterCard,
     val scope: ProseScope,
+    /** 写哪一拍（[ProseScope.BEAT]）或从哪一拍接（[ProseScope.TO_END]）；写到本章结尾时拍数加一表示各拍都写了。 */
     val beat: Int? = null,
     val length: String = "",
     val opening: Boolean = false,
@@ -129,6 +130,8 @@ data class ProseTask(
     val previousHook: String = "",
     val instruction: String = "",
     val direction: WriteDirection? = null,
+    /** 这一章可以埋的伏笔（[com.xycs.lingyuereader.data.ChapterBrief.seeds]）：只点到为止。 */
+    val seeds: List<String> = emptyList(),
 )
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
@@ -341,6 +344,8 @@ object WritePrompts {
         val hook = line(t.card.hook)
         val n = t.beat?.takeIf { it in 1..list.size }
         val beatScope = t.scope == ProseScope.BEAT && n != null
+        // 写到本章结尾、估计各拍都写了（[ProseTask.beat] 是拍数加一）：各拍全标已写，只把这一章收住，不重写最后一拍。
+        val allWritten = t.scope == ProseScope.TO_END && list.isNotEmpty() && t.beat == list.size + 1
         append(CARD_HEADER).append('\n')
         append(t.chapter?.let { "第 $it 章" } ?: "这一章")
         chapterName(t.title).takeIf { it.isNotEmpty() }?.let { append("《").append(it).append("》") }
@@ -348,6 +353,7 @@ object WritePrompts {
         append('\n')
         if (t.opening && t.previousHook.isNotBlank()) append("上一章停在：").append(line(t.previousHook)).append('\n')
         val done: Set<Int> = when {
+            allWritten -> (1..list.size).toSet()
             beatScope || (t.scope == ProseScope.TO_END && n != null) -> (1 until n!!).toSet()
             t.scope == ProseScope.REVISE -> emptySet()
             else -> t.card.beatsDone.toSet()
@@ -355,7 +361,11 @@ object WritePrompts {
         val end = if (hook.isNotEmpty()) "本章结尾，停在钩子上：$hook" else "本章结尾"
         if (list.isNotEmpty()) {
             // 写到本章结尾、又不知道写到哪一拍了：让模型从上文停下的地方接，别从第一拍重写。
-            append(if (t.scope == ProseScope.TO_END && done.isEmpty() && !t.opening) "全章节拍（从上文停下的地方接着写，没写到的拍都要写到）：\n" else "全章节拍：\n")
+            append(when {
+                allWritten -> "全章节拍（各拍都写了）：\n"
+                t.scope == ProseScope.TO_END && done.isEmpty() && !t.opening -> "全章节拍（从上文停下的地方接着写，没写到的拍都要写到）：\n"
+                else -> "全章节拍：\n"
+            })
             list.forEach { b ->
                 append("  ").append(b.index).append(". ").append(line(b.text))
                 val last = b.index == list.size
@@ -389,7 +399,11 @@ object WritePrompts {
                     else -> "这次只写第 $n 拍，它是本章最后一拍，写完本章就结束"
                 }
                 ProseScope.CHAPTER -> "写完整章$atHook"
-                ProseScope.TO_END -> (if (list.isNotEmpty()) "把剩下的各拍都写完" else "把这一章写完") + atHook
+                ProseScope.TO_END -> when {
+                    allWritten -> "各拍都写了，别再重写哪一拍；把这一章收住$atHook"
+                    list.isNotEmpty() -> "把剩下的各拍都写完$atHook"
+                    else -> "把这一章写完$atHook"
+                }
                 ProseScope.SCENE -> "写完眼下这一场就停，停在场面自然收住的地方"
                 ProseScope.WORDS -> "写够篇幅，在一句话说完的地方停"
                 ProseScope.CUSTOM -> "照作者这次的要求写，写完就停"
@@ -407,8 +421,20 @@ object WritePrompts {
         }
         if (t.card.boundary.isNotBlank()) append("这一章不写到：").append(line(t.card.boundary)).append('\n')
         if (t.card.countdown.isNotBlank()) append("时间：").append(line(t.card.countdown)).append('\n')
+        // 后面的剧情只用来铺垫：能埋就埋一笔，但不能写到它发生。
+        if (t.seeds.isNotEmpty() && t.scope != ProseScope.REVISE) {
+            append(SEEDS_HEAD).append('\n')
+            t.seeds.forEach { append("- ").append(line(it)).append("（只点到为止）\n") }
+        }
         if (facts.isNotEmpty()) append("这些事要写出来，但写成场面和对话，不要列清单式交代。")
     }.trim()
+
+    /** 任务卡里“可以埋的伏笔”一节的开头，顺带一句铺垫的规矩。 */
+    const val SEEDS_HEAD = "这一章可以埋的伏笔（后面的事只用来铺垫：留个细节或疑点就行，别收、别说破、别让人物提前知道）："
+
+    /** 写正文时后文的用法：工具能查到后面的细纲、结局，只能拿来铺垫。 */
+    const val FORESHADOW_RULE = "后面的剧情只用来埋伏笔、做铺垫：可以留细节、留疑点，点到为止；不能让人物提前知道，不能说破，不能写出后面才发生的事。"
+
 
     /** 一拍出几个版本时这一版的方向（写进任务卡）：方向只管这一版怎么写，写什么、写到哪里照卡上的。 */
     fun directionRule(direction: WriteDirection): String = "【这一版的方向：${direction.label}】${direction.rule}"
@@ -472,6 +498,7 @@ object WritePrompts {
     fun proseToolGuide(catalog: List<String>): String = buildString {
         append("细节拿不准（人物、地名、前面写过的事）时再查：read_doc 读资料，search 搜关键词，read_chapter 读前面某一章的正文。")
         if (catalog.isNotEmpty()) append("能查的资料：").append(catalog.joinToString("") { "《$it》" }).append("。")
+        append("查到的资料里可能有后面章节的细纲和结局：").append(FORESHADOW_RULE)
         append("查完直接写正文。")
     }
 
@@ -661,7 +688,7 @@ object WritePrompts {
             val o = issues.optJSONObject(i) ?: return@mapNotNull null
             val problem = o.optString("problem").trim()
             if (problem.isEmpty()) null else ReviewIssue(o.optString("quote").trim().trim('“', '”', '「', '」', '"'), problem, o.optString("fix").trim())
-        }
+        }.distinctBy { it.quote to it.problem } // 模型偶尔把同一条说两遍
     }
 
     /** 本章摘要的要求：单独写摘要（[summary]）和整理时顺带写（[sync] 的 summary 字段）用同一句，两边写出来的一个样。 */
@@ -1223,9 +1250,10 @@ object WritePrompts {
 
     /**
      * 去 AI 腔：[paragraphs] 是含标出说法的段落（段落原文、标出的那几处）。只改标出的说法和它所在的那一句，
-     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。
+     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。[voice] 是写法要求（[voiceTail]）：放在格式要求前面，
+     * “只输出 JSON”永远是最后一句——写法要求开头是“落笔时照这些写”，接在最后模型容易回一段改好的正文。
      */
-    fun decliche(paragraphs: List<Pair<String, List<String>>>): String = buildString {
+    fun decliche(paragraphs: List<Pair<String, List<String>>>, voice: String = ""): String = buildString {
         append("下面是作者小说里的几段正文，每段前面是编号，后面方括号里是本机标出的 AI 腔说法：\n\n")
         paragraphs.forEachIndexed { i, (p, marks) ->
             append(i + 1).append(". ").append(p).append('\n')
@@ -1235,6 +1263,7 @@ object WritePrompts {
         append("换成具体的动作、细节或直接删掉；不改情节，不改对白的内容，不动没标出的句子，不加新的比喻和形容词。\n")
         append("wrong 必须是原文里一字不差的一小段（包含标出的说法，最长一句），right 是改好的这一小段（删掉就写空串），reason 用几个字说怎么改的。\n")
         append("每处标出的说法最多一条；改不好、改了反而别扭的就不列。")
+        if (voice.isNotBlank()) append("\n\n").append(voice.trim()).append("\n\n")
         append("只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\"}]}，都不用改就输出 {\"issues\":[]}。")
     }
 }
