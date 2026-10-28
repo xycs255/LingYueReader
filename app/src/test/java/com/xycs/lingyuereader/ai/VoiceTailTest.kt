@@ -106,6 +106,11 @@ class VoiceTailTest {
         assertTrue("1. 林月嘴角勾起，看着窗外。\n   [标出：「嘴角勾起」]" in p)
         assertTrue("只改标出的说法和它所在的那一句" in p && "不改对白的内容" in p)
         assertTrue("{\"issues\":[{\"p\":1" in p)
+        // 带写法要求时：写法要求在中间，“只输出 JSON”仍是最后一句。
+        val voiced = WritePrompts.decliche(paragraphs, "【写法要求】落笔时照这些写：\n- 少用比喻")
+        assertTrue("少用比喻" in voiced)
+        assertTrue(voiced.indexOf("少用比喻") < voiced.indexOf("只输出 JSON"))
+        assertTrue(voiced.trimEnd().endsWith("都不用改就输出 {\"issues\":[]}。"))
         // 回答照写作建议的格式读；删掉（right 空）也算一条。
         val found = WritePrompts.parseIssues(
             """{"issues":[{"p":1,"wrong":"林月嘴角勾起，","right":"林月笑了一下，","reason":"换成动作"},{"p":2,"wrong":"倒吸一口凉气","right":"","reason":"删"}]}""",

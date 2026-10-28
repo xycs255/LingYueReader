@@ -121,6 +121,7 @@ data class ProseTask(
     val title: String,
     val card: ChapterCard,
     val scope: ProseScope,
+    /** 写哪一拍（[ProseScope.BEAT]）或从哪一拍接（[ProseScope.TO_END]）；写到本章结尾时拍数加一表示各拍都写了。 */
     val beat: Int? = null,
     val length: String = "",
     val opening: Boolean = false,
@@ -343,6 +344,8 @@ object WritePrompts {
         val hook = line(t.card.hook)
         val n = t.beat?.takeIf { it in 1..list.size }
         val beatScope = t.scope == ProseScope.BEAT && n != null
+        // 写到本章结尾、估计各拍都写了（[ProseTask.beat] 是拍数加一）：各拍全标已写，只把这一章收住，不重写最后一拍。
+        val allWritten = t.scope == ProseScope.TO_END && list.isNotEmpty() && t.beat == list.size + 1
         append(CARD_HEADER).append('\n')
         append(t.chapter?.let { "第 $it 章" } ?: "这一章")
         chapterName(t.title).takeIf { it.isNotEmpty() }?.let { append("《").append(it).append("》") }
@@ -350,6 +353,7 @@ object WritePrompts {
         append('\n')
         if (t.opening && t.previousHook.isNotBlank()) append("上一章停在：").append(line(t.previousHook)).append('\n')
         val done: Set<Int> = when {
+            allWritten -> (1..list.size).toSet()
             beatScope || (t.scope == ProseScope.TO_END && n != null) -> (1 until n!!).toSet()
             t.scope == ProseScope.REVISE -> emptySet()
             else -> t.card.beatsDone.toSet()
@@ -357,7 +361,11 @@ object WritePrompts {
         val end = if (hook.isNotEmpty()) "本章结尾，停在钩子上：$hook" else "本章结尾"
         if (list.isNotEmpty()) {
             // 写到本章结尾、又不知道写到哪一拍了：让模型从上文停下的地方接，别从第一拍重写。
-            append(if (t.scope == ProseScope.TO_END && done.isEmpty() && !t.opening) "全章节拍（从上文停下的地方接着写，没写到的拍都要写到）：\n" else "全章节拍：\n")
+            append(when {
+                allWritten -> "全章节拍（各拍都写了）：\n"
+                t.scope == ProseScope.TO_END && done.isEmpty() && !t.opening -> "全章节拍（从上文停下的地方接着写，没写到的拍都要写到）：\n"
+                else -> "全章节拍：\n"
+            })
             list.forEach { b ->
                 append("  ").append(b.index).append(". ").append(line(b.text))
                 val last = b.index == list.size
@@ -391,7 +399,11 @@ object WritePrompts {
                     else -> "这次只写第 $n 拍，它是本章最后一拍，写完本章就结束"
                 }
                 ProseScope.CHAPTER -> "写完整章$atHook"
-                ProseScope.TO_END -> (if (list.isNotEmpty()) "把剩下的各拍都写完" else "把这一章写完") + atHook
+                ProseScope.TO_END -> when {
+                    allWritten -> "各拍都写了，别再重写哪一拍；把这一章收住$atHook"
+                    list.isNotEmpty() -> "把剩下的各拍都写完$atHook"
+                    else -> "把这一章写完$atHook"
+                }
                 ProseScope.SCENE -> "写完眼下这一场就停，停在场面自然收住的地方"
                 ProseScope.WORDS -> "写够篇幅，在一句话说完的地方停"
                 ProseScope.CUSTOM -> "照作者这次的要求写，写完就停"
@@ -1238,9 +1250,10 @@ object WritePrompts {
 
     /**
      * 去 AI 腔：[paragraphs] 是含标出说法的段落（段落原文、标出的那几处）。只改标出的说法和它所在的那一句，
-     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。
+     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。[voice] 是写法要求（[voiceTail]）：放在格式要求前面，
+     * “只输出 JSON”永远是最后一句——写法要求开头是“落笔时照这些写”，接在最后模型容易回一段改好的正文。
      */
-    fun decliche(paragraphs: List<Pair<String, List<String>>>): String = buildString {
+    fun decliche(paragraphs: List<Pair<String, List<String>>>, voice: String = ""): String = buildString {
         append("下面是作者小说里的几段正文，每段前面是编号，后面方括号里是本机标出的 AI 腔说法：\n\n")
         paragraphs.forEachIndexed { i, (p, marks) ->
             append(i + 1).append(". ").append(p).append('\n')
@@ -1250,6 +1263,7 @@ object WritePrompts {
         append("换成具体的动作、细节或直接删掉；不改情节，不改对白的内容，不动没标出的句子，不加新的比喻和形容词。\n")
         append("wrong 必须是原文里一字不差的一小段（包含标出的说法，最长一句），right 是改好的这一小段（删掉就写空串），reason 用几个字说怎么改的。\n")
         append("每处标出的说法最多一条；改不好、改了反而别扭的就不列。")
+        if (voice.isNotBlank()) append("\n\n").append(voice.trim()).append("\n\n")
         append("只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\"}]}，都不用改就输出 {\"issues\":[]}。")
     }
 }

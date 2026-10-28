@@ -336,16 +336,29 @@ internal object ReferenceQuotes {
         require(copiedChars(text, original) <= MAX_COPIED) { "正文里抄自范本的片段合计超过 $MAX_COPIED 字" }
     }
 
+    /**
+     * 范本按窗口切好的集合，按范本记住最近一份：逐拍写时每写完一拍都要对累计的全文核一遍，范本不变，
+     * 不用每拍都把范本重切一遍（一章范本切出来是几万个小字符串）。
+     */
+    private class Windows(val original: String, val size: Int) {
+        val set: HashSet<String> by lazy { original.windowed(size).toHashSet() }
+    }
+    private val windowCache = HashMap<Int, Windows>()
+
+    private fun windows(original: String, size: Int): HashSet<String> = synchronized(windowCache) {
+        windowCache[size]?.takeIf { it.original == original } ?: Windows(original, size).also { windowCache[size] = it }
+    }.set
+
     private fun hasLongRun(text: String, original: String): Boolean {
         if (original.length <= MAX_RUN) return false
-        val runs = original.windowed(MAX_RUN + 1).toHashSet()
+        val runs = windows(original, MAX_RUN + 1)
         return (0 until text.length - MAX_RUN).any { text.substring(it, it + MAX_RUN + 1) in runs }
     }
 
     /** 被至少一个 [COPY_MIN] 字的相同片段覆盖到的字数；重叠的片段不重复计算。 */
     internal fun copiedChars(text: String, original: String): Int {
         if (original.length < COPY_MIN || text.length < COPY_MIN) return 0
-        val windows = original.windowed(COPY_MIN).toHashSet()
+        val windows = windows(original, COPY_MIN)
         var covered = 0
         var end = 0
         for (at in 0..text.length - COPY_MIN) {

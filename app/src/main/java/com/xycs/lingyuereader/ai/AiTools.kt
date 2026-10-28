@@ -287,8 +287,9 @@ object AiToolWire {
     private val TOOLS_UNSUPPORTED = listOf(
         // “model does not support tools”“doesn't support function calling”
         Regex("""(?i)\b(?:does|do)\s*(?:not|n't)\s+support\s+$TOOL_WORD\b"""),
-        // “tools are not supported”“tool_choice none not supported”“function calling is unsupported”
-        Regex("""(?i)\b$TOOL_WORD\b[^.;\n]{0,40}?\b(?:(?:is|are)\s+)?(?:not\s+supported|unsupported|not\s+enabled)\b"""),
+        // “tools are not supported”“tool_choice none not supported”“function calling is unsupported”。
+        // “parallel tool calls are not supported”只是不支持并行调用（parallel_tool_calls 参数），工具本身能用，不算。
+        Regex("""(?i)\b(?<!parallel\s)$TOOL_WORD\b[^.;\n]{0,40}?\b(?:(?:is|are)\s+)?(?:not\s+supported|unsupported|not\s+enabled)\b"""),
         // “unsupported parameter: 'tools'”
         Regex("""(?i)\b(?:unsupported|unrecognized|unknown)\s+(?:parameter|field|argument)s?\s*:?\s*['"`]?(?:tools|tool_choice|functions)\b"""),
         // 有的兼容服务：“"auto" tool choice requires --enable-auto-tool-choice”

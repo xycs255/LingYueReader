@@ -585,7 +585,13 @@ class WritingAi(
         // 换了一章：问题清空。还在的问题里，段落已经改掉、错的字不在了的去掉。
         _realtime.update { r ->
             if (r.chapterId != chapterId) RealtimeState(chapterId, today = suggestCount(workId, java.time.LocalDate.now().toString()))
-            else r.copy(issues = r.issues.filter { i -> i.paragraph in paragraphs && i.wrong in i.paragraph })
+            else {
+                // 去 AI 腔挑的段不按长短筛（“他嘴角勾起。”这种短段也挑）：只看段还在不在正文里，不受 [MIN_PARAGRAPH] 限制。
+                val all by lazy { text.lines().map { it.trim() }.toHashSet() }
+                r.copy(issues = r.issues.filter { i ->
+                    i.wrong in i.paragraph && (i.paragraph in paragraphs || (i.kind == SuggestKind.CLICHE.name && i.paragraph.trim() in all))
+                })
+            }
         }
         val seen = checked.getOrPut(workId to chapterId) { HashSet() }
         val todo = paragraphs.filter { it !in seen }.takeLast(REALTIME_BATCH)
@@ -737,7 +743,7 @@ class WritingAi(
                 val paragraphs = picked.map { it.first }
                 // 只看这几段，不带设定包、不给工具：一问一答。写法要求（含黑名单）照样接在最后。
                 val answer = ask("去 AI 腔", workId, WritePrompts.system(work.title, assist),
-                    WritePrompts.withVoice(WritePrompts.decliche(picked), WritePrompts.voiceTail(assist, null)),
+                    WritePrompts.decliche(picked, WritePrompts.voiceTail(assist, null)),
                     whole = true, meter = AiMeter(AiFeature.CLICHE, workId))
                 val found = WritePrompts.parseIssues(answer, paragraphs)
                     .map { it.copy(kind = SuggestKind.CLICHE.name, source = AiCliche.DOC) }
@@ -778,10 +784,10 @@ class WritingAi(
     val inline: StateFlow<InlineWrite?> = _inline.asStateFlow()
     /** 正在写的请求：键是第几版（只写一版时是空）。准备资料时几版共用一个，发出去以后各版一个。 */
     private val inlineJobs = HashMap<Int?, Job>()
-    /** 第几次让 AI 在编辑器里写：每次写只认自己这一次。 */
-    private var inlineRun = 0
-    /** 各版这一次写的编号：只重写一版时，那一版旧的请求不能再改它。 */
-    private val inlineSlots = HashMap<Int?, Int>()
+    /** 第几次让 AI 在编辑器里写：每次写只认自己这一次。主线程改，流式出字时 IO 线程读。 */
+    @Volatile private var inlineRun = 0
+    /** 各版这一次写的编号：只重写一版时，那一版旧的请求不能再改它。主线程改，IO 线程读（键里有空，不能用 ConcurrentHashMap）。 */
+    private val inlineSlots: MutableMap<Int?, Int> = java.util.Collections.synchronizedMap(HashMap())
     private var inlineSlotSeq = 0
 
     /** 写之前算好、几版共用的东西：系统提示（和它稳定的开头）、光标前后、任务卡、写法要求、这一拍、范本、写正文的采样。 */
@@ -884,9 +890,9 @@ class WritingAi(
                 InlineMode.CUSTOM -> ProseScope.CUSTOM
                 InlineMode.BEAT -> ProseScope.BEAT
             }
-            // 写到本章结尾：作者没勾“已写”时，按正文估一估已经写到第几拍，剩下的才算这次要写的。
+            // 写到本章结尾：作者没勾“已写”时，按正文估一估已经写到第几拍，剩下的才算这次要写的；都写了是拍数加一（见 [WritePrompts.taskCard]）。
             val from = if (d.mode != InlineMode.TO_END || kit.card.beatsDone.isNotEmpty()) null
-                else beats(kit.card).let { list -> Beats.covered(list, head).takeIf { it > 0 }?.let { minOf(it + 1, list.size) } }
+                else beats(kit.card).let { list -> Beats.covered(list, head).takeIf { it > 0 }?.let { minOf(it + 1, list.size + 1) } }
             val task = ProseTask(
                 kit.chapter, chapter.title, kit.card, scope, beat = beatTask?.beat?.index ?: from,
                 length = when (d.mode) {
@@ -946,10 +952,11 @@ class WritingAi(
                 return
             }
             if (reference != null) {
-                ReferenceWriting.verifyProse(clean, reference)
+                verifyOffMain(clean, reference)
                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
             }
-            update { it.copy(text = joinAt(head, clean), loading = false, note = note,
+            // 写成了：清掉之前兜底处理器标的“出了意外”（那时这一版其实还在写），不然写好的这一版采纳不了。
+            update { it.copy(text = joinAt(head, clean), loading = false, note = note, error = null,
                 referenceValidated = reference != null, usage = meter.usage, cost = meter.cost) }
             log(d.workId, d.chapterId, "在编辑器里写", (prep.beat?.let { "写第 ${it.beat.index} 拍：${it.beat.text}" } ?: d.mode.label) +
                 (direction?.let { "（${it.label}）" } ?: "") + d.instruction.let { if (it.isBlank()) "" else "：$it" }, clean, meter)
@@ -1375,6 +1382,13 @@ class WritingAi(
         }
     }
 
+    /**
+     * 照范本写的核验（有没有成段抄范本）：要把范本按窗口建集合、把正文逐位置比一遍，一章几万个小字符串，
+     * 逐拍写时每拍对累计的全文再做一遍。不放在主线程上。
+     */
+    private suspend fun verifyOffMain(prose: String, reference: ReferenceWritingMaterial) =
+        withContext(Dispatchers.Default) { ReferenceWriting.verifyProse(prose, reference) }
+
     /** 范本的要求（接在写法要求前面）；没有范本为空。 */
     private fun referenceText(reference: ReferenceWritingMaterial?): String = reference?.let { ReferenceWriting.prompt(it) }.orEmpty()
 
@@ -1384,11 +1398,14 @@ class WritingAi(
         previousHook = kit.previousHook, instruction = instruction, seeds = kit.seeds,
     )
 
-    /** 整章写（[written] 为空，从头写）或接着已写的写完（写到本章结尾，篇幅是剩下的）。 */
+    /**
+     * 整章写（[written] 为空，从头写）或接着已写的写完（写到本章结尾，篇幅是剩下的）。这是候选稿：写到第几拍只按候选稿估，
+     * 不看细纲卡的“已写”——那是作者在编辑器正文里勾的进度，和这份候选稿无关。
+     */
     private fun chapterTask(kit: ProseKit, title: String, written: String, instruction: String) = ProseTask(
-        kit.chapter, title, kit.card, if (written.isBlank()) ProseScope.CHAPTER else ProseScope.TO_END,
-        beat = if (written.isBlank() || kit.card.beatsDone.isNotEmpty()) null
-            else beats(kit.card).let { list -> Beats.covered(list, written).takeIf { it > 0 }?.let { minOf(it + 1, list.size) } },
+        kit.chapter, title, kit.card.copy(beatsDone = emptyList()), if (written.isBlank()) ProseScope.CHAPTER else ProseScope.TO_END,
+        beat = if (written.isBlank()) null
+            else beats(kit.card).let { list -> Beats.covered(list, written).takeIf { it > 0 }?.let { minOf(it + 1, list.size + 1) } },
         length = if (written.isBlank()) WritePrompts.chapterLength(kit.length) else WritePrompts.remaining(kit.length, written),
         previousHook = kit.previousHook, instruction = instruction, seeds = kit.seeds,
     )
@@ -1949,7 +1966,7 @@ class WritingAi(
             check(cleaned.isNotBlank()) { "第 $n 拍：" + emptyProseMessage(truncated = false, suggestThinkingOff = false) }
             val text = prefix + cleaned
             if (reference != null) {
-                ReferenceWriting.verifyProse(text, reference)
+                verifyOffMain(text, reference)
                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, key.first, key.second, reference) }
             }
             val progress = DraftBeats(n, plan.size)
@@ -2095,7 +2112,7 @@ class WritingAi(
                     if (!previous.referenceValidated || reference.excerpt.fingerprint != previous.referenceFingerprint ||
                         reference.excerpt.chapterLength != previous.referenceChapterLength)
                         throw RejectedReferenceWriting("原候选稿的范本来源未核验或已变化，请从头重写")
-                    ReferenceWriting.verifyProse(previous.text, reference)
+                    verifyOffMain(previous.text, reference)
                 }
                 val taskSnapshot = writingTask(workId, chapterId, instruction, targetLength).let { compiled ->
                     if (prepare && !more && compiled != null && assistOf(workId).draftPrep) prepareCard(key, run, compiled, instruction, targetLength) else compiled
@@ -2133,7 +2150,7 @@ class WritingAi(
                         onCommitted = { committed, progress -> beatsCommitted = committed to progress },
                     )
                     newCandidateGenerated = true
-                    updateDraft(key, run) { it.copy(text = text, loading = false, beatWriting = null, beatsText = null,
+                    updateDraft(key, run) { it.copy(text = text, loading = false, beatWriting = null, beatsText = null, error = null,
                         stage = DraftStage.IDLE, taskInstruction = null, taskTargetLength = null, usage = meter.usage, cost = meter.cost) }
                     forgetDraftBaseline(key, run)
                     log(workId, chapterId, if (beatFrom == 1) "写本章" else "接着写", "逐拍写第 $beatFrom—${plan.size} 拍" +
@@ -2176,11 +2193,11 @@ class WritingAi(
                 newCandidateGenerated = true
                 val text = prefix + cleaned
                 if (reference != null) {
-                    ReferenceWriting.verifyProse(text, reference)
+                    verifyOffMain(text, reference)
                     withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 }
                 updateDraft(key, run) { it.copy(text = text, loading = false, referenceAnalysisId = referenceAnalysisId,
-                    workflow = false,
+                    workflow = false, error = null,
                     referenceFingerprint = reference?.excerpt?.fingerprint,
                     referenceChapterLength = reference?.excerpt?.chapterLength,
                     referenceValidated = reference != null, referenceProvenanceBlocked = false,
@@ -2501,7 +2518,7 @@ class WritingAi(
                     if (!previous.referenceValidated || reference.excerpt.fingerprint != previous.referenceFingerprint ||
                         reference.excerpt.chapterLength != previous.referenceChapterLength)
                         throw RejectedReferenceWriting("原候选稿的范本来源未核验或已变化，请从头重写")
-                    ReferenceWriting.verifyProse(previous.text, reference)
+                    verifyOffMain(previous.text, reference)
                 }
                 val rules = withContext(Dispatchers.IO) {
                     CheckRules.parseDocs(store.pack(workId).filter { it.kind == PackKind.RULES }.map { d -> d.title to store.packText(workId, d.id) })
@@ -2592,7 +2609,7 @@ class WritingAi(
                         newCandidateGenerated = true
                         (prefix + cleaned).also { candidate ->
                             if (reference != null) {
-                                ReferenceWriting.verifyProse(candidate, reference)
+                                verifyOffMain(candidate, reference)
                                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                                 updateDraft(key, run) { it.copy(referenceValidated = true) }
                             }
@@ -2600,7 +2617,7 @@ class WritingAi(
                     },
                     review = { manuscript ->
                         if (reference != null) {
-                            ReferenceWriting.verifyProse(manuscript, reference)
+                            verifyOffMain(manuscript, reference)
                             withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                         }
                         askWithPack(
@@ -2620,7 +2637,7 @@ class WritingAi(
                         )).also { candidate ->
                             if (candidate.isNotBlank()) newCandidateGenerated = true
                             if (reference != null) {
-                                ReferenceWriting.verifyProse(candidate, reference)
+                                verifyOffMain(candidate, reference)
                                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                                 updateDraft(key, run) { it.copy(referenceValidated = true) }
                             }
@@ -2673,7 +2690,7 @@ class WritingAi(
                     },
                 )
                 if (reference != null) {
-                    ReferenceWriting.verifyProse(result.text, reference)
+                    verifyOffMain(result.text, reference)
                     withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 }
                 val current = writingTask(workId, chapterId, instruction, targetLength)
