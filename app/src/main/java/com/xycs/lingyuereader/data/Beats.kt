@@ -23,8 +23,6 @@ object Beats {
 
     private val bullet = Regex("^(?:[-*•·+]|[①-⑳]|[（(][0-9０-９一二三四五六七八九十]+[)）]|[0-9０-９]+\\s*[.．、)）:：]|第[0-9０-９一二三四五六七八九十]+拍\\s*[：:、.．]?)\\s*")
     private val tail = Regex("[（(]\\s*(?:约|大约|大概)?\\s*([0-9０-９]+)\\s*(?:个)?(?:汉)?字?\\s*(?:左右|上下)?\\s*[)）]\\s*$")
-    private val number = Regex("[0-9０-９]+")
-    private val rangeMark = Regex("[0-9０-９]\\s*(?:[—－–\\-~～至到]|-)\\s*[0-9０-９]")
 
     /** 一行一拍；空行、只有序号的行不算。 */
     fun parse(text: String): List<Beat> = text.lines().asSequence()
@@ -51,14 +49,30 @@ object Beats {
 
     /**
      * 全章目标篇幅（“3000 到 5000 字”“不少于 3000 字”）按 [count] 拍平均分，取整到 50 字；
-     * 篇幅里没有字数（“依本章细纲……”）时为空。
+     * 篇幅里没有字数（“依本章细纲……”）时为空。区间取中间值（见 [ProseBudget.parse]）。
      */
     fun share(chapterLength: String, count: Int): Int? {
-        if (count <= 0 || '字' !in chapterLength) return null
-        val values = number.findAll(chapterLength).mapNotNull { digits(it.value) }.filter { it in 100..1_000_000 }.toList()
-        if (values.isEmpty()) return null
-        val total = if (values.size >= 2 && rangeMark.containsMatchIn(chapterLength)) (values[0] + values[1]) / 2 else values[0]
+        if (count <= 0) return null
+        val total = ProseBudget.parse(chapterLength)?.target ?: return null
         return ((total.toDouble() / count / 50).let(Math::round) * 50).toInt().coerceAtLeast(100)
+    }
+
+    /**
+     * AI 拆的节拍，各拍篇幅加起来不能超过全章：超过全章目标的 [ProseBudget.BEATS_OVER] 倍（全章写的是区间时，超过区间上限）
+     * 就按比例压回全章目标。真机上拆成 8 拍、每拍“（1100字）”，加起来 8800 字，逐拍照写就是一章八九千字。
+     * 没写篇幅的拍按平均分算进总数，不改；取不到全章目标时原样返回。只给 AI 刚拆的节拍用，作者写在细纲卡里的不动。
+     */
+    fun fit(beats: List<Beat>, chapterLength: String): List<Beat> {
+        val budget = ProseBudget.parse(chapterLength) ?: return beats
+        if (beats.none { it.length != null }) return beats
+        val share = share(chapterLength, beats.size) ?: return beats
+        val sum = beats.sumOf { it.length ?: share }
+        val limit = if (budget.range) budget.high else (budget.target * ProseBudget.BEATS_OVER).toInt()
+        if (sum <= limit) return beats
+        val known = beats.sumOf { it.length ?: 0 }
+        val room = (budget.target - beats.count { it.length == null } * share).coerceAtLeast(100)
+        val factor = room.toDouble() / known
+        return beats.map { b -> b.length?.let { b.copy(length = (Math.round(it * factor / 50) * 50).toInt().coerceAtLeast(100)) } ?: b }
     }
 
     /** 写第 [number] 拍（从 1 数）要带的上下文；篇幅没写就按 [chapterLength] 平均分。 */

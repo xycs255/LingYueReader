@@ -74,7 +74,7 @@ class TaskCardTest {
     fun writingToTheEndListsTheBeatsLeftAndTheRemainingLength() {
         val written = "林".repeat(1_300)
         val left = WritePrompts.remaining("3000—4000字", written)
-        assertEquals("约 2200 字", left)
+        assertEquals("约 2200 字（1700–2700 字，最多不超过 2700 字；宁短勿长，剩下的事写完就收，不要为了凑字加戏）", left)
         val c = WritePrompts.taskCard(task(ProseScope.TO_END, 2, left))
         assertTrue("  1. 林月到渡口，船上没人（已写）\n  2. 杜娘开门，说老周走了\n  3. 沈默赶来，找到另半张药方（本章结尾，停在钩子上：河上传来漕帮的号子。）" in c)
         assertTrue("写到哪里停：把剩下的各拍都写完，停在章末钩子上" in c)

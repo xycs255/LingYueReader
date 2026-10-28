@@ -50,6 +50,7 @@ import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferenceExcerpt
 import com.xycs.lingyuereader.data.ReferencePart
+import com.xycs.lingyuereader.data.ProseBudget
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.DraftStage
@@ -242,6 +243,14 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
     val reviewRequired = draft?.workflow == true || task?.project == true || reviewTask?.project == true
     val text = draft?.text.orEmpty()
+    val words = WordCount.of(text)
+    // 整章草稿比目标长 30% 以上：字数旁标出来，下面可以一键压到目标。全章目标是区间时按区间上限算。
+    val lengthText = task?.targetLength ?: draft?.taskTargetLength ?: targetLength
+    val lengthBudget = remember(lengthText) { ProseBudget.parse(lengthText) }
+    val overBy = lengthBudget?.let { b ->
+        val ref = if (b.range) b.high else b.target
+        ((words - ref) * 100 / ref).takeIf { words * 10 > ref * 13 }
+    }
     // 本章细纲卡的节拍：有就逐拍写（见 WritingAi.writeBeats），这里只读地列出来。
     val beatList = remember(card) { card?.let(::beats).orEmpty() }
     val counterpart = draft?.alternateText ?: draft?.initialText
@@ -582,12 +591,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             Column {
                                 val writingBeat = draft?.beatWriting?.takeIf { loading && (!draft.workflow || draft.stage == DraftStage.CREATING) }
                                 val preparing = draft?.prep?.takeIf { loading }
-                                DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits,
+                                DraftStatusRow(words, DraftStatus(loading, lookup, hits,
                                     // 写之前先拟细纲、拆节拍；逐拍写时说写到第几拍。
                                     preparing?.label ?: writingBeat?.let { "正在写第 $it / ${beatList.size} 拍" } ?: draft?.takeIf { it.workflow }?.stage?.let { stage ->
                                     // 和“本稿审读”同一个判断：资料或要求变了，不再显示“可供采纳”。
                                     if (stage == DraftStage.READY && !loading && !reviewCurrent) STALE_REVIEW else stage.label
-                                }))
+                                }), over = overBy?.takeIf { !loading })
                                 if (!loading) UsageNote(draft?.usage, draft?.cost, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
                             }
                         }
@@ -661,6 +670,11 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                         if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
                         row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
+                        if (overBy != null && lengthBudget != null) row {
+                            ActionRow("压到约 ${lengthBudget.target} 字", enabled = !locked && !revisionWriteBlocked) {
+                                vm.writingAi.condenseDraft(workId, chapterId, lengthText)
+                            }
+                        }
                         if (draft?.initialText != null && draft.alternateText == null && text != draft.initialText)
                             row { ActionRow("换回修订前那一版", enabled = !locked && !revisionWriteBlocked) {
                                 vm.writingAi.restoreInitialDraft(workId, chapterId)
@@ -855,10 +869,14 @@ internal const val TASK_DEBOUNCE_MS = 500L
 
 /** 草稿卡片第一行：左边字数，右边在写的转圈和进度，或写完后按检查规则的结果（合规则用成功色，有不合的用提醒色）。 */
 @Composable
-private fun DraftStatusRow(words: Int, status: DraftStatus) {
+private fun DraftStatusRow(words: Int, status: DraftStatus, over: Int? = null) {
     val c = LocalGroupedColors.current
     GroupedRow {
-        Text("$words 字", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("$words 字", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            // 比目标长太多：提醒色标出来（见上面算的 overBy）。
+            if (over != null) Text("比目标长 $over%", color = c.warning, fontSize = 13.sp, maxLines = 1)
+        }
         AnimatedContent(
             status,
             transitionSpec = { Motion.fadeThrough() },

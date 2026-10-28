@@ -11,6 +11,7 @@ import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ProseBudget
 import com.xycs.lingyuereader.data.ProseLengths
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.ReviewEvidence
@@ -321,18 +322,32 @@ object WritePrompts {
     /** 卡片里的一项写成一行。 */
     private fun line(text: String): String = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
 
-    /** 这一拍的篇幅（细纲卡里写了就照它，没写按全章平均分）；分不出为空。 */
-    fun beatLength(beat: BeatTask): String = beat.length?.let { "约 $it 字" }.orEmpty()
+    /** 这一拍的篇幅（细纲卡里写了就照它，没写按全章平均分）：区间加上限，见 [ProseBudget.card]；分不出为空。 */
+    fun beatLength(beat: BeatTask): String = beatBudget(beat)?.card("这一拍的事").orEmpty()
 
-    /** 全章篇幅：写了数字的照写，没有数字（“依本章细纲……”）为空。 */
-    fun chapterLength(length: String): String = length.trim().takeIf { t -> t.any { it.isDigit() } }.orEmpty()
+    /** 这一拍的篇幅；分不出为空。 */
+    fun beatBudget(beat: BeatTask): ProseBudget? = beat.length?.let { ProseBudget.of(it) }
 
-    /** 写到本章结尾时还剩多少字：全章篇幅（范围取中间）减去已写的；算不出来、所剩无几为空。 */
-    fun remaining(chapterLength: String, written: String): String {
-        val total = Beats.share(chapterLength, 1) ?: return ""
-        val left = total - WordCount.of(written)
-        return if (left < 300) "" else "约 ${left / 100 * 100} 字"
-    }
+    /**
+     * 全章篇幅：读得出字数的写成区间加上限（区间就用作者的区间），读不出但写了数字的照写，没有数字（“依本章细纲……”）为空。
+     */
+    fun chapterLength(length: String): String =
+        ProseBudget.parse(length)?.card("这一章的事") ?: length.trim().takeIf { t -> t.any { it.isDigit() } }.orEmpty()
+
+    /** 写到本章结尾时还剩多少字：全章篇幅（范围取中间）减去已写的，上限也减去已写的；算不出来、所剩无几为空。 */
+    fun remaining(chapterLength: String, written: String): String =
+        remainingBudget(chapterLength, written)?.card("剩下的事").orEmpty()
+
+    fun remainingBudget(chapterLength: String, written: String): ProseBudget? =
+        ProseBudget.parse(chapterLength)?.let { ProseBudget.remaining(it, WordCount.of(written)) }
+
+    /** 编辑器里“写 500 字左右”的篇幅。 */
+    val WORDS_BUDGET = ProseBudget.of(500)
+
+    /**
+     * 编辑器里“写下一场”：卡上不写数字（一场多长由场面定），只在本机按这个上限把关，写成大半章时在句末收住。
+     */
+    val SCENE_BUDGET = ProseBudget.of(1_500)
 
     /**
      * 本次写作任务卡：所有写正文的请求都以它收尾。用大白话写这一章是第几章、视角、全章节拍（标出已写、这次写哪一拍、
@@ -596,6 +611,18 @@ object WritePrompts {
         append("\n只输出改好的“要改的文字”这一部分。")
     }, if (usesSamples(action)) voice else "")
 
+    /**
+     * 整章草稿写长了，压到约 [ProseBudget.target] 字（草稿页“压到约 N 字”）：和缩写一样删拖沓、留关键情节，
+     * 只是对象是整章、给明目标和上限。[voice] 是写正文的写法要求（[proseTail]），压出来的文风才和原稿一样。
+     */
+    fun condense(text: String, title: String, budget: ProseBudget, voice: String = ""): String = withVoice(buildString {
+        if (title.isNotBlank()) append("章节：").append(title).append('\n')
+        append("这一章的草稿（共 ").append(WordCount.of(text)).append(" 字，写长了）：\n").append(text.trim()).append("\n\n")
+        append("精简整章：删去重复、拖沓和可有可无的话，压到约 ").append(budget.target).append(" 字，最多不超过 ").append(budget.high).append(" 字。")
+        append("保留全部关键情节、推动局面的对话和章末钩子，不添新情节，不改人称和口吻，段落顺序照原稿。\n")
+        append("只输出精简后的完整正文。")
+    }, voice)
+
     /** 灵感：[recent] 是写到这里的原文（本章已写的部分，前面接上一章的结尾）。 */
     fun idea(kind: IdeaKind, recent: String, chapterTitle: String, extra: String = ""): String = buildString {
         if (chapterTitle.isNotBlank()) append("正在写的章节：").append(chapterTitle).append('\n')
@@ -719,17 +746,20 @@ object WritePrompts {
         append("请把这一章「").append(title).append("」拆成 3 到 8 拍（作者按拍让 AI 一段段写）。\n")
         append("- 每拍一句话，写这一步“发生什么”（谁、做了什么、结果），不写文笔、不写对白、不写景物描写。\n")
         append("- 按事情发生的先后排，覆盖细纲卡里的事实与结果，最后一拍落在章末钩子上；不加细纲卡和资料里没有的大事件。\n")
-        append("- 全章篇幅").append(length).append("：按每拍的分量分篇幅，写在行尾，比如“（800字）”；分不出就不写。\n")
+        append("- 全章篇幅").append(length).append("：按每拍的分量分篇幅，写在行尾，比如“（800字）”，各拍加起来等于全章篇幅，不要超出；分不出就不写。\n")
         append("每拍一行，行首写序号，比如：\n1. 沈默赶到渡口，发现船不见了（800字）\n只输出节拍，不要别的话。")
     }
 
-    /** 把拆好的节拍整理成细纲卡里的写法：一行一拍，去掉序号，篇幅写成“（800字）”；最多 8 拍。没拆出来时为空。 */
-    fun parseBeats(answer: String): String {
+    /**
+     * 把拆好的节拍整理成细纲卡里的写法：一行一拍，去掉序号，篇幅写成“（800字）”；最多 8 拍。没拆出来时为空。
+     * 各拍篇幅加起来超过全章篇幅 [chapterLength] 的，按比例压回去（见 [Beats.fit]）。
+     */
+    fun parseBeats(answer: String, chapterLength: String = ""): String {
         val lines = answer.lines().map { it.trim() }
             .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("#") }
             // 开场白和小标题（“好的，拆成六拍：”“节拍：”）不是拍。
             .filterNot { it.endsWith("：") || it.endsWith(":") || it.startsWith("好的") || it.startsWith("以下") }
-        return Beats.parse(lines.joinToString("\n")).take(8)
+        return Beats.fit(Beats.parse(lines.joinToString("\n")).take(8), chapterLength)
             .joinToString("\n") { b -> b.text + (b.length?.let { "（${it}字）" } ?: "") }
     }
 
