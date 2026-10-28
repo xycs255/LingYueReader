@@ -171,6 +171,11 @@ data class WorkAssist(
      * 审稿、修订、整理、拟细纲这些求稳的不用。空是服务商默认（请求里不带这个参数）。见 [TEMPERATURES]。
      */
     val temperature: Float? = null,
+    /**
+     * 写正文时先思考：用的范围和 [temperature] 一样。默认关——DeepSeek V4 默认开着思考，思考的 token 也算进输出上限，
+     * 还会忽略温度；关着时给官方 DeepSeek V4 的写正文请求写上“不思考”，别的服务商、别的模型什么都不写。
+     */
+    val thinking: Boolean = false,
     /** 编辑器“写这一拍…”里勾了“出 3 个方向的版本”：按作品记住，下次打开还是这样。 */
     val beatVariants: Boolean = false,
     /** “这章写完了”收尾页上次的勾选。 */
@@ -2140,6 +2145,7 @@ class WorkStore(
             .put("aiCliche", aiCliche)
             .put("banned", JSONArray(banned))
             .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
+            .put("thinking", thinking)
             .put("beatVariants", beatVariants)
             .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
@@ -2210,6 +2216,8 @@ class WorkStore(
                 // 旧数据没有这两项：温度按服务商默认，“3 个方向”不勾。
                 temperature = WorkAssist.cleanTemperature(if (has("temperature") && !isNull("temperature")) optDouble("temperature") else null),
                 beatVariants = optBoolean("beatVariants", false),
+                // 旧数据没有这一项：写正文时不先思考。
+                thinking = optBoolean("thinking", false),
                 // 旧数据没有收尾的勾选：按默认（整理、摘要勾上，审稿不勾）。
                 finish = optJSONObject("finish")?.let { f ->
                     val d = FinishOptions()

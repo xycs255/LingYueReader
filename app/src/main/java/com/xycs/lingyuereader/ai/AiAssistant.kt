@@ -111,10 +111,10 @@ class AiAssistant(
 
     /**
      * 自带系统提示的一次请求（写作助手用：它的系统提示是编辑，不是读书助手）。
-     * [temperature] 只有写正文、改正文的请求才给（作品设的“写正文的温度”），空是服务商默认。
+     * [prose] 只有写正文、改正文的请求才给（作品设的“写正文的温度”“写正文时先思考”），空是服务商默认。
      */
-    suspend fun ask(system: String, prompt: String, whole: Boolean = false, temperature: Float? = null, onText: (String) -> Unit = {}): String =
-        client.stream(_config.value, system, listOf(AiMessage("user", prompt)), whole, temperature, onText)
+    suspend fun ask(system: String, prompt: String, whole: Boolean = false, prose: ProseSampling? = null, onText: (String) -> Unit = {}): String =
+        client.stream(_config.value, system, listOf(AiMessage("user", prompt)), whole, prose, onText)
 
     /** 带工具的一次请求（写作助手查设定包用）：见 [AiClient.converse]。 */
     suspend fun converse(
@@ -130,9 +130,9 @@ class AiAssistant(
         requireTools: Boolean = false,
         onToolsDropped: () -> Unit = {},
         onLookup: (AiToolCall) -> Unit = {},
-        temperature: Float? = null,
+        prose: ProseSampling? = null,
         onText: (String) -> Unit = {},
-    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, requireTools = requireTools, onToolsDropped = onToolsDropped, onLookup = onLookup, temperature = temperature, onText = onText)
+    ): String = client.converse(_config.value, system, prompt, tools, run, cachePrefix, maxRounds = maxRounds, whole = whole, maxTokens = maxTokens, cacheExtra = cacheExtra, requireTools = requireTools, onToolsDropped = onToolsDropped, onLookup = onLookup, prose = prose, onText = onText)
 
     /** 合成一句语音（AI 朗读、AI 讲书）：用设置里的语音服务商。 */
     /** 合成一句。[sp] 给定时按它合成（听书开始时的设置，和缓存键一致），否则按当前设置。 */

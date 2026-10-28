@@ -4,14 +4,18 @@ import android.content.SharedPreferences
 import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiCost
+import com.xycs.lingyuereader.ai.AiEmptyAnswerException
 import com.xycs.lingyuereader.ai.AiException
 import com.xycs.lingyuereader.ai.AiFeature
 import com.xycs.lingyuereader.ai.AiMeter
 import com.xycs.lingyuereader.ai.AiRequestBudget
 import com.xycs.lingyuereader.ai.AiRequestBudgetPreview
+import com.xycs.lingyuereader.ai.AiTruncatedException
 import com.xycs.lingyuereader.ai.AiUsage
+import com.xycs.lingyuereader.ai.AiWire
 import com.xycs.lingyuereader.ai.BibleProposal
 import com.xycs.lingyuereader.ai.IdeaKind
+import com.xycs.lingyuereader.ai.ProseSampling
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.ai.WritePrompts
@@ -246,6 +250,25 @@ internal fun draftOutputTokenLimit(config: AiConfig): Int? {
 }
 
 /**
+ * 编辑器里写一段的输出上限：一般压到 8192，写一段用不了整章那么多。开着“写正文时先思考”、又是会思考的 V4
+ * （[AiWire.switchableThinking]）时不压：思考的 token 也算进上限，压到 8192 会全用在思考上、一个字也没写。
+ */
+internal fun inlineOutputTokenLimit(config: AiConfig, thinking: Boolean): Int? {
+    val draft = draftOutputTokenLimit(config)
+    return if (thinking && AiWire.switchableThinking(config)) draft else draft?.coerceAtMost(8_192)
+}
+
+/**
+ * 写正文的请求没写出正文时怎么说：[truncated] 是到了输出上限（正文一个字没有，上限全用在思考上了），
+ * 否则是模型正常收尾、却没写正文。[suggestThinkingOff] 为真（作品开着“写正文时先思考”、模型能关）时再告诉作者可以关掉它。
+ */
+internal fun emptyProseMessage(truncated: Boolean, suggestThinkingOff: Boolean): String = when {
+    !truncated -> "AI 没有写出正文，再试一次"
+    suggestThinkingOff -> "模型把这次的输出上限都用在思考上，没写出正文。可以在作品 AI 设置里关掉“写正文时先思考”再试"
+    else -> "模型把这次的输出上限都用在思考上，没写出正文"
+}
+
+/**
  * 写作的 AI：选中文字改写、灵感、读者点评、矛盾检查、写作建议、整理设定集。
  * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
  */
@@ -386,8 +409,8 @@ class WritingAi(
                 else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
                     confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
                     meter = meter,
-                    // 润色、扩写、续写这类改正文的用作品设的温度；挑错只改错，求稳，不用。灵感、矛盾检查也不用。
-                    temperature = assist.temperature.takeIf { task is WriteAiTask.Edit && task.action != WriteAction.PROOFREAD },
+                    // 润色、扩写、续写这类改正文的用作品设的温度和思考开关；挑错只改错，求稳，不用。灵感、矛盾检查也不用。
+                    prose = proseOf(assist).takeIf { task is WriteAiTask.Edit && task.action != WriteAction.PROOFREAD },
                     onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false, usage = meter.usage, cost = meter.cost) ?: s }
@@ -681,7 +704,7 @@ class WritingAi(
     private val inlineSlots = HashMap<Int?, Int>()
     private var inlineSlotSeq = 0
 
-    /** 写之前算好、几版共用的东西：系统提示、光标前后、规范、篇幅、写法要求、这一拍、范本、温度。 */
+    /** 写之前算好、几版共用的东西：系统提示、光标前后、规范、篇幅、写法要求、这一拍、范本、写正文的采样。 */
     private class InlinePrep(
         val title: String,
         val system: String,
@@ -693,7 +716,7 @@ class WritingAi(
         val beat: BeatTask?,
         val reference: ReferenceWritingMaterial?,
         val project: Boolean,
-        val temperature: Float?,
+        val prose: ProseSampling,
     )
 
     /**
@@ -782,7 +805,7 @@ class WritingAi(
         val system = WritePrompts.system(work.title, assist, pack.ifEmpty { null }) +
             (if (reference == null) "" else "\n\n" + ReferenceWriting.SYSTEM_RULE)
         return InlinePrep(chapter.title, system, before, after, length, rules, WritePrompts.voiceTail(assist, samples), beatTask, reference,
-            taskSnapshot?.project == true, assist.temperature)
+            taskSnapshot?.project == true, proseOf(assist))
     }
 
     /** 写一版：[slot] 是第几版（空是只写一版）。停下、出错只改这一版。 */
@@ -802,9 +825,9 @@ class WritingAi(
             var shown = 0L
             val answer = askWithPack(
                 "在编辑器里写" + (direction?.let { " · ${it.label}" } ?: ""), d.workId, prep.system, prompt,
-                maxTokens = draftTokens?.coerceAtMost(8_192), meter = meter,
+                maxTokens = inlineOutputTokenLimit(ai.currentConfig, prep.prose.thinking), meter = meter,
                 toolsUpTo = d.chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
-                requireTools = prep.project, temperature = prep.temperature,
+                requireTools = prep.project, prose = prep.prose,
                 onReset = {
                     written = ""
                     shown = 0L
@@ -818,12 +841,19 @@ class WritingAi(
                     update { it.copy(text = joinAt(head, written)) }
                 }
             }
+            val truncated = answer.endsWith(TRUNCATED_NOTE)
             val note = when {
-                answer.endsWith(TRUNCATED_NOTE) -> "写到长度上限停了，可以采纳后再接着写"
+                truncated -> "写到长度上限停了，可以采纳后再接着写"
                 answer.endsWith(STOPPED_NOTE) -> "模型中途停了"
                 else -> null
             }
             val clean = WritePrompts.cleanDraft(answer.removeSuffix(TRUNCATED_NOTE).removeSuffix(STOPPED_NOTE))
+            // 一个字没写（多半是输出上限全用在思考上了）：不是“写了 0 字可以采纳”，是出错；花了的钱照样显示。
+            if (clean.isBlank()) {
+                update { it.copy(text = "", loading = false, note = null, error = emptyProse(truncated, prep.prose),
+                    usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+                return
+            }
             if (reference != null) {
                 ReferenceWriting.verifyProse(clean, reference)
                 withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
@@ -1026,17 +1056,38 @@ class WritingAi(
         prompt: String,
         whole: Boolean = false,
         meter: AiMeter = AiMeter(featureOf(label), workId),
-        /** 写正文的温度（[WorkAssist.temperature]）：只有写正文、改正文的请求才传，别的都空着。 */
-        temperature: Float? = null,
+        /** 写正文的采样（[proseOf]）：只有写正文、改正文的请求才传，别的都空着。 */
+        prose: ProseSampling? = null,
         onText: (String) -> Unit = {},
     ): String {
         val sent = SentRequest(label, system, prompt, System.currentTimeMillis())
         _lastRequest.value = sent
         try {
-            return withContext(meter) { ai.ask(system, prompt, whole, temperature, onText) }
+            return withContext(meter) { proseErrors(prose) { ai.ask(system, prompt, whole, prose, onText) } }
         } finally {
             noteUsage(sent.id, meter)
         }
+    }
+
+    /** 作品设的写正文采样：“写正文的温度”和“写正文时先思考”。 */
+    private fun proseOf(assist: WorkAssist) = ProseSampling(assist.temperature, assist.thinking)
+
+    /** 写正文没写出正文时的报错（见 [emptyProseMessage]）：只有开着思考、模型又能关思考时，才建议去关。 */
+    private fun emptyProse(truncated: Boolean, prose: ProseSampling): String =
+        emptyProseMessage(truncated, prose.thinking && AiWire.switchableThinking(ai.currentConfig))
+
+    /**
+     * 写正文的请求（[prose] 不为空）一个字没写就结束了：换成说清楚原因的报错。到了输出上限、一个字没有（要完整结果的整章、改稿）
+     * 是上限全用在思考上了；正常结束却没有字是没写出来。别的请求、别的错误照原样抛出。
+     */
+    private suspend fun <T> proseErrors(prose: ProseSampling?, block: suspend () -> T): T = try {
+        block()
+    } catch (e: AiTruncatedException) {
+        if (prose == null || !e.empty) throw e
+        throw AiException(emptyProse(true, prose))
+    } catch (e: AiEmptyAnswerException) {
+        if (prose == null) throw e
+        throw AiException(emptyProse(false, prose))
     }
 
     /** 把这次的用量写进“最近一次发给 AI 的内容”（还是这一次的话）。 */
@@ -1096,16 +1147,16 @@ class WritingAi(
         /** 模型不支持工具、这次没带工具就答了（只有 [requireTools] 为假时会发生）。 */
         onToolsDropped: () -> Unit = {},
         /**
-         * 写正文的温度（[WorkAssist.temperature]）。只有写正文、改正文的请求传它：编辑器里接着写、写本章、项目包的创作、
+         * 写正文的采样（[proseOf]：温度、写正文时先思考）。只有写正文、改正文的请求传它：编辑器里接着写、写本章、项目包的创作、
          * 润色扩写这类改稿；审稿、修订、拟细纲、拆节拍、整理、写作建议、去 AI 腔都不传（空是服务商默认）。
          */
-        temperature: Float? = null,
+        prose: ProseSampling? = null,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
         if (!canUsePack) {
             if (requireTools) throw AiException("本次项目任务需要设定包查阅工具；本机模型无法完成，请选支持工具调用的模型")
-            return ask(label, workId, rest, prompt, whole, meter, temperature, onText)
+            return ask(label, workId, rest, prompt, whole, meter, prose, onText)
         }
         val budget = knowledgeBudget(workId)
         val stage = phase ?: when (label) {
@@ -1123,7 +1174,7 @@ class WritingAi(
         _lastRequest.value = sent
         try {
             // 工具多轮的几次请求都加在这一个计量器上。
-            return withContext(meter) { ai.converse(
+            return withContext(meter) { proseErrors(prose) { ai.converse(
                 system, prompt, if (useTools) PackTools.TOOLS else emptyList(),
                 run = { call ->
                     val out = withContext(Dispatchers.IO) { tools.run(call) }
@@ -1141,9 +1192,9 @@ class WritingAi(
                 requireTools = requireTools,
                 onToolsDropped = onToolsDropped,
                 onLookup = { onReset() },
-                temperature = temperature,
+                prose = prose,
                 onText = onText,
-            ) }
+            ) } }
         } finally {
             _lookup.value = null
             noteUsage(sent.id, meter)
@@ -1212,7 +1263,7 @@ class WritingAi(
         return withContext(Dispatchers.IO) { store.aiPack(workId, budget) }
     }
 
-    /** 整章 V4 思考与正文共用输出上限；局部续写仍维持较短上限。 */
+    /** 整章 V4 思考与正文共用输出上限；编辑器里写一段按 [inlineOutputTokenLimit]。 */
     private val draftTokens: Int?
         get() = draftOutputTokenLimit(ai.currentConfig)
 
@@ -1694,7 +1745,7 @@ class WritingAi(
                 if (partial.isNotBlank()) updateDraft(key, run) { it.copy(text = prefix + partial) }
             }
             val cleaned = WritePrompts.cleanDraft(answer)
-            check(cleaned.isNotBlank()) { "第 $n 拍 AI 没有返回正文" }
+            check(cleaned.isNotBlank()) { "第 $n 拍：" + emptyProseMessage(truncated = false, suggestThinkingOff = false) }
             val text = prefix + cleaned
             if (reference != null) {
                 ReferenceWriting.verifyProse(text, reference)
@@ -1810,7 +1861,7 @@ class WritingAi(
                             askWithPack(
                                 if (first) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                                 toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
-                                requireTools = taskSnapshot?.project == true, temperature = assist.temperature, onReset = onReset, onText = onText,
+                                requireTools = taskSnapshot?.project == true, prose = proseOf(assist), onReset = onReset, onText = onText,
                             )
                         },
                         onCommitted = { committed, progress -> beatsCommitted = committed to progress },
@@ -1826,7 +1877,7 @@ class WritingAi(
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
-                    requireTools = taskSnapshot?.project == true, temperature = assist.temperature,
+                    requireTools = taskSnapshot?.project == true, prose = proseOf(assist),
                     onReset = {
                         written = ""
                         newCandidateGenerated = false
@@ -1850,7 +1901,7 @@ class WritingAi(
                     }
                 }
                 val cleaned = WritePrompts.cleanDraft(answer)
-                check(cleaned.isNotBlank()) { "AI 没有返回正文" }
+                check(cleaned.isNotBlank()) { emptyProseMessage(truncated = false, suggestThinkingOff = false) }
                 newCandidateGenerated = true
                 val text = prefix + cleaned
                 if (reference != null) {
@@ -1918,7 +1969,9 @@ class WritingAi(
                     if (old != null) state.restoredFrom(old, "没写成：${e.message ?: "请求失败"}；已保留上一版")
                     else state.copy(text = if (newCandidateGenerated) state.text else previousCandidate,
                         workflow = false, loading = false, error = e.message ?: "请求失败",
-                        initialText = null, alternateText = null)
+                        initialText = null, alternateText = null,
+                        // 没写成也照样花了钱（比如上限全用在思考上），显示这一次花了多少。
+                        usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost)
                 }
                 // With no earlier candidate, a partial remains available for continuation.
                 _drafts.value[key]?.takeIf { draftRuns[key] == run && it.text.isNotBlank() }?.let { d ->
@@ -1976,7 +2029,7 @@ class WritingAi(
         // 文风范例在请求最后（写法要求里），系统提示里只有知识库这一处缓存边界，和真发的请求一样。
         return withContext(Dispatchers.Default) {
             AiRequestBudget.preview(ai.currentConfig, system, fullPrompt, PackTools.TOOLS, draftTokens, workflow,
-                cachePrefix = pack.prefix.length)
+                cachePrefix = pack.prefix.length, prose = proseOf(assist))
         }
     }
 
@@ -2167,7 +2220,7 @@ class WritingAi(
                                     askWithPack(
                                         "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                                         toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
-                                        meter = createMeter, temperature = assist.temperature, onReset = onReset, onText = onText,
+                                        meter = createMeter, prose = proseOf(assist), onReset = onReset, onText = onText,
                                     )
                                 },
                                 onCommitted = { text, progress ->
@@ -2184,8 +2237,8 @@ class WritingAi(
                         val answer = askWithPack(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
                             toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = true, requireTools = true,
-                            // 只有创作阶段用作品设的温度；审读、修订求稳，不带。
-                            meter = createMeter, temperature = assist.temperature,
+                            // 只有创作阶段用作品设的温度和思考开关；审读、修订求稳，不带。
+                            meter = createMeter, prose = proseOf(assist),
                             onReset = {
                                 written = ""
                                 newCandidateGenerated = false
@@ -2207,7 +2260,7 @@ class WritingAi(
                             }
                         }
                         val cleaned = WritePrompts.cleanDraft(answer)
-                        check(cleaned.isNotBlank()) { "AI 没有返回正文" }
+                        check(cleaned.isNotBlank()) { emptyProseMessage(truncated = false, suggestThinkingOff = false) }
                         newCandidateGenerated = true
                         (prefix + cleaned).also { candidate ->
                             if (reference != null) {

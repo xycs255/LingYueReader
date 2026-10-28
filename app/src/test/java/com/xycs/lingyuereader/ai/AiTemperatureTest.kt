@@ -56,22 +56,22 @@ class AiTemperatureTest {
 
     @Test
     fun onlyOpenAiCompatibleBodiesCarryTheTemperature() {
-        val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")), temperature = 1.3f))
+        val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.3f)))
         // 按十进制写：1.3 不写成 1.2999999523。
         assertEquals("1.3", o.get("temperature").toString())
-        assertEquals(1.5, JSONObject(AiWire.body(deepseek, "", listOf(AiMessage("user", "写")), temperature = 1.5f)).getDouble("temperature"), 0.0)
+        assertEquals(1.5, JSONObject(AiWire.body(deepseek, "", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))).getDouble("temperature"), 0.0)
         // 没设（服务商默认）：不写这个参数。
         assertFalse(JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")))).has("temperature"))
         // Anthropic、本机模型都不写。
-        assertFalse(JSONObject(AiWire.body(claude, "系统", listOf(AiMessage("user", "写")), temperature = 1.5f)).has("temperature"))
-        assertFalse(JSONObject(AiWire.body(device, "系统", listOf(AiMessage("user", "写")), temperature = 1.5f)).has("temperature"))
+        assertFalse(JSONObject(AiWire.body(claude, "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))).has("temperature"))
+        assertFalse(JSONObject(AiWire.body(device, "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))).has("temperature"))
 
         // 带工具的请求体也一样。
         val turns = JSONArray().put(JSONObject().put("role", "user").put("content", "写"))
-        assertEquals(0.7, JSONObject(AiToolWire.body(deepseek, "系统", turns, tools, temperature = 0.7f)).getDouble("temperature"), 0.0)
+        assertEquals(0.7, JSONObject(AiToolWire.body(deepseek, "系统", turns, tools, prose = ProseSampling(0.7f))).getDouble("temperature"), 0.0)
         assertFalse(JSONObject(AiToolWire.body(deepseek, "系统", turns, tools)).has("temperature"))
-        assertFalse(JSONObject(AiToolWire.body(claude, "系统", turns, tools, temperature = 1.5f)).has("temperature"))
-        assertFalse(JSONObject(AiToolWire.body(device, "系统", turns, tools, temperature = 1.5f)).has("temperature"))
+        assertFalse(JSONObject(AiToolWire.body(claude, "系统", turns, tools, prose = ProseSampling(1.5f))).has("temperature"))
+        assertFalse(JSONObject(AiToolWire.body(device, "系统", turns, tools, prose = ProseSampling(1.5f))).has("temperature"))
     }
 
     @Test
@@ -93,7 +93,7 @@ class AiTemperatureTest {
     fun streamDropsARejectedTemperatureAndRetriesOnce() = runBlocking<Unit> {
         withTemperature = 400 to """{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model."}}"""
         val pieces = StringBuilder()
-        val answer = AiClient().stream(local(), "系统", listOf(AiMessage("user", "写")), temperature = 1.5f) { pieces.append(it) }
+        val answer = AiClient().stream(local(), "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f)) { pieces.append(it) }
         assertEquals("默认温度的回答", answer)
         assertEquals("默认温度的回答", pieces.toString())
         val sent = sent()
@@ -106,7 +106,7 @@ class AiTemperatureTest {
     fun converseDropsARejectedTemperatureButKeepsTheTools() = runBlocking<Unit> {
         withTemperature = 400 to """{"error":{"message":"temperature does not support 1.5 with this model"}}"""
         var dropped = false
-        val answer = AiClient().converse(local(), "资料", "写", tools, run = { "资料" }, temperature = 1.5f,
+        val answer = AiClient().converse(local(), "资料", "写", tools, run = { "资料" }, prose = ProseSampling(1.5f),
             onToolsDropped = { dropped = true })
         assertEquals("默认温度的回答", answer)
         assertFalse("去掉的是温度，不是工具", dropped)
@@ -123,8 +123,8 @@ class AiTemperatureTest {
         for (tooled in listOf(false, true)) {
             synchronized(requests) { requests.clear() }
             try {
-                if (tooled) AiClient().converse(local(), "资料", "写", tools, run = { "资料" }, temperature = 1.5f)
-                else AiClient().stream(local(), "系统", listOf(AiMessage("user", "写")), temperature = 1.5f)
+                if (tooled) AiClient().converse(local(), "资料", "写", tools, run = { "资料" }, prose = ProseSampling(1.5f))
+                else AiClient().stream(local(), "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))
                 fail("别的 400 要照原样报出")
             } catch (e: AiException) {
                 assertTrue(e.message.orEmpty().contains("max_tokens"))

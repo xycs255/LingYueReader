@@ -558,7 +558,11 @@ internal fun InlineBar(
             val words = WordCount.of(inline.text)
             val line = Modifier.fillMaxWidth().padding(bottom = 4.dp)
             when (p) {
-                2 -> ErrorText(inline.error.orEmpty(), line)
+                // 出错也照常显示花了多少（比如上限全用在思考上、一个字没写，钱照样花了）。
+                2 -> Column(line) {
+                    ErrorText(inline.error.orEmpty())
+                    UsageNote(inline.usage, inline.cost, Modifier.padding(top = 2.dp))
+                }
                 0 -> PanelBusy(
                     when {
                         lookup != null -> "正在查：$lookup"
@@ -601,6 +605,9 @@ private fun variantStatus(v: com.xycs.lingyuereader.InlineVariant): String = whe
     v.loading -> "写着"
     else -> "写好"
 }
+
+/** 作品 AI 设置“写正文时先思考”的说明。 */
+internal const val THINKING_NOTE = "关着：更快、更省，‘写正文的温度’才起作用。开着：AI 先想再写，贵、慢，适合复杂场面。目前只对官方 DeepSeek V4 起作用。"
 
 /** 出 3 个方向的版本：选项后面的说明。 */
 internal const val VARIANTS_NOTE = "冲突升级、按下不发、意外插入各写一版，你挑一版采纳；花费约 3 倍"
@@ -844,11 +851,16 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     StyleSamplesSection(vm, workId, assist)
                     GroupedSection(
-                        header = "温度",
-                        footer = "越高越不套路，也越容易跑偏。只影响写正文和改稿（AI 写、AI 写整章草稿、润色扩写这类），审稿、修订、整理不受影响；" +
-                            "推理和思考模式的模型可能不起作用。",
+                        header = "写正文",
+                        footer = "温度越高越不套路，也越容易跑偏。这两项只影响写正文和改稿（AI 写、AI 写整章草稿、润色扩写这类），审稿、修订、整理不受影响；" +
+                            "推理和思考模式的模型可能不认温度。",
                     ) {
                         row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }
+                        row {
+                            ToggleRow("写正文时先思考", assist.thinking, subtitle = THINKING_NOTE) { on ->
+                                vm.writingAi.updateAssist(workId) { it.copy(thinking = on) }
+                            }
+                        }
                     }
                     GroupedSection(
                         header = "AI 腔",
