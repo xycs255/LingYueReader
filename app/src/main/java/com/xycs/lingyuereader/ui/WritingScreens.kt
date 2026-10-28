@@ -395,7 +395,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var chapterMenu by remember { mutableStateOf<String?>(null) }
     var volumeMenu by remember { mutableStateOf<String?>(null) }
     var collapsedVolumeIds by rememberWritingTreeIds(workId, "volumes")
-    var expandedCardIds by rememberWritingTreeIds(workId, "cards")
     var reorderMode by rememberSaveable(workId) { mutableStateOf(false) }
     var renamingChapter by remember { mutableStateOf<WorkChapter?>(null) }
     var deletingChapter by remember { mutableStateOf<WorkChapter?>(null) }
@@ -565,7 +564,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     unsyncedIds = unsynced,
                     showUnsynced = pack?.isNotEmpty() == true,
                     collapsedVolumeIds = collapsedVolumeIds,
-                    expandedCardIds = expandedCardIds,
                     reorderMode = reorderMode,
                     volumeMenuId = volumeMenu,
                     chapterMenuId = chapterMenu,
@@ -579,9 +577,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         onRenameVolume = { renamingVolume = it },
                         onDeleteVolume = { deletingVolume = it },
                         onOpenChapter = { vm.open(Screen.Editor(workId, it.id)) },
-                        onToggleCard = { id ->
-                            expandedCardIds = if (id in expandedCardIds) expandedCardIds - id else expandedCardIds + id
-                        },
                         onOpenCard = { vm.open(Screen.ChapterCard(workId, it.id)) },
                         onOpenChapterMenu = { chapterMenu = it.id },
                         onDismissChapterMenu = { chapterMenu = null },

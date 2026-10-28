@@ -123,9 +123,13 @@ class PaperUiSnapshotTest {
         compose.onNodeWithText("长夜").performClick()
         waitFor("第二章 天亮")
         capture("paper-work")
-        compose.onNodeWithContentDescription("展开第一章 雪夜细纲卡").performClick()
-        waitFor("事实结果 · 承接边界")
-        capture("paper-work-tree")
+        // 规划树章行右侧的细纲卡图标：一点直接进细纲卡页。
+        compose.onNodeWithContentDescription("打开第一章 雪夜细纲卡").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("打开第一章 雪夜细纲卡").fetchSemanticsNodes().isEmpty() }
+        waitFor("本章")
+        capture("paper-work-tree-card")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitFor("第二章 天亮")
         compose.onNodeWithText("故事账本").performClick()
         waitFor("人物")
         capture("paper-ledger")

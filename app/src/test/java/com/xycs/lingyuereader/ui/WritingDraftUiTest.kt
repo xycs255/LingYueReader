@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
@@ -252,6 +253,26 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c2).isEmpty() }
         // 回到编辑器，看到的是新正文。
         waitForText("门外的人没有回答。")
+    }
+
+    /** 草稿页“修改方向”：对话框里改了方向点“按这个方向重写”，存下方向并直接重写一版，不用再点“重写一版”。 */
+    @Test
+    fun aNewDirectionRewritesTheDraftRightAway() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.writingAi.writeDraft(workId, c2, "多写对白") }
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.text.isNotBlank() } == true }
+        compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, c2)) }
+        waitForText("本章写作任务")
+        compose.onNodeWithText("修改方向").performScrollTo().performClick()
+        waitForText("按它重写一版")
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("让顾长风先开口")
+        compose.onNodeWithText("按这个方向重写").performClick()
+        waitFor { asked.count { "请写出这一章" in it.second } == 2 }
+        assertTrue(asked.last { "请写出这一章" in it.second }.second.contains("作者这次的要求：让顾长风先开口"))
+        waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.text.isNotBlank() } == true }
+        waitFor { store.draftIntent(workId, c2)?.instruction == "让顾长风先开口" }
+        compose.onNode(hasSetTextAction() and hasText("让顾长风先开口")).assertExists()
     }
 
     @Test

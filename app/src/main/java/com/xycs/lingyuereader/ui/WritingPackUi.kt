@@ -81,6 +81,7 @@ import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -109,6 +110,8 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
+    // “导入设定包”一行：直接问导入文件还是文件夹，选了就开系统选择器（不再先弹右上角菜单）。
+    var importing by remember { mutableStateOf(false) }
     // 导入前的预览。测试里直接给（系统的文件选择器在测试里点不了）。
     var preview by remember { mutableStateOf(initialPreview) }
     var editingItem by remember { mutableStateOf<Int?>(null) }
@@ -227,7 +230,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             }
                         }
                         row {
-                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7)) { menu = true }
+                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7), enabled = !busy) { importing = true }
                         }
                     }
                     if (docs == null) LoadingRow("正在读设定包……")
@@ -254,6 +257,20 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                         }
                     }
                 }
+            }
+        }
+        if (importing) {
+            GlassDialog(show = true, title = "导入设定包", summary = "支持 .md、.txt 和设定包 .zip；文件夹里的按文件名自动归类。导入前先给你看一遍。",
+                onDismissRequest = { importing = false }) {
+                DialogOptionList(
+                    listOf(false to "导入文件", true to "导入文件夹"),
+                    description = { folder -> if (folder) "整个文件夹里的 .md、.txt" else "一个或几个文件，也可以是 .zip" },
+                    onPick = { folder ->
+                        importing = false
+                        if (folder) pickFolder.launch(null) else pickFiles.launch(arrayOf("*/*"))
+                    },
+                )
+                TextButton(text = "取消", onClick = { importing = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         }
         if (creating) {

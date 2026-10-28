@@ -1545,7 +1545,7 @@ class WorkStore(
                 JSONArray(text).also { raw -> (0 until raw.length()).forEach { i -> requireNotNull(raw.getJSONObject(i).toChange()) { "变更登记损坏" } } }
             } else JSONArray()
             val assistSource = File(dir(w.id), ASSIST)
-            val assist = if (assistSource.isFile) component(assistSource, "AI 设置和设定集读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
+            val assist = if (assistSource.isFile) component(assistSource, "写作 AI 设置读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
             val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)

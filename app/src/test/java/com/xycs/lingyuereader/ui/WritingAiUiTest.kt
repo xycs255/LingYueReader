@@ -512,6 +512,24 @@ class WritingAiUiTest {
         waitForText("优先级 1 · 常用")
     }
 
+    /** 设定包页“导入设定包”一行：直接问导入文件还是文件夹，选了就开系统选择器。 */
+    @Test
+    fun theImportRowAsksFilesOrFolderAndOpensThePicker() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
+        waitForText("设定包还是空的")
+        compose.onNodeWithText("导入设定包").performClick()
+        waitForText("导入文件夹")
+        compose.onNodeWithText("导入文件").performClick()
+        val files = org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, files.action)
+        waitFor { compose.onAllNodesWithText("导入文件夹").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithText("导入设定包").performClick()
+        waitForText("导入文件夹")
+        compose.onNodeWithText("导入文件夹").performClick()
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE, org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity.action)
+    }
+
     @Test
     fun importReadsAZipThroughTheViewModelAndThePreviewImportsIt() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]

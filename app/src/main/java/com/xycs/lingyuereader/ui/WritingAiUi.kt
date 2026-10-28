@@ -756,7 +756,7 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
 // ---------- 作品的 AI 设置 ----------
 
 /**
- * 一部作品的 AI 设置：写作建议（默认关）、文风要求、记住的改法、设定集入口。
+ * 一部作品的 AI 设置：常用的直接列出（服务商、设定包、文风、温度、AI 腔、写作建议、记录），其余收进“高级设置”。
  */
 @Composable
 fun WorkAiScreen(vm: AppViewModel, workId: String) {
@@ -957,7 +957,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 }
             }
             if (clearing) {
-                GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定集。", onDismissRequest = { clearing = false }) {
+                GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定包。", onDismissRequest = { clearing = false }) {
                     DialogButtons(
                         onDismiss = { clearing = false },
                         onConfirm = {
@@ -1003,7 +1003,7 @@ internal fun temperatureLabel(t: Float?): String = when (t) {
 internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, onAdd: (List<BibleProposal>) -> Unit) {
     var chosen by remember { mutableStateOf(list.map { it.name }.toSet()) }
     val c = LocalGroupedColors.current
-    GlassDialog(show = true, title = "整理出 ${list.size} 个人物", summary = "勾选要加进设定集的；已有的人物，人物档案里他那一节会换成新的说明（原来的文字先存一个历史版本）。", onDismissRequest = onDismiss) {
+    GlassDialog(show = true, title = "整理出 ${list.size} 个人物", summary = "勾选要加进设定包人物档案的；已有的人物，人物档案里他那一节会换成新的说明（原来的文字先存一个历史版本）。", onDismissRequest = onDismiss) {
         Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
             list.forEach { p ->
                 val toggle = { chosen = if (p.name in chosen) chosen - p.name else chosen + p.name }
@@ -1019,7 +1019,7 @@ internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, o
                 }
             }
         }
-        DialogButtons(onDismiss = onDismiss, onConfirm = { onAdd(list.filter { it.name in chosen }) }, confirmText = "加入设定集")
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onAdd(list.filter { it.name in chosen }) }, confirmText = "加入人物档案")
     }
 }
 

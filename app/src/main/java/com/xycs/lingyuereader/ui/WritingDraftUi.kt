@@ -216,10 +216,11 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             verifiedMap = activeMap
         }
     }
-    fun startDraft(more: Boolean = false, reviewOnly: Boolean = false) {
+    /** [ask] 是这次给 AI 的要求：默认是页面上的；“按这个方向重写”刚改了方向，状态还没重组，直接传新的。 */
+    fun startDraft(more: Boolean = false, reviewOnly: Boolean = false, ask: String = instruction) {
         val action = {
-            if (reviewOnly) vm.writingAi.reviewDraft(workId, chapterId, instruction, targetLength)
-            else vm.writingAi.writeDraft(workId, chapterId, instruction, more = more, workflow = workflow,
+            if (reviewOnly) vm.writingAi.reviewDraft(workId, chapterId, ask, targetLength)
+            else vm.writingAi.writeDraft(workId, chapterId, ask, more = more, workflow = workflow,
                 targetLength = targetLength, referenceAnalysisId = referenceId)
         }
         if (task?.project == true && task?.previousLabel?.startsWith("以细纲结果承接") == true && !planContinuationAccepted) {
@@ -582,14 +583,16 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         if (showSent) sent?.let { SentDialog(it) { showSent = false } }
         if (showMethodSent) activeMap?.request?.let { SentDialog(it) { showMethodSent = false } }
         if (directionDialog) {
-            GlassDialog(show = true, title = "修改方向", summary = "写给 AI 的新要求。保存后点“重写一版”；当前候选稿不会立刻改变。",
+            GlassDialog(show = true, title = "修改方向", summary = "写给 AI 的新要求，按它重写一版；这一版留着，可以切回来。",
                 onDismissRequest = { directionDialog = false }) {
                 TextField(value = directionText, onValueChange = { directionText = it },
                     label = "比如：对白增加试探，仍遵守本章结果", modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 250.dp))
                 DialogButtons(onDismiss = { directionDialog = false }, onConfirm = {
                     instructionChoice = directionText
                     directionDialog = false
-                }, confirmText = "保存方向")
+                    // 保存后直接重写，不用再点“重写一版”；现在写不了（AI 没设置、资料缺项、范本没核对好）就只存下方向。
+                    if (canWrite) startDraft(ask = directionText) else vm.showMessage("方向存好了；现在还不能重写，先处理上面的提示")
+                }, confirmText = "按这个方向重写")
             }
         }
         if (editingDraft) {

@@ -38,7 +38,6 @@ class WritingProjectTreeUiTest {
 
     @Test
     fun chapterStillOpensEditorWhileTaskCardAndLongPressRemainReachable() {
-        val expanded = mutableStateOf(emptySet<String>())
         var openedChapter: String? = null
         var openedCard: String? = null
         var openedOutline = false
@@ -52,7 +51,6 @@ class WritingProjectTreeUiTest {
                             unsyncedIds = setOf(first.id),
                             showUnsynced = true,
                             collapsedVolumeIds = emptySet(),
-                            expandedCardIds = expanded.value,
                             reorderMode = false,
                             volumeMenuId = null,
                             chapterMenuId = null,
@@ -61,7 +59,6 @@ class WritingProjectTreeUiTest {
                                 onChapter = { openedChapter = it.id },
                                 onCard = { openedCard = it.id },
                                 onChapterMenu = { longPressed = it.id },
-                                onToggleCard = { id -> expanded.value = if (id in expanded.value) expanded.value - id else expanded.value + id },
                             ),
                         )
                     }
@@ -79,12 +76,13 @@ class WritingProjectTreeUiTest {
         assertEquals(first.id, longPressed)
         compose.onNodeWithText("未整理", substring = true).assertExists()
 
-        val cardButton = compose.onNodeWithContentDescription("展开${first.title}细纲卡")
+        // 细纲卡图标一点直接进细纲卡页，不再先展开一行。
+        val cardButton = compose.onNodeWithContentDescription("打开${first.title}细纲卡")
         val bounds = cardButton.getUnclippedBoundsInRoot()
         assertTrue(bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
         cardButton.performClick()
-        compose.onNodeWithText("事实结果 · 承接边界 · 章末去向").performClick()
         assertEquals(first.id, openedCard)
+        compose.onNodeWithText("事实结果 · 承接边界 · 章末去向").assertDoesNotExist()
         compose.onNodeWithText("新的一章").assertExists()
     }
 
@@ -102,7 +100,6 @@ class WritingProjectTreeUiTest {
                             unsyncedIds = emptySet(),
                             showUnsynced = false,
                             collapsedVolumeIds = collapsed.value,
-                            expandedCardIds = emptySet(),
                             reorderMode = reorder.value,
                             volumeMenuId = null,
                             chapterMenuId = null,
@@ -137,9 +134,9 @@ class WritingProjectTreeUiTest {
         compose.onNodeWithContentDescription("上移${second.title}").performClick()
         assertEquals(second.id to -1, move)
         // 调整模式里不显示细纲卡按钮，完成后回来。
-        compose.onNodeWithContentDescription("展开${first.title}细纲卡").assertDoesNotExist()
+        compose.onNodeWithContentDescription("打开${first.title}细纲卡").assertDoesNotExist()
         compose.onNodeWithText("完成调整").performClick()
-        compose.onNodeWithContentDescription("展开${first.title}细纲卡").assertExists()
+        compose.onNodeWithContentDescription("打开${first.title}细纲卡").assertExists()
         compose.onNodeWithContentDescription("下移${first.title}").assertDoesNotExist()
     }
 
@@ -148,7 +145,6 @@ class WritingProjectTreeUiTest {
         onChapter: (WorkChapter) -> Unit = {},
         onCard: (WorkChapter) -> Unit = {},
         onChapterMenu: (WorkChapter) -> Unit = {},
-        onToggleCard: (String) -> Unit = {},
         onToggleVolume: (String) -> Unit = {},
         onToggleReorder: () -> Unit = {},
         onMove: (WorkChapter, Int) -> Unit = { _, _ -> },
@@ -160,7 +156,6 @@ class WritingProjectTreeUiTest {
         onRenameVolume = {},
         onDeleteVolume = {},
         onOpenChapter = onChapter,
-        onToggleCard = onToggleCard,
         onOpenCard = onCard,
         onOpenChapterMenu = onChapterMenu,
         onDismissChapterMenu = {},
