@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -278,6 +279,10 @@ class WorkStore(
     private val statsFile = File(root, "stats.json")
     private val clock: () -> Long = System::currentTimeMillis
     private val processLock = processLocks.computeIfAbsent(root.canonicalPath) { Any() }
+    /** 同一目录的 WorkStore 共用：设定包每写一次加一，解析缓存据此作废（见 [packSources]）。 */
+    private val packEpoch = packEpochs.computeIfAbsent(root.canonicalPath) { AtomicLong() }
+    /** 设定包解析的结果，只记当前作品的一份。 */
+    internal val packCache = PackSourceCache()
 
     /** Keep a read/validate/write sequence atomic with other stores rooted at the same directory. */
     @Synchronized
@@ -428,6 +433,7 @@ class WorkStore(
                 })
             }
             "pack" -> {
+                packEpoch.incrementAndGet()
                 val index = File(packDir(workId), PACK_INDEX)
                 val raw = JSONArray(index.readText())
                 val docs = (0 until raw.length()).map { requireNotNull(raw.getJSONObject(it).toPackDoc()) { "设定索引损坏" } }
@@ -1194,9 +1200,35 @@ class WorkStore(
 
     private fun writePack(workId: String, docs: List<PackDoc>) {
         val d = packDir(workId).apply { mkdirs() }
+        packEpoch.incrementAndGet()
         check(DurableFiles.write(File(d, PACK_INDEX), JSONArray().apply { docs.forEach { put(it.toJson()) } }.toString().toByteArray())) { "无法保存设定包" }
         update(workId) { it }
     }
+
+    /**
+     * 设定包现在的版本：写入次数、索引和每份文档（id、标题、类别、更新时间、字数）以及文件的大小和改动时间。
+     * 只看文件信息，不读正文；别的途径（恢复备份、另一个窗口）改了文件，大小或改动时间也会变。
+     */
+    private fun packVersion(workId: String, docs: List<PackDoc>): List<Any> {
+        val index = File(packDir(workId), PACK_INDEX)
+        return listOf<Any>(packEpoch.get(), index.length(), index.lastModified()) +
+            docs.map { d -> packFile(workId, d.id).let { f -> listOf(d, f.length(), f.lastModified()) } }
+    }
+
+    /**
+     * 设定包和它解析的结果（按阶段筛的资料、细纲段落、版本差异提示……）。设定包没变就用记着的，变了整份重读重算。
+     * 先取版本再读正文：读的途中又改了，记下的版本只会比正文旧，下次一看版本不同就重算，不会拿旧正文冒充新版本。
+     */
+    fun packSources(workId: String): PackSources {
+        val docs = pack(workId)
+        val version = packVersion(workId, docs)
+        packCache.cached(workId, version)?.let { return it }
+        packCache.reads.incrementAndGet()
+        return packCache.put(PackSources(workId, version, docs.map { it to packText(workId, it.id) }))
+    }
+
+    /** 这部作品按项目包流程写（有阶段提示词、卷纲细纲或带提示词的合订本）。不编整章任务，只看设定包。 */
+    fun isProject(workId: String): Boolean = packSources(workId).project
 
     /**
      * 设定包里的文档，按优先级排好。第一次打开时，把旧版“设定集”里的条目按类别并成几份文档
@@ -2064,6 +2096,7 @@ class WorkStore(
     companion object {
         /** Multiple WorkStore instances can share one directory (including multiwindow activities). */
         private val processLocks = ConcurrentHashMap<String, Any>()
+        private val packEpochs = ConcurrentHashMap<String, AtomicLong>()
         const val DEFAULT_VOLUME = "正文"
         const val KEEP_SNAPSHOTS = 40
         private const val WORK = "work.json"

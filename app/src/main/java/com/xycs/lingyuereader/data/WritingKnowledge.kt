@@ -380,7 +380,7 @@ object ProseLengths {
 
 /** 这部作品给写作 AI 的设定包（[budget] 是知识库最多放多少字）。 */
 fun WorkStore.aiPack(workId: String, budget: Int, phase: WritingPhase? = null): AiPack =
-    PackKnowledge.build(pack(workId).map { it to packText(workId, it.id) }, budget, phase)
+    PackKnowledge.build(packSources(workId).raw, budget, phase)
 
 /** AI 查设定包和正文用的工具。[upTo] 不为空时只能读到这一章为止（防剧透：后面的章不给看）。 */
 fun WorkStore.packTools(workId: String, upTo: String? = null, phase: WritingPhase? = null, confirmedOnly: Boolean = false): PackTools {
@@ -393,7 +393,7 @@ fun WorkStore.packTools(workId: String, upTo: String? = null, phase: WritingPhas
             else -> all
         }
     }.filter { !confirmedOnly || it.status == ChapterStatus.FINAL }
-    val docs = pack(workId).map { it to packText(workId, it.id) }.let { all -> phase?.let { ProjectSources.forPhase(all, it) } ?: all }
+    val docs = packSources(workId).let { sources -> phase?.let { sources.forPhase(it) } ?: sources.raw }
     val numbers = if (confirmedOnly) allChapters.mapIndexed { i, c -> c.id to (ChapterRefs.number(c.title) ?: i + 1) }.toMap() else null
     return PackTools(docs, chapters.map { c -> c to { text(workId, c.id) } }, numbers)
 }

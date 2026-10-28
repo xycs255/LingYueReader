@@ -770,9 +770,10 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
                     prose: Boolean = false): ChapterBrief? {
     val work = get(workId) ?: return null
     val number = chapterNo(work, chapterId) ?: return null
-    val docs = pack(workId).map { it to packText(workId, it.id) }.let { all ->
+    val sources = packSources(workId)
+    val docs = sources.raw.let { all ->
         if (!prose) all
-        else ProjectSources.forPhase(all, WritingPhase.CREATE).filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null }
+        else sources.forPhase(WritingPhase.CREATE).filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null }
     }
     val entries = outlineEntries(workId)
     val planned = plannedCard(workId, chapterId, entries)
@@ -797,6 +798,11 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     }
     val body = text ?: text(workId, chapterId)
     val query = listOf(card, summaries.takeLast(2).joinToString("\n") { it.summary }, body.takeLast(1_500)).joinToString("\n")
-    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style && !prose, ledger(workId),
-        ahead = !prose)
+    val budget = limit ?: assist(workId).briefLimit
+    val skip = own.map { it.text }
+    val ledger = ledger(workId)
+    // 同样的输入（设定包同一版）只挑一次：写正文的一次流程里要拿好几次。
+    return sources.brief(listOf("brief", prose, style, body, card, number, volume, budget, summaries, query, skip, ledger)) {
+        ChapterBriefs.build(docs, body, card, number, volume, budget, summaries, query, skip, style && !prose, ledger, ahead = !prose)
+    }
 }

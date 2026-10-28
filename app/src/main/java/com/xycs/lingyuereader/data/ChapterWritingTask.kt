@@ -1,7 +1,5 @@
 package com.xycs.lingyuereader.data
 
-import java.security.MessageDigest
-
 /** One job has one stage. A chapter-writing template is not an instruction to its reviewer. */
 enum class WritingPhase { CREATE, REVIEW, REVISE, ASSIST, SYNC }
 
@@ -75,9 +73,22 @@ object ProjectSources {
     private fun name(path: String) = path.substringAfterLast('/').substringBeforeLast('.').trim()
     private fun normalized(text: String) = text.removePrefix("\uFEFF").replace(Regex("\\s|　"), "")
 
-    private fun pieces(doc: PackDoc, text: String): List<Pair<PackDoc, String>> {
+    /** 没有“来源文件”四个字，就不可能有来源行：大文档不必拆行、过正则。 */
+    private const val MARK = "来源文件"
+
+    private fun marker(line: String): String? =
+        if (!line.contains(MARK)) null else sourceMark.matchEntire(line.trim())?.groupValues?.get(1)
+
+    /** 至少两行来源行才算合订本（排序用：独立文件排在合订本前面）。 */
+    internal fun compilation(text: String): Boolean =
+        text.contains(MARK) && text.lineSequence().filter { marker(it) != null }.take(2).count() >= 2
+
+    internal fun pieces(doc: PackDoc, text: String): List<Pair<PackDoc, String>> {
+        // 绝大多数文档没有来源行：原样返回，不拆行、不跑正则（几十万字的文档拆行再逐行匹配，是真机上内存溢出的地方）。
+        if (!text.contains(MARK)) return listOf(doc to text)
         val lines = text.removePrefix("\uFEFF").lines()
-        val markers = lines.mapIndexedNotNull { i, line -> sourceMark.matchEntire(line.trim())?.let { i to it.groupValues[1] } }
+        // 只有含“来源文件”的行才过正则。
+        val markers = lines.mapIndexedNotNull { i, line -> marker(line)?.let { i to it } }
         if (markers.size < 2) return listOf(doc to text)
         // An explicit source line must be part of an actual compilation, not two prose quotations.
         if (!doc.title.contains("合订本") && markers.none { (i, _) -> i > 0 && collectionTitle.matches(lines[i - 1].trim()) }) return listOf(doc to text)
@@ -99,13 +110,19 @@ object ProjectSources {
         }
     }
 
-    fun forPhase(docs: List<Pair<PackDoc, String>>, phase: WritingPhase): List<Pair<PackDoc, String>> {
+    /** 排好序、拆开合订本：各阶段共用这一份，只拆一次。[split] 是每份文档拆开的结果（缓存里已经拆过的直接给）。 */
+    internal fun expand(docs: List<Pair<PackDoc, String>>, split: List<List<Pair<PackDoc, String>>> = docs.map { (d, t) -> pieces(d, t) }): List<Pair<PackDoc, String>> {
         // Keep independent sources before their compilation copies regardless of import order.
-        val ordered = docs.sortedWith(compareBy<Pair<PackDoc, String>>(
-            { (_, text) -> text.lineSequence().filter { sourceMark.matches(it.trim()) }.take(2).count() >= 2 },
-            { it.first.priority }, { it.first.title },
-        ))
-        val expanded = ordered.flatMap { (d, t) -> pieces(d, t) }
+        // 排序键每份只算一次：以前比较一次就把整份文本按行扫一遍。
+        val bundled = docs.map { (_, text) -> compilation(text) }
+        return docs.indices.sortedWith(compareBy<Int>({ bundled[it] }, { docs[it].first.priority }, { docs[it].first.title }))
+            .flatMap { split[it] }
+    }
+
+    fun forPhase(docs: List<Pair<PackDoc, String>>, phase: WritingPhase): List<Pair<PackDoc, String>> =
+        PackSources.of(docs)?.forPhase(phase) ?: select(expand(docs), phase)
+
+    internal fun select(expanded: List<Pair<PackDoc, String>>, phase: WritingPhase): List<Pair<PackDoc, String>> {
         val independent = expanded.filter { "::" !in it.first.id }.map { it.first.kind.name + "|" + normalized(it.first.title) }.toSet()
         val seen = HashSet<String>()
         return expanded.mapNotNull { (d, text) ->
@@ -128,7 +145,11 @@ object ProjectSources {
 
     /** Same logical independent/bundled source with different content needs a version check. */
     fun sourceWarnings(docs: List<Pair<PackDoc, String>>): List<String> =
-        docs.flatMap { (d, t) -> pieces(d, t) }.filterNot { archived.containsMatchIn(it.first.title) }
+        PackSources.of(docs)?.warnings ?: warnings(docs.flatMap { (d, t) -> pieces(d, t) })
+
+    /** [split] 是按导入顺序拆开的各份文档。 */
+    internal fun warnings(split: List<Pair<PackDoc, String>>): List<String> =
+        split.filterNot { archived.containsMatchIn(it.first.title) }
             .groupBy { it.first.kind.name + "|" + normalized(it.first.title) }.values.mapNotNull { copies ->
                 if (copies.none { "::" in it.first.id } || copies.none { "::" !in it.first.id } || copies.map { normalized(it.second) }.distinct().size < 2) null
                 else "《${copies.first().first.title}》的独立文件与合订本内嵌内容不同，本次只取独立文件，版本差异待核；不把两份事实叠加。"
@@ -136,7 +157,10 @@ object ProjectSources {
 
     /** A review must be invalidated when any active stage template or rule changes. */
     fun fingerprintSources(docs: List<Pair<PackDoc, String>>): List<Pair<PackDoc, String>> =
-        listOf(WritingPhase.CREATE, WritingPhase.REVIEW, WritingPhase.REVISE).flatMap { forPhase(docs, it) }
+        PackSources.of(docs)?.fingerprintSources ?: fingerprintOf { forPhase(docs, it) }
+
+    internal fun fingerprintOf(phase: (WritingPhase) -> List<Pair<PackDoc, String>>): List<Pair<PackDoc, String>> =
+        listOf(WritingPhase.CREATE, WritingPhase.REVIEW, WritingPhase.REVISE).flatMap(phase)
             .distinctBy { it.first.id to it.second }
 
     fun hasProject(docs: List<Pair<PackDoc, String>>): Boolean =
@@ -144,24 +168,34 @@ object ProjectSources {
             ((d.title.contains("合订本") || t.contains("来源文件：")) && (t.contains("正文创作提示词") || t.contains("章节审读提示词"))) }
 }
 
-/** Compile from current data every time; never persist a candidate as accepted story state. */
-fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String = "", lengthOverride: String = ""): ChapterWritingTask? {
+/**
+ * Compile from current data every time; never persist a candidate as accepted story state.
+ * 设定包解析的结果按设定包版本记着（[packSources]），设定包没变就不重读、不重拆；作品、细纲卡、前文照旧每次现读。
+ * [checkpoint] 在几段重活之间调一下：调用方不要这次结果了（协程取消），就从这里抛出去，不白算到底。
+ */
+fun WorkStore.writingTask(
+    workId: String, chapterId: String, instruction: String = "", lengthOverride: String = "",
+    checkpoint: () -> Unit = {},
+): ChapterWritingTask? {
     val work = get(workId) ?: return null
     val chapter = work.chapter(chapterId) ?: return null
+    packCache.compiles.incrementAndGet()
     val number = chapterNo(work, chapterId)
     val catalogVolume = work.volumeNumber(chapterId)
-    val rawDocs = pack(workId).map { it to packText(workId, it.id) }
-    val docs = ProjectSources.forPhase(rawDocs, WritingPhase.CREATE)
-    val entries = outlineEntries(workId)
+    val material = packSources(workId)
+    checkpoint()
+    val docs = material.forPhase(WritingPhase.CREATE)
+    val entries = material.outlineEntries
+    checkpoint()
     val found = chapterOutlineEntries(work, chapterId, entries)
     val volume = found.firstNotNullOfOrNull { it.volume } ?: catalogVolume
     val planned = plannedCard(workId, chapterId, entries)
     val card = planned.card
     val writingAssist = assist(workId)
-    val project = ProjectSources.hasProject(rawDocs)
+    val project = material.project
     val blocking = mutableListOf<String>()
     val warnings = mutableListOf<String>()
-    warnings += ProjectSources.sourceWarnings(rawDocs)
+    warnings += material.warnings
     if (volume != catalogVolume) warnings += "作品目录与细纲的卷次不同，本次按目标细纲定位第 $volume 卷；请核对卷章归属。"
     if (project && card.facts.isBlank()) blocking += "本章尚无明确的事实与结果，请补齐细纲卡或导入现行目标章细纲。"
     val manual = this.card(workId, chapterId).let { !it.outlineEmpty && it.auto == 0 }
@@ -198,12 +232,19 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
         if (summary.isBlank()) null else chapterNo(work, c.id)?.let { ChapterSummary(it, c.title, summary) }
     }
     val currentLedger = ledger(workId)
-    val context = ChapterBriefs.build(
-        docs.filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null },
-        text = "", card = listOf(card.facts, card.boundary, card.pov, card.hook, card.threads).joinToString("\n"),
-        chapter = number ?: index + 1, volume = volume, limit = writingAssist.briefLimit,
-        summaries = confirmedSummaries, style = true, ledger = currentLedger,
-    ).render().orEmpty()
+    checkpoint()
+    val briefCard = listOf(card.facts, card.boundary, card.pov, card.hook, card.threads).joinToString("\n")
+    val briefChapter = number ?: index + 1
+    // 挑本章资料要把设定包切块、算二元组，是最费内存的一步：同样的输入（设定包同一版）只挑一次。
+    val context = material.brief(listOf("task", briefCard, briefChapter, volume, writingAssist.briefLimit, confirmedSummaries, currentLedger)) {
+        ChapterBriefs.build(
+            docs.filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null },
+            text = "", card = briefCard,
+            chapter = briefChapter, volume = volume, limit = writingAssist.briefLimit,
+            summaries = confirmedSummaries, style = true, ledger = currentLedger,
+        )
+    }.render().orEmpty()
+    checkpoint()
     val sources = (found.map { it.doc } + docs.filter { it.first.kind != PackKind.REFERENCE && it.first.kind != PackKind.TECHNIQUE }.map { it.first.title }).distinct()
     val (sampleSources, sampleFallback) = StyleSamples.sources(work.chapters, index, writingAssist.sampleFallback)
     val sampleSignature = StyleSamples.signature(sampleSources, sampleFallback, writingAssist.sampleOptions)
@@ -214,9 +255,10 @@ fun WorkStore.writingTask(workId: String, chapterId: String, instruction: String
             writingAssist.sampleLimit.toString(), writingAssist.sampleFallback.toString(),
             writingAssist.sampleSkip.sorted().toString(), writingAssist.sampleShift.toSortedMap().toString(),
         ) +
-        work.chapters.take(index).filter { it.status == ChapterStatus.FINAL }.flatMap { c -> listOf(c.id, c.title, c.words.toString(), c.updatedAt.toString(), this.card(workId, c.id).summary) } +
-        ProjectSources.fingerprintSources(rawDocs).flatMap { listOf(it.first.title, it.first.kind.name, it.second) }
-    val fingerprint = MessageDigest.getInstance("SHA-256").digest(state.joinToString("\u0000").toByteArray()).joinToString("") { "%02x".format(it) }
+        work.chapters.take(index).filter { it.status == ChapterStatus.FINAL }.flatMap { c -> listOf(c.id, c.title, c.words.toString(), c.updatedAt.toString(), this.card(workId, c.id).summary) }
+    // 和以前把整串拼起来再算的指纹一模一样，只是边读边算：设定包的正文不再拼成一整串、转成一整块字节。
+    val fingerprint = sha256Joined(state.asSequence() +
+        material.fingerprintSources.asSequence().flatMap { sequenceOf(it.first.title, it.first.kind.name, it.second) })
     return ChapterWritingTask(chapter.title, number, volume, instruction.trim(), length, previous, previousLabel, card, sources, warnings, blocking, project, fingerprint, context)
 }
 

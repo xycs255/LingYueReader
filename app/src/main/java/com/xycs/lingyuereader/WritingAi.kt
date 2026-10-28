@@ -85,10 +85,17 @@ import com.xycs.lingyuereader.data.writingTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -291,6 +298,12 @@ internal class StreamTick(private val every: Long = WritingAi.STREAM_REFRESH_MS,
 }
 
 /**
+ * 编本章任务时出的 Error（内存不够、栈溢出）换成的普通异常：各处只接 Exception 的地方也接得住，
+ * 界面上显示 [message]，不闪退。原来的 Error 在 [cause] 里，已经记进闪退记录。
+ */
+class TaskCompileError(message: String, cause: Throwable) : IllegalStateException(message, cause)
+
+/**
  * 写作的 AI：选中文字改写、灵感、读者点评、写作建议、整理设定集。
  * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
  */
@@ -419,14 +432,14 @@ class WritingAi(
                 val chapter = work.chapter(chapterId)
                 val title = chapter?.title.orEmpty()
                 val assist = assistOf(workId)
-                val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId) }
+                val taskSnapshot = writingTask(workId, chapterId)
                 val previous = withContext(Dispatchers.IO) {
                     val chapters = work.chapters
                     val i = chapters.indexOfFirst { it.id == chapterId }
                     if (taskSnapshot?.project == true) taskSnapshot.previous else chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
                 // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感都带上。
-                val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true) }
+                val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true, task = taskSnapshot) }
                 // 改稿类（挑错除外）带上定稿章里挑的文风范例。
                 val samples = if (task is WriteAiTask.Edit && WritePrompts.usesSamples(task.action)) samplesFor(workId, chapterId) else null
                 val (system, prompt) = when (task) {
@@ -829,7 +842,7 @@ class WritingAi(
         val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
         val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
         if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
-        val taskSnapshot = withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, d.instruction) }
+        val taskSnapshot = writingTask(workId, chapterId, d.instruction)
         val reference = d.referenceAnalysisId?.let { withContext(Dispatchers.IO) { ReferenceWriting.load(store, workId, chapterId, it) } }
         if (reference != null && run == inlineRun) _inline.update { w -> w?.copy(referenceFingerprint = reference.excerpt.fingerprint,
             referenceChapterLength = reference.excerpt.chapterLength) }
@@ -1088,10 +1101,14 @@ class WritingAi(
     private fun characterNames(workId: String): List<String> =
         characterDocs(workId).flatMap { WritePrompts.characterNames(store.packText(workId, it.id)) }.distinct()
 
-    /** 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。[upTo] 为真时章目录只列到这一章（查阅工具也只能读到这一章）。 */
-    private fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false, upTo: Boolean = false): String? {
+    /**
+     * 写这一章要带给 AI 的资料：本章资料（按章挑的设定）加细纲卡和上一章的钩子。[upTo] 为真时章目录只列到这一章（查阅工具也只能读到这一章）。
+     * [task] 是调用方刚编好的本章任务（不带要求、篇幅的那份）：有就直接用，不再编一次。
+     */
+    private suspend fun chapterContext(workId: String, chapterId: String, text: String, style: Boolean = false, upTo: Boolean = false,
+                                       task: ChapterWritingTask? = null): String? {
         val work = store.get(workId) ?: return null
-        val project = store.writingTask(workId, chapterId)
+        val project = task ?: writingTask(workId, chapterId)
         if (project?.project == true) return project.render()
         val chapters = work.chapters
         val i = chapters.indexOfFirst { it.id == chapterId }
@@ -1277,7 +1294,7 @@ class WritingAi(
 
     /** 写正文时能用工具查的资料（文档名）。 */
     private suspend fun proseCatalog(workId: String): List<String> = withContext(Dispatchers.IO) {
-        ProsePack.catalog(store.pack(workId).map { it to store.packText(workId, it.id) })
+        ProsePack.catalog(store.packSources(workId).raw)
     }
 
     // ---------- 写正文共用的资料 ----------
@@ -1319,7 +1336,7 @@ class WritingAi(
             val material = store.brief(workId, chapterId, text, limit, confirmedOnly = project, prose = true)?.render(prose = true).orEmpty()
             // 作者的写作规范、称谓与语气、检查规则：只放这一份，去掉整章字数（篇幅只在任务卡里说）。
             val norms = ProsePack.tidy(ProseLengths.strip(writingRules(workId, chapterId, text)))
-            val author = ProsePack.instructions(store.pack(workId).map { it to store.packText(workId, it.id) }, phase)
+            val author = ProsePack.instructions(store.packSources(workId).raw, phase)
             val stable = WritePrompts.proseSystem(work.title, assist, author, norms, "")
             val system = WritePrompts.proseSystem(work.title, assist, author, norms, material) +
                 (if (reference) "\n\n" + ReferenceWriting.SYSTEM_RULE else "")
@@ -1492,10 +1509,10 @@ class WritingAi(
                         ReviewGate.FACT -> {
                             if (!ready) GateResult(gate, error = "没有设置 AI，跳过", at = System.currentTimeMillis())
                             else {
+                                val taskSnapshot = writingTask(workId, chapterId)
                                 val (pack, previous, project) = withContext(Dispatchers.IO) {
                                     val i = work.chapters.indexOfFirst { it.id == chapterId }
-                                    val taskSnapshot = store.writingTask(workId, chapterId)
-                                    Triple(chapterContext(workId, chapterId, text),
+                                    Triple(chapterContext(workId, chapterId, text, task = taskSnapshot),
                                         if (taskSnapshot?.project == true) taskSnapshot.previous.takeLast(1_500)
                                         else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty(),
                                         taskSnapshot?.project == true)
@@ -1594,11 +1611,11 @@ class WritingAi(
      */
     suspend fun splitBeats(workId: String, chapterId: String, card: ChapterCard): String {
         if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        val task = writingTask(workId, chapterId)
         val (system, prompt) = withContext(Dispatchers.IO) {
             val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
             val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
             val text = store.text(workId, chapterId)
-            val task = store.writingTask(workId, chapterId)
             val length = task?.takeIf { it.project }?.targetLength ?: lengthOf(workId)
             val pack = if (canUsePack) store.chapterHints(workId, chapterId, text) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render()
             WritePrompts.system(work.title, assistOf(workId), pack) to WritePrompts.beatsSplit(chapter.title, card, length, text)
@@ -1785,7 +1802,9 @@ class WritingAi(
                 val saved = runCatching { store.draftContent(workId, chapterId) }
                     .getOrElse { DraftContent("", provenanceError = "草稿读取失败：${it.message ?: "来源不明"}") }
                 val assist = store.assist(workId)
-                val required = saved.text.isNotBlank() && (chapterId in assist.draftWorkflows || store.writingTask(workId, chapterId)?.project == true)
+                // 只要知道是不是项目包：看设定包就够了，不为这个编一整份任务（打开草稿页时本来就要编一次）。
+                val required = saved.text.isNotBlank() && (chapterId in assist.draftWorkflows ||
+                    store.get(workId)?.chapter(chapterId) != null && store.isProject(workId))
                 Triple(saved, required, assist.draftIntents[chapterId])
             }
             _drafts.update { m -> if (key in m) m else m + (key to DraftState(workId, chapterId, saved.text,
@@ -2136,9 +2155,59 @@ class WritingAi(
         }
     }
 
-    /** Build the same explicit task that the next workflow request will use. Never calls an AI. */
-    suspend fun writingTask(workId: String, chapterId: String, instruction: String = "", targetLength: String = ""): ChapterWritingTask? =
-        withContext(Dispatchers.IO) { store.writingTask(workId, chapterId, instruction, targetLength) }
+    /** 正在编的本章任务，按参数记：参数一样的一起等这一次，没人等了就停掉。 */
+    private class TaskCompile(val job: Deferred<ChapterWritingTask?>) { var waiters = 0 }
+    private val taskCompiles = HashMap<List<String>, TaskCompile>()
+
+    /**
+     * 编本章任务的协程：同一时间只编一份（编一次要把设定包过一遍，几份叠在一起就是真机上内存溢出的原因），
+     * 一份出错不连累别的。
+     */
+    private val compileScope = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.IO.limitedParallelism(1) +
+        CoroutineExceptionHandler { _, e -> CrashLog.caught(e) })
+
+    /**
+     * Build the same explicit task that the next workflow request will use. Never calls an AI.
+     *
+     * 单飞：参数相同、正在编的，等那一次的结果；等的人都走了（比如草稿页改了要求，旧的那次协程被取消），这次编译就停下。
+     * 编的时候内存不够、栈溢出这类 Error 换成 [TaskCompileError]（普通异常，带一句作者能照着做的话），各处照常接住，不闪退。
+     */
+    suspend fun writingTask(workId: String, chapterId: String, instruction: String = "", targetLength: String = ""): ChapterWritingTask? {
+        val key = listOf(workId, chapterId, instruction, targetLength)
+        val compile = synchronized(taskCompiles) {
+            taskCompiles.getOrPut(key) {
+                TaskCompile(compileScope.async(start = CoroutineStart.LAZY) { compileTask(workId, chapterId, instruction, targetLength) })
+            }.also { it.waiters++ }
+        }
+        compile.job.start()
+        try {
+            return compile.job.await()
+        } finally {
+            synchronized(taskCompiles) {
+                if (--compile.waiters == 0) {
+                    if (taskCompiles[key] === compile) taskCompiles.remove(key)
+                    compile.job.cancel()
+                }
+            }
+        }
+    }
+
+    /** 真正编本章任务的那一步（参数：作品、章、要求、篇幅、检查点）。测试换成数次数的、会抛内存不够的。 */
+    internal var compiler: (String, String, String, String, () -> Unit) -> ChapterWritingTask? =
+        { workId, chapterId, instruction, targetLength, checkpoint -> store.writingTask(workId, chapterId, instruction, targetLength, checkpoint) }
+
+    private suspend fun compileTask(workId: String, chapterId: String, instruction: String, targetLength: String): ChapterWritingTask? {
+        val job = currentCoroutineContext().job
+        return try {
+            compiler(workId, chapterId, instruction, targetLength) { job.ensureActive() }
+        } catch (e: OutOfMemoryError) {
+            CrashLog.caught(e)
+            throw TaskCompileError(TASK_TOO_LARGE, e)
+        } catch (e: Error) {
+            CrashLog.caught(e)
+            throw TaskCompileError("本章任务没编成（${e.javaClass.simpleName}），详情记在“我的 → 闪退记录”里", e)
+        }
+    }
 
     /** Estimate the actual first chapter-draft request locally; no model request is sent. */
     suspend fun previewDraftRequest(
@@ -2148,9 +2217,11 @@ class WritingAi(
         targetLength: String,
         workflow: Boolean,
         referenceAnalysisId: String? = null,
+        /** 草稿页已经按同样的要求、篇幅编好的任务：有就直接用，不再编一次。 */
+        compiled: ChapterWritingTask? = null,
     ): AiRequestBudgetPreview? {
         if (!ready || localModel) return null
-        val task = writingTask(workId, chapterId, instruction, targetLength) ?: return null
+        val task = compiled ?: writingTask(workId, chapterId, instruction, targetLength) ?: return null
         val work = withContext(Dispatchers.IO) { store.get(workId) } ?: return null
         val chapter = work.chapter(chapterId) ?: return null
         val assist = assistOf(workId)
@@ -3197,6 +3268,9 @@ class WritingAi(
 
         /** 修订稿已写盘、复审没走完时给作者看的状态。 */
         const val REVISION_SAVED = "修订稿已保存，复审没完成"
+
+        /** 编本章任务时内存不够：告诉作者能做什么，不只说出错了。 */
+        const val TASK_TOO_LARGE = "资料太大，内存不够，本章任务没编成：先把设定包里用不到的大文档（旧版、重复的合订本）删掉或拆小，再试一次"
 
         /** 写作建议今天发了几次存在偏好里的键（后面接作品id）。 */
         private const val SUGGEST_COUNT_KEY = "suggest_count."
