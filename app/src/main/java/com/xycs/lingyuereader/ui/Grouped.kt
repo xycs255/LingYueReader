@@ -615,10 +615,14 @@ internal fun CheckboxRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 固定勾上、不能取消的（比如收尾里的“定稿”）：勾选框照常用主题色画，不用禁用时的浅色，点了也不变；读屏照旧是“不可用”。
+        val fixed = !enabled && checked && !dimChecked
         // 勾选框只是样子：点按和读屏都交给整行。
-        Box(Modifier.clearAndSetSemantics {}) { Checkbox(state = ToggleableState(checked), onClick = { onChange(!checked) }, enabled = enabled) }
+        Box(Modifier.clearAndSetSemantics {}) {
+            Checkbox(state = ToggleableState(checked), onClick = { if (enabled) onChange(!checked) }, enabled = enabled || fixed)
+        }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = if ((checked && dimChecked) || !enabled) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+            Text(title, color = if ((checked && dimChecked) || (!enabled && !fixed)) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp)
         }
