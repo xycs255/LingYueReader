@@ -2903,9 +2903,10 @@ class WritingAi(
         }
         // 一段都没整理成：和整章没整理成一样，报错。
         failed?.let { (_, e) -> if (answered == 0) throw e }
-        val merged = PackSync.merge(found)
+        val merged = withContext(Dispatchers.Default) { PackSync.merge(found) }
         val (docs, entries) = withContext(Dispatchers.IO) { store.pack(workId).map { it to store.packText(workId, it.id) } to store.ledger(workId) }
-        val planned = PackSync.plan(merged, docs, entries)
+        // 查重要和账本几千条比：不放在主线程上。
+        val planned = withContext(Dispatchers.Default) { PackSync.plan(merged, docs, entries) }
         return base.copy(
             items = planned, dropped = dropped, known = merged.size - planned.size, parts = parts.size, noTools = noTools, summary = summaryText,
             error = failed?.let { (i, e) -> "第 $i 段（共 ${parts.size} 段）没整理成：${e.message ?: "请求失败"}；这一章先不记为已整理" },
