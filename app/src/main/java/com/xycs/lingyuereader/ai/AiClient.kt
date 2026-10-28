@@ -31,6 +31,12 @@ open class AiException(message: String) : Exception(message)
 class AiToolsUnsupportedException(message: String) : AiException(message)
 
 /**
+ * 请求带了 temperature，服务商在开始回答之前（400、422）明确拒绝了它：推理模型这类只认默认值、或者不认这个参数。
+ * 只有这一种报错会去掉 temperature 重发一次；别的 4xx 照原样抛出。
+ */
+class AiTemperatureUnsupportedException(message: String) : AiException(message)
+
+/**
  * 两种接口的请求和回包格式。只管拼字符串、解析字符串，不联网，方便测试。
  * - OpenAI 兼容：POST {地址}/chat/completions，Authorization: Bearer 密钥，流式回包每行 `data: {choices:[{delta:{content}}]}`，以 `data: [DONE]` 结束；
  * - Anthropic：POST {地址}/v1/messages，x-api-key 密钥，流式回包里 `content_block_delta` 的 `text_delta` 是新文字。
@@ -96,14 +102,19 @@ object AiWire {
         runCatching { java.net.URI(c.baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }
             .getOrDefault(false)
 
+    /**
+     * [temperature] 是作品设的“写正文的温度”（空是服务商默认，不传）。只在 OpenAI 兼容协议上传：
+     * 新的 Claude 模型对这个参数有限制，本机模型有自己的采样设置。
+     */
     fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true,
-             maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false): String {
+             maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false, temperature: Float? = null): String {
         val list = JSONArray()
         val o = JSONObject().put("model", c.model.trim()).put("stream", stream)
         when (c.protocol) {
             AiProtocol.OPENAI -> {
                 if (stream && streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
                 if (maxTokens != null) o.put("max_tokens", maxTokens)
+                temperature(o, c, temperature)
                 if (disableOfficialDeepSeekThinking && officialDeepSeek(c) &&
                     c.model.trim().lowercase() in setOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH)) {
                     o.put("thinking", JSONObject().put("type", "disabled"))
@@ -122,6 +133,20 @@ object AiWire {
         }
         return o.put("messages", list).toString()
     }
+
+    /** OpenAI 兼容的请求体里写上温度（别的协议不写）；按十进制写，1.3 不写成 1.2999999523。 */
+    internal fun temperature(o: JSONObject, c: AiConfig, temperature: Float?) {
+        if (c.protocol == AiProtocol.OPENAI && temperature != null && temperature.isFinite()) o.put("temperature", temperature.toString().toDouble())
+    }
+
+    /**
+     * 服务商不接受 temperature 的报错：400 或 422，回包里说到 temperature（“Unsupported parameter: 'temperature'”
+     * “temperature does not support 1.5 with this model”这类）。只认这两种状态码，别的参数问题、别的状态码都不算。
+     */
+    fun temperatureRejected(code: Int, body: String): Boolean =
+        (code == 400 || code == 422) && TEMPERATURE_WORD.containsMatchIn(body)
+
+    private val TEMPERATURE_WORD = Regex("""(?i)\btemperature\b|温度""")
 
     /** 流里的一条事件带来的东西；[usage] 是这条里带的用量（多半在最后一块）。 */
     data class Delta(val text: String = "", val done: Boolean = false, val terminal: Boolean = false,
@@ -316,8 +341,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
      * 回答到了长度上限被截断、拒答或被过滤、流没有正常结束时：[whole] 为真（整稿、要完整 JSON 的整理、翻译）就报错，
      * 否则截断和拒答在末尾加一句说明，断流照常返回。
      */
-    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
-        streamWithOptions(config, system, messages, whole, onText)
+    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false,
+                       temperature: Float? = null, onText: (String) -> Unit = {}): String =
+        streamWithOptions(config, system, messages, whole, onText, temperature = temperature)
 
     /** Connection checks are real, billable requests: bound their output and disable official V4 thinking. */
     internal suspend fun testConnection(config: AiConfig): String = streamWithOptions(
@@ -333,6 +359,23 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         onText: (String) -> Unit = {},
         maxTokens: Int? = null,
         disableOfficialDeepSeekThinking: Boolean = false,
+        temperature: Float? = null,
+    ): String = try {
+        streamOnce(config, system, messages, whole, onText, maxTokens, disableOfficialDeepSeekThinking, temperature)
+    } catch (e: AiTemperatureUnsupportedException) {
+        // 服务商不认温度（推理模型等）：回答还没开始，去掉温度重发一次，按服务商默认写。
+        streamOnce(config, system, messages, whole, onText, maxTokens, disableOfficialDeepSeekThinking, null)
+    }
+
+    private suspend fun streamOnce(
+        config: AiConfig,
+        system: String,
+        messages: List<AiMessage>,
+        whole: Boolean,
+        onText: (String) -> Unit,
+        maxTokens: Int?,
+        disableOfficialDeepSeekThinking: Boolean,
+        temperature: Float?,
     ): String =
         if (config.onDevice) {
             val llm = device ?: throw AiException("这台手机用不了本机模型（要 64 位的手机）")
@@ -361,11 +404,14 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 conn.doOutput = true
                 AiWire.headers(config).forEach { (k, v) -> conn.setRequestProperty(k, v) }
                 conn.outputStream.use { it.write(AiWire.body(config, system, messages,
-                    maxTokens = maxTokens, disableOfficialDeepSeekThinking = disableOfficialDeepSeekThinking).toByteArray(Charsets.UTF_8)) }
+                    maxTokens = maxTokens, disableOfficialDeepSeekThinking = disableOfficialDeepSeekThinking,
+                    temperature = temperature).toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
                 redirected(conn, code)?.let { throw AiException(it) }
                 if (code !in 200..299) {
                     val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                    if (sentTemperature(config, temperature) && AiWire.temperatureRejected(code, err))
+                        throw AiTemperatureUnsupportedException(AiWire.error(code, err))
                     throw AiException(AiWire.error(code, err))
                 }
                 val type = conn.contentType.orEmpty()
@@ -456,22 +502,31 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         /** 模型不支持工具、这次去掉工具重发了：调用方据此提示“没能查设定包”。 */
         onToolsDropped: () -> Unit = {},
         onLookup: (AiToolCall) -> Unit = {},
+        /** 写正文的温度（空是服务商默认）：见 [AiWire.body]。服务商不认时去掉重发一次，之后几轮都不带。 */
+        temperature: Float? = null,
         onText: (String) -> Unit = {},
     ): String {
         if (requireTools && tools.isEmpty()) throw AiException("本次任务需要设定包查阅工具，但没有可用工具")
         if (config.onDevice || config.protocol == AiProtocol.DEVICE) {
             if (requireTools) throw AiException("本机模型不支持设定包查阅工具，无法完成本次任务")
-            return stream(config, system, listOf(AiMessage("user", prompt)), whole, onText)
+            return stream(config, system, listOf(AiMessage("user", prompt)), whole, temperature, onText)
         }
         var useTools = tools
+        var temp = temperature
         retry@ while (true) {
             val turns = JSONArray().put(AiToolWire.user(config, prompt))
             var round = 0
             try {
                 while (true) {
                     val allow = useTools.isNotEmpty() && round < maxRounds
-                    val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra)
-                    val turn = post(config, body, whole, onText)
+                    fun body() = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra, temp)
+                    val turn = try {
+                        post(config, body(), whole, onText, sentTemperature(config, temp))
+                    } catch (e: AiTemperatureUnsupportedException) {
+                        // 回答还没开始：去掉温度，这一轮重发一次。
+                        temp = null
+                        post(config, body(), whole, onText, false)
+                    }
                     if (turn.truncated && turn.calls.isNotEmpty()) {
                         throw AiException("模型的工具调用被截断，本次没有执行，请缩短材料后重试")
                     }
@@ -505,7 +560,13 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     }
 
     /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。[whole] 为真时流必须正常结束。 */
-    private suspend fun post(config: AiConfig, body: String, whole: Boolean, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
+    /** 这次请求体里真的写了温度（只有 OpenAI 兼容协议写）。 */
+    private fun sentTemperature(config: AiConfig, temperature: Float?): Boolean =
+        temperature != null && config.protocol == AiProtocol.OPENAI && !config.onDevice
+
+    /** [temperature] 为真是请求体里带了温度：只有这时服务商说不认温度才算 [AiTemperatureUnsupportedException]。 */
+    private suspend fun post(config: AiConfig, body: String, whole: Boolean, onText: (String) -> Unit,
+                             temperature: Boolean = false): AiToolWire.Turn = withContext(Dispatchers.IO) {
         val collector = AiToolWire.Collector(config.protocol, AiWire.officialDeepSeek(config), onText)
         var reported = false
         val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
@@ -530,6 +591,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                 // 还没开始回答就被拒：只有明确说不支持工具的 4xx 才算，交给 converse 去掉工具重发。
                 if (code in 400..499 && AiToolWire.unsupported(err)) throw AiToolsUnsupportedException(AiWire.error(code, err))
+                if (temperature && AiWire.temperatureRejected(code, err)) throw AiTemperatureUnsupportedException(AiWire.error(code, err))
                 throw AiException(AiWire.error(code, err))
             }
             val type = conn.contentType.orEmpty()

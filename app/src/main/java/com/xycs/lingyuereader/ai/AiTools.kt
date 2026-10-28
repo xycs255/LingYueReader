@@ -34,6 +34,8 @@ object AiToolWire {
         maxTokens: Int? = null,
         /** 第二处缓存的位置（文风范例这类紧跟在设定包后面、也很少变的部分的末尾）；0 是没有。 */
         cacheExtra: Int = 0,
+        /** 写正文的温度：只在 OpenAI 兼容协议上写（见 [AiWire.body]），空是服务商默认。 */
+        temperature: Float? = null,
     ): String {
         val o = JSONObject().put("model", c.model.trim()).put("stream", true)
         when (c.protocol) {
@@ -52,6 +54,7 @@ object AiToolWire {
                     if (!allowTools) o.put("tool_choice", "none")
                 }
                 if (maxTokens != null) o.put("max_tokens", maxTokens)
+                AiWire.temperature(o, c, temperature)
             }
             AiProtocol.ANTHROPIC -> {
                 o.put("max_tokens", maxTokens ?: AiWire.MAX_TOKENS)
