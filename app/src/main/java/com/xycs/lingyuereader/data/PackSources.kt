@@ -36,6 +36,9 @@ class PackSources internal constructor(
     val fingerprintSources: List<Pair<PackDoc, String>> by lazy { ProjectSources.fingerprintOf(::forPhase) }
     val outlineEntries: List<OutlineEntry> by lazy { outlineEntriesOf(workId, forPhase(WritingPhase.CREATE)) }
 
+    /** 挑本章资料用的切块、二元组、人物表：跟着这一版设定包走，每次挑资料不再整包重算。 */
+    val prep = BriefPrep()
+
     /** 挑好的本章资料：同样的参数（[key] 里是挑资料用到的全部输入）只挑一次。最多记几份，旧的丢掉。 */
     private val briefs = object : LinkedHashMap<List<Any?>, ChapterBrief>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Any?>, ChapterBrief>?) = size > BRIEFS

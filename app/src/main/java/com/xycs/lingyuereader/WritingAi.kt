@@ -59,6 +59,7 @@ import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.WriteRecord
 import com.xycs.lingyuereader.data.brief
+import com.xycs.lingyuereader.data.briefPresent
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.PackSync
 import com.xycs.lingyuereader.data.SyncItem
@@ -1847,7 +1848,8 @@ class WritingAi(
     private fun styleRules(workId: String, chapterId: String, text: String): String {
         val docs = store.pack(workId).filter { it.kind == PackKind.STYLE || it.kind == PackKind.VOICE }.map { it to store.packText(workId, it.id) }
         if (docs.none { it.second.isNotBlank() }) return ""
-        val present = store.brief(workId, chapterId, text)?.present.orEmpty()
+        // 只要出场人物：不再为它另挑一整份本章资料（人物表和写正文那份资料共用设定包这一版的缓存）。
+        val present = store.briefPresent(workId, chapterId, text)
         return ChapterBriefs.styleFor(docs, present, if (localModel) LOCAL_STYLE_LIMIT else ChapterBriefs.STYLE_LIMIT)
     }
 

@@ -256,7 +256,7 @@ fun WorkStore.writingTask(
             docs.filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null },
             text = "", card = briefCard,
             chapter = briefChapter, volume = volume, limit = writingAssist.briefLimit,
-            summaries = confirmedSummaries, style = true, ledger = currentLedger,
+            summaries = confirmedSummaries, style = true, ledger = currentLedger, prep = material.prep,
         )
     }.render().orEmpty()
     checkpoint()
