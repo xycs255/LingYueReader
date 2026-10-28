@@ -22,11 +22,15 @@ data class SampleChapter(val id: String, val title: String, val text: String)
 /**
  * 挑段的设置（作品的 AI 设置里存着）：[limit] 总字数上限（0 是不带），[skip] 是作者点了“不用这段”的键，
  * [shift] 是各类点了几次“换一段”（按 [SampleKind] 的名字）。
+ * 下面两项是这一次写的时候才有的：[avoid] 是这次要写的场面（本章细纲、节拍），和它高度重合的段不挑，免得模型照着抄；
+ * [shown] 是请求里已经带了的正文（上一章结尾），里面的段不再当范例。
  */
 data class SampleOptions(
     val limit: Int = StyleSamples.DEFAULT_LIMIT,
     val skip: Set<String> = emptySet(),
     val shift: Map<String, Int> = emptyMap(),
+    val avoid: String = "",
+    val shown: String = "",
 )
 
 /** 挑段的结果：[fallback] 为真表示没有定稿章、退回用了字数最多的几章。 */
@@ -42,13 +46,24 @@ data class SamplePick(val samples: List<StyleSample>, val fallback: Boolean = fa
  *   没有定稿章时（作者开着“退回”）用之前字数最多的 [FALLBACK_CHAPTERS] 章，都没有就不带；
  * - 每章按段落切出 200–500 字的片段（相邻几段合成一片，一段太长在句末截断），用简单的特征给片段打分：
  *   引号里的字占比（对白）、短句比例和动作字密度、感叹号破折号（动作）、长句和少引号（叙述描写）；
- * - 三类轮流挑分最高的，不重叠，挑到总字数上限放不下为止（800 字时一类一段，1500 字时一类一到两段，3000 字时更多）；
+ * - 对白戏、动作冲突戏优先：按对白、动作、叙述的次序轮流挑分最高的，叙述描写至多一段，挑到总字数上限放不下为止；
+ * - 不挑章节开头那几段，不挑以天气、景物起笔的段（模型最爱照着它起笔，开头就写雾），
+ *   不挑和这次要写的场面高度重合的段（[SampleOptions.avoid]），不挑请求里已经带了的段（[SampleOptions.shown]）；
  * - 结果只由章节内容和设置决定：同样的内容挑出同样的片段，提示词前缀稳定，服务商能缓存。
  */
 object StyleSamples {
-    /** 作品设置里可选的总字数上限：关、800、1500、3000。 */
-    val LIMITS = listOf(0, 800, 1500, 3000)
-    const val DEFAULT_LIMIT = 1_500
+    /** 作品设置里可选的总字数上限：关、800、1500、2500、3000、5000。 */
+    val LIMITS = listOf(0, 800, 1500, 2500, 3000, 5000)
+    const val DEFAULT_LIMIT = 2_500
+
+    /** 以前的默认值：存着它、又没另存新字段的作品当作没改过（见 WorkAssist 的读取）。 */
+    const val OLD_DEFAULT_LIMIT = 1_500
+
+    /** 章节开头这么多段不挑：开头多是铺垫和景物，拿来当范例，模型就照着它起笔。 */
+    const val OPENING_PARAGRAPHS = 3
+
+    /** 和这次要写的场面共有这么多个少见的二元组（人名这类到处都有的不算），就算高度重合。 */
+    const val OVERLAP = 8
     /** 一段最少、最多多少字。 */
     const val MIN = 200
     const val MAX = 500
@@ -58,7 +73,7 @@ object StyleSamples {
     const val MAX_SOURCES = 30
 
     /** 文风范例在提示词里的开头一句（测试、找位置用）。 */
-    const val HEADER = "文风范例（作者定稿章节里的几段。只学写法——句式、节奏、用词、对白方式——不要照抄内容，不要延续这些段落里的情节）："
+    const val HEADER = "【文风范例】下面是作者自己写的几段。照这个语感写：句子节奏、对话方式、叙述的口气。不要照抄内容。"
 
     /**
      * 挑哪几章：[chapters] 是全书按目录顺序的章，[before] 是当前章的位置（只用它之前的；为空时全书都算，设置页预览用）。
@@ -83,8 +98,12 @@ object StyleSamples {
         if (options.limit < MIN) return emptyList()
         // 一段最长多少：总量小时每段短些，三类都能放下。
         val longest = (options.limit / SampleKind.entries.size).coerceIn(MIN, MAX)
-        val pieces = chapters.flatMapIndexed { ci, c -> pieces(ci, c.text, longest) }
-        val ranked = SampleKind.entries.associateWith { kind ->
+        val all = chapters.flatMapIndexed { ci, c -> pieces(ci, c.text, longest) }
+        val similar = overlapping(all, options.avoid)
+        val pieces = all.filter { p ->
+            p.from >= OPENING_PARAGRAPHS && !sceneryOpening(p.text) && p !in similar && !shownIn(p, options.shown)
+        }
+        val ranked = ORDER.associateWith { kind ->
             pieces.filter { kind in it.scores }
                 .sortedWith(compareByDescending<Piece> { it.scores.getValue(kind) }.thenBy { it.chapter }.thenBy { it.from })
                 // 相邻的候选大半重叠：只留分高的那片，“换一段”才真换到别处。
@@ -95,10 +114,11 @@ object StyleSamples {
         }
         val chosen = mutableListOf<Pair<SampleKind, Piece>>()
         var total = 0
-        // 三类轮流挑，直到放不下。
+        // 对白、动作、叙述轮流挑，直到放不下；叙述描写至多一段。
         while (true) {
             var added = false
-            for (kind in SampleKind.entries) {
+            for (kind in ORDER) {
+                if (kind == SampleKind.NARRATION && chosen.any { it.first == kind }) continue
                 val usable = ranked.getValue(kind).filter { p ->
                     sample(chapters, kind, p).key !in options.skip &&
                         chosen.none { (_, q) -> q.chapter == p.chapter && p.from < q.to && q.from < p.to }
@@ -119,6 +139,39 @@ object StyleSamples {
         // 按书里的先后排：读起来顺，顺序也稳定。
         return chosen.sortedWith(compareBy({ it.second.chapter }, { it.second.from })).map { (kind, p) -> sample(chapters, kind, p) }
     }
+
+    /** 挑的次序：对白戏、动作冲突戏在前。 */
+    private val ORDER = listOf(SampleKind.DIALOGUE, SampleKind.ACTION, SampleKind.NARRATION)
+
+    /** 天气、景物（只看第一句开头那几个字）。 */
+    private val scenery = Regex("雾|雨|雪|风|云|天色|天光|月光|日光|阳光|晨光|夕阳|晚霞|黄昏|夜色|暮色|河面|江面|水面|湖面")
+
+    /** 以天气、景物起笔：第一句前 [SCENERY_HEAD] 个字里写天气景物，又没有对白、没有动作。 */
+    internal fun sceneryOpening(text: String): Boolean {
+        val first = text.trim().split(Regex("(?<=[。！？!?…\\n])")).first()
+        if (quotedChars(first) > 0 || first.any { it in ACTION_CHARS }) return false
+        return scenery.find(first)?.let { it.range.first < SCENERY_HEAD } == true
+    }
+
+    private const val SCENERY_HEAD = 12
+
+    /**
+     * 和这次要写的场面（[avoid]）高度重合的片段：共有 [OVERLAP] 个以上的二元组。到处都有的二元组（三成以上的片段里都有，
+     * 多是人名、常用词）不算，只算少见的。
+     */
+    private fun overlapping(pieces: List<Piece>, avoid: String): Set<Piece> {
+        val target = PackRanking.bigrams(avoid)
+        if (target.isEmpty() || pieces.isEmpty()) return emptySet()
+        val grams = pieces.map { PackRanking.bigrams(it.text) }
+        val df = HashMap<String, Int>()
+        grams.forEach { g -> g.forEach { df[it] = (df[it] ?: 0) + 1 } }
+        val common = maxOf(2, (pieces.size * 0.3).toInt())
+        return pieces.indices.filter { i -> grams[i].count { it in target && (df[it] ?: 0) < common } >= OVERLAP }.map { pieces[it] }.toSet()
+    }
+
+    /** 片段里有一段（十个字以上）已经在请求里了。 */
+    private fun shownIn(p: Piece, shown: String): Boolean =
+        shown.isNotBlank() && p.text.lines().map { it.trim() }.any { it.length >= 10 && it in shown }
 
     private fun sample(chapters: List<SampleChapter>, kind: SampleKind, p: Piece): StyleSample =
         chapters[p.chapter].let { StyleSample(it.id, it.title, kind, p.text) }
@@ -241,6 +294,8 @@ object StyleSamples {
         buildString {
             sources.forEach { append(it.id).append('/').append(it.words).append('/').append(it.updatedAt).append('/').append(it.status.name).append(';') }
             append(fallback).append('|').append(options.limit).append('|')
+            if (options.avoid.isNotBlank()) append(fingerprint(options.avoid)).append('|')
+            if (options.shown.isNotBlank()) append(fingerprint(options.shown)).append('|')
             options.skip.sorted().forEach { append(it).append(',') }
             append('|')
             options.shift.toSortedMap().forEach { (k, v) -> append(k).append('=').append(v).append(',') }

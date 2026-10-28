@@ -68,7 +68,7 @@ class WritingClicheUiTest {
                         "请去掉这些 AI 腔" in user -> JSONObject().put("issues", JSONArray()
                             .put(JSONObject().put("p", 1).put("wrong", "林月嘴角勾起，").put("right", "林月笑了一下，").put("reason", "换成动作"))
                             .put(JSONObject().put("p", 2).put("wrong", "倒吸一口凉气，").put("right", "").put("reason", "删掉"))).toString()
-                        "请从光标处接着往下写正文" in user -> "杜娘嘴角勾起，没再说话。"
+                        "【光标在这里】" in user -> "杜娘嘴角勾起，没再说话。"
                         else -> "好。"
                     }
                     val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
@@ -151,8 +151,8 @@ class WritingClicheUiTest {
         assertTrue("2. 沈默倒吸一口凉气，没有说话。" in ask && "「倒吸一口凉气」" in ask)
         // 没标出的段不发。
         assertFalse("顾长风推门进来" in ask)
-        // 写法要求照样接在最后。
-        assertTrue(ask.contains(WritePrompts.VOICE_HEADER))
+        // 写法要求照样带上（在最后的任务卡前面）。
+        assertTrue(ask.contains(WritePrompts.PROSE_HEADER))
         // 用量单独记一类“去 AI 腔”。
         waitFor { vm.aiUsage.value.days[LocalDate.now()].orEmpty().any { it.work == workId && it.feature == AiFeature.CLICHE.name } }
         // 每条带“AI 腔”标签（读屏念“AI 腔类建议”）。

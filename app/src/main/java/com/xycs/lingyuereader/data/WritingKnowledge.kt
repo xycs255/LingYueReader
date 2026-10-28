@@ -321,6 +321,61 @@ class PackTools(
     }
 }
 
+/**
+ * 写正文用的设定包：不整份放知识库（那是给审稿、整理用的），只放作者写给 AI 的说明和一张能查的资料清单；
+ * 本章用得上的资料另外按章挑（[brief] 的 `prose`），别的让模型需要时用工具查。
+ * 都不带“[来源 …]”编号：编号是审读核对出处用的，写正文时只会让模型以为自己在填核对表。
+ */
+object ProsePack {
+    /**
+     * 作者写给 AI 的说明（工作说明、这一阶段的提示词：创作用正文创作提示词，修订用章节修订提示词），去掉整章字数。没有为空。
+     */
+    fun instructions(docs: List<Pair<PackDoc, String>>, phase: WritingPhase = WritingPhase.CREATE): String =
+        ProjectSources.forPhase(docs, phase).filter { it.first.kind == PackKind.INSTRUCTION && it.second.isNotBlank() }
+            .sortedWith(compareBy({ it.first.priority }, { it.first.title }))
+            .mapNotNull { (d, t) -> ProseLengths.strip(t).trim().takeIf { it.isNotEmpty() }?.let { "【${d.title}】\n$it" } }
+            .joinToString("\n\n").let(::tidy)
+
+    /** 去掉和“【文档名】”重复的一级标题（“【写作规范】”下面紧跟的“# 写作规范”）。 */
+    fun tidy(text: String): String = text.replace(Regex("【([^】\n]+)】\n#\\s*\\1\\s*\n"), "【$1】\n")
+
+    /** 能用工具查的资料（文档名），工作说明和检查规则不列（已经给了，或只给本机用）。 */
+    fun catalog(docs: List<Pair<PackDoc, String>>): List<String> =
+        ProjectSources.forPhase(docs, WritingPhase.CREATE)
+            .filter { it.first.kind != PackKind.INSTRUCTION && it.first.kind != PackKind.RULES && it.second.isNotBlank() }
+            .sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
+            .map { it.first.title }.distinct()
+}
+
+/**
+ * 写正文时，篇幅只在最后的任务卡里说一次。作者的说明、写作规范、检查规则、细纲里写的整章字数（“每章3000-4000字”
+ * “字数：3000-4000”），交给模型前去掉：同一个请求里两个篇幅数字，模型要么写过界，要么注水。
+ * 本机检查照旧按检查规则数字数，这里只改发给模型的文字。
+ */
+object ProseLengths {
+    private const val NUM = "[0-9０-９零〇一二两三四五六七八九十百千万]+"
+    private val amount = Regex("($NUM)\\s*(?:[—－–\\-~～至到]\\s*($NUM)\\s*)?(?:个)?(?:汉)?字")
+    private val lead = Regex("^\\s*(?:[-*+•]\\s+|\\d{1,3}[.、)）]\\s*)?")
+    private val clause = Regex("[^。；;！？!?\\n]+[。；;！？!?]*")
+
+    /** 这一句写的是整章（或更大）的字数：数到一千字以上的才算，“开头三百字内”“12 字以内”不算。 */
+    fun chapterScale(text: String): Boolean = amount.findAll(text).any { m ->
+        (CheckRules.cn(m.groupValues[1].replace('〇', '零')) ?: 0) >= 1_000
+    }
+
+    fun strip(text: String): String = text.lines().mapNotNull { line ->
+        if (CheckRules.parse(line).rules.any { it is CheckRule.Length }) return@mapNotNull null
+        val head = lead.find(line)?.value.orEmpty()
+        val pieces = clause.findAll(line.substring(head.length)).map { it.value }.toList()
+        val kept = pieces.filterNot(::chapterScale)
+        when {
+            kept.size == pieces.size -> line
+            kept.isEmpty() -> null
+            else -> head + kept.joinToString("").trimStart()
+        }
+    }.joinToString("\n")
+}
+
 /** 这部作品给写作 AI 的设定包（[budget] 是知识库最多放多少字）。 */
 fun WorkStore.aiPack(workId: String, budget: Int, phase: WritingPhase? = null): AiPack =
     PackKnowledge.build(pack(workId).map { it to packText(workId, it.id) }, budget, phase)

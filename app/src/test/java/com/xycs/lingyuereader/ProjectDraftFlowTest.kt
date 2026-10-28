@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sun.net.httpserver.HttpServer
+import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.DraftStage
 import com.xycs.lingyuereader.data.DraftReferenceProvenance
 import com.xycs.lingyuereader.data.DraftRevisionSnapshot
@@ -114,11 +115,11 @@ class ProjectDraftFlowTest {
                 val list = (0 until messages.length()).map { messages.getJSONObject(it) }
                 val system = list.filter { it.optString("role") == "system" }.joinToString("\n") { it.optString("content") }
                 val user = list.last { it.optString("role") == "user" }.getString("content")
+                // 审读请求标着阶段；修订、创作是写正文的请求，以任务卡收尾，修订的前面是“这一章现在的稿子”。
                 val phase = when {
-                    "【当前阶段：创作】" in user -> "CREATE"
                     "【当前阶段：审读】" in user -> "REVIEW"
-                    "【当前阶段：修订】" in user -> "REVISE"
-                    streamFenceOnly && ("请写出这一章" in user || "请从最后一句接着往下写" in user) -> "CREATE"
+                    "这一章现在的稿子：" in user -> "REVISE"
+                    WritePrompts.CARD_HEADER in user -> "CREATE"
                     else -> "UNEXPECTED"
                 }
                 asked += Request(phase, system, user, if (body.has("temperature")) body.getDouble("temperature") else null)
@@ -282,9 +283,9 @@ class ProjectDraftFlowTest {
         assertTrue(asked.last { it.phase == "REVIEW" }.user.contains(revised))
     }
 
-    /** 作品设了写正文的温度：只有创作阶段带上，审读、修订求稳，不带。 */
+    /** 作品设了写正文的温度：创作和修订（写出来的都是正文）带上，审读求稳，不带。 */
     @Test
-    fun onlyTheCreateStageCarriesTheWorkTemperature() {
+    fun theCreateAndReviseStagesCarryTheWorkTemperature() {
         store.updateAssist(workId) { it.copy(temperature = 1.3f) }
         val vm = model()
         vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
@@ -292,7 +293,8 @@ class ProjectDraftFlowTest {
         assertEquals(state.error, DraftStage.READY, state.stage)
         assertCounts(create = 1, review = 2, revise = 1)
         assertEquals(listOf(1.3), asked.filter { it.phase == "CREATE" }.map { it.temperature })
-        assertTrue(asked.filter { it.phase != "CREATE" }.all { it.temperature == null })
+        assertEquals(listOf(1.3), asked.filter { it.phase == "REVISE" }.map { it.temperature })
+        assertTrue(asked.filter { it.phase == "REVIEW" }.all { it.temperature == null })
     }
 
     @Test

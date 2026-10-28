@@ -10,7 +10,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
-/** 作品的“写正文的温度”“写正文时先思考”和“写这一拍出 3 个方向”：存盘、备份恢复都带上，旧数据缺字段读成默认。 */
+/** 作品的“写正文的温度”“写正文时先思考”“写这一拍出 3 个方向”和“这部书的口味”：存盘、备份恢复都带上，旧数据缺字段读成默认。 */
 class WorkAssistTemperatureTest {
     @get:Rule
     val tmp = TemporaryFolder()
@@ -73,5 +73,25 @@ class WorkAssistTemperatureTest {
             assertNull("$bad", WorkStore(dir).assist(w.id).temperature)
             assertEquals("短句为主", WorkStore(dir).assist(w.id).style)
         }
+    }
+
+    /** 这部书的口味：存盘、备份恢复都带上；旧数据没有这一项读成空（写正文时不带）。 */
+    @Test
+    fun flavorSurvivesJsonAndBackup() {
+        val dir = tmp.newFolder("flavor")
+        val a = WorkStore(dir)
+        val w = a.create("渡口")
+        assertEquals("", a.assist(w.id).flavor)
+        val flavor = "轻松带吐槽的穿越历史爽文，主角爱用历史知识算计人。"
+        a.updateAssist(w.id) { it.copy(flavor = flavor, style = "短句为主") }
+        val file = File(dir, "works/${w.id}/assist.json")
+        assertEquals(flavor, JSONObject(file.readText()).getString("flavor"))
+        assertEquals(flavor, WorkStore(dir).assist(w.id).flavor)
+        val b = WorkStore(tmp.newFolder("flavor-b"))
+        assertEquals(1, b.restoreBackup(String(a.backup()!!)))
+        assertEquals(flavor, b.assist(w.id).flavor)
+        file.writeText(JSONObject(file.readText()).apply { remove("flavor") }.toString())
+        assertEquals("", WorkStore(dir).assist(w.id).flavor)
+        assertEquals("短句为主", WorkStore(dir).assist(w.id).style)
     }
 }

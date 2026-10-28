@@ -74,10 +74,16 @@ data class ChapterBrief(
     /** 账本快照拼成的文字；没有为 null。 */
     val ledgerText: String? get() = ledger?.render(ledgerLimit)
 
-    /** 拼成给 AI 的文字。 */
-    fun render(): String? {
+    /**
+     * 拼成给 AI 的文字。[prose] 为真时是写正文用的（见 [ChapterBriefs.build] 的 `ahead`）：开头一句只说这是什么，
+     * 不讲优先级——写正文的模型拿到“以前面的为准”这类话，只会多一层核对的心思。
+     */
+    fun render(prose: Boolean = false): String? {
         if (isEmpty) return null
-        val out = StringBuilder("下面是写第 $chapter 章（第 $volume 卷）要用到的设定资料，按优先级排列；资料之间有冲突时，以前面的为准。\n")
+        val out = StringBuilder(
+            if (prose) "写第 $chapter 章用得上的资料（出场人物、设定、到这一章为止的进展）：\n"
+            else "下面是写第 $chapter 章（第 $volume 卷）要用到的设定资料，按优先级排列；资料之间有冲突时，以前面的为准。\n",
+        )
         if (present.isNotEmpty()) out.append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
         // 账本是最新进展：放在前情之后、察觉和伏笔之前。
         val ledgerText = ledgerText
@@ -96,7 +102,7 @@ data class ChapterBrief(
             waiting.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
         if (notYet.isNotEmpty()) {
-            out.append("\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
+            out.append(if (prose) "\n【人物现在还不知道的（别让他们提前知道或说破）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
             notYet.forEach { out.append("- ").append(it).append('\n') }
         }
         if (hidden.isNotEmpty()) {
@@ -410,6 +416,9 @@ object ChapterBriefs {
     /** 写作规范、称谓与语气另外节选，不进按块挑的资料。 */
     private val styleKinds = setOf(PackKind.STYLE, PackKind.VOICE)
 
+    /** 总纲、卷纲细纲：写正文时不挑（本章细纲在任务卡里，前面的章有前情，后面的是剧透）。 */
+    private val plans = setOf(PackKind.OUTLINE, PackKind.VOLUME)
+
     /** 人物卡最多带几个（出场多的在前，其余只列名字）。 */
     const val MAX_CHARACTERS = 8
 
@@ -418,6 +427,36 @@ object ChapterBriefs {
 
     /** 按块挑的资料，分数到这个才带上。 */
     private const val MIN_SCORE = 2.5
+
+    /** 写正文时“人物还不知道的事”最多列几条。 */
+    private const val PROSE_NOT_YET = 6
+
+    /** 写正文时按块挑的门槛高一些：只带和这一章真有关的，别的让模型需要时自己查。 */
+    private const val PROSE_MIN_SCORE = 3.5
+
+    /** 写全书结局、后文走向的小节标题。 */
+    private val endingTitle = Regex("结局|终局|尾声|大结局|后文走向|全书走向")
+
+    /** 写结局、谜底的句子。 */
+    private val endingWords = Regex("结局|终局|谜底|最后的真相")
+
+    /** 写人物、事情后来怎样的条目（“- 变化：……”“**结局：**……”）。 */
+    private val laterLabel = Regex("^\\s*(?:[-*+]\\s*)?(?:\\*\\*)?(?:变化|怎么变|结局|下场|后续|终局|命运|归宿|走向|人物弧光?|成长线)(?:\\*\\*)?[：:]")
+
+    /**
+     * 写正文时用，防剧透：一段设定里只留到第 [chapter] 章（第 [volume] 卷）为止的。写到后面任何一章、后面任何一卷的句子，
+     * 写结局、谜底的句子，写人物后来怎样的条目（“变化：”“结局：”）都去掉。
+     */
+    internal fun upTo(text: String, chapter: Int, volume: Int): String = buildString {
+        val kept = text.lines().filterNot { laterLabel.containsMatchIn(it) }.joinToString("\n")
+        Regex("[^。；;\n]+[。；;]?\n?").findAll(kept).forEach { m ->
+            val chapters = ChapterRefs.find(m.value)
+            val volumes = PackRanking.volumes(m.value)
+            val later = chapters.any { it > chapter } || volumes.any { it > volume } || endingWords.containsMatchIn(m.value)
+            // 去掉的一句是一行的末尾时，换行留着，下一行不接到上一行后面。
+            if (!later) append(m.value) else if (m.value.endsWith("\n")) append('\n')
+        }
+    }.replace(Regex("\n{2,}"), "\n").trim()
 
     /**
      * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认），
@@ -438,6 +477,11 @@ object ChapterBriefs {
         skip: List<String> = emptyList(),
         style: Boolean = false,
         ledger: List<LedgerEntry> = emptyList(),
+        /**
+         * 带不带后文：为假时（写正文）不带本章之后的章节细纲、后面卷的细纲、全书结局和“只有作者知道的”，
+         * 总纲、卷纲细纲整份不挑（本章细纲在任务卡里，前面的章有前情），别的资料里只写到后面的句子也去掉。
+         */
+        ahead: Boolean = true,
     ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
         val hidden = mutableListOf<String>()
@@ -454,9 +498,11 @@ object ChapterBriefs {
         var budget = limit / 4
         val whole = mutableSetOf<String>()
         sorted.filter { (d, t) ->
-            d.always && (d.kind !in structured || (d.kind == PackKind.CHARACTER && present.isEmpty())) && d.kind !in styleKinds && t.trim().length <= SMALL_DOC
+            d.always && (d.kind !in structured || (d.kind == PackKind.CHARACTER && present.isEmpty())) && d.kind !in styleKinds && t.trim().length <= SMALL_DOC &&
+                (ahead || d.kind !in plans)
         }.forEach { (d, t) ->
-            val body = t.trim()
+            val body = if (ahead) t.trim() else upTo(t, chapter, volume)
+            if (body.isEmpty()) return@forEach
             if (body.length > budget) return@forEach
             items += BriefItem(d.kind.label, d.title, body, "常用（优先级 ${d.priority}）")
             whole += d.id
@@ -493,7 +539,7 @@ object ChapterBriefs {
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
         val ledgerText = shown?.render(ledgerLimit)
         ledgerText?.let { left -= it.length }
-        snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
+        if (ahead) snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
         // 只用本章实际展示的快照替代察觉表。快照被预算截短时，保守保留察觉表，避免删掉恰好没列出的那条。
         val completeSnapshot = shown?.takeIf { (it.render(Int.MAX_VALUE)?.length ?: 0) <= ledgerLimit }
         val ledgerKnow = completeSnapshot?.known.orEmpty().filter { ledgerText?.contains(it.text) == true }
@@ -501,19 +547,19 @@ object ChapterBriefs {
         val ledgerSecret = ledger.filter { it.secret }.map { it.text }
         val ledgerPromise = ledger.filter { it.kind == LedgerKind.PROMISE }.map { it.text }
         fun hide(h: String) {
-            if (ledgerSecret.none { same(it, h) }) hidden += h
+            if (ahead && ledgerSecret.none { same(it, h) }) hidden += h
         }
 
         // 三、出场人物的人物卡：出现次数多的在前。写到后面章节的句子、“结局”“怎么变”这类格子另列为只有作者知道的。
         var charBudget = left / 3
         present.take(MAX_CHARACTERS).forEach { c ->
             if (charBudget <= 100) return@forEach
-            val (now, ahead) = splitByChapter(c.notes.joinToString("\n"), chapter)
-            val body = cut(now, minOf(charBudget, 800))
+            val (now, later) = splitByChapter(c.notes.joinToString("\n"), chapter)
+            val body = cut(if (ahead) now else upTo(now, chapter, volume), minOf(charBudget, 800))
             items += BriefItem("人物", c.name, body, "本章出场" + if (c.aliases.isEmpty()) "" else "（也叫${c.aliases.joinToString("、")}）")
             charBudget -= body.length
             left -= body.length
-            (c.later + listOf(ahead)).filter { it.isNotBlank() }.forEach { hide(c.name + "——" + cut(it, 300)) }
+            (c.later + listOf(later)).filter { it.isNotBlank() }.forEach { hide(c.name + "——" + cut(it, 300)) }
         }
 
         // 三、察觉：出场人物到这一章为止知道的（离这一章近的在前），以及还不该知道的。
@@ -554,10 +600,19 @@ object ChapterBriefs {
             items += BriefItem("察觉", "到第 $chapter 章为止知道的", knownText.toString().trim(), "出场人物的察觉表")
             left -= knownText.length
         }
-        val notYet = relevant.filterNot(::reached).filterNot(::inLedger)
+        val notYet = if (ahead) relevant.filterNot(::reached).filterNot(::inLedger)
             .sortedBy { it.chapter ?: ((it.volume ?: 0) * 1000) }
             .take(12)
             .map { cut(it.text, 160) }
+        // 写正文：只说出场人物现在还不知道什么，不带章号（带了就是告诉模型后面第几章发生什么），也不列别人的。
+        else relevant.filterNot(::reached).filterNot(::inLedger)
+            .sortedBy { it.chapter ?: ((it.volume ?: 0) * 1000) }
+            .mapNotNull { k ->
+                // 只认写明了“谁”的（人物那一列、小节标题）；没写明的，正文里提到的人不一定是不知道的那个。
+                val who = people(k.holders).filter { it in presentNames }
+                if (who.isEmpty()) null else who.joinToString("、") + "还不知道：" + cut(k.what.ifBlank { k.text }, 120)
+            }
+            .distinct().take(PROSE_NOT_YET)
         left -= notYet.sumOf { it.length }
 
         // 四、伏笔：埋下了还没回收的；计划这一章回收的另列。
@@ -570,8 +625,11 @@ object ChapterBriefs {
         // 五、其余文档切块打分：写到这一章（单独写到的最算数，大范围几乎不算）、写到出场人物、和细纲卡用词重合。
         val skipKeys = skip.map { it.replace(Regex("\\s"), "").take(24) }.filter { it.length >= 4 }
         // 账本导出的那份资料和上面的快照重复，账本不空时不再挑。
-        val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds && (ledger.isEmpty() || d.title != LEDGER_EXPORT_TITLE) }.flatMap { (d, t) ->
-            PackUnits.split(t, documentTitle = d.title).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }.map { d to it }
+        val pool = sorted.filter { (d, _) -> d.id !in whole && d.kind !in structured && d.kind !in styleKinds && (ledger.isEmpty() || d.title != LEDGER_EXPORT_TITLE) &&
+            (ahead || d.kind !in plans) }.flatMap { (d, t) ->
+            PackUnits.split(t, documentTitle = d.title).filter { u -> skipKeys.none { it in u.text.replace(Regex("\\s"), "") } }
+                .let { units -> if (ahead) units else units.filter { u -> !endingTitle.containsMatchIn(u.path.joinToString(" ")) } }
+                .map { d to it }
         }
         val grams = pool.map { (_, u) -> PackRanking.bigrams(u.text) }
         val lexicon = PackRanking.Lexicon(grams)
@@ -597,14 +655,17 @@ object ChapterBriefs {
                 if (refs.minOf { r -> if (chapter < r.first) r.first - chapter else chapter - r.last } > 10) score -= 2.0
                 if (refs.all { it.first > chapter + 3 }) score -= 2.0
             }
-            if (score < MIN_SCORE) return@mapIndexedNotNull null
+            // 写正文：只写到后面的章、后面的卷的块不带。
+            if (!ahead && ((refs.isNotEmpty() && refs.all { it.first > chapter }) || (volumes.isNotEmpty() && volumes.all { it > volume }))) return@mapIndexedNotNull null
+            if (score < if (ahead) MIN_SCORE else PROSE_MIN_SCORE) return@mapIndexedNotNull null
             val why = chapterWhy ?: if (names.isNotEmpty()) "写到" + names.joinToString("、") else "和本章细纲相关"
             Triple(score, d to u, why)
         }.sortedWith(compareByDescending<Triple<Double, Pair<PackDoc, PackUnit>, String>> { it.first }.thenBy { it.second.first.priority })
         ranked.forEach { (_, du, why) ->
             val (d, u) = du
             if (left <= 200) return@forEach
-            val body = cut(u.text, minOf(left, 1_500))
+            val body = cut(if (ahead) u.text else upTo(u.text, chapter, volume), minOf(left, 1_500))
+            if (body.isEmpty()) return@forEach
             items += BriefItem(d.kind.label, (listOf(d.title) + u.path).joinToString(" › "), body, why)
             left -= body.length
         }
@@ -699,14 +760,20 @@ fun WorkStore.chapterNo(work: Work, chapterId: String): Int? {
  * 读设定包、细纲卡和这一章，挑本章资料。[text] 为空时用存盘的正文；[limit] 为空时按作品里设的上限；
  * [style] 为真时带写作规范节选（写正文、写法关另外带全，不用）。
  * [confirmedOnly] 为真时，前情只用已定稿章的摘要，不把未定稿的摘要或细纲计划当作已经发生的事实。
+ * [prose] 为真时是写正文用的：只用写正文这一阶段的资料（[ProjectSources.forPhase]，不含工作说明和各阶段的提示词），
+ * 不带后文（见 [ChapterBriefs.build] 的 `ahead`），出场人物也从节拍里认。
  */
-fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int? = null, style: Boolean = false, confirmedOnly: Boolean = false): ChapterBrief? {
+fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, limit: Int? = null, style: Boolean = false, confirmedOnly: Boolean = false,
+                    prose: Boolean = false): ChapterBrief? {
     val work = get(workId) ?: return null
     val number = chapterNo(work, chapterId) ?: return null
-    val docs = pack(workId).map { it to packText(workId, it.id) }
+    val docs = pack(workId).map { it to packText(workId, it.id) }.let { all ->
+        if (!prose) all
+        else ProjectSources.forPhase(all, WritingPhase.CREATE).filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null }
+    }
     val entries = outlineEntries(workId)
     val planned = plannedCard(workId, chapterId, entries)
-    val card = planned.card.let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).joinToString("\n") }
+    val card = planned.card.let { listOf(it.facts, it.boundary, it.pov, it.countdown, it.hook, it.threads).plus(if (prose) listOf(it.beats) else emptyList()).joinToString("\n") }
     val own = chapterOutlineEntries(work, chapterId, entries)
     // Only this chapter's matched outline can override the catalog volume. A nearby earlier
     // outline may belong to another volume and cannot establish the current chapter's scope.
@@ -727,5 +794,6 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     }
     val body = text ?: text(workId, chapterId)
     val query = listOf(card, summaries.takeLast(2).joinToString("\n") { it.summary }, body.takeLast(1_500)).joinToString("\n")
-    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style, ledger(workId))
+    return ChapterBriefs.build(docs, body, card, number, volume, limit ?: assist(workId).briefLimit, summaries, query, own.map { it.text }, style && !prose, ledger(workId),
+        ahead = !prose)
 }

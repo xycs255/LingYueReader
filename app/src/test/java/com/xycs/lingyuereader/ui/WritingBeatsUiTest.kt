@@ -160,7 +160,8 @@ class WritingBeatsUiTest {
         compose.onNodeWithText("写第 2 拍").performClick()
         waitForText("AI 写了")
         val ask = prompts.single { "只写第 2 拍" in it }
-        assertTrue(ask.contains("下一拍「老周的信」不要写到"))
+        assertTrue(ask.contains("  3. 老周的信（后面再写"))
+        assertTrue(ask.contains("别开始第 3 拍"))
         // 采纳以后才记成已写。
         assertEquals(listOf(1), store.card(workId, chapterId).beatsDone)
         compose.onNodeWithText("采纳").performClick()

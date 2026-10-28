@@ -129,6 +129,8 @@ data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, 
 data class WorkAssist(
     val realtime: Boolean = false,
     val style: String = "",
+    /** 这部书的口味：作者写的一两句话（“轻松带吐槽的穿越历史爽文……”）。写正文时放在任务卡上方，AI 照这个口味写；空的不带。 */
+    val flavor: String = "",
     val entries: List<BibleEntry> = emptyList(),
     val accepted: List<StyleExample> = emptyList(),
     val rejected: Int = 0,
@@ -2128,7 +2130,7 @@ class WorkStore(
         }
 
         private fun WorkAssist.toJson(): JSONObject = JSONObject()
-            .put("realtime", realtime).put("style", style).put("rejected", rejected)
+            .put("realtime", realtime).put("style", style).put("flavor", flavor).put("rejected", rejected)
             .put("entries", JSONArray().apply { entries.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("name", e.name).put("text", e.text)) } })
             .put("accepted", JSONArray().apply { accepted.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
             .put("declined", JSONArray().apply { declined.forEach { e -> put(JSONObject().put("action", e.action).put("before", e.before).put("after", e.after).put("at", e.at)) } })
@@ -2141,6 +2143,7 @@ class WorkStore(
             .put("syncTip", syncTip)
             .put("format", format.toJson())
             .put("sampleLimit", sampleLimit)
+            .put(SAMPLE_LIMIT_KEY, sampleLimit)
             .put("sampleFallback", sampleFallback)
             .put("sampleSkip", JSONArray(sampleSkip))
             .put("sampleShift", JSONObject().apply { sampleShift.forEach { (k, v) -> put(k, v) } })
@@ -2157,12 +2160,25 @@ class WorkStore(
                 })
             } })
 
+        /**
+         * 文风范例带多少字。以前每次存盘都写“sampleLimit”，存着的是旧默认 1500 还是作者挑的分不出来；
+         * 现在另存一份 [SAMPLE_LIMIT_KEY]。只有旧字段、又正好是旧默认的，按没改过算，用新的默认值；作者挑过别的照旧。
+         */
+        private fun sampleLimitOf(o: JSONObject): Int = when {
+            o.has(SAMPLE_LIMIT_KEY) -> o.optInt(SAMPLE_LIMIT_KEY, StyleSamples.DEFAULT_LIMIT)
+            o.has("sampleLimit") -> o.optInt("sampleLimit").let { if (it == StyleSamples.OLD_DEFAULT_LIMIT) StyleSamples.DEFAULT_LIMIT else it }
+            else -> StyleSamples.DEFAULT_LIMIT
+        }
+
+        private const val SAMPLE_LIMIT_KEY = "sampleLimit2"
+
         private fun JSONObject.toAssist(): WorkAssist {
             val es = optJSONArray("entries") ?: JSONArray()
             val ac = optJSONArray("accepted") ?: JSONArray()
             return WorkAssist(
                 realtime = optBoolean("realtime"),
                 style = optString("style"),
+                flavor = optString("flavor"),
                 rejected = optInt("rejected"),
                 entries = (0 until es.length()).mapNotNull { i ->
                     val e = es.optJSONObject(i) ?: return@mapNotNull null
@@ -2189,7 +2205,7 @@ class WorkStore(
                 }.orEmpty(),
                 syncTip = optBoolean("syncTip", true),
                 format = FormatSettings.fromJson(optJSONObject("format")),
-                sampleLimit = optInt("sampleLimit", StyleSamples.DEFAULT_LIMIT),
+                sampleLimit = sampleLimitOf(this),
                 sampleFallback = optBoolean("sampleFallback", true),
                 sampleSkip = optJSONArray("sampleSkip")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() } }.orEmpty(),
                 sampleShift = optJSONObject("sampleShift")?.let { o -> o.keys().asSequence().associateWith { o.optInt(it) } }.orEmpty(),

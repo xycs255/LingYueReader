@@ -22,6 +22,7 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
@@ -93,8 +94,8 @@ class WritingDraftUiTest {
                     val answer = when {
                         "只返回一个 JSON 对象" in user -> """{"nodes":[{"kind":"信息","label":"声响引题","quote":"夜里有人叩门"},{"kind":"动作","label":"靠近灯盏","quote":"移近灯盏"}],"dialogue":null}"""
                         validWorkflowReview && "【当前阶段：审读】" in user -> """{"summary":["对白语气需作者最终确认"],"missing":[],"issues":[]}"""
-                        "请写出这一章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
-                        "请从最后一句接着往下写" in user -> "门外的人没有回答。"
+                        "写到哪里停：写完整章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
+                        "这一章已经写到这里" in user -> "门外的人没有回答。"
                         "概括这一章" in user -> "沈默进城，在杜娘的茶馆落脚。"
                         // 审稿：故意不按格式回答。
                         else -> "这一章写得很好，没有什么问题。"
@@ -188,7 +189,7 @@ class WritingDraftUiTest {
         waitForText("声响引题")
         waitForText("靠近灯盏")
         assertEquals("写法图只由作者点击后请求一次", 1, asked.count { (_, user) -> "只返回一个 JSON 对象" in user })
-        assertEquals("分析范本不能自行写正文", 0, asked.count { (_, user) -> "请写出这一章" in user })
+        assertEquals("分析范本不能自行写正文", 0, asked.count { (_, user) -> "写到哪里停：写完整章" in user })
         compose.onNodeWithText("写作范本").performScrollTo().performClick()
         compose.onNodeWithText("不使用范本").performClick()
         compose.waitForIdle()
@@ -201,7 +202,7 @@ class WritingDraftUiTest {
         waitFor { asked.any { (system, user) -> "夜里有人叩门" in system + user } }
         waitForText("杜娘把门打开")
         waitForText("来源：范本片段已核验 · 本章任务资料")
-        assertEquals("AI 只应在作者点击写本章后写一版", 1, asked.count { (_, user) -> "请写出这一章" in user })
+        assertEquals("AI 只应在作者点击写本章后写一版", 1, asked.count { (_, user) -> "写到哪里停：写完整章" in user })
         assertEquals("候选稿不能自动进入正文", "旧稿一句。", store.text(workId, c2))
     }
 
@@ -230,15 +231,19 @@ class WritingDraftUiTest {
         waitFor { store.draft(workId, c2) == "杜娘把门打开，雪灌了进来。\n“谁？”她问。" }
         waitForText("来源：本章任务资料 · 未使用范本")
         waitForText("审读：未启用自动审读，请自行通读")
-        val (system, user) = asked.first { "请写出这一章" in it.second }
-        assertTrue("篇幅不少于 10 字" in user)
-        assertTrue("作者这次的要求：多写对白" in user)
-        assertTrue("上一章结尾：\n沈默进了城。" in user)
-        assertTrue("对白要短。" in user && "字数：至少 10" in user)
-        assertTrue("本章细纲卡" in system && "杜娘开门，门外来了人" in system)
-        // 前一章的摘要当前情带上了；设定包整份在前面。
-        assertTrue("【前情】\n- 第 1 章 第1章：沈默进城，在杜娘的茶馆落脚。" in system)
-        assertTrue(system.startsWith("下面是作者这部作品的设定包"))
+        val (system, user) = asked.first { "写到哪里停：写完整章" in it.second }
+        // 任务卡（请求最后）：唯一的篇幅、作者这次的要求、本章细纲；上一章结尾在请求开头。
+        val card = user.substringAfter(WritePrompts.CARD_HEADER)
+        assertTrue("篇幅：不少于 10 字" in card)
+        assertTrue("作者这次的要求：多写对白" in card)
+        assertTrue("本章必须成立的事：杜娘开门，门外来了人" in card)
+        assertTrue(user.startsWith("上一章结尾：\n沈默进了城。"))
+        // 作者的写作规范、检查规则只在系统提示里放一份；检查规则里的字数不交给模型（篇幅只在任务卡里说）。
+        assertTrue("对白要短。" in system && "对白要短。" !in user)
+        assertFalse("字数：至少 10" in system + user)
+        // 前一章的摘要当前情带上了；写正文的系统提示从合写搭档的身份起，不整份放设定包。
+        assertTrue("【前情·第 1 章 第1章】\n沈默进城，在杜娘的茶馆落脚。" in system)
+        assertTrue(system.startsWith("你是和作者一起写这部小说"))
 
         // 接着写：接在草稿后面。
         compose.onNodeWithText("接着写").performScrollTo().performClick()
@@ -268,8 +273,8 @@ class WritingDraftUiTest {
         waitForText("按它重写一版")
         compose.onAllNodes(hasSetTextAction()).onLast().performTextReplacement("让顾长风先开口")
         compose.onNodeWithText("按这个方向重写").performClick()
-        waitFor { asked.count { "请写出这一章" in it.second } == 2 }
-        assertTrue(asked.last { "请写出这一章" in it.second }.second.contains("作者这次的要求：让顾长风先开口"))
+        waitFor { asked.count { "写到哪里停：写完整章" in it.second } == 2 }
+        assertTrue(asked.last { "写到哪里停：写完整章" in it.second }.second.contains("作者这次的要求：让顾长风先开口"))
         waitFor { vm.writingAi.drafts.value[workId to c2]?.let { !it.loading && it.text.isNotBlank() } == true }
         waitFor { store.draftIntent(workId, c2)?.instruction == "让顾长风先开口" }
         compose.onNode(hasSetTextAction() and hasText("让顾长风先开口")).assertExists()
