@@ -321,6 +321,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val workStore = com.xycs.lingyuereader.data.WorkStore(java.io.File(app.filesDir, "writing"))
 
+    /** 退到后台、系统内存紧张时放掉记着的整份设定包（百万字的设定包常驻几十 MB），回来用到再读。 */
+    private val trimMemory = object : android.content.ComponentCallbacks2 {
+        override fun onTrimMemory(level: Int) {
+            if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) workStore.trimMemory()
+        }
+        override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+        @Deprecated("ComponentCallbacks 要求实现；新系统上走 onTrimMemory")
+        override fun onLowMemory() = workStore.trimMemory()
+    }.also { app.registerComponentCallbacks(it) }
+
     /** 写作：作品、正文、码字统计。 */
     val writing = WritingModel(workStore, viewModelScope) { _messages.value = it }
 
@@ -2187,6 +2197,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun closeAi() = assistant.close()
 
     override fun onCleared() {
+        getApplication<Application>().unregisterComponentCallbacks(trimMemory)
         preview?.release()
         _talkPlayer.value?.release()
         super.onCleared()

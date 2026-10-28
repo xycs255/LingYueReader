@@ -17,7 +17,8 @@ import java.util.Locale
  * - 闪退（没接住的异常）留最近 [KEEP] 次；下次打开时问一次要不要复制（[unseen]）。
  * - 写作 AI 这类地方接住了、没让 app 闪退的意外（内存不够、栈溢出、下标越界这类程序的毛病）也记，另留最近 [KEEP] 条，
  *   同样的错只记一条、数次数：真机上复现不了的毛病，靠它查。
- * - 记录里不带正文：只记异常的类名和出错的代码位置；错误说明里的汉字（可能是正文、设定）一律隐去，只留字数。
+ * - 记录里不带正文：只记异常的类名和出错的代码位置；错误说明里只留数字、标点、类名和常见的报错用语
+ *   （“Index 9 out of bounds for length 3”），别的字（汉字、英文、JSON 片段里的内容，可能是正文、设定）一律隐去，只留字数。
  */
 object CrashLog {
     /** 闪退、接住的意外，各留最近几条。 */
@@ -77,25 +78,43 @@ object CrashLog {
         store = file?.let(::CrashLogFile)
     }
 
-    /** 记一条接住了的意外（不会闪退的那种）。没装（单元测试里）就不记。 */
+    /**
+     * 记一条接住了的意外（不会闪退的那种）。没装（单元测试里）就不记。
+     * 读写记录文件（带 fsync）放到单独的一个线程上：调用的地方常在主线程上（界面里接住的意外），出错那一下不再多卡一次磁盘。
+     * 堆栈、界面、线程在这里就取好，写的时候不再看当时的状态。闪退那条照旧当场写完（进程马上就没了）。
+     */
     fun caught(e: Throwable) {
         val s = store ?: return
-        runCatching { s.add(entry(e, Thread.currentThread(), fatal = false)) }
+        val entry = runCatching { entry(e, Thread.currentThread(), fatal = false) }.getOrNull() ?: return
+        runCatching { writer.execute { runCatching { s.add(entry) } } }
+    }
+
+    /** 写接住的意外的那个线程（守护线程，不拦着进程退出）。 */
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "crash-log").apply { isDaemon = true } }
+
+    /** 等排着的记录写完（读之前、清空之前），读到的才是全的。 */
+    private fun drain() {
+        runCatching { writer.submit {}.get(2, java.util.concurrent.TimeUnit.SECONDS) }
     }
 
     /** 全部记录，新的在前。 */
-    fun entries(): List<Entry> = store?.read().orEmpty()
+    fun entries(): List<Entry> {
+        drain()
+        return store?.read().orEmpty()
+    }
 
     /** 上次闪退了、还没问过作者的那一条（最新的）；没有为空。 */
     fun unseen(): Entry? = entries().firstOrNull { it.fatal && !it.seen }
 
     /** 问过了：以后不再弹。 */
     fun markSeen() {
+        drain()
         runCatching { store?.markSeen() }
     }
 
     /** 清空记录。 */
     fun clear() {
+        drain()
         runCatching { store?.clear() }
     }
 
@@ -144,29 +163,81 @@ object CrashLog {
     }.trimEnd()
 
     /**
-     * 错误说明里可能夹着正文、设定（比如解析失败时带上的原文）：连着的汉字和全角标点换成“〔N字〕”，
-     * 英文和数字（下标、长度、类名）留着，太长的截断。
+     * 错误说明里可能夹着正文、设定（解析失败时带上的原文、整段 JSON、英文书名、拼音）：只留固定格式的部分——
+     * 数字、ASCII 标点和空白、类名（带点的“java.lang.String”、以 Exception / Error 结尾的）和常见的报错用语（[WORDS]）；
+     * 别的连着的字（汉字、其他文字、不在表里的英文单词）一律换成“〔N字〕”。太长的截断。
      */
     internal fun mask(message: String): String {
         val out = StringBuilder()
-        var run = 0
+        var hidden = 0
         fun flush() {
-            if (run > 0) out.append("〔").append(run).append("字〕")
-            run = 0
+            if (hidden > 0) out.append("〔").append(hidden).append("字〕")
+            hidden = 0
         }
-        for (ch in message) {
-            if (wide(ch)) run++ else {
-                flush()
-                out.append(ch)
+        var i = 0
+        while (i < message.length) {
+            val ch = message[i]
+            if (ch.isAsciiLetter() || ch == '_' || ch == '$') {
+                var j = i
+                while (j < message.length && message[j].let { it.isAsciiLetter() || it in '0'..'9' || it == '_' || it == '$' || it == '.' }) j++
+                val word = message.substring(i, j).trimEnd('.')
+                if (keep(word)) {
+                    flush()
+                    out.append(word)
+                } else {
+                    hidden += word.length
+                }
+                i += word.length
+            } else if (ch.code < 0x80) {
+                // 单词之间的空格不把隐去的字分成好几段：“〔3字〕 〔5字〕”合成一段更看不出原文。
+                if (ch == ' ' && hidden > 0 && i + 1 < message.length && !keepsAt(message, i + 1)) hidden++
+                else {
+                    flush()
+                    out.append(ch)
+                }
+                i++
+            } else {
+                hidden++
+                i++
             }
         }
         flush()
         return if (out.length > MESSAGE) out.substring(0, MESSAGE) + "…" else out.toString()
     }
 
-    /** 汉字、全角符号、中日韩标点。 */
-    private fun wide(ch: Char): Boolean = Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
-        ch in '　'..'〿' || ch in '＀'..'￯' || ch in '‐'..'⁯' || ch.code > 0x2E7F && ch.code < 0xA000
+    private fun Char.isAsciiLetter() = this in 'a'..'z' || this in 'A'..'Z'
+
+    /** 从 [at] 起是不是一个要留着的词（或者数字、标点）：合并隐去的段时用。 */
+    private fun keepsAt(message: String, at: Int): Boolean {
+        val ch = message[at]
+        if (!(ch.isAsciiLetter() || ch == '_' || ch == '$')) return ch.code < 0x80
+        var j = at
+        while (j < message.length && message[j].let { it.isAsciiLetter() || it in '0'..'9' || it == '_' || it == '$' || it == '.' }) j++
+        return keep(message.substring(at, j).trimEnd('.'))
+    }
+
+    private val CLASS_NAME = Regex("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
+    private val THROWABLE_NAME = Regex("[A-Z][A-Za-z0-9]*(?:Exception|Error)")
+
+    private fun keep(word: String): Boolean = word.isNotEmpty() &&
+        (word.lowercase() in WORDS || CLASS_NAME.matches(word) || THROWABLE_NAME.matches(word))
+
+    /** JVM、JSON 库、网络库报错里常见的英文词：留着才看得懂报的是什么。 */
+    private val WORDS = setOf(
+        "a", "an", "the", "of", "to", "in", "on", "at", "for", "from", "with", "by", "and", "or", "not", "no", "is", "are", "was", "be",
+        "but", "has", "have", "had", "can", "cannot", "can't", "must", "should", "been", "this", "that", "than", "into", "as",
+        "index", "out", "bounds", "length", "size", "offset", "count", "begin", "end", "start", "range", "capacity", "position",
+        "null", "empty", "missing", "expected", "unexpected", "invalid", "illegal", "unsupported", "unknown", "found", "got",
+        "value", "values", "key", "keys", "element", "elements", "such", "type", "types", "class", "cast", "converted", "convert",
+        "object", "array", "string", "number", "int", "long", "double", "boolean", "char", "character", "input", "output",
+        "format", "parse", "parsing", "error", "exception", "failed", "failure", "allocate", "allocation", "byte", "bytes",
+        "free", "until", "oom", "heap", "stack", "overflow", "max", "min", "limit", "exceeded", "timeout", "timed",
+        "connection", "connect", "closed", "reset", "refused", "host", "port", "http", "https", "socket", "stream", "read", "write",
+        "file", "directory", "denied", "permission", "space", "left", "device", "collection", "modification", "concurrent",
+        "divide", "zero", "line", "column", "duplicate", "already", "used", "required", "argument", "state", "operation",
+        "method", "field", "lazy", "initialized", "uninitialized", "property", "has", "terminated", "unterminated", "after", "before",
+        "json", "jsonobject", "jsonarray", "at", "character", "near", "code", "status", "response", "request", "body",
+    )
 
     const val FILE = "crash-log.json"
     private const val FRAMES = 40

@@ -203,4 +203,20 @@ class ChapterTaskMemoryTest {
         assertFalse(ProjectSources.compilation("来源文件：一份.md\n正文"))
         assertTrue(ProjectSources.compilation("来源文件：一份.md\n正文\n来源文件：两份.md\n正文"))
     }
+
+    /** 两个线程同时第一次读同一部作品的设定包：只读一份；内存紧张时放掉，下次用到再读。 */
+    @Test fun aConcurrentFirstReadReadsOnceAndTrimLetsGo() {
+        val store = WorkStore(tmp.newFolder())
+        val (workId, _) = LargePack.build(store, finals = 1)
+        val start = java.util.concurrent.CountDownLatch(1)
+        val got = java.util.Collections.synchronizedList(mutableListOf<PackSources>())
+        val threads = (0 until 4).map { thread { start.await(); got += store.packSources(workId) } }
+        start.countDown()
+        threads.forEach { it.join() }
+        assertEquals(1, store.packCache.reads.get())
+        assertEquals(1, got.map { System.identityHashCode(it) }.toSet().size)
+        store.trimMemory()
+        store.packSources(workId)
+        assertEquals(2, store.packCache.reads.get())
+    }
 }

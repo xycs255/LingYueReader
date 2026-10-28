@@ -1251,9 +1251,19 @@ class WorkStore(
         val docs = pack(workId)
         val version = packVersion(workId, docs)
         packCache.cached(workId, version)?.let { return it }
-        packCache.reads.incrementAndGet()
-        return packCache.put(PackSources(workId, version, docs.map { it to packText(workId, it.id) }))
+        // 同一部作品同时只读一份：另一个线程正在读，等它读完直接用（以前两边各读一整份，峰值是两份整包）。
+        // 不能在拿着 WorkStore 的锁时调这里（读文档要拿那把锁）；现在的调用方都没有。
+        synchronized(packCache.readLock(workId)) {
+            val again = pack(workId)
+            val now = packVersion(workId, again)
+            packCache.cached(workId, now)?.let { return it }
+            packCache.reads.incrementAndGet()
+            return packCache.put(PackSources(workId, now, again.map { it to packText(workId, it.id) }))
+        }
     }
+
+    /** 放掉记着的设定包和挑好的资料（系统内存紧张时）：下次用到再读。 */
+    fun trimMemory() = packCache.clear()
 
     /** 这部作品按项目包流程写（有阶段提示词、卷纲细纲或带提示词的合订本）。不编整章任务，只看设定包。 */
     fun isProject(workId: String): Boolean = packSources(workId).project

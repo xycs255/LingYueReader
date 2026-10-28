@@ -68,6 +68,20 @@ class CrashLogTest {
         assertTrue(all.contains("Caused by: java.lang.RuntimeException"))
     }
 
+    /** 英文正文、拼音、整段 JSON 也不进记录：只留数字、标点、类名和常见的报错用语。 */
+    @Test
+    fun englishAndJsonFragmentsAreHiddenToo() {
+        CrashLog.caught(org.json.JSONException("Value {\"title\":\"Moonlit Ferry\",\"text\":\"Lin Yue folded the two halves\"} of type org.json.JSONObject cannot be converted to JSONArray"))
+        CrashLog.caught(NumberFormatException("For input string: \"Shen Mo waited by the river\""))
+        val all = CrashLog.entries().joinToString { CrashLog.report(it) }
+        listOf("Moonlit", "Ferry", "Lin Yue", "folded", "halves", "Shen", "river", "waited").forEach { assertFalse(it, all.contains(it)) }
+        assertTrue(all, all.contains("of type org.json.JSONObject cannot be converted to JSONArray"))
+        assertTrue(all, all.contains("For input string: \"〔"))
+        // 常见的报错照旧看得懂。
+        assertEquals("Index 9 out of bounds for length 3", CrashLog.mask("Index 9 out of bounds for length 3"))
+        assertEquals("Failed to allocate a 12345 byte allocation", CrashLog.mask("Failed to allocate a 12345 byte allocation"))
+    }
+
     @Test
     fun askOnceAfterACrash() {
         assertNull(CrashLog.unseen())
