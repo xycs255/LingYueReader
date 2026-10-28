@@ -772,10 +772,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     val assist = assists[workId] ?: WorkAssist()
     val styleField = remember(workId, assists[workId] != null) { mutableStateOf(assist.style) }
     var style by styleField
-    var clearing by remember { mutableStateOf(false) }
-    var showSent by remember { mutableStateOf(false) }
     var temperatureOpen by remember { mutableStateOf(false) }
-    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
     // 文风要求边打边存（停一下再写盘）。
     LaunchedEffect(style) {
         if (assists[workId] == null || style == assist.style) return@LaunchedEffect
@@ -816,8 +813,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
             ) {
                 item {
                     GroupedSection(
-                        footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：选中文字（或把光标放在那段）润色、扩写、缩写、挑错、续写；" +
-                            "也可以要灵感、请 AI 以读者视角点评本章、检查前后矛盾。结果先给你看对比，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
+                        footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：“AI 写…”从光标处写正文；选中文字（或把光标放在那段）润色、扩写、缩写、挑错；" +
+                            "也可以请 AI 以读者视角点评本章、检查前后矛盾，问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
@@ -835,78 +832,23 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                     }
-                    GroupedSection(
-                        header = "记录",
-                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
-                            "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看；也写着这次用了多少 token、约多少钱。" +
-                            "“用量”按天、按功能记这部作品花了多少（只有数字）。",
-                    ) {
-                        // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。
-                        row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
+                    GroupedSection(header = "文风", footer = "AI 改稿、写正文时都按这里写的来，比如“第一人称，口语化，少用成语”“对话多、短句为主”。") {
                         row {
-                            NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
-                        }
-                        row {
-                            val usage by vm.aiUsage.collectAsStateWithLifecycle()
-                            val today = com.xycs.lingyuereader.ai.UsageBook.total(usage.days[java.time.LocalDate.now()].orEmpty().filter { it.work == workId })
-                            NavRow(
-                                "用量",
-                                value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (com.xycs.lingyuereader.ai.AiPricing.money(today.cost)?.let { "约 $it" } ?: "${today.usage.requests} 次"),
-                            ) { vm.open(Screen.AiUsage(workId)) }
+                            TextField(
+                                value = style,
+                                onValueChange = { style = it },
+                                label = "对文风的要求",
+                                modifier = Modifier.fillMaxWidth().padding(12.dp).heightIn(min = 80.dp, max = 200.dp),
+                            )
                         }
                     }
+                    StyleSamplesSection(vm, workId, assist)
                     GroupedSection(
-                        header = "设定包",
-                        footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
-                            "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
-                            "放得越多，AI 越不用查，但每次请求越大。DeepSeek 会尝试缓存相同的开头，实际命中以用量记录为准。" +
-                            "本章资料字数上限也影响联网项目写作；本机模型不能自己查，会按章挑着带。",
+                        header = "温度",
+                        footer = "越高越不套路，也越容易跑偏。只影响写正文和改稿（AI 写、AI 写整章草稿、润色扩写这类），审稿、修订、整理不受影响；" +
+                            "推理和思考模式的模型可能不起作用。",
                     ) {
-                        row {
-                            PickerRow(
-                                "知识库上限",
-                                WorkAssist.KNOWLEDGE_LIMITS.map { it to if (it == 0) "按模型" else "${it / 10_000} 万字" },
-                                assist.knowledgeLimit,
-                            ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
-                        }
-                        row {
-                            PickerRow("本章资料上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
-                                vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
-                            }
-                        }
-                    }
-                    GroupedSection(
-                        header = "写作建议",
-                        footer = "开启后，你停笔几秒，灵阅会把打开这一章以后新写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
-                            "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。设定、规范、口吻要设定包里有依据，拿不准的不提；" +
-                            "只查错字时不带设定包；本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次可以在下面设。" +
-                            "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
-                    ) {
-                        row {
-                            // 开了以后下面带出几行“查某类”，都不带图标，这一行也不带。
-                            ToggleRow("写作时给建议", assist.realtime) { on ->
-                                vm.writingAi.updateAssist(workId) { it.copy(realtime = on) }
-                            }
-                        }
-                        if (assist.realtime) {
-                            SuggestKind.entries.filter { it.realtime }.forEach { k ->
-                                row {
-                                    ToggleRow("查${k.label}", k.name in assist.suggestKinds) { on ->
-                                        vm.writingAi.updateAssist(workId) { a -> a.copy(suggestKinds = if (on) (a.suggestKinds + k.name).distinct() else a.suggestKinds - k.name) }
-                                    }
-                                }
-                            }
-                            row {
-                                PickerRow("两次至少隔", WorkAssist.SUGGEST_GAPS.map { it to "$it 秒" }, assist.suggestGap) { v ->
-                                    vm.writingAi.updateAssist(workId) { it.copy(suggestGap = v) }
-                                }
-                            }
-                            row {
-                                PickerRow("一天最多", WorkAssist.SUGGEST_CAPS.map { it to if (it == 0) "不限" else "$it 次" }, assist.suggestCap) { v ->
-                                    vm.writingAi.updateAssist(workId) { it.copy(suggestCap = v) }
-                                }
-                            }
-                        }
+                        row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }
                     }
                     GroupedSection(
                         header = "AI 腔",
@@ -925,51 +867,50 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                         }
                     }
                     GroupedSection(
-                        header = "温度",
-                        footer = "越高越不套路，也越容易跑偏。只影响写正文和改稿（接着写、写本章、润色扩写这类），审稿、修订、整理不受影响；" +
-                            "推理和思考模式的模型可能不起作用。",
+                        header = "写作建议",
+                        footer = "开启后，你停笔几秒，灵阅会把打开这一章以后新写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
+                            "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。设定、规范、口吻要设定包里有依据，拿不准的不提；" +
+                            "只查错字时不带设定包；本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次在“高级设置”里设。" +
+                            "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
                     ) {
-                        row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }
-                    }
-                    GroupedSection(header = "文风", footer = "AI 改稿、续写时都按这里写的来，比如“第一人称，口语化，少用成语”“对话多、短句为主”。") {
                         row {
-                            TextField(
-                                value = style,
-                                onValueChange = { style = it },
-                                label = "对文风的要求",
-                                modifier = Modifier.fillMaxWidth().padding(12.dp).heightIn(min = 80.dp, max = 200.dp),
-                            )
+                            // 开了以后下面带出几行“查某类”，都不带图标，这一行也不带。
+                            ToggleRow("写作时给建议", assist.realtime) { on ->
+                                vm.writingAi.updateAssist(workId) { it.copy(realtime = on) }
+                            }
+                        }
+                        if (assist.realtime) {
+                            SuggestKind.entries.filter { it.realtime }.forEach { k ->
+                                row {
+                                    ToggleRow("查${k.label}", k.name in assist.suggestKinds) { on ->
+                                        vm.writingAi.updateAssist(workId) { a -> a.copy(suggestKinds = if (on) (a.suggestKinds + k.name).distinct() else a.suggestKinds - k.name) }
+                                    }
+                                }
+                            }
                         }
                     }
-                    StyleSamplesSection(vm, workId, assist)
                     GroupedSection(
-                        header = "学你的改法",
-                        footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
-                            "没采纳的改法记下最近 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。只存在这台手机上（随灵阅备份）。",
+                        header = "记录",
+                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
+                            "“用量”按天、按功能记这部作品花了多少（只有数字）。",
                     ) {
-                        row { ValueRow("记住的采纳", "${assist.accepted.size} 条") }
-                        row { ValueRow("记住的没采纳", "${assist.declined.size} 条") }
-                        row { ValueRow("没用上的建议", "${assist.rejected} 次") }
-                        if (assist.accepted.isNotEmpty() || assist.rejected > 0 || assist.declined.isNotEmpty()) {
-                            row { ActionRow("清除记录", destructive = true) { clearing = true } }
+                        // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。
+                        row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
+                        row {
+                            val usage by vm.aiUsage.collectAsStateWithLifecycle()
+                            val today = com.xycs.lingyuereader.ai.UsageBook.total(usage.days[java.time.LocalDate.now()].orEmpty().filter { it.work == workId })
+                            NavRow(
+                                "用量",
+                                value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (com.xycs.lingyuereader.ai.AiPricing.money(today.cost)?.let { "约 $it" } ?: "${today.usage.requests} 次"),
+                            ) { vm.open(Screen.AiUsage(workId)) }
                         }
+                    }
+                    // 不常调的收进二级页：值和存储都不变，只是换个地方放。
+                    GroupedSection(footer = "知识库和本章资料的上限、写作建议的频率、文风范例怎么挑、学你的改法、最近一次发给 AI 的内容。") {
+                        row { NavRow("高级设置") { vm.open(Screen.WorkAiAdvanced(workId)) } }
                     }
                 }
             }
-            if (clearing) {
-                GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定包。", onDismissRequest = { clearing = false }) {
-                    DialogButtons(
-                        onDismiss = { clearing = false },
-                        onConfirm = {
-                            clearing = false
-                            vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
-                        },
-                        confirmText = "清除",
-                        destructive = true,
-                    )
-                }
-            }
-            if (showSent) sent?.let { SentDialog(it) { showSent = false } }
             if (temperatureOpen) {
                 GlassDialog(show = true, title = "写正文的温度", summary = "越高越不套路，也越容易跑偏；只用在写正文、改稿上", onDismissRequest = { temperatureOpen = false }) {
                     DialogOptionList(
@@ -985,6 +926,100 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 作品 AI 设置的“高级设置”：不常调的几样从设置页收进来，值和存储都没变——
+ * 知识库、本章资料的上限，写作建议的频率，文风范例怎么挑，学你的改法（计数、清除），最近一次发给 AI 的内容。
+ */
+@Composable
+fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val assist = assists[workId] ?: WorkAssist()
+    val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
+    var clearing by remember { mutableStateOf(false) }
+    var showSent by remember { mutableStateOf(false) }
+    SubPageScaffold("高级设置", onBack = { vm.back() }) { padding ->
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            item {
+                GroupedSection(
+                    header = "设定包",
+                    footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
+                        "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
+                        "放得越多，AI 越不用查，但每次请求越大。DeepSeek 会尝试缓存相同的开头，实际命中以用量记录为准。" +
+                        "本章资料字数上限也影响联网项目写作；本机模型不能自己查，会按章挑着带。",
+                ) {
+                    row {
+                        PickerRow(
+                            "知识库上限",
+                            WorkAssist.KNOWLEDGE_LIMITS.map { it to if (it == 0) "按模型" else "${it / 10_000} 万字" },
+                            assist.knowledgeLimit,
+                        ) { v -> vm.writingAi.updateAssist(workId) { it.copy(knowledgeLimit = v) } }
+                    }
+                    row {
+                        PickerRow("本章资料上限", WorkAssist.BRIEF_LIMITS.map { it to "${it / 1000} 千字" }, assist.briefLimit) { v ->
+                            vm.writingAi.updateAssist(workId) { it.copy(briefLimit = v) }
+                        }
+                    }
+                }
+                GroupedSection(
+                    header = "写作建议",
+                    footer = "开了“写作时给建议”才用得上：停笔后两次检查之间至少隔多久、一天最多查几次。按服务商的价格计费。",
+                ) {
+                    row {
+                        PickerRow("两次至少隔", WorkAssist.SUGGEST_GAPS.map { it to "$it 秒" }, assist.suggestGap) { v ->
+                            vm.writingAi.updateAssist(workId) { it.copy(suggestGap = v) }
+                        }
+                    }
+                    row {
+                        PickerRow("一天最多", WorkAssist.SUGGEST_CAPS.map { it to if (it == 0) "不限" else "$it 次" }, assist.suggestCap) { v ->
+                            vm.writingAi.updateAssist(workId) { it.copy(suggestCap = v) }
+                        }
+                    }
+                }
+                StyleSamplesMoreSection(vm, workId, assist)
+                GroupedSection(
+                    header = "学你的改法",
+                    footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
+                        "没采纳的改法记下最近 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。只存在这台手机上（随灵阅备份）。",
+                ) {
+                    row { ValueRow("记住的采纳", "${assist.accepted.size} 条") }
+                    row { ValueRow("记住的没采纳", "${assist.declined.size} 条") }
+                    row { ValueRow("没用上的建议", "${assist.rejected} 次") }
+                    if (assist.accepted.isNotEmpty() || assist.rejected > 0 || assist.declined.isNotEmpty()) {
+                        row { ActionRow("清除记录", destructive = true) { clearing = true } }
+                    }
+                }
+                GroupedSection(
+                    header = "记录",
+                    footer = "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看；也写着这次用了多少 token、约多少钱。",
+                ) {
+                    row {
+                        NavRow("最近一次发给 AI 的内容", value = sent?.let { "${it.label} · ${it.size} 字" } ?: "还没有", enabled = sent != null) { showSent = true }
+                    }
+                }
+            }
+        }
+        if (clearing) {
+            GlassDialog(show = true, title = "清除记录", summary = "记住的采纳和统计都会清掉，不影响稿子和设定包。", onDismissRequest = { clearing = false }) {
+                DialogButtons(
+                    onDismiss = { clearing = false },
+                    onConfirm = {
+                        clearing = false
+                        vm.writingAi.updateAssist(workId) { it.copy(accepted = emptyList(), declined = emptyList(), rejected = 0) }
+                    },
+                    confirmText = "清除",
+                    destructive = true,
+                )
+            }
+        }
+        if (showSent) sent?.let { SentDialog(it) { showSent = false } }
     }
 }
 

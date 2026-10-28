@@ -49,43 +49,56 @@ private fun rememberStylePick(vm: AppViewModel, workId: String, assist: WorkAssi
     return pick
 }
 
-/** 作品的 AI 设置里“文风范例”一节：开关、字数上限、没有定稿章时退回、看看挑了哪几段。 */
+/** 作品的 AI 设置里“文风范例”一节：只有开关；带多少字、没有定稿章时退回、看看挑了哪几段在“高级设置”里（[StyleSamplesMoreSection]）。 */
 @Composable
 internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
-    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
-    val pick = rememberStylePick(vm, workId, assist, assists[workId] != null)
     GroupedSection(
         header = "文风范例",
         footer = "从你标了“定稿”的章里挑几段——一段叙述描写、一段对白多的、一段动作场面，每段 200–500 字——放进发给 AI 的内容里当范例。" +
             "AI 写、AI 写整章草稿、润色、更生动、扩写、缩写、按要求改时照着学句式、节奏、用词和对白方式，不照抄内容；挑错、写作建议、审稿不带。" +
-            "写第 N 章时只从它前面的章里挑，不会剧透。本机模型只带三分之一。在本机挑，同样的定稿章挑出同样的几段（开头不变，服务商能缓存）。",
+            "写第 N 章时只从它前面的章里挑，不会剧透。本机模型只带三分之一。在本机挑，同样的定稿章挑出同样的几段（开头不变，服务商能缓存）。" +
+            "最多带多少字、挑了哪几段在“高级设置”里。",
     ) {
         row {
             ToggleRow("用定稿章当文风范例", assist.sampleLimit > 0) { on ->
                 vm.writingAi.updateAssist(workId) { it.copy(sampleLimit = if (on) StyleSamples.DEFAULT_LIMIT else 0) }
             }
         }
-        if (assist.sampleLimit > 0) {
-            row {
-                PickerRow("最多带", StyleSamples.LIMITS.filter { it > 0 }.map { it to "$it 字" }, assist.sampleLimit) { v ->
-                    vm.writingAi.updateAssist(workId) { it.copy(sampleLimit = v) }
-                }
+    }
+}
+
+/** “高级设置”里的文风范例：最多带、没有定稿章时退回、看看挑了哪几段；开关关着时只说一句。 */
+@Composable
+internal fun StyleSamplesMoreSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    val pick = rememberStylePick(vm, workId, assist, assists[workId] != null && assist.sampleLimit > 0)
+    GroupedSection(
+        header = "文风范例",
+        footer = if (assist.sampleLimit > 0) "从定稿章里挑几段当范例，最多带这么多字。" else "在“写作 AI”设置里打开“用定稿章当文风范例”才用得上。",
+    ) {
+        if (assist.sampleLimit <= 0) {
+            row { EmptyRow("文风范例关着") }
+            return@GroupedSection
+        }
+        row {
+            PickerRow("最多带", StyleSamples.LIMITS.filter { it > 0 }.map { it to "$it 字" }, assist.sampleLimit) { v ->
+                vm.writingAi.updateAssist(workId) { it.copy(sampleLimit = v) }
             }
-            row {
-                ToggleRow("没有定稿章时用字数最多的章", assist.sampleFallback) { on ->
-                    vm.writingAi.updateAssist(workId) { it.copy(sampleFallback = on) }
-                }
+        }
+        row {
+            ToggleRow("没有定稿章时用字数最多的章", assist.sampleFallback) { on ->
+                vm.writingAi.updateAssist(workId) { it.copy(sampleFallback = on) }
             }
-            row {
-                NavRow(
-                    "看看挑了哪几段",
-                    value = when {
-                        pick == null -> "……"
-                        pick.samples.isEmpty() -> "没有可用的"
-                        else -> "${pick.samples.size} 段 · ${pick.chars} 字"
-                    },
-                ) { vm.open(Screen.WorkStyleSamples(workId)) }
-            }
+        }
+        row {
+            NavRow(
+                "看看挑了哪几段",
+                value = when {
+                    pick == null -> "……"
+                    pick.samples.isEmpty() -> "没有可用的"
+                    else -> "${pick.samples.size} 段 · ${pick.chars} 字"
+                },
+            ) { vm.open(Screen.WorkStyleSamples(workId)) }
         }
     }
 }

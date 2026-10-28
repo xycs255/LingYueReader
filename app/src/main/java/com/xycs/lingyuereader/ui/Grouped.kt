@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -470,6 +471,30 @@ internal fun NavRow(
         if (value != null) RowValue(value, enabled)
         if (trailing != null) Box(Modifier.padding(start = 8.dp)) { trailing() }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
+    }
+}
+
+/**
+ * 在本页展开、收起一组次要选项的一行（排版设置的“更多排版规则”）：名字、右边灰色的说明（几项），
+ * 小箭头收着朝右、展开朝下，转过去用标准缓动（减少动效时直接换）。读屏念“已展开 / 已收起”。
+ * 点进二级页的用 [NavRow]；这里只在本页多露几行。
+ */
+@Composable
+internal fun ExpandRow(title: String, expanded: Boolean, value: String? = null, onToggle: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val turn by animateFloatAsState(if (expanded) 90f else 0f, if (Effects.noMotion) snap() else Motion.standard(Motion.SHORT), label = "expandArrow")
+    GroupedRow(
+        Modifier.semantics { stateDescription = if (expanded) "已展开" else "已收起" },
+        onClick = onToggle,
+    ) {
+        RowTitle(title, c.label, enabled = true)
+        if (value != null) RowValue(value)
+        Icon(
+            LingYueIcons.ChevronForward,
+            contentDescription = null,
+            tint = c.tertiary,
+            modifier = Modifier.padding(start = 4.dp).size(16.dp).graphicsLayer { rotationZ = turn },
+        )
     }
 }
 

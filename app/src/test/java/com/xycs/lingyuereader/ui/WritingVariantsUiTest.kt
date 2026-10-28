@@ -160,6 +160,31 @@ class WritingVariantsUiTest {
         waitFor { WorkStore(writingDir).assist(workId).temperature == null }
     }
 
+    /** 作品 AI 设置分两层：常用的直接列出；上限、频率、文风范例怎么挑、学你的改法、最近一次发给 AI 的内容在“高级设置”里，照样能改。 */
+    @Test
+    fun theAdvancedSettingsHoldTheRarelyChangedItems() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitFor { vm.writingAi.assists.value[workId] != null }
+        listOf("服务商", "设定包", "写作范本", "对文风的要求", "用定稿章当文风范例", "写正文的温度", "查 AI 腔", "我的黑名单", "写作时给建议", "AI 记录", "用量")
+            .forEach { compose.onNodeWithText(it).performScrollTo() }
+        listOf("知识库上限", "本章资料上限", "两次至少隔", "一天最多", "最多带", "看看挑了哪几段", "记住的采纳", "最近一次发给 AI 的内容")
+            .forEach { assertTrue("$it 收进了高级设置", compose.onAllNodesWithText(it).fetchSemanticsNodes().isEmpty()) }
+        // 开了写作建议才带出四类子开关。
+        compose.onNodeWithText("写作时给建议").performScrollTo().performClick()
+        waitFor { WorkStore(writingDir).assist(workId).realtime }
+        listOf("查错字", "查设定", "查规范", "查口吻").forEach { compose.onNodeWithText(it).performScrollTo() }
+
+        compose.onNodeWithText("高级设置").performScrollTo().performClick()
+        waitForText("知识库上限")
+        listOf("知识库上限", "本章资料上限", "两次至少隔", "一天最多", "最多带", "没有定稿章时用字数最多的章", "看看挑了哪几段",
+            "记住的采纳", "记住的没采纳", "没用上的建议", "最近一次发给 AI 的内容").forEach { compose.onNodeWithText(it).performScrollTo() }
+        // 值和存储不变：在这里改两次至少隔，存进作品设置。
+        compose.onNodeWithText("两次至少隔").performScrollTo().performClick()
+        compose.onNodeWithText("60 秒").performClick()
+        waitFor { WorkStore(writingDir).assist(workId).suggestGap == 60 }
+    }
+
     @Test
     fun threeDirectionsAreWrittenAndTheSelectedOneIsAccepted() {
         WorkStore(writingDir).updateAssist(workId) { it.copy(temperature = 1.3f) }

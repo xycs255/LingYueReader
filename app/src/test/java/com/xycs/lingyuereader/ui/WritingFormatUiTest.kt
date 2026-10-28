@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.text.TextRange
@@ -21,6 +22,7 @@ import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.WorkStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -181,6 +183,24 @@ class WritingFormatUiTest {
         // 排版设置里关掉“输入时自动排版”：照打。
         compose.runOnUiThread { vm.open(Screen.WorkFormatSettings(workId)) }
         waitForText("输入时自动排版")
+        // 默认只露输入时自动排版和引号风格，其余收在“更多排版规则”里。
+        waitForText("引号风格")
+        assertTrue(compose.onAllNodesWithText("标点换全角").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("更多排版规则").performScrollTo().performClick()
+        // 列表是懒加载的：滚到哪一项再找它。
+        // 按节点 id 认这个列表：滚下去以后“更多排版规则”就不在树里了。
+        val listId = compose.onNode(androidx.compose.ui.test.hasScrollToIndexAction() and
+            androidx.compose.ui.test.hasAnyDescendant(androidx.compose.ui.test.hasText("更多排版规则"))).fetchSemanticsNode().id
+        val list = compose.onNode(androidx.compose.ui.test.SemanticsMatcher("排版设置列表") { it.id == listId })
+        listOf("段首段尾空白", "段内多余空格", "中英文之间加空格", "空行", "标点换全角", "省略号、破折号", "合并重复标点", "段末缺标点时提示", "统一引号")
+            .forEach { list.performScrollToNode(androidx.compose.ui.test.hasText(it)) }
+        // 收进去的项照样能改，存的值不变。
+        compose.onNodeWithText("统一引号").performClick()
+        waitFor { !store.assist(workId).format.quotes }
+        list.performScrollToNode(androidx.compose.ui.test.hasText("更多排版规则"))
+        compose.onNodeWithText("更多排版规则").performClick()
+        waitFor { compose.onAllNodesWithText("标点换全角").fetchSemanticsNodes().isEmpty() }
+        list.performScrollToNode(androidx.compose.ui.test.hasText("输入时自动排版"))
         compose.onNodeWithText("输入时自动排版").performClick()
         waitFor { !store.assist(workId).format.onInput }
         compose.runOnUiThread { vm.back() }

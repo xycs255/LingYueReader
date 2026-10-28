@@ -190,15 +190,20 @@ class WritingRound2UiTest {
         compose.runOnUiThread { vm.writingAi.run(workId, chapterId, store.text(workId, chapterId), com.xycs.lingyuereader.WriteAiTask.Idea(com.xycs.lingyuereader.ai.IdeaKind.entries.first())) }
         waitFor { store.aiLog(workId).isNotEmpty() }
 
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        compose.runOnUiThread { vm.open(Screen.WorkAiAdvanced(workId)) }
         waitForText("最近一次发给 AI 的内容")
         compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo().performClick()
         waitForText("系统提示（")
         compose.onNodeWithText("好").performClick()
+        waitFor { compose.onAllNodesWithText("系统提示（", substring = true).fetchSemanticsNodes().isEmpty() }
         // 本章资料上限改成 2 万字。
         compose.onNodeWithText("本章资料上限").performScrollTo().performClick()
+        waitForText("20 千字")
         compose.onNodeWithText("20 千字").performClick()
         waitFor { store.assist(workId).briefLimit == 20_000 }
+        compose.runOnUiThread { vm.back() }
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitForText("写作范本")
 
         compose.onNodeWithText("AI 记录").performScrollTo().performClick()
         waitForText("让门外有脚步声")
