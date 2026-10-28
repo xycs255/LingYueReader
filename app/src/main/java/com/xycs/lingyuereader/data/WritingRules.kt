@@ -71,6 +71,19 @@ object CheckRules {
     private val bannedKey = Regex("^(?:禁用|不用|别用|不要用|禁止)(?:词|词语|句式|称谓|说法|动作|动作拍|口癖|套话)?$|^句式$|^禁用句式$")
     private val numberIn = Regex(number)
 
+    /**
+     * 读几份文档（标题、正文）里的规则，合在一起。两份同名时后面的标题加“（2）”这类序号：
+     * 命中按“文档#行号”认，同名文档同一行会撞键（问题面板的列表撞键直接闪退）。
+     */
+    fun parseDocs(docs: List<Pair<String, String>>): RuleSet {
+        val seen = HashMap<String, Int>()
+        return docs.fold(RuleSet()) { all, (title, text) ->
+            val n = (seen[title] ?: 0) + 1
+            seen[title] = n
+            all + parse(text, if (n == 1) title else "$title（$n）")
+        }
+    }
+
     /** 读一份文档里的规则。 */
     fun parse(text: String, doc: String = ""): RuleSet {
         val rules = mutableListOf<CheckRule>()
@@ -165,8 +178,8 @@ object CheckRules {
                 p = p.substring(0, m.range.first).trim()
             }
             val forms = p.split('／', '/', '|', '｜').map(::unquote).filter { it.isNotEmpty() && wildcard.replace(it, "").isNotEmpty() }
-            if (forms.isEmpty()) null else RuleTerm(forms, except)
-        }
+            if (forms.isEmpty()) null else RuleTerm(forms.distinct(), except)
+        }.distinctBy { it.label } // “禁用：大概、大概”：同一个词数两遍没有意义，命中的键也会撞
     }
 
     private fun unquote(s: String) = s.trim().trim('“', '”', '"', '「', '」', '‘', '’', '\'', '『', '』').trim()

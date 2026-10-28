@@ -734,7 +734,7 @@ class WritingModel(
     suspend fun rules(workId: String): RuleSet = withContext(disk) { readRules(workId) }
 
     private fun readRules(workId: String): RuleSet =
-        store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+        CheckRules.parseDocs(store.pack(workId).filter { it.kind == PackKind.RULES }.map { d -> d.title to store.packText(workId, d.id) })
 
     /** 按规则检查一章（存盘的正文）。没有规则时返回 null。 */
     suspend fun checkChapter(workId: String, chapterId: String): RuleReport? {

@@ -661,7 +661,7 @@ object WritePrompts {
             val o = issues.optJSONObject(i) ?: return@mapNotNull null
             val problem = o.optString("problem").trim()
             if (problem.isEmpty()) null else ReviewIssue(o.optString("quote").trim().trim('“', '”', '「', '」', '"'), problem, o.optString("fix").trim())
-        }
+        }.distinctBy { it.quote to it.problem } // 模型偶尔把同一条说两遍
     }
 
     /** 本章摘要的要求：单独写摘要（[summary]）和整理时顺带写（[sync] 的 summary 字段）用同一句，两边写出来的一个样。 */

@@ -1537,7 +1537,7 @@ class WritingAi(
                         }
                         ReviewGate.RULES -> {
                             val rules = withContext(Dispatchers.IO) {
-                                store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+                                CheckRules.parseDocs(store.pack(workId).filter { it.kind == PackKind.RULES }.map { d -> d.title to store.packText(workId, d.id) })
                             }
                             if (rules.isEmpty) GateResult(gate, error = "没有检查规则，跳过", at = System.currentTimeMillis())
                             else {
@@ -2470,7 +2470,7 @@ class WritingAi(
                     ReferenceWriting.verifyProse(previous.text, reference)
                 }
                 val rules = withContext(Dispatchers.IO) {
-                    store.pack(workId).filter { it.kind == PackKind.RULES }.fold(RuleSet()) { all, d -> all + CheckRules.parse(store.packText(workId, d.id), d.title) }
+                    CheckRules.parseDocs(store.pack(workId).filter { it.kind == PackKind.RULES }.map { d -> d.title to store.packText(workId, d.id) })
                 }
                 val proseRules = withContext(Dispatchers.IO) { writingRules(workId, chapterId, "") }
                 val assist = assistOf(workId)
