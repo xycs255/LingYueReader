@@ -11,7 +11,20 @@ import org.json.JSONObject
 internal data class ReferenceWritingMaterial(val analysisId: String, val excerpt: ReferenceExcerpt)
 
 /** Discard generated prose if the selected source changes or the model copies an extended passage. */
-internal class RejectedReferenceWriting(message: String) : IllegalStateException(message)
+internal class RejectedReferenceWriting(message: String, val issue: DraftReferenceIssue? = null) : IllegalStateException(message)
+
+/**
+ * 已写的候选稿要接着写、审读，范本这一关没过的原因（草稿页按它给出路，见 [WritingAi.recheckDraftReference]、
+ * [WritingAi.reviewWithoutReference]）。
+ */
+enum class DraftReferenceIssue {
+    /** 范本没变，只是“已核验”的标记没了（改过、压过篇幅、写到一半停下）：重新核验一遍就行。 */
+    UNVERIFIED,
+    /** 范本变了、删了或读不到：没法按原来的范本核验。 */
+    CHANGED,
+    /** 正文和范本太像（连续照抄或抄来的片段太多）。 */
+    COPIED,
+}
 
 internal object ReferenceWriting {
     private const val CHAPTER_CHARS = 12_000
@@ -35,6 +48,20 @@ internal object ReferenceWriting {
             throw RejectedReferenceWriting("范本片段已变化，请重新分析后再让 AI 写")
         }
         return ReferenceWritingMaterial(analysis.id, excerpt)
+    }
+
+    /**
+     * 范本分析现在指向的那段原文，不管它和写稿时比变没变；分析、章节没了或读不出来为空。
+     * 只给“不用范本，直接审读这一稿”用：去掉范本关联前，拿现在的原文查一遍有没有照抄。
+     */
+    fun current(store: WorkStore, workId: String, targetChapterId: String, analysisId: String): ReferenceWritingMaterial? = try {
+        store.referenceAnalyses(workId, targetChapterId).firstOrNull { it.id == analysisId }?.let { analysis ->
+            val maxChars = if (analysis.part == ReferencePart.CHAPTER) CHAPTER_CHARS else analysis.end - analysis.start
+            store.selectedChapterExcerpt(workId, analysis.referenceId, analysis.chapterId, analysis.part, maxChars, analysis.start, analysis.end)
+                ?.let { ReferenceWritingMaterial(analysis.id, it) }
+        }
+    } catch (e: Exception) {
+        null
     }
 
     fun ensureCurrent(store: WorkStore, workId: String, targetChapterId: String, material: ReferenceWritingMaterial) {
@@ -69,6 +96,19 @@ internal object ReferenceWriting {
             ReferenceQuotes.checkProse(prose, material.excerpt.text)
         } catch (e: IllegalArgumentException) {
             throw RejectedReferenceWriting("本轮生成${e.message}，不能采纳；请缩小范围或调整写法要求")
+        }
+    }
+
+    /**
+     * 核验已经写好的一稿（不是这次刚生成的）：没过时说清楚哪一段和范本太像，作者好去改。
+     */
+    fun verifyDraft(prose: String, material: ReferenceWritingMaterial) {
+        try {
+            ReferenceQuotes.checkProse(prose, material.excerpt.text)
+        } catch (e: IllegalArgumentException) {
+            val passage = ReferenceQuotes.longestCopied(prose, material.excerpt.text)
+            throw RejectedReferenceWriting("这一稿${e.message}" +
+                (passage?.let { "，比如这段和范本一字不差：“$it”" } ?: "") + "。改掉这些地方再核验，或者从头重写", DraftReferenceIssue.COPIED)
         }
     }
 }

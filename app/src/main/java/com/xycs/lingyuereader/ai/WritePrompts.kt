@@ -509,6 +509,29 @@ object WritePrompts {
         if (material.isNotBlank()) append("\n\n").append(material.trim())
     }
 
+    /**
+     * 审读的系统提示：编辑助手的身份，作者的工作说明和章节审读提示词（[author]），本章任务（[task]：细纲卡、已定前章结尾、
+     * 按本章挑的资料和账本快照）。不再整份放知识库：其余资料由 [reviewToolGuide] 列出，模型核对时自己查。
+     * [task] 为空时就是每次一样的开头（缓存边界）。
+     */
+    fun reviewSystem(title: String, assist: WorkAssist, author: String, task: String): String = buildString {
+        append(system(title, assist).trim())
+        if (author.isNotBlank()) append("\n\n【作者写给 AI 的说明】\n").append(author.trim())
+        if (task.isNotBlank()) append("\n\n").append(task.trim())
+    }
+
+    /**
+     * 审读时的查阅说明和能查的资料清单（文档名）。来源编号在查阅结果里（“[来源 …]”）：原文要查了才能一字不差地引，
+     * 清单里不再逐份列编号，省字数。
+     */
+    fun reviewToolGuide(catalog: List<String>): String = buildString {
+        append("本章任务里没整份给出的资料（设定、人物、细纲原文、前面的正文），核对时用工具查原文：")
+        append("read_doc 读资料或其中一节，search 搜关键词，read_chapter 读前面某一章的正文。")
+        append("source_ref 用查阅结果里标的来源编号，source_quote 照查到的原文一字不差地抄；没查到原文的，不当作已核实的依据。")
+        if (catalog.isNotEmpty()) append("能查的资料：").append(catalog.joinToString("") { "《$it》" }).append("。")
+        append("查够了直接给审读结果。")
+    }
+
     /** 写正文时的查阅说明：一两句，需要核对时再查，查完直接写。 */
     fun proseToolGuide(catalog: List<String>): String = buildString {
         append("细节拿不准（人物、地名、前面写过的事）时再查：read_doc 读资料，search 搜关键词，read_chapter 读前面某一章的正文。")

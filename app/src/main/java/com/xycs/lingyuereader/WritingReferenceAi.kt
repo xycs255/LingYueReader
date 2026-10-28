@@ -355,6 +355,27 @@ internal object ReferenceQuotes {
         return (0 until text.length - MAX_RUN).any { text.substring(it, it + MAX_RUN + 1) in runs }
     }
 
+    /**
+     * 正文里和范本连续相同的最长一段（至少 [COPY_MIN] 字，去掉了空白）；没有为空。太长的只取前 [shown] 字。
+     * 核验没过时拿给作者看是哪一段。
+     */
+    fun longestCopied(prose: String, source: String, shown: Int = 60): String? {
+        val original = normalized(source)
+        val text = normalized(prose)
+        if (original.length < COPY_MIN || text.length < COPY_MIN) return null
+        val windows = windows(original, COPY_MIN)
+        var best: String? = null
+        var at = 0
+        while (at <= text.length - COPY_MIN) {
+            if (text.substring(at, at + COPY_MIN) !in windows) { at++; continue }
+            var end = at + COPY_MIN
+            while (end < text.length && original.contains(text.substring(at, end + 1))) end++
+            if (best == null || end - at > best.length) best = text.substring(at, end)
+            at = end
+        }
+        return best?.let { if (it.length > shown) it.take(shown) + "……" else it }
+    }
+
     /** 被至少一个 [COPY_MIN] 字的相同片段覆盖到的字数；重叠的片段不重复计算。 */
     internal fun copiedChars(text: String, original: String): Int {
         if (original.length < COPY_MIN || text.length < COPY_MIN) return 0

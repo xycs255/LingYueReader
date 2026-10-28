@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.CrashLog
+import com.xycs.lingyuereader.DraftReferenceIssue
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ChapterCard
@@ -514,6 +515,38 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     if (sent != null && sent?.label in setOf("写本章", "接着写", "本稿审读", "本稿修订")) {
                         row { NavRow("看发给 AI 的内容", value = sent?.let { "${it.size} 字" }) { showSent = true } }
+                    }
+                }
+                // 已写的这一稿过不了范本这一关（标记丢了、范本变了、和范本太像）：给出路，不只说“请从头重写”。
+                val sourceIssue = draft?.takeIf { !loading && text.isNotBlank() && it.referenceAnalysisId != null && !it.referenceProvenanceBlocked }
+                    ?.let { it.referenceIssue ?: DraftReferenceIssue.UNVERIFIED.takeIf { _ -> !it.referenceValidated } }
+                if (sourceIssue != null) {
+                    GroupedSection(
+                        header = "范本核验",
+                        footer = when (sourceIssue) {
+                            DraftReferenceIssue.UNVERIFIED -> "这一稿还没核验和范本有没有照抄（改过、压过篇幅，或写到一半停下）。范本没变，重新核验一遍，通过了就能接着写、审读。"
+                            DraftReferenceIssue.CHANGED -> "写这一稿时用的范本变了或读不到，没法按原来的范本核验。可以去掉范本：先拿范本现在的原文查一遍有没有照抄，没有就直接审读；查不了再从头重写。"
+                            DraftReferenceIssue.COPIED -> "这一稿有地方和范本太像（见上方说明）。改掉那几处再重新核验，或者从头重写。"
+                        },
+                    ) {
+                        if (sourceIssue != DraftReferenceIssue.CHANGED) row {
+                            ActionRow("重新核验范本", enabled = !locked && !revisionWriteBlocked) { vm.writingAi.recheckDraftReference(workId, chapterId) }
+                        }
+                        row {
+                            ActionRow("不用范本，直接审读这一稿", enabled = canReview) {
+                                val action = {
+                                    vm.writingAi.reviewWithoutReference(workId, chapterId, instruction, targetLength) {
+                                        // 这一稿不再挂范本：下次写用的范本选择也清掉，免得“接着写”又要求沿用范本。
+                                        vm.clearCompanionReference(workId, chapterId)
+                                        referenceId = null
+                                    }
+                                }
+                                if (task?.project == true && task?.previousLabel?.startsWith("以细纲结果承接") == true && !planContinuationAccepted) {
+                                    pendingContinuation = action
+                                } else action()
+                            }
+                        }
+                        row { ActionRow("从头重写", enabled = canWrite) { startDraft() } }
                     }
                 }
                 GroupedSection(
