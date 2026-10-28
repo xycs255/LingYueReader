@@ -133,4 +133,25 @@ class AiClicheTest {
         assertEquals(null, AiCliche.bannable("嘴"))
         assertEquals(null, AiCliche.bannable("字".repeat(21)))
     }
+
+    /** 文艺克制腔：硬造余味的单句短段、“张了张嘴”“到底没喊出”“盯着……看了一会儿”，只限次数；吐槽、玩梗不标。 */
+    @Test
+    fun restrainedArtsyLinesAreCountedButJokesAreNot() {
+        val once = "林月张了张嘴。她转身去了渡口，船上没人。\n“周伯？”她喊了一声。"
+        assertTrue(hits(once).none { "张了张嘴" in it.message })
+        val twice = "林月张了张嘴，到底没喊出声。\n沈默也张了张嘴。\n她盯着那条船看了一会儿，又盯着桩子看了一会儿。"
+        val found = hits(twice)
+        assertTrue(found.joinToString { it.message }, found.any { "张了张嘴" in it.message })
+        assertTrue(found.any { "盯着……看了一会儿" in it.message })
+        assertTrue(found.all(AiCliche::isVoice))
+        // 只有一句的短段：一章两处以内不标，多了才标；对白不算。
+        val short = "林月推开门，屋里没人。\n墙是凉的。\n灶也是凉的。\n“走吧。”\n“好。”"
+        assertTrue(hits(short).none { "字以内的段" in it.message })
+        val more = short + "\n风停了。"
+        val para = hits(more).first { "字以内的段" in it.message }
+        assertEquals(3, para.ranges.size)
+        // 叙述者吐槽、网络梗是作者要的口吻，不算 AI 腔。
+        val jokes = "好家伙，这波属于是血赚。林月心想，离谱，太离谱了。\n顾长风这人吧，主打一个阴阳怪气，绝了。"
+        assertTrue(hits(jokes).joinToString { it.message }, hits(jokes).isEmpty())
+    }
 }
