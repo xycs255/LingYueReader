@@ -420,11 +420,14 @@ object WritePrompts {
         }
     }
 
+    /** 本章摘要的要求：单独写摘要（[summary]）和整理时顺带写（[sync] 的 summary 字段）用同一句，两边写出来的一个样。 */
+    private const val SUMMARY_RULE = "用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；" +
+        "章末留下的钩子写一句。只写事实，不评价写法，不猜后文。"
+
     /** 本章摘要：给写后面的章当前情用，只写事实。 */
     fun summary(text: String, title: String): String = buildString {
         append("下面是小说的一章「").append(title).append("」：\n\n").append(text).append("\n\n")
-        append("请用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；")
-        append("章末留下的钩子写一句。只写事实，不评价写法，不猜后文。只输出摘要本身。")
+        append("请").append(SUMMARY_RULE).append("只输出摘要本身。")
     }
 
     /**
@@ -639,7 +642,7 @@ object WritePrompts {
      * 只要正文里明写了的：新出现的设定、和设定包对不上的写进设定包；人物状态的变化、发生的事、谁知道了什么、
      * 新埋和收掉的伏笔、故事里的时间记进账本。每条带正文原句，解析时核对。
      */
-    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = ""): String = buildString {
+    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = "", summary: Boolean = false): String = buildString {
         if (parts > 1) {
             // 太长的章分几段整理：每段一次请求，带上前一段的末尾接上文。
             append("这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）太长，分 ").append(parts).append(" 段整理")
@@ -666,6 +669,8 @@ object WritePrompts {
         append("7. threads_closed（收伏笔）：这一章收掉的伏笔。id 只能写上面账本“开着的伏笔”里列出的编号（比如 P1）；")
         append("没列出的不要提，账本里没有列出伏笔时给空列表。\n")
         append("8. time（时间）：这一章在故事里是什么时候，或者离上一章过了多久。when 写一句话；正文没写就空着。\n")
+        // “这章写完了”：整理和写摘要合成一次请求，省一次把整章正文再发一遍。
+        if (summary) append("9. summary（本章摘要）：给写后面的章当前情用。").append(SUMMARY_RULE).append("写成一段话，不分条。\n")
         append("规矩：\n")
         append("- 只提正文里明确写到的，不推测、不补全、不替作者发明设定；拿不准就不提。\n")
         append("- 设定包里已经有的不要重复提。")
@@ -685,7 +690,8 @@ object WritePrompts {
         append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}],")
         append("\"threads_opened\":[{\"what\":\"\",\"payoff\":null,\"quote\":\"\"}],")
         append("\"threads_closed\":[{\"id\":\"P1\",\"quote\":\"\"}],")
-        append("\"time\":{\"when\":\"\",\"quote\":\"\"}}")
+        append("\"time\":{\"when\":\"\",\"quote\":\"\"}")
+        append(if (summary) ",\"summary\":\"\"}" else "}")
     }
 
     /** 分段整理时带上前一段末尾多少字（接上文用）。 */
@@ -711,8 +717,8 @@ object WritePrompts {
         return out.filter { it.isNotBlank() }
     }
 
-    /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */
-    data class SyncParse(val items: List<SyncItem>, val dropped: Int)
+    /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数；[summary] 是顺带写的本章摘要（没要、没回是空的）。 */
+    data class SyncParse(val items: List<SyncItem>, val dropped: Int, val summary: String = "")
 
     /** 原句至少要有几个字（不算标点、空白）；不到这么长的，得是正文里完整的一句。 */
     const val QUOTE_CHARS = 6
@@ -891,7 +897,9 @@ object WritePrompts {
                 )
             }
         }
-        return SyncParse(out.distinctBy { it.key }, dropped)
+        // 摘要不用核对原句：它是概括，不是摘抄；作者在收尾页上看过、改过才存。
+        val summary = listOf("summary", "摘要", "本章摘要").firstNotNullOfOrNull { k -> o.optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
+        return SyncParse(out.distinctBy { it.key }, dropped, summary)
     }
 
     /** 整理出来、要记进账本的一条：第 [from] 章起，依据是正文原句 [quote]。 */

@@ -223,4 +223,40 @@ class WriteSyncPromptsTest {
         assertTrue("分 ${parts.size} 段整理" in p && "第 2 段" in p && "上一段的末尾" in p && "按设定算第 12 章" in p && "只整理这一段" in p)
         assertTrue(parts[1].take(20) in p)
     }
+
+    /** “这章写完了”把整理和写摘要合成一次请求：要摘要时提示词里多一项，要求和单独写摘要的一样；不要时没有。 */
+    @Test
+    fun syncPromptAsksForTheSummaryOnlyWhenWanted() {
+        val plain = WritePrompts.sync("第十二章 渡口", 12, chapter)
+        assertFalse("summary" in plain)
+        assertTrue(plain.trimEnd().endsWith("\"time\":{\"when\":\"\",\"quote\":\"\"}}"))
+        val p = WritePrompts.sync("第十二章 渡口", 12, chapter, summary = true)
+        assertTrue("9. summary（本章摘要）" in p)
+        assertTrue(p.trimEnd().endsWith(",\"summary\":\"\"}"))
+        // 和单独写摘要（WritePrompts.summary）用同一句要求：150 到 300 字，只写事实。
+        val rule = WritePrompts.summary(chapter, "第十二章 渡口").substringAfter("请").substringBefore("只输出摘要本身")
+        assertTrue("150 到 300 字" in rule && "只写事实" in rule)
+        assertTrue(rule in p)
+    }
+
+    @Test
+    fun parseSyncReadsTheSummaryAndLeavesItEmptyWhenMissing() {
+        val summary = "林月在渡口茶馆从杜娘口中得知老周昨夜死了，顾长风在门外叫她；她这才知道沈默是朝廷的卧底。"
+        val with = parse("""{"new":[],"conflicts":[],"events":[{"what":"老周死了","quote":"老周昨夜里走了"}],"summary":"  $summary  "}""")
+        assertEquals(summary, with.summary)
+        assertEquals(1, with.items.size)
+        // 也认中文键。
+        assertEquals(summary, parse("""{"new":[],"摘要":"$summary"}""").summary)
+        // 没有这个字段（旧的回法、没要摘要）：空的，整理照常。
+        val without = parse("""{"new":[],"conflicts":[],"events":[{"what":"老周死了","quote":"老周昨夜里走了"}]}""")
+        assertEquals("", without.summary)
+        assertEquals(1, without.items.size)
+        assertEquals("", parse("""{"new":[],"summary":null}""").summary)
+        // 只回了摘要、整理的几类一样都没有：仍算没按格式回。
+        try {
+            parse("""{"summary":"$summary"}""")
+            fail("只有摘要不该当成整理好了")
+        } catch (_: AiException) {
+        }
+    }
 }

@@ -117,6 +117,12 @@ data class StyleExample(val action: String, val before: String, val after: Strin
 data class DraftIntent(val instruction: String = "", val targetLength: String = "", val workflowChoice: Boolean? = null)
 
 /**
+ * “这章写完了”收尾页上的勾选项（按作品记住）：整理入账（账本和设定包）、写本章摘要、顺带三道审稿。
+ * 定稿是收尾本身，总要做，不在这里。前两项默认勾，审稿要花时间和钱，默认不勾。
+ */
+data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false)
+
+/**
  * 一部作品的 AI 设置和资料：写作建议开没开（默认关，开了才会自动把刚写的段落发给服务商）、
  * 作者写的文风偏好、设定集、采纳过的修改。
  */
@@ -167,6 +173,8 @@ data class WorkAssist(
     val temperature: Float? = null,
     /** 编辑器“写这一拍…”里勾了“出 3 个方向的版本”：按作品记住，下次打开还是这样。 */
     val beatVariants: Boolean = false,
+    /** “这章写完了”收尾页上次的勾选。 */
+    val finish: FinishOptions = FinishOptions(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -2133,6 +2141,7 @@ class WorkStore(
             .put("banned", JSONArray(banned))
             .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
             .put("beatVariants", beatVariants)
+            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2201,6 +2210,11 @@ class WorkStore(
                 // 旧数据没有这两项：温度按服务商默认，“3 个方向”不勾。
                 temperature = WorkAssist.cleanTemperature(if (has("temperature") && !isNull("temperature")) optDouble("temperature") else null),
                 beatVariants = optBoolean("beatVariants", false),
+                // 旧数据没有收尾的勾选：按默认（整理、摘要勾上，审稿不勾）。
+                finish = optJSONObject("finish")?.let { f ->
+                    val d = FinishOptions()
+                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review))
+                } ?: FinishOptions(),
             )
         }
 
