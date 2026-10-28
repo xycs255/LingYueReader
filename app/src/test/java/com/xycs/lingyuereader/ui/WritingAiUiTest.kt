@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.semantics.SemanticsActions
@@ -384,6 +385,8 @@ class WritingAiUiTest {
         compose.onNodeWithText("好").performClick()
         waitForText("让他听见门外的脚步声")
         assertTrue(prompts.single().contains("杜娘的茶馆"))
+        // 字流出来时回答还没收完，“插到光标处”要等回答完整才可点；慢机器上不等就点会落空。
+        waitFor { compose.onAllNodes(hasText("插到光标处") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("插到光标处").performClick()
         waitFor { "让他听见门外的脚步声" in WorkStore(writingDir).text(workId, chapterId) }
     }
