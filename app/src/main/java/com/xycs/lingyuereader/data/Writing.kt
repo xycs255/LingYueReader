@@ -117,6 +117,12 @@ data class StyleExample(val action: String, val before: String, val after: Strin
 data class DraftIntent(val instruction: String = "", val targetLength: String = "", val workflowChoice: Boolean? = null)
 
 /**
+ * “这章写完了”收尾页上的勾选项（按作品记住）：整理入账（账本和设定包）、写本章摘要、顺带三道审稿。
+ * 定稿是收尾本身，总要做，不在这里。前两项默认勾，审稿要花时间和钱，默认不勾。
+ */
+data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false)
+
+/**
  * 一部作品的 AI 设置和资料：写作建议开没开（默认关，开了才会自动把刚写的段落发给服务商）、
  * 作者写的文风偏好、设定集、采纳过的修改。
  */
@@ -160,6 +166,20 @@ data class WorkAssist(
     val aiCliche: Boolean = true,
     /** 我的黑名单：作者不想再看到的说法（最旧的在前，最多 [KEEP_BANNED] 条）。本机全文禁用，生成时也告诉 AI 别用。 */
     val banned: List<String> = emptyList(),
+    /**
+     * 写正文的温度：只用在写正文、改正文的请求上（接着写、写本章、项目包的创作、润色扩写这类改稿、多方向版本），
+     * 审稿、修订、整理、拟细纲这些求稳的不用。空是服务商默认（请求里不带这个参数）。见 [TEMPERATURES]。
+     */
+    val temperature: Float? = null,
+    /**
+     * 写正文时先思考：用的范围和 [temperature] 一样。默认关——DeepSeek V4 默认开着思考，思考的 token 也算进输出上限，
+     * 还会忽略温度；关着时给官方 DeepSeek V4 的写正文请求写上“不思考”，别的服务商、别的模型什么都不写。
+     */
+    val thinking: Boolean = false,
+    /** 编辑器“写这一拍…”里勾了“出 3 个方向的版本”：按作品记住，下次打开还是这样。 */
+    val beatVariants: Boolean = false,
+    /** “这章写完了”收尾页上次的勾选。 */
+    val finish: FinishOptions = FinishOptions(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -185,6 +205,11 @@ data class WorkAssist(
         val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
         val SUGGEST_GAPS = listOf(10, 20, 40, 60, 120)
         val SUGGEST_CAPS = listOf(50, 100, 200, 500, 0)
+        /** 写正文的温度可选的几档（空是服务商默认）。DeepSeek 建议创作类用 1.5 左右。 */
+        val TEMPERATURES: List<Float?> = listOf(null, 0.7f, 1.0f, 1.3f, 1.5f)
+
+        /** 读进来的温度：不是 0 到 2 之间的数（坏数据）当作服务商默认。 */
+        fun cleanTemperature(t: Double?): Float? = t?.takeIf { it.isFinite() && it in 0.0..2.0 }?.toFloat()
     }
 }
 
@@ -1533,7 +1558,7 @@ class WorkStore(
                 JSONArray(text).also { raw -> (0 until raw.length()).forEach { i -> requireNotNull(raw.getJSONObject(i).toChange()) { "变更登记损坏" } } }
             } else JSONArray()
             val assistSource = File(dir(w.id), ASSIST)
-            val assist = if (assistSource.isFile) component(assistSource, "AI 设置和设定集读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
+            val assist = if (assistSource.isFile) component(assistSource, "写作 AI 设置读不出，没有放进备份") { JSONObject(it).toAssist() } else WorkAssist()
             // pack() may migrate an old settings bundle and touch the work timestamp.
             // 读不出的项不放这个键：恢复时没有这个键就保留那台手机上原来的。
             val entry = read(w.id).toJson().put("texts", texts).put("cards", cards).put("drafts", drafts)
@@ -2119,6 +2144,10 @@ class WorkStore(
             .put("draftWorkflows", JSONArray(draftWorkflows.sorted()))
             .put("aiCliche", aiCliche)
             .put("banned", JSONArray(banned))
+            .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
+            .put("thinking", thinking)
+            .put("beatVariants", beatVariants)
+            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2184,6 +2213,16 @@ class WorkStore(
                 // 旧数据没有这两项：默认查 AI 腔、黑名单空着。
                 aiCliche = optBoolean("aiCliche", true),
                 banned = WorkAssist.cleanBanned(optJSONArray("banned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
+                // 旧数据没有这两项：温度按服务商默认，“3 个方向”不勾。
+                temperature = WorkAssist.cleanTemperature(if (has("temperature") && !isNull("temperature")) optDouble("temperature") else null),
+                beatVariants = optBoolean("beatVariants", false),
+                // 旧数据没有这一项：写正文时不先思考。
+                thinking = optBoolean("thinking", false),
+                // 旧数据没有收尾的勾选：按默认（整理、摘要勾上，审稿不勾）。
+                finish = optJSONObject("finish")?.let { f ->
+                    val d = FinishOptions()
+                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review))
+                } ?: FinishOptions(),
             )
         }
 

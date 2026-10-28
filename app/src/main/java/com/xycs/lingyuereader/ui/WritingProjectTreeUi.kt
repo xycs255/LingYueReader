@@ -57,7 +57,6 @@ internal data class WritingTreeActions(
     val onRenameVolume: (Volume) -> Unit,
     val onDeleteVolume: (Volume) -> Unit,
     val onOpenChapter: (WorkChapter) -> Unit,
-    val onToggleCard: (String) -> Unit,
     val onOpenCard: (WorkChapter) -> Unit,
     val onOpenChapterMenu: (WorkChapter) -> Unit,
     val onDismissChapterMenu: () -> Unit,
@@ -82,7 +81,7 @@ internal fun rememberWritingTreeIds(workId: String, kind: String): MutableState<
 /**
  * A single lazy tree replaces the separate chapter directory. Chapter rows remain individual
  * LazyColumn items, so hundreds of chapters do not compose all at once. A chapter tap still
- * opens its editor; the adjacent 48 dp task-card control expands its planning child.
+ * opens its editor; the adjacent 48 dp task-card control opens that chapter's card directly.
  */
 @OptIn(ExperimentalFoundationApi::class)
 internal fun LazyListScope.writingPlanningTreeItems(
@@ -90,7 +89,6 @@ internal fun LazyListScope.writingPlanningTreeItems(
     unsyncedIds: Set<String>,
     showUnsynced: Boolean,
     collapsedVolumeIds: Set<String>,
-    expandedCardIds: Set<String>,
     reorderMode: Boolean,
     volumeMenuId: String?,
     chapterMenuId: String?,
@@ -126,14 +124,12 @@ internal fun LazyListScope.writingPlanningTreeItems(
                     TreeChapterRow(
                         chapter = chapter,
                         unsynced = showUnsynced && chapter.id in unsyncedIds,
-                        cardExpanded = chapter.id in expandedCardIds,
                         reorderMode = reorderMode,
                         canMoveUp = (positions[chapter.id] ?: 0) > 0,
                         canMoveDown = (positions[chapter.id] ?: chapters.lastIndex) < chapters.lastIndex,
                         menuOpen = chapterMenuId == chapter.id,
                         actions = actions,
                     )
-                    if (chapter.id in expandedCardIds) TreeTaskCardRow(chapter, actions.onOpenCard)
                 }
             }
             item(key = "add:${volume.id}", contentType = "add") {
@@ -229,7 +225,6 @@ private fun TreeVolumeRow(
 private fun TreeChapterRow(
     chapter: WorkChapter,
     unsynced: Boolean,
-    cardExpanded: Boolean,
     reorderMode: Boolean,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
@@ -256,8 +251,9 @@ private fun TreeChapterRow(
                     MoveArrow(up = true, enabled = canMoveUp, label = "上移${chapter.title}") { actions.onMoveChapter(chapter, -1) }
                     MoveArrow(up = false, enabled = canMoveDown, label = "下移${chapter.title}") { actions.onMoveChapter(chapter, 1) }
                 } else {
-                    IconButton(onClick = { actions.onToggleCard(chapter.id) }, modifier = Modifier.size(48.dp)) {
-                        Icon(LingYueIcons.Notes, contentDescription = if (cardExpanded) "收起${chapter.title}细纲卡" else "展开${chapter.title}细纲卡", tint = c.tint, modifier = Modifier.size(18.dp))
+                    // 点一下直接进细纲卡页。原来先展开一行，那一行只有固定的说明字，没有别的信息，去掉了少点一下。
+                    IconButton(onClick = { actions.onOpenCard(chapter) }, modifier = Modifier.size(48.dp)) {
+                        Icon(LingYueIcons.Notes, contentDescription = "打开${chapter.title}细纲卡", tint = c.tint, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -297,25 +293,6 @@ private fun MoveArrow(up: Boolean, enabled: Boolean, label: String, onClick: () 
                 modifier = Modifier.size(16.dp).graphicsLayer { rotationZ = if (up) 180f else 0f },
             )
         }
-    }
-}
-
-@Composable
-private fun TreeTaskCardRow(chapter: WorkChapter, onOpen: (WorkChapter) -> Unit) {
-    val c = LocalGroupedColors.current
-    Row(
-        Modifier.fillMaxWidth().padding(start = 52.dp, end = 8.dp, bottom = 8.dp).heightIn(min = 52.dp)
-            .clip(RoundedCornerShape(12.dp)).background(c.fill).clickable { onOpen(chapter) }
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(LingYueIcons.Notes, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text("细纲卡", color = c.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Text("事实结果 · 承接边界 · 章末去向", color = c.secondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
 }
 

@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -81,6 +82,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -472,6 +474,30 @@ internal fun NavRow(
     }
 }
 
+/**
+ * 在本页展开、收起一组次要选项的一行（排版设置的“更多排版规则”）：名字、右边灰色的说明（几项），
+ * 小箭头收着朝右、展开朝下，转过去用标准缓动（减少动效时直接换）。读屏念“已展开 / 已收起”。
+ * 点进二级页的用 [NavRow]；这里只在本页多露几行。
+ */
+@Composable
+internal fun ExpandRow(title: String, expanded: Boolean, value: String? = null, onToggle: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val turn by animateFloatAsState(if (expanded) 90f else 0f, if (Effects.noMotion) snap() else Motion.standard(Motion.SHORT), label = "expandArrow")
+    GroupedRow(
+        Modifier.semantics { stateDescription = if (expanded) "已展开" else "已收起" },
+        onClick = onToggle,
+    ) {
+        RowTitle(title, c.label, enabled = true)
+        if (value != null) RowValue(value)
+        Icon(
+            LingYueIcons.ChevronForward,
+            contentDescription = null,
+            tint = c.tertiary,
+            modifier = Modifier.padding(start = 4.dp).size(16.dp).graphicsLayer { rotationZ = turn },
+        )
+    }
+}
+
 /** 带开关的一行（miuix 开关）；整行都能点。 */
 @Composable
 internal fun ToggleRow(
@@ -565,6 +591,7 @@ internal fun CheckRow(
 /**
  * 勾选框一行：左边 miuix 勾选框，右边名字（最多 [titleMaxLines] 行）和一行灰色说明，整行都能点。
  * 勾上的名字淡一点（第三级灰），像清单里做完的事。可以各自勾、不互斥的清单用它（细纲卡的节拍“已写”）；单选用 [CheckRow]。
+ * 当选项开关用（对话框里“出 3 个方向的版本”）时 [dimChecked] 传假：勾上不淡。
  */
 @Composable
 internal fun CheckboxRow(
@@ -573,6 +600,7 @@ internal fun CheckboxRow(
     subtitle: String? = null,
     titleMaxLines: Int = Int.MAX_VALUE,
     enabled: Boolean = true,
+    dimChecked: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
     val c = LocalGroupedColors.current
@@ -587,10 +615,14 @@ internal fun CheckboxRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 固定勾上、不能取消的（比如收尾里的“定稿”）：勾选框照常用主题色画，不用禁用时的浅色，点了也不变；读屏照旧是“不可用”。
+        val fixed = !enabled && checked && !dimChecked
         // 勾选框只是样子：点按和读屏都交给整行。
-        Box(Modifier.clearAndSetSemantics {}) { Checkbox(state = ToggleableState(checked), onClick = { onChange(!checked) }, enabled = enabled) }
+        Box(Modifier.clearAndSetSemantics {}) {
+            Checkbox(state = ToggleableState(checked), onClick = { if (enabled) onChange(!checked) }, enabled = enabled || fixed)
+        }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = if (checked || !enabled) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+            Text(title, color = if ((checked && dimChecked) || (!enabled && !fixed)) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
                 maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp)
         }
@@ -1263,7 +1295,7 @@ internal fun DialogButtons(
 
 /**
  * 对话框里“选一项”：一行一项，名字（下面可有灰色说明），点了就选。样子照 [CheckRow]，给了 [selected] 时当前那项打勾。
- * “AI 接着写”“新建什么”这类挑一种做法的对话框用它，不用一格格按钮；选项只有两三个、不用说明的用 [SegmentedControl]。
+ * “新建什么”这类挑一种做法的对话框用它，不用一格格按钮；选项只有两三个、不用说明的用 [SegmentedControl]。
  */
 @Composable
 internal fun <T> DialogOptionList(
@@ -1280,6 +1312,21 @@ internal fun <T> DialogOptionList(
             }
         }
     }
+}
+
+/**
+ * 对话框里一节的小标题（“AI 写”面板的“写这一拍”“写多少”）：次要色 13sp，和下面选项的文字左对齐；只是标签，不能点。
+ * 读屏当标题念，可以按标题跳。
+ */
+@Composable
+internal fun DialogSectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = LocalGroupedColors.current.secondary,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        modifier = modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp).semantics { heading() },
+    )
 }
 
 // ---------- 加载、空、出错 ----------
@@ -1359,6 +1406,53 @@ internal fun ErrorText(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+/** 流程里一步的记号：等着、在做、好了、出错、不做。 */
+internal enum class StepMark { WAITING, RUNNING, DONE, FAILED, SKIPPED }
+
+/**
+ * 流程里的一步（“这章写完了”的进度）：左边 20dp 的记号——等着是第三级灰空心圈，在做是 [Spinner]，好了是成功色勾，
+ * 出错是删除色叉，不做是第三级灰短横；中间名字（不做的变灰），右边一个状态字（[label]），出错时下面一行 [detail] 写原因。
+ * 读屏把名字、状态、原因连成一句念；状态变了（在做 → 好了）礼貌地念出来。
+ */
+@Composable
+internal fun StepRow(title: String, mark: StepMark, label: String, detail: String? = null) {
+    val c = LocalGroupedColors.current
+    val tone = when (mark) {
+        StepMark.DONE -> c.success
+        StepMark.FAILED -> c.destructive
+        StepMark.RUNNING -> c.tint
+        StepMark.WAITING, StepMark.SKIPPED -> c.tertiary
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clearAndSetSemantics {
+                contentDescription = "$title：$label" + (detail?.let { "，$it" } ?: "")
+                liveRegion = LiveRegionMode.Polite
+            }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            when (mark) {
+                StepMark.RUNNING -> Spinner(size = 18.dp)
+                StepMark.DONE -> Icon(LingYueIcons.Check, contentDescription = null, tint = tone, modifier = Modifier.size(18.dp))
+                StepMark.FAILED -> Icon(LingYueIcons.Close, contentDescription = null, tint = tone, modifier = Modifier.size(18.dp))
+                StepMark.WAITING -> Canvas(Modifier.size(12.dp)) {
+                    drawCircle(tone, radius = size.minDimension / 2 - 1.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+                }
+                StepMark.SKIPPED -> Box(Modifier.size(width = 10.dp, height = 2.dp).clip(CircleShape).background(tone))
+            }
+        }
+        Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = if (mark == StepMark.SKIPPED) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            if (detail != null) Text(detail, color = if (mark == StepMark.FAILED) c.destructive else c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Text(label, color = tone, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
 // ---------- 面板、页面骨架 ----------
 
 /** 面板右上角的关闭钮：32dp 的圆底灰叉，能点的范围 48dp（目录面板、编辑器浮层面板）。 */
@@ -1380,7 +1474,7 @@ internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modi
 }
 
 /**
- * 编辑器里贴在键盘上方的浮层面板（AI 结果、可能的问题、AI 接着写、写作建议、规则）：顶上 20dp 圆角、卡片底色；
+ * 编辑器里贴在键盘上方的浮层面板（AI 结果、可能的问题、AI 写的那一段、书灵、写作建议、规则）：顶上 20dp 圆角、卡片底色；
  * 标题一行左边可带强调色小图标，[status] 是标题右边的灰色小字（“生成中……”），最右是圆底关闭钮（[onClose] 为空时不显示）；
  * 内容在中间，[actions] 一排胶囊按钮（[PillButton]）在最下面，放不下左右滑。
  * 高矮变化（流式输出、换一条建议）平滑过去；出现、收起由调用处包 AnimatedVisibility（[Motion.edgeEnter] / [Motion.edgeExit]）。

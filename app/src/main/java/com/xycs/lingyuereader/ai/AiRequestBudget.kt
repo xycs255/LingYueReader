@@ -34,12 +34,14 @@ object AiRequestBudget {
         maxToolRounds: Int = 6,
         cachePrefix: Int = 0,
         cacheExtra: Int = 0,
+        /** 写正文的采样（温度、思考开关），和真发的请求体一样写进去再估。 */
+        prose: ProseSampling? = null,
     ): AiRequestBudgetPreview {
         // Anthropic's wire builder inserts this default when callers omit maxTokens.
         val effectiveMaxTokens = maxTokens ?: if (config.protocol == AiProtocol.ANTHROPIC) AiWire.MAX_TOKENS else null
         val sent = if (config.onDevice) system + prompt else AiToolWire.body(
             config, system, JSONArray().put(AiToolWire.user(config, prompt)), tools,
-            cachePrefix = cachePrefix, cacheExtra = cacheExtra, maxTokens = maxTokens,
+            cachePrefix = cachePrefix, cacheExtra = cacheExtra, maxTokens = maxTokens, prose = prose,
         )
         val input = AiUsage.estimateTokens(sent)
         val reserve = effectiveMaxTokens?.toLong() ?: 0L

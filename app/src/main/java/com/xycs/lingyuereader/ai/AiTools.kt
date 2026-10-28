@@ -34,6 +34,8 @@ object AiToolWire {
         maxTokens: Int? = null,
         /** 第二处缓存的位置（文风范例这类紧跟在设定包后面、也很少变的部分的末尾）；0 是没有。 */
         cacheExtra: Int = 0,
+        /** 写正文的采样（温度、思考开关）：见 [AiWire.prose]，空是不是写正文的请求，什么都不写。 */
+        prose: ProseSampling? = null,
     ): String {
         val o = JSONObject().put("model", c.model.trim()).put("stream", true)
         when (c.protocol) {
@@ -52,6 +54,7 @@ object AiToolWire {
                     if (!allowTools) o.put("tool_choice", "none")
                 }
                 if (maxTokens != null) o.put("max_tokens", maxTokens)
+                AiWire.prose(o, c, prose)
             }
             AiProtocol.ANTHROPIC -> {
                 o.put("max_tokens", maxTokens ?: AiWire.MAX_TOKENS)

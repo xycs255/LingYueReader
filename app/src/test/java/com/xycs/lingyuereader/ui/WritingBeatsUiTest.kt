@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -34,7 +35,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.util.Collections
 
-/** 节拍：细纲卡页拆节拍、勾已写；编辑器里“写这一拍…”；“AI 写本章”逐拍写，候选稿是各拍拼起来的。 */
+/** 节拍：细纲卡页拆节拍、勾已写；编辑器“AI 写…”面板里写这一拍、智能推荐“写第 N 拍”；“AI 写整章草稿”逐拍写，候选稿是各拍拼起来的。 */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
 class WritingBeatsUiTest {
@@ -149,12 +150,13 @@ class WritingBeatsUiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         waitForText("沈默推开茶馆的门")
-        compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("写这一拍…")
-        compose.onNodeWithText("写这一拍…").performScrollTo().performClick()
-        // 列出各拍；第 1 拍写过了，默认选第 2 拍。
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
+        // 面板上面列各拍，下面是写多少；第 1 拍写过了，默认选第 2 拍。
         waitForText("写第 2 拍")
         compose.onNodeWithText("2. 杜娘开门").assertIsSelected()
+        waitForText("写多少")
+        listOf("写下一场", "写到本章结尾", "写 500 字左右", "按要求写…").forEach { compose.onNodeWithText(it).performScrollTo() }
         compose.onNodeWithText("写第 2 拍").performClick()
         waitForText("AI 写了")
         val ask = prompts.single { "只写第 2 拍" in it }
@@ -164,6 +166,31 @@ class WritingBeatsUiTest {
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text + "\n" + beatText.getValue(2) }
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
+    }
+
+    /** 本章有没写的拍：智能推荐写着“写第 N 拍”，一点就写，不弹面板；采纳后推荐换成下一拍，都写完了推荐“这章写完了”。 */
+    @Test
+    fun theSmartRecommendationWritesTheNextBeatInOneTap() {
+        setBeats("沈默赶到渡口，发现船不见了\n杜娘开门\n老周的信", done = listOf(1))
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        val store = WorkStore(writingDir)
+        compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
+        waitForText("沈默推开茶馆的门")
+        waitFor { compose.onAllNodesWithContentDescription("智能推荐：写第 2 拍", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("智能推荐：写第 2 拍", substring = true).performClick()
+        waitForText("AI 写了")
+        // 没有弹“AI 写”面板，直接写了第 2 拍。
+        assertTrue(compose.onAllNodesWithText("写多少").fetchSemanticsNodes().isEmpty())
+        assertTrue(prompts.single().contains("只写第 2 拍"))
+        compose.onNodeWithText("采纳").performClick()
+        waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
+        waitFor { compose.onAllNodesWithContentDescription("智能推荐：写第 3 拍", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("智能推荐：写第 3 拍", substring = true).performClick()
+        waitForText("AI 写了")
+        compose.onNodeWithText("采纳").performClick()
+        waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2, 3) }
+        waitFor { compose.onAllNodesWithContentDescription("智能推荐：这章写完了，细纲卡的 3 拍都写完了", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(text + "\n" + beatText.getValue(2) + "\n" + beatText.getValue(3), store.text(workId, chapterId))
     }
 
     @Test

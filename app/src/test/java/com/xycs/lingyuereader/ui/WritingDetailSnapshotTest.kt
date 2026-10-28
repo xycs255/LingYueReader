@@ -52,10 +52,13 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowLooper
 import java.io.File
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写本章、三道审稿、设定包、生词本。只截图供设计复核，不做像素断言；
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
 @RunWith(AndroidJUnit4::class)
@@ -72,9 +75,13 @@ class WritingDetailSnapshotTest {
         /** 方法名以 “ink” 开头的测试用深色（暖墨）主题。 */
         private var ink = false
 
+        /** 方法名以 “eink” 开头的测试打开“墨水屏 / 省电模式”（浅色）。 */
+        private var eInk = false
+
         override fun apply(base: Statement, description: Description): Statement {
             withAi = description.methodName.orEmpty().contains("Ai")
             ink = description.methodName.orEmpty().startsWith("ink")
+            eInk = description.methodName.orEmpty().startsWith("eink")
             return super.apply(base, description)
         }
 
@@ -107,14 +114,20 @@ class WritingDetailSnapshotTest {
                 // 照 WritingRound2UiTest：本地假服务器，只回一句话；截图过程中并不真的发请求。
                 server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                     createContext("/v1/chat/completions") { ex ->
-                        ex.requestBody.readBytes()
+                        val asked = ex.requestBody.readBytes().decodeToString()
+                        // 收尾截图：整理请求先挂着（截“进行中”），放行后回整理结果和摘要；别的请求照旧回一句话。
+                        val answer = if (FINISH_SYNC in asked) {
+                            finishGate.await(20, TimeUnit.SECONDS)
+                            FINISH_ANSWER
+                        } else "1. 让门外有脚步声。"
                         val bytes = JSONObject().put("choices", JSONArray().put(JSONObject()
-                            .put("message", JSONObject().put("content", "1. 让门外有脚步声。")).put("finish_reason", "stop")))
+                            .put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
                             .toString().toByteArray()
                         ex.responseHeaders.add("Content-Type", "application/json")
                         ex.sendResponseHeaders(200, bytes.size.toLong())
                         ex.responseBody.use { it.write(bytes) }
                     }
+                    executor = Executors.newCachedThreadPool()
                     start()
                 }
                 ai.putBoolean("enabled", true).putString("preset", "local").putString("protocol", "OPENAI")
@@ -122,13 +135,17 @@ class WritingDetailSnapshotTest {
             }
             ai.commit()
             Prefs(context).saveAppearance(Appearance(mode = if (ink) ThemeMode.DARK else ThemeMode.LIGHT, blur = false, liquidGlass = false))
+            if (eInk) context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().putBoolean("eInk", true).commit()
         }
 
         override fun after() {
+            finishGate.countDown()
             server?.stop(0)
             server = null
         }
     }
+    /** 收尾截图里挂住整理请求的闸：截完“进行中”再放行。 */
+    private val finishGate = CountDownLatch(1)
     private val compose = createAndroidComposeRule<MainActivity>()
     private val vm get() = ViewModelProvider(compose.activity)[AppViewModel::class.java]
     private var workId = ""
@@ -264,14 +281,15 @@ class WritingDetailSnapshotTest {
     private fun openChapterThree() {
         openWork()
         val row = hasText("第3章 夜渡") and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick)
-        // 规划树是异步读出来的：机器忙时列表里可能还没有这一章，滚不到就等一等再滚。
+        // 规划树是异步读出来的：机器忙时列表里可能还没有这一章，或者滚到以后列表又重读了一次、这一行暂时不在；
+        // 滚不到、滚到了却找不着，都等一等再滚。
         val deadline = System.nanoTime() + 15_000_000_000L
-        while (runCatching { scrollWorkListTo(row) }.isFailure) {
+        while (runCatching { scrollWorkListTo(row); compose.onNode(row).performScrollTo() }.isFailure) {
             check(System.nanoTime() < deadline) { "作品页里一直找不到第 3 章" }
             ShadowLooper.idleMainLooper()
             Thread.sleep(50)
         }
-        compose.onNode(row).performScrollTo().performClick()
+        compose.onNode(row).performClick()
         waitForText("半块玉佩攥在手心")
         waitForDescription("打开四组工具")
     }
@@ -297,7 +315,7 @@ class WritingDetailSnapshotTest {
         capture("detail-editor-bottom")
 
         openTools()
-        waitForDescription("写本章草稿")
+        waitForDescription("AI 写整章草稿")
         waitForDescription("快捷标点")
         capture("detail-editor-tools-write")
         pickGroup("查", "三道审稿")
@@ -336,9 +354,9 @@ class WritingDetailSnapshotTest {
         waitForGone("设置写作 AI")
         capture("detail-editor-bottom-ai")
 
-        // AI 写本章：没有候选稿。
+        // AI 写整章草稿：没有候选稿。
         openTools()
-        compose.onNodeWithContentDescription("写本章草稿").performClick()
+        compose.onNodeWithContentDescription("AI 写整章草稿").performClick()
         waitForText("开始创作")
         waitForGone("正在读取已保存的候选稿")
         waitForGone("正在核对本章任务与资料")
@@ -475,5 +493,118 @@ class WritingDetailSnapshotTest {
         waitForText("fēng háng")
         waitForText("复习 3")
         capture("detail-vocabulary-cards")
+    }
+
+    /** 第 3 章细纲卡加三拍、第 1 拍写过：“AI 写”面板列节拍，推荐“写第 2 拍”。 */
+    private fun seedBeats() {
+        val store = WorkStore(File(context.filesDir, "writing"))
+        store.saveCard(workId, chapterThree, store.card(workId, chapterThree).copy(
+            beats = "林月求老周夜里渡河\n沈默出现，替她付了船钱\n船行到河心，沈默问起玉佩", beatsDone = listOf(1)))
+    }
+
+    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、书灵（问主意、选范本）。 */
+    private fun aiWriteAndCompanion(prefix: String) {
+        seedBeats()
+        openChapterThree()
+        waitForDescription("智能推荐：写第 2 拍")
+        capture("$prefix-editor-bottom-beat")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
+        waitForText("从光标处往下写")
+        waitForText("写第 2 拍")
+        capture("$prefix-ai-write-panel")
+        compose.onNodeWithText("出 3 个方向的版本（花费约 3 倍）").performScrollTo()
+        capture("$prefix-ai-write-panel-bottom")
+        compose.onNodeWithText("取消").performClick()
+        waitForGone("从光标处往下写")
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("AI 写整章草稿")
+        capture("$prefix-editor-more-menu")
+        // 菜单点“细纲卡”收起，再返回编辑器。
+        compose.onNodeWithText("细纲卡").performClick()
+        waitForText("沈默的来意不点破")
+        compose.onNodeWithContentDescription("返回").performClick()
+        waitForDescription("打开四组工具")
+        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForText("问主意")
+        waitForText("没选范本")
+        capture("$prefix-companion")
+    }
+
+    @Test
+    fun simplifyAiWritePanelAndCompanion() = aiWriteAndCompanion("simplify")
+
+    @Test
+    fun inkSimplifyAiWritePanelAndCompanion() = aiWriteAndCompanion("ink-simplify")
+
+    /** 作品 AI 设置分两层、高级设置、排版设置默认只露两样和展开后。 */
+    @Test
+    fun simplifyAiSettingsAndFormat() {
+        openWork()
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitForText("写作范本")
+        capture("simplify-work-ai-top")
+        compose.onNodeWithText("高级设置").performScrollTo()
+        capture("simplify-work-ai-bottom")
+        compose.onNodeWithText("高级设置").performClick()
+        waitForText("知识库上限")
+        capture("simplify-work-ai-advanced")
+        compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo()
+        capture("simplify-work-ai-advanced-bottom")
+        compose.runOnUiThread { vm.open(Screen.WorkFormatSettings(workId)) }
+        waitForText("输入时自动排版")
+        waitForText("更多排版规则")
+        capture("simplify-format")
+        compose.onNodeWithText("更多排版规则").performClick()
+        waitForText("段首段尾空白")
+        capture("simplify-format-more")
+    }
+
+    /**
+     * “这章写完了”收尾页：开始前（勾选项、本机检查的提醒）、进行中（整理和摘要合成的那次请求还挂着）、确认（摘要、整理结果、完成收尾）。
+     * 加一条检查规则，让“还有 N 条不合规则”的提醒露出来。
+     */
+    private fun finishChapter(prefix: String) {
+        WorkStore(File(context.filesDir, "writing")).addPackDoc(workId, PackKind.RULES, "检查规则", "禁用：没抬头\n")
+        openChapterThree()
+        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("这章写完了").performClick()
+        waitForText("收尾要做的")
+        waitForText("条不合规则")
+        capture("$prefix-finish-setup")
+        compose.onNodeWithText("开始").performClick()
+        waitForDescription("整理入账：在做")
+        waitForDescription("写本章摘要：在做")
+        capture("$prefix-finish-running")
+        finishGate.countDown()
+        waitForText("完成收尾")
+        waitForText("本章摘要")
+        waitForText("新规矩：夜里封航")
+        capture("$prefix-finish-confirm")
+    }
+
+    @Test
+    fun finishChapterAiPages() = finishChapter("finish")
+
+    @Test
+    fun inkFinishChapterAiPages() = finishChapter("ink-finish")
+
+    @Test
+    fun einkFinishChapterAiPages() = finishChapter("eink-finish")
+
+    private companion object {
+        /** 认出整理请求的一句（见 WritePrompts.sync）。 */
+        const val FINISH_SYNC = "作者写完了这一章，请整理它"
+
+        /** 第 3 章的整理结果和摘要：依据都是第 3 章正文里的原句。 */
+        val FINISH_ANSWER: String = JSONObject()
+            .put("new", JSONArray().put(JSONObject().put("type", "规矩").put("name", "夜里封航").put("kind", "硬性设定")
+                .put("text", "渡口入夜封航，船家不渡人").put("quote", "封航了，明天也未必有。")))
+            .put("conflicts", JSONArray())
+            .put("states", JSONArray().put(JSONObject().put("who", "林月").put("aspect", "随身").put("now", "攥着半块玉佩").put("quote", "林月把半块玉佩攥在手心。")))
+            .put("events", JSONArray().put(JSONObject().put("what", "渡口封航，今晚没有船").put("quote", "封航了，明天也未必有。")))
+            .put("threads_opened", JSONArray().put(JSONObject().put("what", "林月非过河不可的缘由").put("quote", "“今晚还有船吗？”她问。")))
+            .put("summary", "夜里林月攥着半块玉佩来到渡口，求老周今晚渡她过河。老周说已经封航，明天也未必有船。林月必须在天亮前过河，章末仍没找到船。")
+            .toString()
     }
 }

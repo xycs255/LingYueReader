@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -130,9 +131,11 @@ class WritingInlineUiTest {
         waitFor { compose.onAllNodesWithText("昨夜就死了。啊", substring = true).fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length))
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        compose.onNodeWithText("AI 接着写").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         waitForText("从光标处往下写")
-        compose.onNodeWithText("写下一场").performClick()
+        // 没有节拍时默认就是“写下一场”。
+        compose.onNodeWithText("写下一场").assertIsSelected()
+        compose.onNodeWithText("开始写").performClick()
         waitForText("AI 写了")
         // 写的字只显示在光标处，正文没变；请求带着设定包、光标前后的正文和“写完这一场”。
         waitFor { store.text(workId, chapterId) == text }
@@ -156,8 +159,9 @@ class WritingInlineUiTest {
         assertEquals(text, store.text(workId, chapterId))
 
         // 再写一次，采纳：上一段说完了，另起一段接上；原来的正文存进历史，AI 写的字不算码字数。
-        compose.onNodeWithText("AI 接着写").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         compose.onNodeWithText("写下一场").performClick()
+        compose.onNodeWithText("开始写").performClick()
         waitForText("AI 写了")
         compose.onNodeWithText("采纳").performClick()
         val expected = "$text\n雪还在下。\n沈默在门口站了一会儿。"

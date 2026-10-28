@@ -1,7 +1,9 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.Role
@@ -198,10 +200,12 @@ class WritingAiUiTest {
     @Test
     fun ideasAreShownButNeverChangeTheDraft() {
         openEditor()
+        // 问主意在书灵里（AI 条上不再有“灵感…”）。
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        // 操作条横着滑：灵感在后面，先滑过去。
-        compose.onNodeWithText("灵感…").performScrollTo().performClick()
-        waitForText("接下来怎么写")
+        assertTrue(compose.onAllNodesWithText("灵感…").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForText("问主意")
+        listOf("细节和描写", "起名", "卡文了", "随便问").forEach { waitForText(it) }
         compose.onNodeWithText("接下来怎么写").performClick()
         waitForText("让他听见门外的脚步声")
         assertTrue("给出接下来剧情的 3 个不同走向" in prompts.single())
@@ -369,12 +373,30 @@ class WritingAiUiTest {
         assertTrue(prompts.isEmpty())
     }
 
+    /** 书灵里问主意：起名先问一句给什么起名，问的时候带上；结果能插到光标处。 */
+    @Test
+    fun theCompanionAsksForNamesAndTheIdeaCanBeInserted() {
+        openEditor()
+        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForText("问主意")
+        compose.onNodeWithText("起名").performClick()
+        waitForText("给什么起名？")
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("杜娘的茶馆")
+        compose.onNodeWithText("好").performClick()
+        waitForText("让他听见门外的脚步声")
+        assertTrue(prompts.single().contains("杜娘的茶馆"))
+        // 字流出来时回答还没收完，“插到光标处”要等回答完整才可点；慢机器上不等就点会落空。
+        waitFor { compose.onAllNodes(hasText("插到光标处") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("插到光标处").performClick()
+        waitFor { "让他听见门外的脚步声" in WorkStore(writingDir).text(workId, chapterId) }
+    }
+
     @Test
     fun aiWriterUsesAnExplicitReferenceAndWaitsForAuthorAcceptance() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         openEditor()
-        compose.onNodeWithContentDescription("书灵写作").performClick()
-        waitForText("先说这一段要发生什么")
+        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForText("没选范本")
         compose.onNodeWithText("选择范本").performClick()
         waitForText("本章还没有范本分析")
         compose.onNodeWithText("关闭").performClick()
@@ -383,7 +405,7 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("正文").performTextInput("又")
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
-        assertTrue("打字、移动光标和打开书灵写作都不能自动发请求", prompts.isEmpty())
+        assertTrue("打字、移动光标和打开书灵都不能自动发请求", prompts.isEmpty())
 
         compose.onNodeWithText("选择范本").performClick()
         compose.onNodeWithText("新增/分析范本").performClick()
@@ -397,17 +419,25 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.back() }
         waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
         if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
-            compose.onNodeWithContentDescription("书灵写作").performClick()
+            compose.onNodeWithContentDescription("书灵").performClick()
         }
         waitForText("选择范本")
         compose.onNodeWithText("选择范本").performClick()
         waitForText(sourceLabel)
         compose.onNodeWithText(sourceLabel).performClick()
-        waitForText("交给 AI 写这一段")
+        waitForText("换范本")
         assertTrue("选中范本也不能自动发请求", prompts.isEmpty())
 
-        compose.onNodeWithText("交给 AI 写这一段").performClick()
-        waitForText("这一段要发生什么？")
+        // 写正文从“AI 写…”面板进：选了范本时多一行“照范本写法”，默认开着。
+        compose.onNodeWithContentDescription("关闭书灵").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
+        val referenceRow = "照范本写法：《${reference.title}》·${chapter.title}"
+        waitForText(referenceRow)
+        compose.onNodeWithText(referenceRow).performScrollTo().assertIsOn()
+        compose.onNodeWithText("按要求写…").performScrollTo().performClick()
+        compose.onNodeWithText("开始写").performClick()
+        waitForText("想让 AI 怎么写？")
         assertTrue("只有作者给出构思并提交才请求模型", prompts.isEmpty())
         val intent = "来人递出军令，守门人先试探身份"
         compose.onAllNodes(hasSetTextAction()).onLast().performTextInput(intent)
@@ -483,6 +513,24 @@ class WritingAiUiTest {
         waitFor { store.pack(workId).single().priority == 1 }
         compose.onNodeWithContentDescription("返回").performClick()
         waitForText("优先级 1 · 常用")
+    }
+
+    /** 设定包页“导入设定包”一行：直接问导入文件还是文件夹，选了就开系统选择器。 */
+    @Test
+    fun theImportRowAsksFilesOrFolderAndOpensThePicker() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
+        waitForText("设定包还是空的")
+        compose.onNodeWithText("导入设定包").performClick()
+        waitForText("导入文件夹")
+        compose.onNodeWithText("导入文件").performClick()
+        val files = org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, files.action)
+        waitFor { compose.onAllNodesWithText("导入文件夹").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithText("导入设定包").performClick()
+        waitForText("导入文件夹")
+        compose.onNodeWithText("导入文件夹").performClick()
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE, org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity.action)
     }
 
     @Test

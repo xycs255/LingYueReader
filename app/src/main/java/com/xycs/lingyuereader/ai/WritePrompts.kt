@@ -70,14 +70,24 @@ enum class SuggestKind(val label: String, val ask: String, val realtime: Boolean
     }
 }
 
-/** 在编辑器里让 AI 接着写：写多少。 */
+/** 在编辑器里让 AI 在光标处写（“AI 写”面板）：写多少。 */
 enum class InlineMode(val label: String) {
     SCENE("写下一场"),
     TO_END("写到本章结尾"),
     WORDS("写 500 字左右"),
     CUSTOM("按要求写…"),
-    /** 写细纲卡里的某一拍：不在“AI 接着写”的选项里，从编辑器菜单“写这一拍…”选拍后进来。 */
+    /** 写细纲卡里的某一拍：“AI 写”面板上面列的节拍，或智能推荐的“写第 N 拍”。 */
     BEAT("写这一拍…"),
+}
+
+/**
+ * 一拍出几个版本时的方向：同样的资料、节拍、细纲和写法要求，各按一个方向写一版，作者挑。
+ * [rule] 写进提示词，放在节拍、模式要求之后、写法要求之前。
+ */
+enum class WriteDirection(val label: String, val rule: String) {
+    CONFLICT("冲突升级", "让这一段里的矛盾更尖锐：人物更主动地顶上去，把话说重、把事做绝一点，冲突在这一段里往上走一级。"),
+    RESTRAIN("按下不发", "写得克制：情绪和信息压着不说破，用动作、细节和留白让读者自己读出来，不替人物把心里话说出来。"),
+    SURPRISE("意外插入", "插入一个合理的小意外（一个人、一件东西或一个消息），改变这一段的走向；意外要在细纲卡的事实边界之内，不提前写后面的事。"),
 }
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
@@ -329,7 +339,8 @@ object WritePrompts {
      * 在编辑器里接着光标往下写：[before] 是光标前的正文（前面不够时接上一章结尾），[after] 是光标后面已经写了的。
      * [length] 是全章篇幅要求，[instruction] 是作者这次的要求，[voice] 是写法要求（[voiceTail]），接在最后。
      */
-    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
+    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String, voice: String = "", beat: BeatTask? = null,
+                   direction: WriteDirection? = null): String = withVoice(buildString {
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
         append("这一章「").append(title).append("」写到光标处的正文：\n").append(before).append("\n【光标在这里】\n")
         if (after.isNotBlank()) append("光标后面已经写了（只作语境，不要重复它，写的内容要能接上它）：\n").append(after).append('\n')
@@ -347,7 +358,12 @@ object WritePrompts {
         append("\n- 接着上文最后一个字写：上文最后一段没写完就接着写这一段，要另起一段就换行。不要重复上文。")
         append("\n- 细纲卡里的事实、人物知道什么不知道什么，以设定资料为准；拿不准就先用工具查。")
         append("\n- 只输出接下去的正文：一行一段，段首不空格；不要章名、小标题、解释。")
+        if (direction != null) append("\n\n").append(directionRule(direction))
     }, voice)
+
+    /** 一拍出几个版本时这一版的方向要求（[continueAt] 用）：方向之外，节拍、细纲卡和写法要求照旧。 */
+    fun directionRule(direction: WriteDirection): String =
+        "【这一版的方向：${direction.label}】${direction.rule}方向只管这一段怎么写，上面的节拍、细纲卡的事实边界和后面的写法要求都照旧遵守。"
 
     fun proofread(paragraphs: List<String>): String = buildString {
         append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")
@@ -404,11 +420,14 @@ object WritePrompts {
         }
     }
 
+    /** 本章摘要的要求：单独写摘要（[summary]）和整理时顺带写（[sync] 的 summary 字段）用同一句，两边写出来的一个样。 */
+    private const val SUMMARY_RULE = "用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；" +
+        "章末留下的钩子写一句。只写事实，不评价写法，不猜后文。"
+
     /** 本章摘要：给写后面的章当前情用，只写事实。 */
     fun summary(text: String, title: String): String = buildString {
         append("下面是小说的一章「").append(title).append("」：\n\n").append(text).append("\n\n")
-        append("请用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；")
-        append("章末留下的钩子写一句。只写事实，不评价写法，不猜后文。只输出摘要本身。")
+        append("请").append(SUMMARY_RULE).append("只输出摘要本身。")
     }
 
     /**
@@ -623,7 +642,7 @@ object WritePrompts {
      * 只要正文里明写了的：新出现的设定、和设定包对不上的写进设定包；人物状态的变化、发生的事、谁知道了什么、
      * 新埋和收掉的伏笔、故事里的时间记进账本。每条带正文原句，解析时核对。
      */
-    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = ""): String = buildString {
+    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = "", summary: Boolean = false): String = buildString {
         if (parts > 1) {
             // 太长的章分几段整理：每段一次请求，带上前一段的末尾接上文。
             append("这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）太长，分 ").append(parts).append(" 段整理")
@@ -650,6 +669,8 @@ object WritePrompts {
         append("7. threads_closed（收伏笔）：这一章收掉的伏笔。id 只能写上面账本“开着的伏笔”里列出的编号（比如 P1）；")
         append("没列出的不要提，账本里没有列出伏笔时给空列表。\n")
         append("8. time（时间）：这一章在故事里是什么时候，或者离上一章过了多久。when 写一句话；正文没写就空着。\n")
+        // “这章写完了”：整理和写摘要合成一次请求，省一次把整章正文再发一遍。
+        if (summary) append("9. summary（本章摘要）：给写后面的章当前情用。").append(SUMMARY_RULE).append("写成一段话，不分条。\n")
         append("规矩：\n")
         append("- 只提正文里明确写到的，不推测、不补全、不替作者发明设定；拿不准就不提。\n")
         append("- 设定包里已经有的不要重复提。")
@@ -669,7 +690,8 @@ object WritePrompts {
         append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}],")
         append("\"threads_opened\":[{\"what\":\"\",\"payoff\":null,\"quote\":\"\"}],")
         append("\"threads_closed\":[{\"id\":\"P1\",\"quote\":\"\"}],")
-        append("\"time\":{\"when\":\"\",\"quote\":\"\"}}")
+        append("\"time\":{\"when\":\"\",\"quote\":\"\"}")
+        append(if (summary) ",\"summary\":\"\"}" else "}")
     }
 
     /** 分段整理时带上前一段末尾多少字（接上文用）。 */
@@ -695,8 +717,8 @@ object WritePrompts {
         return out.filter { it.isNotBlank() }
     }
 
-    /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数。 */
-    data class SyncParse(val items: List<SyncItem>, val dropped: Int)
+    /** 整理本章的解析结果：[dropped] 是正文里找不到原句、丢掉的条数；[summary] 是顺带写的本章摘要（没要、没回是空的）。 */
+    data class SyncParse(val items: List<SyncItem>, val dropped: Int, val summary: String = "")
 
     /** 原句至少要有几个字（不算标点、空白）；不到这么长的，得是正文里完整的一句。 */
     const val QUOTE_CHARS = 6
@@ -875,7 +897,9 @@ object WritePrompts {
                 )
             }
         }
-        return SyncParse(out.distinctBy { it.key }, dropped)
+        // 摘要不用核对原句：它是概括，不是摘抄；作者在收尾页上看过、改过才存。
+        val summary = listOf("summary", "摘要", "本章摘要").firstNotNullOfOrNull { k -> o.optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
+        return SyncParse(out.distinctBy { it.key }, dropped, summary)
     }
 
     /** 整理出来、要记进账本的一条：第 [from] 章起，依据是正文原句 [quote]。 */

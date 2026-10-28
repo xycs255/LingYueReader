@@ -31,6 +31,27 @@ open class AiException(message: String) : Exception(message)
 class AiToolsUnsupportedException(message: String) : AiException(message)
 
 /**
+ * 请求带了 temperature，服务商在开始回答之前（400、422）明确拒绝了它：推理模型这类只认默认值、或者不认这个参数。
+ * 只有这一种报错会去掉 temperature 重发一次；别的 4xx 照原样抛出。
+ */
+class AiTemperatureUnsupportedException(message: String) : AiException(message)
+
+/**
+ * 要完整结果的请求（[AiClient.stream] 等的 whole）到了输出上限被截断。[empty] 为真是正文一个字都没有：
+ * 上限全用在了看不见的思考上（DeepSeek V4 这类思考也算进 max_tokens），调用方可以据此说清楚原因。
+ */
+class AiTruncatedException(message: String, val empty: Boolean) : AiException(message)
+
+/** 回答正常结束，却一个字都没有（没被截断、也没拒答）。 */
+class AiEmptyAnswerException(message: String) : AiException(message)
+
+/**
+ * 写正文的请求怎么采样，来自作品 AI 设置：[temperature] 是“写正文的温度”（空是服务商默认），
+ * [thinking] 是“写正文时先思考”。整个对象为空表示这不是写正文的请求（审稿、整理等），两样都照服务商默认，什么都不写。
+ */
+data class ProseSampling(val temperature: Float? = null, val thinking: Boolean = false)
+
+/**
  * 两种接口的请求和回包格式。只管拼字符串、解析字符串，不联网，方便测试。
  * - OpenAI 兼容：POST {地址}/chat/completions，Authorization: Bearer 密钥，流式回包每行 `data: {choices:[{delta:{content}}]}`，以 `data: [DONE]` 结束；
  * - Anthropic：POST {地址}/v1/messages，x-api-key 密钥，流式回包里 `content_block_delta` 的 `text_delta` 是新文字。
@@ -96,16 +117,26 @@ object AiWire {
         runCatching { java.net.URI(c.baseUrl.trim()).host?.equals("api.deepseek.com", ignoreCase = true) == true }
             .getOrDefault(false)
 
+    /**
+     * 官方 DeepSeek 上能用 `thinking` 参数开关思考的 V4 模型：V4 Pro、Flash，和还暂时转到 Flash 的旧名 deepseek-v4-flash。
+     * 别的服务商、别的模型（包括自建地址上同名的模型）不认这个参数，一律不写。
+     */
+    fun switchableThinking(c: AiConfig): Boolean = officialDeepSeek(c) &&
+        c.model.trim().lowercase() in setOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH, "deepseek-v4-flash")
+
+    /**
+     * [prose] 是作品设的写正文采样（空是不是写正文的请求，什么都不写），温度和思考开关怎么写见 [prose] 函数。
+     */
     fun body(c: AiConfig, system: String, messages: List<AiMessage>, stream: Boolean = true,
-             maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false): String {
+             maxTokens: Int? = null, disableOfficialDeepSeekThinking: Boolean = false, prose: ProseSampling? = null): String {
         val list = JSONArray()
         val o = JSONObject().put("model", c.model.trim()).put("stream", stream)
         when (c.protocol) {
             AiProtocol.OPENAI -> {
                 if (stream && streamUsage(c)) o.put("stream_options", JSONObject().put("include_usage", true))
                 if (maxTokens != null) o.put("max_tokens", maxTokens)
-                if (disableOfficialDeepSeekThinking && officialDeepSeek(c) &&
-                    c.model.trim().lowercase() in setOf(AiPresets.DEEPSEEK_V4_PRO, AiPresets.DEEPSEEK_FLASH)) {
+                prose(o, c, prose)
+                if (disableOfficialDeepSeekThinking && switchableThinking(c)) {
                     o.put("thinking", JSONObject().put("type", "disabled"))
                 }
                 if (system.isNotEmpty()) list.put(JSONObject().put("role", "system").put("content", system))
@@ -122,6 +153,28 @@ object AiWire {
         }
         return o.put("messages", list).toString()
     }
+
+    /**
+     * 写正文的请求体里写上采样设置（[prose] 为空是别的请求，什么都不写）：
+     * - 温度只在 OpenAI 兼容协议上写，按十进制写，1.3 不写成 1.2999999523；
+     * - 没开“写正文时先思考”、又是能开关思考的模型（[switchableThinking]）时写 `thinking: disabled`。
+     *   DeepSeek V4 默认开着思考：思考的 token 也算进 max_tokens，还会忽略温度。开着就不写，照服务商默认先想再写。
+     */
+    internal fun prose(o: JSONObject, c: AiConfig, prose: ProseSampling?) {
+        if (prose == null) return
+        val temperature = prose.temperature
+        if (c.protocol == AiProtocol.OPENAI && temperature != null && temperature.isFinite()) o.put("temperature", temperature.toString().toDouble())
+        if (!prose.thinking && switchableThinking(c)) o.put("thinking", JSONObject().put("type", "disabled"))
+    }
+
+    /**
+     * 服务商不接受 temperature 的报错：400 或 422，回包里说到 temperature（“Unsupported parameter: 'temperature'”
+     * “temperature does not support 1.5 with this model”这类）。只认这两种状态码，别的参数问题、别的状态码都不算。
+     */
+    fun temperatureRejected(code: Int, body: String): Boolean =
+        (code == 400 || code == 422) && TEMPERATURE_WORD.containsMatchIn(body)
+
+    private val TEMPERATURE_WORD = Regex("""(?i)\btemperature\b|温度""")
 
     /** 流里的一条事件带来的东西；[usage] 是这条里带的用量（多半在最后一块）。 */
     data class Delta(val text: String = "", val done: Boolean = false, val terminal: Boolean = false,
@@ -292,6 +345,8 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     companion object {
         /** 整稿请求（[whole]）遇到拒答或内容过滤：不能把提示语当正文交出去。 */
         const val REFUSED = "模型拒绝回答，或内容被服务商过滤，本次没有完整回答；调整内容后再试"
+        /** 整稿请求到了输出上限被截断（[AiTruncatedException]）。 */
+        const val TRUNCATED = "回答太长，到了模型的长度上限被截断了；内容少一些再试"
         /** 整稿请求的流没有正常结束（代理超时、对端断开）。 */
         const val INCOMPLETE = "连接中断，回答不完整；请重试"
 
@@ -316,8 +371,9 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
      * 回答到了长度上限被截断、拒答或被过滤、流没有正常结束时：[whole] 为真（整稿、要完整 JSON 的整理、翻译）就报错，
      * 否则截断和拒答在末尾加一句说明，断流照常返回。
      */
-    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false, onText: (String) -> Unit = {}): String =
-        streamWithOptions(config, system, messages, whole, onText)
+    suspend fun stream(config: AiConfig, system: String, messages: List<AiMessage>, whole: Boolean = false,
+                       prose: ProseSampling? = null, onText: (String) -> Unit = {}): String =
+        streamWithOptions(config, system, messages, whole, onText, prose = prose)
 
     /** Connection checks are real, billable requests: bound their output and disable official V4 thinking. */
     internal suspend fun testConnection(config: AiConfig): String = streamWithOptions(
@@ -333,6 +389,23 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         onText: (String) -> Unit = {},
         maxTokens: Int? = null,
         disableOfficialDeepSeekThinking: Boolean = false,
+        prose: ProseSampling? = null,
+    ): String = try {
+        streamOnce(config, system, messages, whole, onText, maxTokens, disableOfficialDeepSeekThinking, prose)
+    } catch (e: AiTemperatureUnsupportedException) {
+        // 服务商不认温度（推理模型等）：回答还没开始，去掉温度重发一次，按服务商默认写；思考的设置照旧。
+        streamOnce(config, system, messages, whole, onText, maxTokens, disableOfficialDeepSeekThinking, prose?.copy(temperature = null))
+    }
+
+    private suspend fun streamOnce(
+        config: AiConfig,
+        system: String,
+        messages: List<AiMessage>,
+        whole: Boolean,
+        onText: (String) -> Unit,
+        maxTokens: Int?,
+        disableOfficialDeepSeekThinking: Boolean,
+        prose: ProseSampling?,
     ): String =
         if (config.onDevice) {
             val llm = device ?: throw AiException("这台手机用不了本机模型（要 64 位的手机）")
@@ -361,11 +434,14 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 conn.doOutput = true
                 AiWire.headers(config).forEach { (k, v) -> conn.setRequestProperty(k, v) }
                 conn.outputStream.use { it.write(AiWire.body(config, system, messages,
-                    maxTokens = maxTokens, disableOfficialDeepSeekThinking = disableOfficialDeepSeekThinking).toByteArray(Charsets.UTF_8)) }
+                    maxTokens = maxTokens, disableOfficialDeepSeekThinking = disableOfficialDeepSeekThinking,
+                    prose = prose).toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
                 redirected(conn, code)?.let { throw AiException(it) }
                 if (code !in 200..299) {
                     val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
+                    if (sentTemperature(config, prose) && AiWire.temperatureRejected(code, err))
+                        throw AiTemperatureUnsupportedException(AiWire.error(code, err))
                     throw AiException(AiWire.error(code, err))
                 }
                 val type = conn.contentType.orEmpty()
@@ -407,7 +483,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 reported = true
                 report(config, usage, sent, out.toString())
                 if (truncated) {
-                    if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
+                    if (whole) throw AiTruncatedException(TRUNCATED, empty = out.isBlank())
                     val note = "\n\n（回答太长，后面被截断了。）"
                     out.append(note)
                     onText(note)
@@ -418,7 +494,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                     out.append(note)
                     onText(note)
                 }
-                if (out.isBlank()) throw AiException("服务商没有返回内容")
+                if (out.isBlank()) throw AiEmptyAnswerException("服务商没有返回内容")
                 out.toString()
             } catch (e: AiException) {
                 throw e
@@ -456,34 +532,43 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
         /** 模型不支持工具、这次去掉工具重发了：调用方据此提示“没能查设定包”。 */
         onToolsDropped: () -> Unit = {},
         onLookup: (AiToolCall) -> Unit = {},
+        /** 写正文的采样（空是不是写正文的请求）：见 [AiWire.prose]。服务商不认温度时去掉温度重发一次，之后几轮都不带；思考的设置照旧。 */
+        prose: ProseSampling? = null,
         onText: (String) -> Unit = {},
     ): String {
         if (requireTools && tools.isEmpty()) throw AiException("本次任务需要设定包查阅工具，但没有可用工具")
         if (config.onDevice || config.protocol == AiProtocol.DEVICE) {
             if (requireTools) throw AiException("本机模型不支持设定包查阅工具，无法完成本次任务")
-            return stream(config, system, listOf(AiMessage("user", prompt)), whole, onText)
+            return stream(config, system, listOf(AiMessage("user", prompt)), whole, prose, onText)
         }
         var useTools = tools
+        var sampling = prose
         retry@ while (true) {
             val turns = JSONArray().put(AiToolWire.user(config, prompt))
             var round = 0
             try {
                 while (true) {
                     val allow = useTools.isNotEmpty() && round < maxRounds
-                    val body = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra)
-                    val turn = post(config, body, whole, onText)
+                    fun body() = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra, sampling)
+                    val turn = try {
+                        post(config, body(), whole, onText, sentTemperature(config, sampling))
+                    } catch (e: AiTemperatureUnsupportedException) {
+                        // 回答还没开始：去掉温度，这一轮重发一次（思考的设置照旧）。
+                        sampling = sampling?.copy(temperature = null)
+                        post(config, body(), whole, onText, false)
+                    }
                     if (turn.truncated && turn.calls.isNotEmpty()) {
                         throw AiException("模型的工具调用被截断，本次没有执行，请缩短材料后重试")
                     }
                     if (turn.calls.isEmpty() || !allow) {
                         val out = StringBuilder(turn.text)
                         if (turn.truncated) {
-                            if (whole) throw AiException("回答太长，到了模型的长度上限被截断了；内容少一些再试")
+                            if (whole) throw AiTruncatedException(TRUNCATED, empty = out.isBlank())
                             "\n\n（回答太长，后面被截断了。）".let { out.append(it); onText(it) }
                         }
                         if (turn.refused && whole) throw AiException(REFUSED)
                         if (turn.refused) ("\n\n（模型中途停止了回答。）".takeIf { out.isNotEmpty() } ?: "模型拒绝回答这个问题。").let { out.append(it); onText(it) }
-                        if (out.isBlank()) throw AiException("服务商没有返回内容")
+                        if (out.isBlank()) throw AiEmptyAnswerException("服务商没有返回内容")
                         return out.toString()
                     }
                     round++
@@ -505,7 +590,13 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
     }
 
     /** 发一轮（带工具的对话用）：流式读回答，拼成 [AiToolWire.Turn]。[whole] 为真时流必须正常结束。 */
-    private suspend fun post(config: AiConfig, body: String, whole: Boolean, onText: (String) -> Unit): AiToolWire.Turn = withContext(Dispatchers.IO) {
+    /** 这次请求体里真的写了温度（只有 OpenAI 兼容协议写）。 */
+    private fun sentTemperature(config: AiConfig, prose: ProseSampling?): Boolean =
+        prose?.temperature != null && config.protocol == AiProtocol.OPENAI && !config.onDevice
+
+    /** [temperature] 为真是请求体里带了温度：只有这时服务商说不认温度才算 [AiTemperatureUnsupportedException]。 */
+    private suspend fun post(config: AiConfig, body: String, whole: Boolean, onText: (String) -> Unit,
+                             temperature: Boolean = false): AiToolWire.Turn = withContext(Dispatchers.IO) {
         val collector = AiToolWire.Collector(config.protocol, AiWire.officialDeepSeek(config), onText)
         var reported = false
         val url = runCatching { URL(AiWire.endpoint(config)) }.getOrNull()?.takeIf { it.protocol == "https" || (it.protocol == "http" && isLanHost(it.host)) }
@@ -530,6 +621,7 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
                 val err = runCatching { conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } }.getOrNull().orEmpty()
                 // 还没开始回答就被拒：只有明确说不支持工具的 4xx 才算，交给 converse 去掉工具重发。
                 if (code in 400..499 && AiToolWire.unsupported(err)) throw AiToolsUnsupportedException(AiWire.error(code, err))
+                if (temperature && AiWire.temperatureRejected(code, err)) throw AiTemperatureUnsupportedException(AiWire.error(code, err))
                 throw AiException(AiWire.error(code, err))
             }
             val type = conn.contentType.orEmpty()

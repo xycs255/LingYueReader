@@ -167,6 +167,8 @@ sealed interface Screen {
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
     /** 一部作品的 AI 设置：写作建议、文风、学到的改法。 */
     data class WorkAi(val workId: String) : Screen
+    /** 作品 AI 设置的“高级设置”：上限、写作建议的频率、文风范例怎么挑、学你的改法、最近一次发给 AI 的内容。 */
+    data class WorkAiAdvanced(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
     /** 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。 */
@@ -201,6 +203,9 @@ sealed interface Screen {
 
     /** 整理进设定包的结果：新设定、冲突、察觉，勾选后写进设定包。 */
     data class ChapterSync(val workId: String) : Screen
+
+    /** “这章写完了”：一页里收尾（审稿、整理入账、写摘要、定稿），确认后一次写完。 */
+    data class ChapterFinish(val workId: String, val chapterId: String) : Screen
 
     /** 一部作品的排版设置：各条规则、引号风格、输入时自动排版。 */
     data class WorkFormatSettings(val workId: String) : Screen

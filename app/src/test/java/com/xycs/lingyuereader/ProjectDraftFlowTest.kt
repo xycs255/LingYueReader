@@ -83,7 +83,8 @@ class ProjectDraftFlowTest {
     @Volatile private var releaseFirstToken = CountDownLatch(1)
 
     private enum class ReviewMode { ISSUE_THEN_PASS, PASS, MALFORMED, ISSUE_THEN_MALFORMED }
-    private data class Request(val phase: String, val system: String, val user: String) {
+    /** [temperature] 是请求体里的温度（没有为空）。 */
+    private data class Request(val phase: String, val system: String, val user: String, val temperature: Double? = null) {
         val all: String get() = "$system\n$user"
     }
 
@@ -120,7 +121,7 @@ class ProjectDraftFlowTest {
                     streamFenceOnly && ("请写出这一章" in user || "请从最后一句接着往下写" in user) -> "CREATE"
                     else -> "UNEXPECTED"
                 }
-                asked += Request(phase, system, user)
+                asked += Request(phase, system, user, if (body.has("temperature")) body.getDouble("temperature") else null)
                 if (phase == "CREATE" && failCreate) {
                     exchange.sendResponseHeaders(503, -1)
                     exchange.close()
@@ -279,6 +280,19 @@ class ProjectDraftFlowTest {
         assertTrue(candidate in revision.user)
         assertTrue("开门动作" in revision.user)
         assertTrue(asked.last { it.phase == "REVIEW" }.user.contains(revised))
+    }
+
+    /** 作品设了写正文的温度：只有创作阶段带上，审读、修订求稳，不带。 */
+    @Test
+    fun onlyTheCreateStageCarriesTheWorkTemperature() {
+        store.updateAssist(workId) { it.copy(temperature = 1.3f) }
+        val vm = model()
+        vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
+        val state = completed(vm)
+        assertEquals(state.error, DraftStage.READY, state.stage)
+        assertCounts(create = 1, review = 2, revise = 1)
+        assertEquals(listOf(1.3), asked.filter { it.phase == "CREATE" }.map { it.temperature })
+        assertTrue(asked.filter { it.phase != "CREATE" }.all { it.temperature == null })
     }
 
     @Test

@@ -208,7 +208,7 @@ private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
  * 人物状态多一行“方面”（下拉选），新伏笔多一格“计划第几章收”，收伏笔写明收的是账本里哪一条。[edited] 是按作者改过的样子。
  */
 @Composable
-private fun SyncItemRow(
+internal fun SyncItemRow(
     item: SyncItem,
     edited: SyncItem,
     checked: Boolean,
