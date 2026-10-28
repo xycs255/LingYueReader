@@ -72,6 +72,17 @@ private data class DraftStatus(val loading: Boolean, val lookup: String?, val hi
 private enum class DraftMode { STOP, WRITE, REWRITE }
 
 /** The preview covers the first call only; later review, revision and lookups have unknown sizes. */
+/** 写本章一共发几次请求：写前准备、写正文（逐拍写一拍一次）、审读修订。 */
+internal fun draftRequestsLine(p: AiRequestBudgetPreview): String {
+    fun range(a: Int, b: Int) = if (a == b) "$a" else "$a～$b"
+    val parts = listOfNotNull(
+        p.prepRequests.takeIf { it > 0 }?.let { "写前准备 $it 次" },
+        if (p.createMax <= 1) "写正文 1 次" else "逐拍写 ${range(p.createMin, p.createMax)} 拍、每拍 1 次",
+        "审读、修订 1～3 次".takeIf { p.workflow },
+    )
+    return "共 ${range(p.minimumStages, p.maximumStages)} 次请求：" + parts.joinToString("，")
+}
+
 private fun draftBudgetCost(preview: AiRequestBudgetPreview, usdRate: Double): String = when {
     preview.onDevice -> "本机离线模型，不产生接口费用"
     preview.firstRequestLow == null -> "未设置此模型单价，费用暂不能估算"
@@ -451,8 +462,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                             (preview.outputTokenLimit?.let { " · 输出最多 ${AiPricing.tokens(it.toLong())} token（含思考）" } ?: ""),
                                             color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
                                         Text(draftBudgetCost(preview, aiConfig.usdRate), color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
-                                        Text("流程 ${preview.minimumStages}～${preview.maximumStages} 阶段" +
-                                            if (preview.tools) "；查资料时每阶段最多追加 ${preview.maxToolRounds} 次请求" else "",
+                                        Text(draftRequestsLine(preview) +
+                                            if (preview.tools) "；查资料时每次最多追加 ${preview.maxToolRounds} 次请求" else "",
                                             color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
                                         if (preview.exceedsPlanningBudget) Text(
                                             "输入与输出预留超出灵阅 ${AiPricing.tokens(preview.planningTokens.toLong())} token 的规划预算；建议减少常驻资料。不会自动截取或阻止发送。",
@@ -465,7 +476,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 if (text.isBlank() && !aiConfig.onDevice) Text("首轮费用含可能的缓存写入，仅为粗估范围，非封顶；缓存命中不保证。审读、修订与查阅还会产生费用。",
                                     color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
                                 if (text.isBlank() && prepNames.isNotEmpty() && writeBlocking.isEmpty()) Text(
-                                    "写之前另加约 ${prepNames.size} 次小请求（${prepNames.joinToString("、")}，用量记在“拟细纲”类）；上面的首轮按现在的细纲卡估。",
+                                    "写之前另加约 ${prepNames.size} 次小请求（${prepNames.joinToString("、")}，用量记在“拟细纲”类），已算进上面的请求次数；首轮按现在的细纲卡估。",
                                     color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
                             }
                         }

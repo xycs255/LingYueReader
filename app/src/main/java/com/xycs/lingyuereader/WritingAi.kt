@@ -1153,12 +1153,14 @@ class WritingAi(
         meter: AiMeter = AiMeter(featureOf(label), workId),
         /** 写正文的采样（[proseOf]）：只有写正文、改正文的请求才传，别的都空着。 */
         prose: ProseSampling? = null,
+        /** 关掉思考（见 [quiet]）：整理、摘要这类要完整 JSON 或一段短答的请求。 */
+        noThinking: Boolean = false,
         onText: (String) -> Unit = {},
     ): String {
         val sent = SentRequest(label, system, prompt, System.currentTimeMillis())
         _lastRequest.value = sent
         try {
-            return withContext(meter) { proseErrors(prose) { ai.ask(system, prompt, whole, prose, onText) } }
+            return withContext(meter) { proseErrors(prose) { ai.ask(system, prompt, whole, prose ?: quiet(noThinking), onText) } }
         } finally {
             noteUsage(sent.id, meter)
         }
@@ -1166,6 +1168,14 @@ class WritingAi(
 
     /** 作品设的写正文采样：“写正文的温度”和“写正文时先思考”。 */
     private fun proseOf(assist: WorkAssist) = ProseSampling(assist.temperature, assist.thinking)
+
+    /**
+     * 整理、摘要这类请求的采样：不带温度，只在能开关思考的官方 V4 上写 `thinking: disabled`（[AiWire.switchableThinking]，别的模型什么都不写）。
+     * 它们只是从正文里摘事实、写一段概括，用不着先想；V4 默认开着思考，思考的 token 也算进上限，整理那 5120 的上限
+     * 会被思考吃光，作者看到的是“回答太长”。审稿不关：要判断前后矛盾，思考有用，而且审稿不设上限，吃不光。
+     * 这里不当成写正文的请求：没写出东西时照原来的报错，不说“没写出正文”。
+     */
+    private fun quiet(on: Boolean): ProseSampling? = if (on) ProseSampling(temperature = null, thinking = false) else null
 
     /** 写正文没写出正文时的报错（见 [emptyProseMessage]）：只有开着思考、模型又能关思考时，才建议去关。 */
     private fun emptyProse(truncated: Boolean, prose: ProseSampling): String =
@@ -1251,12 +1261,14 @@ class WritingAi(
          * 润色扩写这类改稿；审稿、修订、拟细纲、拆节拍、整理、写作建议、去 AI 腔都不传（空是服务商默认）。
          */
         prose: ProseSampling? = null,
+        /** 关掉思考（见 [quiet]）。 */
+        noThinking: Boolean = false,
         onReset: () -> Unit = {},
         onText: (String) -> Unit = {},
     ): String {
         if (!canUsePack) {
             if (requireTools) throw AiException("本次项目任务需要设定包查阅工具；本机模型无法完成，请选支持工具调用的模型")
-            return ask(label, workId, rest, prompt, whole, meter, prose, onText)
+            return ask(label, workId, rest, prompt, whole, meter, prose, noThinking, onText)
         }
         val budget = knowledgeBudget(workId)
         val stage = phase ?: when (label) {
@@ -1294,7 +1306,7 @@ class WritingAi(
                 requireTools = requireTools,
                 onToolsDropped = onToolsDropped,
                 onLookup = { onReset() },
-                prose = prose,
+                prose = prose ?: quiet(noThinking),
                 onText = onText,
             ) } }
         } finally {
@@ -1595,7 +1607,7 @@ class WritingAi(
         if (work == null) throw IllegalStateException("作品不在了")
         if (text.isBlank()) throw IllegalStateException("这一章还没有正文")
         val title = work.chapter(chapterId)?.title.orEmpty()
-        return ask("章节摘要", workId, WritePrompts.system(work.title, assistOf(workId)), WritePrompts.summary(text, title), whole = true).trim()
+        return ask("章节摘要", workId, WritePrompts.system(work.title, assistOf(workId)), WritePrompts.summary(text, title), whole = true, noThinking = true).trim()
     }
 
     /**
@@ -2328,9 +2340,13 @@ class WritingAi(
             else beatTask(kit, chapter.title, Beats.task(plan, 1, kit.length), instruction)
         val fullPrompt = WritePrompts.draft(kit.previous, prose, kit.tail, referenceText(reference))
         val system = kit.system + "\n\n" + WritePrompts.proseToolGuide(proseCatalog(workId))
+        // 一键写本章（开着 draftPrep）：缺细纲先拟、缺节拍先拆，各多一次小请求；拆出来几拍就逐拍写几次。
+        val planning = assist.draftPrep && kit.card.facts.isBlank()
+        val split = assist.draftPrep && plan.isEmpty()
         return withContext(Dispatchers.Default) {
             AiRequestBudget.preview(ai.currentConfig, system, fullPrompt, PackTools.TOOLS, draftTokens, workflow,
-                cachePrefix = stableLength(system, kit.stable), prose = proseOf(assist))
+                cachePrefix = stableLength(system, kit.stable), prose = proseOf(assist),
+                beats = plan.size, splitBeats = split, prepRequests = listOf(planning, split).count { it })
         }
     }
 
@@ -2887,7 +2903,7 @@ class WritingAi(
                 val answer = askWithPack(
                     "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text, summary = withSummary),
                     whole = true, maxTokens = if (withSummary) SYNC_TOKENS + SUMMARY_TOKENS else SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
-                    meter = meter, onToolsDropped = { noTools = true },
+                    meter = meter, onToolsDropped = { noTools = true }, noThinking = true,
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
                 val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names)

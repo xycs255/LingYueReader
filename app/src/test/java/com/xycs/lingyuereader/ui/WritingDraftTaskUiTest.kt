@@ -137,4 +137,14 @@ class WritingDraftTaskUiTest {
             CrashLog.use(null)
         }
     }
+
+    /** 细纲卡有 5 拍：预算按逐拍写 5 次请求算（以前写的是“流程 1～1 阶段”）。 */
+    @Test
+    fun theBudgetCountsOneRequestPerBeat() {
+        val store = WorkStore(writingDir)
+        store.saveCard(workId, chapterId, store.card(workId, chapterId).copy(beats = "林月到渡口\n沈默来了\n两人上船\n灯灭了\n老周的信"))
+        open { w, c, i, t, check -> store.writingTask(w, c, i, t, check) }
+        waitFor("预算预估") { shown("写本章请求预算") }
+        waitFor("按拍数算请求") { shown("共 5 次请求：逐拍写 5 拍、每拍 1 次") }
+    }
 }

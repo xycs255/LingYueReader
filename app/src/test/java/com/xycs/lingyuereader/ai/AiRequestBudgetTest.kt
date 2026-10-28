@@ -100,4 +100,23 @@ class AiRequestBudgetTest {
             emptyList(), cachePrefix = prefix.length, cacheExtra = system.length)
         assertEquals(AiUsage.estimateTokens(actualBody), packAndSamples.inputTokens)
     }
+
+    /** 逐拍写一拍一次请求：5 拍就是 5 次；写前要拟细纲、拆节拍的另加，拆出几拍不知道时按 3 到 8 拍算。 */
+    @Test
+    fun beatsAndPrepCountAsRequests() {
+        val five = AiRequestBudget.preview(deepSeek, "资料", "写第一拍", emptyList(), 32_768, workflow = false, beats = 5)
+        assertEquals(5, five.minimumStages)
+        assertEquals(5, five.maximumStages)
+        assertEquals("共 5 次请求：逐拍写 5 拍、每拍 1 次", com.xycs.lingyuereader.ui.draftRequestsLine(five))
+        val project = AiRequestBudget.preview(deepSeek, "资料", "写第一拍", emptyList(), 32_768, workflow = true, beats = 5)
+        assertEquals(6, project.minimumStages)
+        assertEquals(8, project.maximumStages)
+        val oneClick = AiRequestBudget.preview(deepSeek, "资料", "写本章", emptyList(), 32_768, workflow = false, splitBeats = true, prepRequests = 2)
+        assertEquals(2 + 3, oneClick.minimumStages)
+        assertEquals(2 + 8, oneClick.maximumStages)
+        assertEquals("共 5～10 次请求：写前准备 2 次，逐拍写 3～8 拍、每拍 1 次", com.xycs.lingyuereader.ui.draftRequestsLine(oneClick))
+        // 没有节拍：一次写完。
+        val whole = AiRequestBudget.preview(deepSeek, "资料", "写本章", emptyList(), 32_768, workflow = false)
+        assertEquals("共 1 次请求：写正文 1 次", com.xycs.lingyuereader.ui.draftRequestsLine(whole))
+    }
 }
