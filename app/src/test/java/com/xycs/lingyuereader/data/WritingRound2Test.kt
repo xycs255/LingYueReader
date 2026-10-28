@@ -97,6 +97,17 @@ class WritingRound2Test {
         assertEquals(WriteRecord.KEEP, s.aiLog(w.id).size)
     }
 
+    /** “矛盾检查”去掉了（审稿的事实关做这件事）：以前记下的那几条照样读得出、列得出，名字不变。 */
+    @Test
+    fun oldConsistencyRecordsStillRead() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("长夜")
+        s.addAiLog(w.id, WriteRecord("old", 10L, w.chapters[0].id, "第1章", "矛盾检查", "", "林月第三章说的是左臂受伤。"))
+        s.addAiLog(w.id, WriteRecord("new", 20L, w.chapters[0].id, "第1章", "读者点评", "", "节奏稍慢。"))
+        assertEquals(listOf("读者点评", "矛盾检查"), s.aiLog(w.id).map { it.kind })
+        assertEquals("林月第三章说的是左臂受伤。", s.aiLog(w.id).last().text)
+    }
+
     @Test
     fun issueMarksAndDeclinedEditsAreStored() {
         val r = ChapterReview(1, 2, listOf(GateResult(ReviewGate.FACT, listOf(ReviewIssue("一句", "问题", "改法", ReviewIssue.IGNORED)))))

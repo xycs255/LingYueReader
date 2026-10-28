@@ -44,7 +44,6 @@ class WritingEditorToolsUiTest {
             WriteAiTask.Edit(WriteAction.POLISH, "原文", 0, 2) to "核对润色候选",
             WriteAiTask.Idea(IdeaKind.NEXT) to "查看灵感结果",
             WriteAiTask.Review to "查看读者点评",
-            WriteAiTask.Consistency to "查看矛盾检查",
         )
         tasks.forEach { (task, label) ->
             val result = recommendation(aiState = WriteAiState("work", "chapter", task, text = "结果", loading = false))
@@ -55,8 +54,8 @@ class WritingEditorToolsUiTest {
         val loading = recommendation(aiState = WriteAiState("work", "chapter", WriteAiTask.Review))
         assertEquals("正在生成点评", loading.label)
         assertFalse(loading.enabled)
-        val failed = recommendation(aiState = WriteAiState("work", "chapter", WriteAiTask.Consistency, loading = false, error = "网络失败"))
-        assertEquals("前后矛盾检查失败", failed.label)
+        val failed = recommendation(aiState = WriteAiState("work", "chapter", WriteAiTask.Review, loading = false, error = "网络失败"))
+        assertEquals("读者点评失败", failed.label)
         assertFalse(failed.enabled)
     }
 

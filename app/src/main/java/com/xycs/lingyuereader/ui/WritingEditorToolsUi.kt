@@ -64,13 +64,11 @@ internal fun editorRecommendation(
                 is WriteAiTask.Edit -> "正在${task.title}"
                 is WriteAiTask.Idea -> "正在构思灵感"
                 WriteAiTask.Review -> "正在生成点评"
-                WriteAiTask.Consistency -> "正在检查矛盾"
             }
             else -> when (task) {
                 is WriteAiTask.Edit -> "核对${task.title}候选"
                 is WriteAiTask.Idea -> "查看灵感结果"
                 WriteAiTask.Review -> "查看读者点评"
-                WriteAiTask.Consistency -> "查看矛盾检查"
             }
         }
         val reason = when {

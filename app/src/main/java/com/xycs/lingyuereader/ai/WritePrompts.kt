@@ -169,7 +169,7 @@ object WritePrompts {
     /** 改稿时带上前文多少字、后文多少字。 */
     const val BEFORE_CHARS = 1_500
     const val AFTER_CHARS = 300
-    /** 整章点评、矛盾检查最多发多少字。 */
+    /** 整章点评最多发多少字。 */
     const val CHAPTER_CHARS = 14_000
 
     /** 能查设定包时加在系统提示后面：要用就查，别凭印象编；查完直接作答。 */
@@ -307,15 +307,6 @@ object WritePrompts {
         append("1. 节奏：哪里拖、哪里赶；\n2. 看点：最吸引人的地方，有没有让人想往下翻的钩子；\n")
         append("3. 弃书风险：哪些地方可能让读者失去耐心或出戏；\n4. 三条最值得改的具体建议（指出是哪一段）。\n")
         append("说真话，不要客套，也不要全盘否定。纯文本分条，总共不超过 500 字。")
-    }
-
-    /** 前后矛盾检查：设定集在系统提示里，这里给上一章结尾和本章。 */
-    fun consistency(previous: String, chapter: String, chapterTitle: String): String = buildString {
-        if (previous.isNotBlank()) append("上一章的结尾：\n").append(previous).append("\n\n")
-        append("本章「").append(chapterTitle).append("」：\n").append(chapter.take(CHAPTER_CHARS)).append("\n\n")
-        append("检查本章和作品设定、和上一章之间有没有前后矛盾：人名地名写法不一致、人物的年龄身份能力关系对不上、")
-        append("已经死去或离开的人物又出现、时间线和季节天气冲突、物品下落不一致、伏笔被遗忘等。\n")
-        append("逐条列出发现的问题，每条写明本章原文的哪句话、和什么矛盾。只列有把握的；没有发现就只回答“没有发现明显的前后矛盾”。")
     }
 
     /** 没有设定包时的写作建议：几段刚写的文字，让模型挑出明显的错字、用词和标点错误，回 JSON。 */

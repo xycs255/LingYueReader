@@ -72,7 +72,7 @@ data class ChapterReview(val textHash: Int, val at: Long, val gates: List<GateRe
 }
 
 /**
- * 写作 AI 的一条记录（灵感、读者点评、矛盾检查、写本章）：哪一章、做了什么、AI 的回答，以及作者觉得有没有用
+ * 写作 AI 的一条记录（灵感、读者点评、写本章；以前还有“矛盾检查”，[kind] 是存下的名字，旧记录照常显示）：哪一章、做了什么、AI 的回答，以及作者觉得有没有用
  * （[rating] 1 有用、-1 没用、0 没评）。存在本机，方便回头翻，也方便作者判断哪些提示词好用。
  */
 data class WriteRecord(

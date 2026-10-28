@@ -100,7 +100,7 @@ internal fun SentDialog(sent: SentRequest, onDismiss: () -> Unit) {
 private enum class LogAction(val label: String) { USEFUL("有用"), USELESS("没用"), COPY("复制") }
 
 /**
- * 写作 AI 的记录：灵感、读者点评、矛盾检查、AI 写的章，新的在前。点开看全文、复制，标有用或没用（作者自己判断提示词好不好用），
+ * 写作 AI 的记录：灵感、读者点评、AI 写的章（以前的“矛盾检查”记录照样列着），新的在前。点开看全文、复制，标有用或没用（作者自己判断提示词好不好用），
  * 也可以删掉（删了不能恢复，要再确认一次）。
  */
 @Composable
@@ -128,7 +128,7 @@ fun WorkAiLogScreen(vm: AppViewModel, workId: String) {
                     EmptyState(
                         LingYueIcons.Sparkle,
                         "还没有 AI 记录",
-                        "要过的灵感、读者点评、矛盾检查和 AI 写的章都会记在这里，可以回头看、复制，标有用还是没用。",
+                        "要过的灵感、读者点评和 AI 写的章都会记在这里，可以回头看、复制，标有用还是没用。",
                     )
                 }
                 else -> {

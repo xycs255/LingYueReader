@@ -125,10 +125,6 @@ internal sealed interface AiBarItem {
         override val label = "读者点评"
     }
 
-    data object Consistency : AiBarItem {
-        override val label = "矛盾检查"
-    }
-
     /** 本章有 AI 腔、黑名单命中时才出现：把标出的段落发给 AI，只改那几处。 */
     data object Cliche : AiBarItem {
         override val label = "去 AI 腔"
@@ -144,7 +140,6 @@ internal val AI_BAR = listOf(
     AiBarItem.Edit(WriteAction.PROOFREAD),
     AiBarItem.Custom,
     AiBarItem.Review,
-    AiBarItem.Consistency,
 )
 
 /**
@@ -259,7 +254,7 @@ internal fun PanelBusy(text: String, modifier: Modifier = Modifier) {
 
 /**
  * 写作助手的结果面板：改稿类先显示对比（删的划掉、加的标绿），可以切到“改后”看全文；
- * 采纳才改稿。灵感、点评、矛盾检查只给人看，灵感可以插到光标处。
+ * 采纳才改稿。灵感、点评只给人看，灵感可以插到光标处。
  * 流式输出时跟着滚到底；“正在想”和结果、对比和改后之间原地淡过去（高矮由面板平滑跟上）。
  */
 @Composable
@@ -821,7 +816,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     GroupedSection(
                         footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：“AI 写…”从光标处写正文；选中文字（或把光标放在那段）润色、扩写、缩写、挑错；" +
-                            "也可以请 AI 以读者视角点评本章、检查前后矛盾，问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
+                            "也可以请 AI 以读者视角点评本章（前后矛盾在“三道审稿”的事实关里查），问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
@@ -903,7 +898,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "记录",
-                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
+                        footer = "灵感、读者点评、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
                             "“用量”按天、按功能记这部作品花了多少（只有数字）。",
                     ) {
                         // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。

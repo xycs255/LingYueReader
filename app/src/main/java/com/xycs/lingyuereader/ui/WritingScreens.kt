@@ -1119,9 +1119,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 if (editTarget(st.text.toString(), st.selection, WriteAction.CUSTOM) == null) vm.showMessage("先选中文字，或把光标放在要改的那段")
                 else asking = "想怎么改？" to { req -> runEdit(WriteAction.CUSTOM, req) }
             }
-            AiBarItem.Review, AiBarItem.Consistency ->
+            AiBarItem.Review ->
                 if (st.text.isBlank()) vm.showMessage("这一章还没有内容")
-                else runAi(if (item == AiBarItem.Review) WriteAiTask.Review else WriteAiTask.Consistency)
+                else runAi(WriteAiTask.Review)
         }
     }
 
