@@ -56,10 +56,12 @@ class AiTemperatureTest {
 
     @Test
     fun onlyOpenAiCompatibleBodiesCarryTheTemperature() {
-        val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(1.3f)))
-        // 按十进制写：1.3 不写成 1.2999999523。
-        assertEquals("1.3", o.get("temperature").toString())
-        assertEquals(1.5, JSONObject(AiWire.body(deepseek, "", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))).getDouble("temperature"), 0.0)
+        val o = JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")), prose = ProseSampling(0.9f)))
+        // 按十进制写：0.9 不写成 0.8999999762。
+        assertEquals("0.9", o.get("temperature").toString())
+        assertEquals(1.1, JSONObject(AiWire.body(deepseek, "", listOf(AiMessage("user", "写")), prose = ProseSampling(1.1f))).getDouble("temperature"), 0.0)
+        // 旧版本存的 1.5 这类：发出去不超过 1.1，再高 DeepSeek V4 会写成乱码。
+        assertEquals(1.1, JSONObject(AiWire.body(deepseek, "", listOf(AiMessage("user", "写")), prose = ProseSampling(1.5f))).getDouble("temperature"), 0.0)
         // 没设（服务商默认）：不写这个参数。
         assertFalse(JSONObject(AiWire.body(deepseek, "系统", listOf(AiMessage("user", "写")))).has("temperature"))
         // Anthropic、本机模型都不写。
@@ -98,7 +100,7 @@ class AiTemperatureTest {
         assertEquals("默认温度的回答", pieces.toString())
         val sent = sent()
         assertEquals(2, sent.size)
-        assertEquals(1.5, sent[0].getDouble("temperature"), 0.0)
+        assertEquals(1.1, sent[0].getDouble("temperature"), 0.0)
         assertFalse(sent[1].has("temperature"))
     }
 

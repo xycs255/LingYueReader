@@ -126,7 +126,7 @@ class ProseRequestTest {
                 "3. 沈默赶来，和林月在船舱夹板里找到另半张药方，后半写着“交周，送白沙渡”（1000字）\n" +
                 "4. 林月决定去白沙渡漕帮总舵，沈默拦不住，说要跟着去；章末河上传来漕帮的号子（700字）",
         ))
-        store.updateAssist(workId) { it.copy(temperature = 1.3f, thinking = false, banned = listOf("不由得", "倒吸一口凉气")) }
+        store.updateAssist(workId) { it.copy(temperature = 1.1f, thinking = false, banned = listOf("不由得", "倒吸一口凉气")) }
         writing = WritingAi(store, ai, scope) { }
     }
 

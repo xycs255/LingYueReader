@@ -88,15 +88,15 @@ class AiProseThinkingTest {
     fun proseRequestsOnOfficialV4TurnThinkingOffUnlessTheWorkWantsIt() {
         for (body in listOf(::plain, ::tooled)) {
             // 写正文、开关关着：不思考，温度照写。
-            val off = body(deepseek, ProseSampling(temperature = 1.3f, thinking = false))
+            val off = body(deepseek, ProseSampling(temperature = 0.9f, thinking = false))
             assertEquals("disabled", off.thinking())
-            assertEquals("1.3", off.get("temperature").toString())
+            assertEquals("0.9", off.get("temperature").toString())
             assertEquals("disabled", body(deepseek, ProseSampling()).thinking())
             assertEquals("disabled", body(deepseek.copy(model = AiPresets.DEEPSEEK_FLASH), ProseSampling()).thinking())
             assertEquals("disabled", body(deepseek.copy(model = "deepseek-v4-flash"), ProseSampling()).thinking())
             // 开着：什么都不写，照服务商默认先想再写。
             assertFalse(body(deepseek, ProseSampling(thinking = true)).has("thinking"))
-            assertEquals(1.5, body(deepseek, ProseSampling(1.5f, thinking = true)).getDouble("temperature"), 0.0)
+            assertEquals(1.1, body(deepseek, ProseSampling(1.1f, thinking = true)).getDouble("temperature"), 0.0)
             // 不是写正文的请求（审稿、整理等）：不写。
             assertFalse(body(deepseek, null).has("thinking"))
             assertFalse(body(deepseek, null).has("temperature"))
@@ -118,7 +118,7 @@ class AiProseThinkingTest {
         assertEquals("林月推开了门。", answer)
         val sent = sent()
         assertEquals(2, sent.size)
-        assertEquals(1.5, sent[0].getDouble("temperature"), 0.0)
+        assertEquals(1.1, sent[0].getDouble("temperature"), 0.0)
         assertFalse(sent[1].has("temperature"))
         assertEquals(listOf("disabled", "disabled"), sent.map { it.thinking() })
 

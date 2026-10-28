@@ -163,7 +163,9 @@ object AiWire {
     internal fun prose(o: JSONObject, c: AiConfig, prose: ProseSampling?) {
         if (prose == null) return
         val temperature = prose.temperature
-        if (c.protocol == AiProtocol.OPENAI && temperature != null && temperature.isFinite()) o.put("temperature", temperature.toString().toDouble())
+        // 不超过 [WorkAssist.MAX_TEMPERATURE]：再高 DeepSeek V4 就写成乱码。
+        if (c.protocol == AiProtocol.OPENAI && temperature != null && temperature.isFinite())
+            o.put("temperature", temperature.coerceAtMost(com.xycs.lingyuereader.data.WorkAssist.MAX_TEMPERATURE).toString().toDouble())
         if (!prose.thinking && switchableThinking(c)) o.put("thinking", JSONObject().put("type", "disabled"))
     }
 

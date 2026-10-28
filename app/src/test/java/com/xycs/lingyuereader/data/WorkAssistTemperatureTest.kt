@@ -25,11 +25,11 @@ class WorkAssistTemperatureTest {
         assertFalse(a.assist(w.id).beatVariants)
         assertFalse(a.assist(w.id).thinking)
 
-        a.updateAssist(w.id) { it.copy(temperature = 1.3f, beatVariants = true, thinking = true) }
+        a.updateAssist(w.id) { it.copy(temperature = 1.1f, beatVariants = true, thinking = true) }
         val file = File(dirs[0], "works/${w.id}/assist.json")
-        // 按十进制存：1.3 不存成 1.2999999523。
-        assertEquals("1.3", JSONObject(file.readText()).get("temperature").toString())
-        assertEquals(1.3f, WorkStore(dirs[0]).assist(w.id).temperature)
+        // 按十进制存：1.1 不存成 1.1000000238。
+        assertEquals("1.1", JSONObject(file.readText()).get("temperature").toString())
+        assertEquals(1.1f, WorkStore(dirs[0]).assist(w.id).temperature)
         assertTrue(WorkStore(dirs[0]).assist(w.id).beatVariants)
         assertEquals(true, JSONObject(file.readText()).get("thinking"))
         assertTrue(WorkStore(dirs[0]).assist(w.id).thinking)
@@ -37,7 +37,7 @@ class WorkAssistTemperatureTest {
         // 备份恢复带上。
         val b = WorkStore(dirs[1])
         assertEquals(1, b.restoreBackup(String(a.backup()!!)))
-        assertEquals(1.3f, b.assist(w.id).temperature)
+        assertEquals(1.1f, b.assist(w.id).temperature)
         assertTrue(b.assist(w.id).beatVariants)
         assertTrue(b.assist(w.id).thinking)
 
@@ -58,7 +58,7 @@ class WorkAssistTemperatureTest {
         val dir = tmp.newFolder("old")
         val store = WorkStore(dir)
         val w = store.create("渡口")
-        store.updateAssist(w.id) { it.copy(temperature = 1.5f, beatVariants = true, thinking = true, style = "短句为主") }
+        store.updateAssist(w.id) { it.copy(temperature = 1.1f, beatVariants = true, thinking = true, style = "短句为主") }
         val file = File(dir, "works/${w.id}/assist.json")
         // 旧数据没有这三项。
         file.writeText(JSONObject(file.readText()).apply { remove("temperature"); remove("beatVariants"); remove("thinking") }.toString())
@@ -93,5 +93,16 @@ class WorkAssistTemperatureTest {
         file.writeText(JSONObject(file.readText()).apply { remove("flavor") }.toString())
         assertEquals("", WorkStore(dir).assist(w.id).flavor)
         assertEquals("短句为主", WorkStore(dir).assist(w.id).style)
+    }
+
+    /** 旧版本可以选 1.3、1.5：DeepSeek V4 关掉思考时会写成乱码。读出来按 1.0 算，1.1 及以下照旧。 */
+    @Test
+    fun oldHighTemperaturesReadAsStandard() {
+        assertEquals(1.0f, WorkAssist.cleanTemperature(1.5))
+        assertEquals(1.0f, WorkAssist.cleanTemperature(1.3))
+        assertEquals(1.1f, WorkAssist.cleanTemperature(1.1))
+        assertEquals(0.7f, WorkAssist.cleanTemperature(0.7))
+        assertEquals(null, WorkAssist.cleanTemperature(null))
+        assertEquals(null, WorkAssist.cleanTemperature(3.0))
     }
 }

@@ -286,7 +286,7 @@ class ProjectDraftFlowTest {
     /** 作品设了写正文的温度：创作和修订（写出来的都是正文）带上，审读求稳，不带。 */
     @Test
     fun theCreateAndReviseStagesCarryTheWorkTemperature() {
-        store.updateAssist(workId) { it.copy(temperature = 1.3f) }
+        store.updateAssist(workId) { it.copy(temperature = 1.1f) }
         val vm = model()
         vm.writingAi.writeDraft(workId, chapterId, workflow = true, targetLength = "10—100字")
         val state = completed(vm)

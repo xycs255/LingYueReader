@@ -240,10 +240,17 @@ data class WorkAssist(
         val SUGGEST_GAPS = listOf(10, 20, 40, 60, 120)
         val SUGGEST_CAPS = listOf(50, 100, 200, 500, 0)
         /** 写正文的温度可选的几档（空是服务商默认）。DeepSeek 建议创作类用 1.5 左右。 */
-        val TEMPERATURES: List<Float?> = listOf(null, 0.7f, 1.0f, 1.3f, 1.5f)
+        val TEMPERATURES: List<Float?> = listOf(null, 0.7f, 0.9f, 1.0f, 1.1f)
+
+        /**
+         * 写正文的温度最高给到这里。DeepSeek V4 关掉思考时温度原样起作用：设到 1.3、1.5，写出来就成了一串读不通的字
+         * （作者真机上 1.5 整章乱码）。旧版本里存的 1.3、1.5 读出来按 1.0 算，发请求时也不超过这个数。
+         */
+        const val MAX_TEMPERATURE = 1.1f
 
         /** 读进来的温度：不是 0 到 2 之间的数（坏数据）当作服务商默认。 */
         fun cleanTemperature(t: Double?): Float? = t?.takeIf { it.isFinite() && it in 0.0..2.0 }?.toFloat()
+            ?.let { if (it > MAX_TEMPERATURE) 1.0f else it }
     }
 }
 

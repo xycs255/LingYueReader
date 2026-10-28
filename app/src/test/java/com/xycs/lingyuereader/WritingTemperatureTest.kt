@@ -87,7 +87,7 @@ class WritingTemperatureTest {
         chapterId = work.chapters.single().id
         store.saveText(workId, chapterId, text, count = false)
         store.saveCard(workId, chapterId, ChapterCard(facts = "沈默到渡口，老周已经走了"))
-        store.updateAssist(workId) { it.copy(temperature = 1.5f) }
+        store.updateAssist(workId) { it.copy(temperature = 1.1f) }
     }
 
     @After

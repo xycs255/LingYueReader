@@ -136,7 +136,7 @@ class WritingStreamUiTest {
             ))
             // 光标前已经写了一万多字的长章节。
             store.saveText(workId, chapterId, (beats[0] + "\n" + beats[1] + "\n").repeat(6).trim(), count = false)
-            store.updateAssist(workId) { it.copy(temperature = 1.3f, thinking = false, aiCliche = true) }
+            store.updateAssist(workId) { it.copy(temperature = 1.1f, thinking = false, aiCliche = true) }
         }
 
         override fun after() {

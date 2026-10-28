@@ -173,7 +173,7 @@ class WritingThinkingTest {
      */
     @Test
     fun summariesAndSyncNeverThink() {
-        store.updateAssist(workId) { it.copy(thinking = true, temperature = 1.3f) }
+        store.updateAssist(workId) { it.copy(thinking = true, temperature = 1.1f) }
         val sync = requestsOf("整理本章", { writing.syncChapter(workId, chapterId) }) {
             writing.sync.value?.let { it.running == null && it.results.isNotEmpty() } == true
         }
