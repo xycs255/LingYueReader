@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.CrashLog
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ChapterCard
@@ -58,6 +59,8 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -103,6 +106,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val instruction = instructionChoice ?: draft?.instruction.orEmpty()
     val targetLength = targetLengthChoice ?: draft?.targetLength.orEmpty()
     var task by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
+    // [task] 是按哪一组（要求、篇幅）编的：预算预估、审读任务要求一样时直接用它，不再各编一次。
+    var taskInput by remember(workId, chapterId) { mutableStateOf<Pair<String, String>?>(null) }
     var taskError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
     var budgetPreview by remember(workId, chapterId) { mutableStateOf<AiRequestBudgetPreview?>(null) }
     var budgetPreviewError by remember(workId, chapterId) { mutableStateOf(false) }
@@ -153,16 +158,34 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         catch (e: Exception) { sourceError = e.message ?: "范本片段读取失败" }
         finally { sourceLoading = false }
     }
+    // 停笔 [TASK_DEBOUNCE_MS] 毫秒再编：编一次要把设定包过一遍，不能每打一个字就编一次。
+    // 改了要求，这里的协程被取消，WritingAi 那边没人等的旧编译也跟着停下（单飞，见 WritingAi.writingTask）。
     LaunchedEffect(workId, chapterId, instruction, targetLength) {
-        delay(250)
-        runCatching { vm.writingAi.writingTask(workId, chapterId, instruction, targetLength) }
-            .onSuccess { task = it; taskError = null }
-            .onFailure { taskError = it.message ?: "本章任务读取失败" }
+        delay(TASK_DEBOUNCE_MS)
+        try {
+            task = vm.writingAi.writingTask(workId, chapterId, instruction, targetLength)
+            taskInput = instruction to targetLength
+            taskError = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // 内存不够这类 Error 也只是这一次没编成：报一句，不能让界面跟着崩（LaunchedEffect 里漏出去就是闪退）。
+            if (e !is Exception) CrashLog.caught(e)
+            taskError = e.message ?: "本章任务读取失败"
+        }
     }
     // 审读绑定审读时的要求：界面上新改的要求只用于下一次写，不让当前稿的审读失效。
+    // 只有审读过的稿子要比对；要求、篇幅和页面上的一样就用 [task]，不一样才另编一次。
     var reviewTask by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
-    LaunchedEffect(workId, chapterId, draft?.assessment, draft?.taskInstruction, draft?.taskTargetLength, task) {
-        reviewTask = runCatching { vm.writingAi.reviewTask(workId, chapterId) }.getOrNull()
+    val reviewInput = draft?.let { (it.taskInstruction ?: it.instruction) to (it.taskTargetLength ?: it.targetLength) }
+    LaunchedEffect(workId, chapterId, draft?.assessment, reviewInput, task) {
+        reviewTask = when {
+            draft?.assessment == null -> null
+            reviewInput == taskInput && task != null -> task
+            else -> try { vm.writingAi.reviewTask(workId, chapterId) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Throwable) { if (e !is Exception) CrashLog.caught(e); null }
+        }
     }
     val reviewCurrent = draft?.assessment?.let { report -> reviewTask?.fingerprint == report.materials } == true
     // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
@@ -185,19 +208,24 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val canReview = draft != null && !revisionWriteBlocked && aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
     val canWrite = canReview &&
         (referenceId == null || !sourceLoading && sourceExcerpt != null && sourceError == null)
-    LaunchedEffect(workId, chapterId, instruction, targetLength, workflow, referenceId, text,
+    // 预估按 [task] 编好时的要求、篇幅算，直接用编好的任务：改要求时等 [task] 重编完再估一次，不另外编。
+    LaunchedEffect(workId, chapterId, taskInput, workflow, referenceId, text,
         sourceExcerpt?.fingerprint, task?.fingerprint, aiConfig, loading) {
         budgetPreview = null
         budgetPreviewError = false
-        if (!aiConfig.ready || aiConfig.onDevice || loading || text.isNotBlank() || task == null || taskError != null ||
+        val input = taskInput
+        val compiled = task
+        if (!aiConfig.ready || aiConfig.onDevice || loading || text.isNotBlank() || compiled == null || input == null || taskError != null ||
             referenceId != null && (sourceLoading || sourceError != null || sourceExcerpt == null)) return@LaunchedEffect
         delay(300)
         try {
-            budgetPreview = vm.writingAi.previewDraftRequest(workId, chapterId, instruction, targetLength, workflow, referenceId)
+            budgetPreview = vm.writingAi.previewDraftRequest(workId, chapterId, input.first, input.second, workflow, referenceId, compiled)
             if (budgetPreview == null) budgetPreviewError = true
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Throwable) {
+            // 以前只接 Exception：算预估时内存不够（OutOfMemoryError 是 Error）就从这里漏出去闪退。
+            if (e !is Exception) CrashLog.caught(e)
             budgetPreviewError = true
         }
     }
@@ -228,9 +256,16 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         } else action()
     }
     val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
-    // 写完以后按检查规则看一遍（本机算）。
+    // 写完以后按检查规则看一遍（本机算，整章扫一遍放在后台；写的途中不算）。查不了（规则读不出）就不显示，不能让界面跟着崩。
     val hits by produceState<Int?>(null, text, loading) {
-        value = if (loading || text.isBlank()) null else vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { CheckRules.check(text, it).hits.size }
+        value = if (loading || text.isBlank()) null else try {
+            vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { rules -> withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits.size } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            CrashLog.caught(e)
+            null
+        }
     }
     val snackbar = rememberWritingMessages(vm)
     val locked = chapter?.locked == true
@@ -630,7 +665,13 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             fun place(replace: Boolean) {
                 placing = false
                 scope.launch {
-                    val blocked = vm.writingAi.draftBlocked(workId, chapterId)
+                    // 采纳前要重编一次任务核对审读：这里出的任何错（含内存不够）都只报一句，不能漏出去闪退。
+                    val blocked = try { vm.writingAi.draftBlocked(workId, chapterId) }
+                        catch (e: CancellationException) { throw e }
+                        catch (e: Throwable) {
+                            if (e !is Exception) CrashLog.caught(e)
+                            e.message ?: "本章任务读取失败"
+                        }
                     if (blocked != null) { vm.showMessage(blocked); return@launch }
                     vm.writing.applyDraft(workId, chapterId, text, replace) {
                         vm.writingAi.clearDraft(workId, chapterId)
@@ -689,6 +730,9 @@ private const val STALE_REVIEW = "审读已过时"
 
 /** 离底多远以内才跟着滚（像素，约一屏多）：再远说明作者往上翻着看，不拽回去。 */
 private const val FOLLOW_LIMIT = 1600
+
+/** 改“写作要求 / 篇幅”后停笔多久才重编本章任务（毫秒）。 */
+internal const val TASK_DEBOUNCE_MS = 500L
 
 /** 草稿卡片第一行：左边字数，右边在写的转圈和进度，或写完后按检查规则的结果（合规则用成功色，有不合的用提醒色）。 */
 @Composable

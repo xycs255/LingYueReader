@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
@@ -103,6 +105,9 @@ fun MeScreen(vm: AppViewModel) {
     }
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> confirmRestore = uri }
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let(vm::setBackupFolder) }
+    // 闪退记录有几条（回到这页时重读）。
+    var crashCount by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(Unit) { crashCount = withContext(Dispatchers.IO) { com.xycs.lingyuereader.CrashLog.entries().size } }
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
     }
@@ -234,6 +239,11 @@ fun MeScreen(vm: AppViewModel) {
                         GroupedSection(header = "关于", footer = "灵阅：开源、无广告，默认不联网（只在你使用 AI 助手、书源或下载离线语音模型时联网）。代码以 Apache-2.0 发布。") {
                             row { ValueRow("版本", version, icon = LingYueIcons.Info, iconBackground = RowIconColors.Info) }
                             row { NavRow("项目主页", "GitHub", icon = LingYueIcons.Share, iconBackground = RowIconColors.Link) { openHome() } }
+                            row {
+                                NavRow("闪退记录", crashCount?.let { if (it == 0) "没有" else "$it 条" }, icon = LingYueIcons.Info, iconBackground = RowIconColors.Info) {
+                                    vm.open(Screen.CrashLog)
+                                }
+                            }
                         }
                     }
                 }

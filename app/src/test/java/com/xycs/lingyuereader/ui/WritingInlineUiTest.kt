@@ -67,7 +67,7 @@ class WritingInlineUiTest {
                     // “慢慢写”：等测试放行再回答，好在写的途中再点一次。
                     if ("慢慢写" in user) slowGate.await(30, java.util.concurrent.TimeUnit.SECONDS)
                     val answer = when {
-                        "请从光标处接着往下写正文" in user -> "雪还在下。\n沈默在门口站了一会儿。"
+                        "【光标在这里】" in user -> "雪还在下。\n沈默在门口站了一会儿。"
                         "只找下面这几类问题" in user ->
                             """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"杜娘说话爱绕弯，不会这么直白","kind":"VOICE","source":"《人物档案》杜娘"}]}"""
                         else -> """{"issues":[]}"""
@@ -150,7 +150,7 @@ class WritingInlineUiTest {
         // 提示条盖在键盘上方那一排上：等它收起再切回 AI 操作。
         waitFor { compose.onAllNodesWithText("AI 写的还没采纳或撤回", substring = true).fetchSemanticsNodes().isEmpty() }
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        val ask = prompts.first { "请从光标处接着往下写正文" in it }
+        val ask = prompts.first { "【光标在这里】" in it }
         assertTrue("杜娘抬头看他，说老周昨夜就死了。\n【光标在这里】" in ask && "写完眼下这一场就停" in ask)
 
         // 撤回：什么都不留。

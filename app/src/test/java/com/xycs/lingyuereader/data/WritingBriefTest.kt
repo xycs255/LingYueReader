@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.data
 
+import com.xycs.lingyuereader.ai.ProseScope
+import com.xycs.lingyuereader.ai.ProseTask
 import com.xycs.lingyuereader.ai.WritePrompts
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -271,9 +273,10 @@ class WritingBriefTest {
             "灯下，林月看着玉佩。\n“你回来了。”",
             WritePrompts.cleanDraft("```\n第三章 玉佩\n\n　　灯下，林月看着玉佩。\n\n“你回来了。”\n（本章完）\n```"),
         )
-        val draft = WritePrompts.draft("第三章", "上一章的结尾", "【检查规则】\n字数：3000-6000", "3000 到 6000 字", "多写对白")
-        assertTrue("上一章结尾：\n上一章的结尾" in draft && "篇幅3000 到 6000 字" in draft && "作者这次的要求：多写对白" in draft)
-        assertTrue("请从最后一句接着往下写" in WritePrompts.draftMore("第三章", "已经写了的。", "", "3000 到 6000 字"))
+        val task = ProseTask(3, "第三章", ChapterCard(facts = "林月进城。"), ProseScope.CHAPTER, length = "3000 到 6000 字", instruction = "多写对白")
+        val draft = WritePrompts.draft("上一章的结尾", task)
+        assertTrue("上一章结尾：\n上一章的结尾" in draft && "篇幅：3000 到 6000 字" in draft && "作者这次的要求：多写对白" in draft)
+        assertTrue("紧接上文最后一句" in WritePrompts.draftMore("已经写了的。", task.copy(scope = ProseScope.TO_END)))
         assertTrue("150 到 300 字" in WritePrompts.summary("正文", "第三章"))
     }
 }

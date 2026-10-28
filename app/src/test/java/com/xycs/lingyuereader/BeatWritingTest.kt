@@ -5,6 +5,7 @@ import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.InlineMode
+import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.DraftBeats
 import com.xycs.lingyuereader.data.PackKind
@@ -136,22 +137,25 @@ class BeatWritingTest {
         assertEquals(all, disk.text)
         assertEquals(DraftBeats(3, 3), disk.beats)
 
-        // 第一拍：只写开头这一拍，下一拍不要写到；没写篇幅按全章平均分。
+        // 第一拍：从本章开头写这一拍，下一拍后面再写；没写篇幅按全章平均分。每拍都带完整的任务卡。
         val first = beatPrompt(1).single()
-        assertTrue(first.contains("请只写本章开头的这一拍"))
-        assertTrue(first.contains("「沈默赶到渡口，发现船不见了」。这件事必须写到、写完"))
-        assertTrue(first.contains("下一拍「杜娘开门，说老周昨夜走了」不要写到"))
-        assertTrue(first.contains("这一拍篇幅约 1000 字"))
-        // 第二拍：接着已写的写，上一拍不要重写。
+        assertTrue(first.contains("从哪里接：本章开头"))
+        assertTrue(first.contains("  1. 沈默赶到渡口，发现船不见了  ← 这次写这一拍"))
+        assertTrue(first.contains("  2. 杜娘开门，说老周昨夜走了（后面再写，这次别写到）"))
+        assertTrue(first.contains("篇幅：约 1000 字"))
+        // 第二拍：接着已写的写，上一拍标成已写。
         val second = beatPrompt(2).single()
-        assertTrue(second.contains("已经写了下面这些"))
+        assertTrue(second.contains("这一章已经写到这里"))
         assertTrue(second.contains(beatText.getValue(1)))
-        assertTrue(second.contains("上一拍「沈默赶到渡口，发现船不见了」已经写过了，上面已经写的正文就是，不要重写"))
-        assertFalse(second.contains("请写出这一章「"))
-        // 最后一拍：用它自己写的篇幅，写完收束。
+        assertTrue(second.contains("  1. 沈默赶到渡口，发现船不见了（已写）"))
+        assertTrue(second.contains("从哪里接：紧接上文最后一句"))
+        assertFalse(second.contains("写完整章"))
+        // 最后一拍：用它自己写的篇幅，写完本章就结束。
         val third = beatPrompt(3).single()
-        assertTrue(third.contains("这一拍篇幅约 500 字"))
-        assertTrue(third.contains("这是最后一拍"))
+        assertTrue(third.contains("篇幅：约 500 字"))
+        assertTrue(third.contains("它是本章最后一拍"))
+        // 每一拍的请求都以任务卡收尾。
+        listOf(first, second, third).forEach { assertTrue(it.substringAfterLast(WritePrompts.CARD_HEADER).contains("写到哪里停")) }
         assertEquals(3, prompts.size)
     }
 
@@ -217,7 +221,7 @@ class BeatWritingTest {
         waitFor("写完") { draft()?.loading == false }
         assertEquals("整章一口气写完。", draft()?.text)
         assertEquals(1, prompts.size)
-        assertTrue(prompts.single().contains("请写出这一章「"))
+        assertTrue(prompts.single().contains("写到哪里停：写完整章"))
         assertFalse(prompts.single().contains("拍"))
         assertNull(store.draftContent(workId, chapterId).beats)
     }
@@ -234,8 +238,8 @@ class BeatWritingTest {
         assertTrue(draft()?.assessment != null)
         assertEquals(DraftBeats(3, 3), store.draftContent(workId, chapterId).beats)
         // 第一拍走项目包的创作提示，审读看的是拼好的全文。
-        assertTrue(beatPrompt(1).single().contains("【当前阶段：创作】"))
-        assertTrue(beatPrompt(1).single().contains("只写本章开头的这一拍"))
+        assertTrue(beatPrompt(1).single().contains(WritePrompts.CARD_HEADER))
+        assertTrue(beatPrompt(1).single().contains("从哪里接：本章开头"))
         val review = prompts.first { "【当前阶段：审读】" in it }
         assertTrue(review.contains(all))
     }
@@ -247,9 +251,9 @@ class BeatWritingTest {
         writing.writeInline(workId, chapterId, text, text.length, InlineMode.BEAT, beat = 2)
         waitFor("写第二拍") { writing.inline.value?.loading == false }
         val ask = beatPrompt(2).single()
-        assertTrue(ask.contains("请从光标处接着往下写正文"))
-        assertTrue(ask.contains("上一拍「沈默赶到渡口，发现船不见了」已经写过了，光标前的正文就是，不要重写"))
-        assertTrue(ask.contains("下一拍「老周的信」不要写到：写到第 2 拍收住就停"))
+        assertTrue(ask.contains("这一章写到光标处的正文"))
+        assertTrue(ask.contains("  1. 沈默赶到渡口，发现船不见了（已写）"))
+        assertTrue(ask.contains("写到哪里停：这次只写第 2 拍，写完它的事就停，别开始第 3 拍"))
         // 重写：还是这一拍。
         writing.retryInline()
         waitFor("重写第二拍") { writing.inline.value?.loading == false && beatPrompt(2).size == 2 }

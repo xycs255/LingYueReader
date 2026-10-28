@@ -83,6 +83,21 @@ object Beats {
         return progress.written + 1
     }
 
+    /**
+     * 正文已经写到了前几拍（编辑器里“写到本章结尾”用，作者没在细纲卡里勾“已写”时）：从第一拍起，
+     * 一拍的字（二元组）有一半以上在 [text] 里出现就算写了，遇到没写的就停。
+     */
+    fun covered(beats: List<Beat>, text: String): Int {
+        val written = PackRanking.bigrams(text)
+        var n = 0
+        for (b in beats) {
+            val grams = PackRanking.bigrams(b.text)
+            if (grams.isEmpty() || grams.count { it in written } * 2 < grams.size) break
+            n++
+        }
+        return n
+    }
+
     /** 第一拍没写的（默认选它）；都写了为空。 */
     fun firstUndone(card: ChapterCard): Int? {
         val done = card.beatsDone.toSet()

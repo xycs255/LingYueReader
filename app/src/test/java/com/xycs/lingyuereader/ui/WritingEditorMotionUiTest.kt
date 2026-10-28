@@ -72,7 +72,7 @@ class WritingEditorMotionUiTest {
                     val user = (0 until msgs.length()).map { msgs.getJSONObject(it) }.last { it.getString("role") == "user" }.getString("content")
                     prompts += user
                     val answer = when {
-                        "请从光标处接着往下写正文" in user -> "雪还在下。\n沈默在门口站了一会儿。"
+                        "【光标在这里】" in user -> "雪还在下。\n沈默在门口站了一会儿。"
                         "只找下面这几类问题" in user ->
                             """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"杜娘说话爱绕弯，不会这么直白","kind":"VOICE","source":"《人物档案》杜娘"}]}"""
                         else -> {

@@ -5,6 +5,7 @@
   - 云备份每个应用只有 25 MB，超了整个应用都不再备份：书、词典、字体、离线语音模型、本机 AI 模型、写作的历史版本不进云备份（用灵阅自己的备份）；
     换机迁移没有这个限制，照常带过去；
   - 自动备份的文件夹授权换了手机就不能用，都不带过去。
+  - 闪退记录只是这台手机上查问题用的，不进云备份。
 -->
 <data-extraction-rules>
     <cloud-backup>
@@ -18,6 +19,7 @@
         <exclude domain="file" path="llm/" />
         <exclude domain="file" path="writing/history/" />
         <exclude domain="file" path="writing/preview/" />
+        <exclude domain="file" path="crash/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="ai.xml" />

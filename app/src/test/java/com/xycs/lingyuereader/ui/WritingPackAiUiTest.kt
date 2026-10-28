@@ -10,6 +10,7 @@ import com.sun.net.httpserver.HttpServer
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.ai.WritePrompts
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ReviewEvidence
@@ -111,10 +112,14 @@ class WritingPackAiUiTest {
 
         val first = bodies.first()
         val system = first.getJSONArray("messages").getJSONObject(0).getString("content")
-        // 工作说明在最前面，知识库整份，细纲在目录里、AI 自己读；这一章的细纲原文随请求带。
-        assertTrue(system.indexOf("【使用说明】") < system.indexOf("【人物档案】"))
-        assertTrue("《第一卷细纲》（卷纲细纲，" in system)
-        assertTrue("【本次章节任务】" in system && "沈默夜里出门" in system)
+        // 写正文：先是合写搭档的身份和作者的说明，再是按这一章挑的资料（出场人物的人物卡）；知识库不整份给，
+        // 细纲在能查的资料里、AI 自己读；这一章的细纲在请求最后的任务卡里。
+        assertTrue(system.startsWith("你是和作者一起写这部小说"))
+        assertTrue(system.indexOf("【使用说明】") in 0 until system.indexOf("【人物·沈默】"))
+        assertTrue("《第一卷细纲》" in system)
+        assertFalse("=== 知识库（整份） ===" in system)
+        val user = first.getJSONArray("messages").let { m -> (0 until m.length()).map { m.getJSONObject(it) }.last { it.getString("role") == "user" } }.getString("content")
+        assertTrue(user.substringAfter(WritePrompts.CARD_HEADER).contains("沈默夜里出门"))
         assertEquals(3, first.getJSONArray("tools").length())
         // 工具读到的第一章交回给 AI 了。
         val second = bodies[1].getJSONArray("messages")

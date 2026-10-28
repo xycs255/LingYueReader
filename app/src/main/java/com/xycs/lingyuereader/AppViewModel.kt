@@ -215,6 +215,9 @@ sealed interface Screen {
 
     /** 全书排版：先看各章要改几处，再按章排（跳过定稿的章）。 */
     data class WorkFormat(val workId: String) : Screen
+
+    /** 闪退记录：最近几次闪退、接住的意外，能看能复制。 */
+    data object CrashLog : Screen
 }
 
 /** 跳转前读到的地方：从目录、书签、搜索、进度条跳走后，可以一键回来。[block] 为负表示章名处。 */
@@ -1425,6 +1428,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** 写作的 AI：改稿、灵感、点评、写作建议、设定集。 */
     val writingAi = WritingAi(workStore, assistant, viewModelScope, app.getSharedPreferences("writing_ai", android.content.Context.MODE_PRIVATE)) { _messages.value = it }
         .also { it.ledgerChanged = writing::loadLedger }
+        .also { w ->
+            // 闪退记录里说一句当时 AI 在不在写正文（只说在写什么，不带正文）。
+            CrashLog.busy = {
+                listOfNotNull(
+                    "编辑器里 AI 在写".takeIf { w.inline.value?.anyLoading == true },
+                    "AI 在写整章草稿".takeIf { w.drafts.value.values.any { it.loading } },
+                ).joinToString("、")
+            }
+        }
     val referenceAi = WritingReferenceAi(workStore, assistant, viewModelScope) { _messages.value = it }
     val writingMethodMap = WritingMethodMap(workStore, assistant, viewModelScope) { _messages.value = it }
     private val companionChoices = app.getSharedPreferences("writing_companion", android.content.Context.MODE_PRIVATE)

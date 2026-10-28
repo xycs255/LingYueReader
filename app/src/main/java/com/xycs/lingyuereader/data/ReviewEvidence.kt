@@ -74,7 +74,7 @@ fun WorkStore.reviewEvidence(workId: String, chapterId: String, task: ChapterWri
     val work = get(workId)
     val before = work?.chapters?.indexOfFirst { it.id == chapterId } ?: -1
     val chapters = if (before >= 0) work!!.chapters.take(before).filter { it.status == ChapterStatus.FINAL } else emptyList()
-    val docs = ProjectSources.forPhase(pack(workId).map { it to packText(workId, it.id) }, WritingPhase.REVIEW)
+    val docs = packSources(workId).forPhase(WritingPhase.REVIEW)
         .filter { (doc, text) -> text.isNotBlank() && doc.kind !in setOf(PackKind.REFERENCE, PackKind.TECHNIQUE) }
     return ReviewEvidence(listOf(ReviewEvidence.task(task)) +
         docs.map { (doc, text) -> ReviewEvidence.pack(doc, text) } +

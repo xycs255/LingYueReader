@@ -1,7 +1,6 @@
 package com.xycs.lingyuereader.ai
 
 import com.xycs.lingyuereader.data.ChapterCard
-import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.StyleSamples
 import com.xycs.lingyuereader.data.WorkAssist
@@ -10,7 +9,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 写法要求（文风、范例、采纳过的改法、去 AI 腔、黑名单）接在生成正文的请求最后；系统提示里没有范例；挑错不带。 */
+/**
+ * 写法要求（文风、范例、采纳过的改法、去 AI 腔、黑名单）：改稿接在请求最后；写正文时在任务卡前面（任务卡永远在最后）；
+ * 系统提示里没有范例；挑错不带。
+ */
 class VoiceTailTest {
     private val samples = StyleSamples.HEADER + "\n【第一章 渡口·对白】\n“船呢？”沈默问。"
     private val assist = WorkAssist(
@@ -20,11 +22,7 @@ class VoiceTailTest {
     )
     private val tail = WritePrompts.voiceTail(assist, samples)
 
-    private fun task() = ChapterWritingTask(
-        title = "第四章 河桥", chapter = 4, volume = 1, instruction = "", targetLength = "6000 字",
-        previous = "城门在他身后合上。", previousLabel = "用户定稿第三章", card = ChapterCard(facts = "顾长风北返。"),
-        sourceNames = emptyList(), warnings = emptyList(), blocking = emptyList(), project = true, fingerprint = "f",
-    )
+    private fun task(scope: ProseScope = ProseScope.CHAPTER) = ProseTask(4, "第四章 河桥", ChapterCard(facts = "顾长风北返。"), scope, length = "6000 字")
 
     @Test
     fun tailHoldsEverythingInOrder() {
@@ -33,9 +31,9 @@ class VoiceTailTest {
         val at = order.map { tail.indexOf(it) }
         assertTrue(at.toString(), at.all { it >= 0 })
         assertEquals(at.sorted(), at)
-        // 去 AI 腔的写法要求 6–8 条，短而具体。
-        assertTrue(WritePrompts.VOICE_RULES.size in 6..8)
-        WritePrompts.VOICE_RULES.forEach { assertTrue(it in tail) }
+        // 改稿的去 AI 腔写法要求 6–8 条，短而具体。
+        assertTrue(WritePrompts.EDIT_RULES.size in 6..8)
+        WritePrompts.EDIT_RULES.forEach { assertTrue(it in tail) }
     }
 
     @Test
@@ -48,28 +46,28 @@ class VoiceTailTest {
         // 什么都没有：空串，请求原样不变。
         val empty = WritePrompts.voiceTail(WorkAssist(aiCliche = false), null)
         assertEquals("", empty)
-        assertEquals(WritePrompts.draft("渡口", "", "", "3000 字", ""), WritePrompts.draft("渡口", "", "", "3000 字", "", empty))
+        assertEquals(WritePrompts.edit(WriteAction.POLISH, "风很大。", "", "", "渡口"), WritePrompts.edit(WriteAction.POLISH, "风很大。", "", "", "渡口", voice = empty))
     }
 
     @Test
-    fun generationPromptsEndWithTheTail() {
+    fun generationPromptsEndWithTheTaskCardRightAfterTheTail() {
+        val prose = WritePrompts.proseTail(assist, samples)
         val prompts = mapOf(
-            "接着写" to WritePrompts.continueAt("河桥", "他站住。", "", InlineMode.WORDS, "6000 字", "", "禁用：您", tail),
-            "写本章" to WritePrompts.draft("河桥", "上一章结尾", "禁用：您", "6000 字", "多写对白", tail),
-            "接着写草稿" to WritePrompts.draftMore("河桥", "已经写的。", "禁用：您", "6000 字", tail),
-            "项目创作" to WritePrompts.projectDraft(task(), "对白可以长说。", tail),
-            "项目修订" to WritePrompts.projectRevision(task(), "顾长风北返。", "意见", "对白可以长说。", tail),
+            "接着写" to WritePrompts.continueAt("他站住。", "", task(ProseScope.WORDS), prose),
+            "写本章" to WritePrompts.draft("上一章结尾", task(), prose),
+            "接着写草稿" to WritePrompts.draftMore("已经写的。", task(ProseScope.TO_END), prose),
+            "项目修订" to WritePrompts.projectRevision("顾长风北返。", "意见", task(), prose),
         )
         prompts.forEach { (name, p) ->
-            assertTrue(name, p.endsWith(tail))
+            val card = p.indexOf(WritePrompts.CARD_HEADER)
+            assertTrue(name, card > 0)
+            // 任务卡是最后一段，写法要求紧挨在它前面。
+            assertTrue(name, p.substring(0, card).trimEnd().endsWith(prose))
+            assertFalse(name, p.substring(card).contains(WritePrompts.PROSE_HEADER))
             assertTrue(name, "「嘴角勾起」" in p)
             assertTrue(name, StyleSamples.HEADER in p)
+            assertFalse(name, WritePrompts.VOICE_HEADER in p)
         }
-        // 写法要求紧贴在“请写”之后。
-        val draft = prompts.getValue("写本章")
-        assertTrue(draft.indexOf(WritePrompts.VOICE_HEADER) > draft.indexOf("请写出这一章"))
-        val inline = prompts.getValue("接着写")
-        assertTrue(inline.indexOf(WritePrompts.VOICE_HEADER) > inline.indexOf("请从光标处接着往下写正文"))
     }
 
     @Test

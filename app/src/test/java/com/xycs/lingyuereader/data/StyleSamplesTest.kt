@@ -5,6 +5,8 @@ import com.xycs.lingyuereader.ai.AiPresets
 import com.xycs.lingyuereader.ai.AiProtocol
 import com.xycs.lingyuereader.ai.AiToolWire
 import com.xycs.lingyuereader.ai.WriteAction
+import com.xycs.lingyuereader.ai.ProseScope
+import com.xycs.lingyuereader.ai.ProseTask
 import com.xycs.lingyuereader.ai.WritePrompts
 import org.json.JSONArray
 import org.json.JSONObject
@@ -46,8 +48,11 @@ class StyleSamplesTest {
             "那人退了半步，又扑上来。沈默矮身闪过，反手一刀刺向他肋下。对方横刀去挡，被震得虎口发麻。沈默不等他站稳，抬腿踢中他手腕，刀脱手飞出，落进河里。那人转身就跑。沈默追了两步，停下了。",
         )
 
+        /** 章节开头的几段（不挑）。 */
+        val OPENING = listOf("天还没亮。", "林月醒了。", "她听见外面有人敲门。")
+
         fun chapterText(variant: String = "") =
-            (NARRATION + DIALOGUE + ACTION).joinToString("\n") { it + variant }
+            (OPENING + DIALOGUE + NARRATION + ACTION).joinToString("\n") { it + variant }
     }
 
     private fun options(limit: Int = 1500, skip: Set<String> = emptySet(), shift: Map<String, Int> = emptyMap()) = SampleOptions(limit, skip, shift)
@@ -132,7 +137,7 @@ class StyleSamplesTest {
         assertEquals(mapOf("ACTION" to 2), back.sampleShift)
         assertEquals(800, back.sampleLimit)
         assertFalse(back.sampleFallback)
-        // 旧的设置文件没有这几项：默认 1500 字、退回开着。
+        // 新作品默认带 2500 字。
         assertEquals(StyleSamples.DEFAULT_LIMIT, WorkAssist().sampleLimit)
     }
 
@@ -160,9 +165,11 @@ class StyleSamplesTest {
         assertEquals(one, WritePrompts.voiceTail(assist, samples))
         val at = one.indexOf(StyleSamples.HEADER)
         assertTrue(at > one.indexOf("第三人称，冷峻"))
-        val prompt = WritePrompts.draft("渡口", "", "", "3000 字", "", one)
-        assertTrue(prompt.endsWith(one))
-        assertTrue(prompt.indexOf(StyleSamples.HEADER) > prompt.indexOf("请写出这一章"))
+        // 写正文：范例在写法要求里、任务卡前面（任务卡永远在最后）。
+        val tail = WritePrompts.proseTail(assist, samples)
+        val prompt = WritePrompts.draft("", ProseTask(1, "渡口", ChapterCard(facts = "林月守渡口。"), ProseScope.CHAPTER), tail)
+        assertTrue(prompt.endsWith(WritePrompts.taskCard(ProseTask(1, "渡口", ChapterCard(facts = "林月守渡口。"), ProseScope.CHAPTER, opening = true))))
+        assertTrue(prompt.indexOf(StyleSamples.HEADER) in 0 until prompt.indexOf(WritePrompts.CARD_HEADER))
         assertFalse(WritePrompts.voiceTail(assist, null).contains(StyleSamples.HEADER))
         // 挑错不带；改稿、续写带。
         assertFalse(WritePrompts.usesSamples(WriteAction.PROOFREAD))
@@ -183,5 +190,60 @@ class StyleSamplesTest {
         assertNull(blocks.getJSONObject(2).optJSONObject("cache_control"))
         // 没有第二处时和以前一样两块。
         assertEquals(2, JSONObject(AiToolWire.body(c, system, JSONArray(), emptyList(), cachePrefix = 5)).getJSONArray("system").length())
+    }
+
+    /** 对白戏、动作戏优先，至少一段对白，叙述描写至多一段；不挑章节开头、不挑以景物起笔的段。 */
+    @Test
+    fun dialogueAndActionComeFirstAndOpeningsAreSkipped() {
+        val picked = StyleSamples.pick(sources, options(3000))
+        assertTrue(picked.any { it.kind == SampleKind.DIALOGUE })
+        assertTrue(picked.count { it.kind == SampleKind.NARRATION } <= 1)
+        assertTrue(picked.count { it.kind == SampleKind.DIALOGUE } + picked.count { it.kind == SampleKind.ACTION } > picked.count { it.kind == SampleKind.NARRATION })
+        // 章节开头那几段、以“河面”“雾气”起笔的那段都不挑。
+        picked.forEach { p ->
+            assertFalse(p.text, p.text.startsWith("天还没亮"))
+            assertFalse(p.text, p.text.startsWith("渡口在镇子的东头"))
+        }
+        assertTrue(StyleSamples.sceneryOpening(NARRATION[0]))
+        assertFalse(StyleSamples.sceneryOpening(NARRATION[1]))
+        assertFalse(StyleSamples.sceneryOpening("雾里冲出一个人，扑倒了林月。"))
+        assertFalse(StyleSamples.sceneryOpening(DIALOGUE[0]))
+    }
+
+    /** 和这次要写的场面高度重合的段不挑（免得照抄），请求里已经带了的段（上一章结尾）也不挑。 */
+    @Test
+    fun scenesLikeTheOneBeingWrittenAndTextAlreadySentAreSkipped() {
+        val plain = StyleSamples.pick(sources, options(3000))
+        val action = plain.first { it.kind == SampleKind.ACTION }
+        val avoid = StyleSamples.pick(sources, options(3000).copy(avoid = "沈默在船板上和黑影缠斗，拔刀格挡，踹翻那人，火星四溅，又有人从岸上冲下来，劈在刀背上。"))
+        assertTrue(avoid.none { it.text == action.text })
+        val shown = StyleSamples.pick(sources, options(3000).copy(shown = DIALOGUE[1] + "\n" + DIALOGUE[2]))
+        assertTrue(shown.none { DIALOGUE[1] in it.text })
+        // 挑的东西变了，缓存的键也跟着变。
+        val c = listOf(WorkChapter("c1", "第一章", 900, 1L, ChapterStatus.FINAL))
+        assertNotEquals(StyleSamples.signature(c, false, options()), StyleSamples.signature(c, false, options().copy(avoid = "缠斗")))
+    }
+
+    /** 默认放宽到 2500 字；旧数据存着旧默认 1500 的按没改过算，作者挑过别的照旧。 */
+    @Test
+    fun theDefaultLimitGrewAndOldDefaultsFollowIt() {
+        assertEquals(2_500, StyleSamples.DEFAULT_LIMIT)
+        assertTrue(StyleSamples.DEFAULT_LIMIT in StyleSamples.LIMITS)
+        val dir = tmp.newFolder("limit")
+        val store = WorkStore(dir)
+        val w = store.create("渡口")
+        val file = java.io.File(dir, "works/${w.id}/assist.json")
+        fun saved(limit: Int) = file.writeText(JSONObject(file.readText()).apply { remove("sampleLimit2"); put("sampleLimit", limit) }.toString())
+        store.updateAssist(w.id) { it.copy(style = "短句") }
+        saved(1500)
+        assertEquals(StyleSamples.DEFAULT_LIMIT, WorkStore(dir).assist(w.id).sampleLimit)
+        saved(800)
+        assertEquals(800, WorkStore(dir).assist(w.id).sampleLimit)
+        // 新存的 1500 是作者挑的：照旧。
+        store.updateAssist(w.id) { it.copy(sampleLimit = 1500) }
+        assertEquals(1500, WorkStore(dir).assist(w.id).sampleLimit)
+        val b = WorkStore(tmp.newFolder("limit-b"))
+        assertEquals(1, b.restoreBackup(String(store.backup()!!)))
+        assertEquals(1500, b.assist(w.id).sampleLimit)
     }
 }

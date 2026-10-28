@@ -77,6 +77,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -240,8 +241,12 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WorkFormatSettings -> WorkFormatSettingsScreen(vm, screen.workId)
             is Screen.WorkBanned -> WorkBannedScreen(vm, screen.workId)
             is Screen.WorkFormat -> WorkFormatScreen(vm, screen.workId)
+            Screen.CrashLog -> CrashLogScreen(vm)
         }
     }
+    // 闪退记录：记下现在在哪个界面（只记名字，不带书名、章名）。
+    val top = stack.last()
+    SideEffect { com.xycs.lingyuereader.CrashLog.screen = top.toString().substringBefore('(') }
 }
 
 @Composable

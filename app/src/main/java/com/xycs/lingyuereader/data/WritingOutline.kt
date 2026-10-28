@@ -336,10 +336,12 @@ private val outlineCache = object : LinkedHashMap<String, List<OutlineEntry>>(32
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<OutlineEntry>>?) = size > 64
 }
 
-/** 设定包里所有写到某一章的段落（卷纲细纲在前）。 */
-fun WorkStore.outlineEntries(workId: String): List<OutlineEntry> =
-    ProjectSources.forPhase(pack(workId).map { it to packText(workId, it.id) }, WritingPhase.CREATE)
-        .filter { it.first.kind in OUTLINE_KINDS }.sortedBy { OUTLINE_KINDS.indexOf(it.first.kind) * 100 + it.first.priority }.flatMapIndexed { rank, (d, text) ->
+/** 设定包里所有写到某一章的段落（卷纲细纲在前）。设定包没变就用记着的（见 [PackSources.outlineEntries]）。 */
+fun WorkStore.outlineEntries(workId: String): List<OutlineEntry> = packSources(workId).outlineEntries
+
+/** [docs] 是写正文阶段筛过的设定包（[ProjectSources.forPhase]）。 */
+internal fun outlineEntriesOf(workId: String, docs: List<Pair<PackDoc, String>>): List<OutlineEntry> =
+    docs.filter { it.first.kind in OUTLINE_KINDS }.sortedBy { OUTLINE_KINDS.indexOf(it.first.kind) * 100 + it.first.priority }.flatMapIndexed { rank, (d, text) ->
         val key = "$workId/${d.id}/${d.updatedAt}/${d.words}"
         val parsed = synchronized(outlineCache) { outlineCache[key] } ?: ChapterOutlines.parse(listOf(d.title to text)).also { synchronized(outlineCache) { outlineCache[key] = it } }
         parsed.map { it.copy(rank = rank) }
