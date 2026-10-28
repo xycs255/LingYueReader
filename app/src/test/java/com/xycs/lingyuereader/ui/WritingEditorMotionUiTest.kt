@@ -74,7 +74,7 @@ class WritingEditorMotionUiTest {
                     val answer = when {
                         "请从光标处接着往下写正文" in user -> "雪还在下。\n沈默在门口站了一会儿。"
                         "只找下面这几类问题" in user ->
-                            """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"按设定老周这时还活着","kind":"CANON","source":"《人物档案》老周"}]}"""
+                            """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"杜娘说话爱绕弯，不会这么直白","kind":"VOICE","source":"《人物档案》杜娘"}]}"""
                         else -> {
                             reviewGate.await(30, TimeUnit.SECONDS)
                             "读来顺畅。"
@@ -206,18 +206,18 @@ class WritingEditorMotionUiTest {
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(0))
         repeat(6) {
             advance(64)
-            assertTrue("光标只是掠过，建议条不该出来", !shown("按设定老周这时还活着"))
+            assertTrue("光标只是掠过，建议条不该出来", !shown("杜娘说话爱绕弯，不会这么直白"))
         }
         // 停稳了才出来。
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(at))
         advance(64)
-        assertTrue("还没停稳，建议条先不出来", !shown("按设定老周这时还活着"))
+        assertTrue("还没停稳，建议条先不出来", !shown("杜娘说话爱绕弯，不会这么直白"))
         advance(400)
-        assertTrue("停稳了，建议条出来", shown("按设定老周这时还活着"))
+        assertTrue("停稳了，建议条出来", shown("杜娘说话爱绕弯，不会这么直白"))
         // 采纳：那条马上收起，正文换好。
         compose.onNodeWithText("采纳").performClick()
         advance(600)
-        assertTrue(!shown("按设定老周这时还活着"))
+        assertTrue(!shown("杜娘说话爱绕弯，不会这么直白"))
         compose.mainClock.autoAdvance = true
         waitFor { WorkStore(writingDir).text(workId, chapterId) == text.replace("昨夜就死了", "昨夜病倒了") }
     }

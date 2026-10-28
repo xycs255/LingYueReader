@@ -527,7 +527,7 @@ class WritingAi(
             _realtime.update { it.copy(checking = true, waiting = null, error = null, today = count) }
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) }
-                // 只查错字（或本机模型）：不带设定包，一问一答。要查设定、规范、口吻：带上设定包和本章提示，
+                // 只查错字（或本机模型）：不带设定包，一问一答。要查规范、口吻：带上设定包和本章提示，
                 // 但不给工具，一次请求就答（写作建议发得勤，不能每次查好几轮）。
                 val typoOnly = !canUsePack || kinds == setOf(SuggestKind.TYPO)
                 val answer = if (!typoOnly) {

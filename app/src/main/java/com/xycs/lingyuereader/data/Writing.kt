@@ -202,7 +202,10 @@ data class WorkAssist(
             list.map { it.trim() }.filter { it.isNotEmpty() }.asReversed().distinct().asReversed().takeLast(KEEP_BANNED)
         val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
         val KNOWLEDGE_LIMITS = listOf(0, 30_000, 60_000, 100_000, 150_000, 300_000)
-        val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
+        /** 写作建议默认查的几类。以前还有 CANON（查设定），现在交给审稿的事实关，读旧设置时去掉（[SUGGESTABLE]）。 */
+        val SUGGEST_KINDS = listOf("TYPO", "STYLE", "VOICE")
+        /** 写作建议能选的几类：旧设置里存着别的（CANON）读的时候忽略。 */
+        val SUGGESTABLE = com.xycs.lingyuereader.ai.SuggestKind.entries.filter { it.realtime }.map { it.name }.toSet()
         val SUGGEST_GAPS = listOf(10, 20, 40, 60, 120)
         val SUGGEST_CAPS = listOf(50, 100, 200, 500, 0)
         /** 写正文的温度可选的几档（空是服务商默认）。DeepSeek 建议创作类用 1.5 左右。 */
@@ -2178,7 +2181,7 @@ class WorkStore(
                 },
                 briefLimit = optInt("briefLimit", 12_000),
                 knowledgeLimit = optInt("knowledgeLimit", 0),
-                suggestKinds = optJSONArray("suggestKinds")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: WorkAssist.SUGGEST_KINDS,
+                suggestKinds = optJSONArray("suggestKinds")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it in WorkAssist.SUGGESTABLE } } ?: WorkAssist.SUGGEST_KINDS,
                 suggestGap = optInt("suggestGap", 20),
                 suggestCap = optInt("suggestCap", 50),
                 synced = optJSONObject("synced")?.let { o ->

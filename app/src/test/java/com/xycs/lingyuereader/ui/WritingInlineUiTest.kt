@@ -69,7 +69,7 @@ class WritingInlineUiTest {
                     val answer = when {
                         "请从光标处接着往下写正文" in user -> "雪还在下。\n沈默在门口站了一会儿。"
                         "只找下面这几类问题" in user ->
-                            """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"按设定老周这时还活着","kind":"CANON","source":"《人物档案》老周"}]}"""
+                            """{"issues":[{"p":1,"wrong":"老周昨夜就死了","right":"老周昨夜病倒了","reason":"杜娘说话爱绕弯，不会这么直白","kind":"VOICE","source":"《人物档案》杜娘"}]}"""
                         else -> """{"issues":[]}"""
                     }
                     val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
@@ -196,20 +196,22 @@ class WritingInlineUiTest {
         waitForText("1 条写作建议")
         // 发的是写作建议：带着设定包，按开着的几类挑。
         val ask = prompts.first { "只找下面这几类问题" in it }
-        assertTrue("- 设定：" in ask && "- 口吻：" in ask && "1. 杜娘抬头看他，说老周昨夜就死了。" in ask)
+        assertTrue("- 规范：" in ask && "- 口吻：" in ask && "1. 杜娘抬头看他，说老周昨夜就死了。" in ask)
+        // 查设定交给审稿的事实关：写作建议不再要这一类。
+        assertFalse("- 设定：" in ask)
         assertFalse("沈默推开茶馆的门" in ask)
         // 光标点到划线的地方：显示这条建议。
         val at = text.indexOf("昨夜就死了")
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(at))
-        waitForText("按设定老周这时还活着")
-        waitForText("依据：《人物档案》老周")
+        waitForText("杜娘说话爱绕弯，不会这么直白")
+        waitForText("依据：《人物档案》杜娘")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text.replace("昨夜就死了", "昨夜病倒了") }
 
-        // “设定类不提”：以后不查这一类（两次请求之间有间隔，这里直接调）。
-        compose.runOnUiThread { vm.writingAi.muteKind(workId, SuggestKind.CANON.name) }
-        waitFor { store.assist(workId).suggestKinds == listOf("TYPO", "STYLE", "VOICE") }
-        assertFalse(SuggestKind.CANON.name in store.assist(workId).suggestKinds)
+        // “口吻类不提”：以后不查这一类（两次请求之间有间隔，这里直接调）。
+        compose.runOnUiThread { vm.writingAi.muteKind(workId, SuggestKind.VOICE.name) }
+        waitFor { store.assist(workId).suggestKinds == listOf("TYPO", "STYLE") }
+        assertFalse(SuggestKind.VOICE.name in store.assist(workId).suggestKinds)
     }
 
     @Test
