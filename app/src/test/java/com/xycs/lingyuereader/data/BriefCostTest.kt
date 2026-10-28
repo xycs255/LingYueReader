@@ -19,30 +19,30 @@ class BriefCostTest {
     private val mx = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
     private fun sha(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 
-    /** 改前挑出来的本章资料（渲染后的文字取 SHA-256 前 16 位）和出场人物，逐条对：结果一字不差。 */
+    /** 改前挑出来的本章资料（按 [ChapterBrief.render] 拼成文字，取 SHA-256 前 16 位）和出场人物，逐条对：结果一字不差。 */
     private val before = """
-第3章 雾渡3|0|true|null 31841c9da24e212c [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
-第3章 雾渡3|0|true|6000 9d64b7ddcb8aa12b [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
+第3章 雾渡3|0|true|null 7292936c29843522 [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
+第3章 雾渡3|0|true|6000 8d164b6592a602ef [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
 第3章 雾渡3|0|false|null 2b6ca8537b759245 [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
 第3章 雾渡3|0|false|6000 15566ffe123d02b4 [老周, 林月, 沈默, 白沙渡, 漕帮, 杜娘, 顾长风]
-第3章 雾渡3|1038|true|null 6557bef64a31c1e4 [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
-第3章 雾渡3|1038|true|6000 c17575eb6d809cbc [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
+第3章 雾渡3|1038|true|null fde0e11eea6a26d5 [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
+第3章 雾渡3|1038|true|6000 42a6f8bbcddb9cdf [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
 第3章 雾渡3|1038|false|null e8c7d021e12dcfd4 [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
 第3章 雾渡3|1038|false|6000 44188d2d9c607ed3 [林月, 沈默, 老周, 杜娘, 白沙渡, 顾长风, 漕帮, 刘三]
-第3章 雾渡3|805|true|null 813fa3661e325a02 [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
-第3章 雾渡3|805|true|6000 e27c6dec8bc33a19 [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
+第3章 雾渡3|805|true|null 3a965bfe79ee7ba5 [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
+第3章 雾渡3|805|true|6000 7f8605e608e4382a [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
 第3章 雾渡3|805|false|null b33414bd746ec186 [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
 第3章 雾渡3|805|false|6000 3bed0288e68e208c [老周, 林月, 杜娘, 沈默, 白沙渡, 顾长风, 漕帮, 刘三]
-第25章 雾渡25|0|true|null 3f3232849b858160 [林月, 杜娘, 沈默, 老周, 顾长风]
-第25章 雾渡25|0|true|6000 5e7932acd3125994 [林月, 杜娘, 沈默, 老周, 顾长风]
+第25章 雾渡25|0|true|null 34fcf713d0164a65 [林月, 杜娘, 沈默, 老周, 顾长风]
+第25章 雾渡25|0|true|6000 a3a8b97502c8af07 [林月, 杜娘, 沈默, 老周, 顾长风]
 第25章 雾渡25|0|false|null 8714f18d28c979aa [林月, 老周, 杜娘]
 第25章 雾渡25|0|false|6000 1e4617385d9f1463 [林月, 老周, 杜娘]
-第25章 雾渡25|1038|true|null 7e05620127f0e919 [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
-第25章 雾渡25|1038|true|6000 de1ae6053543e73e [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
+第25章 雾渡25|1038|true|null 207ba6b40ac16b4b [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
+第25章 雾渡25|1038|true|6000 0da994cf9539b5e4 [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
 第25章 雾渡25|1038|false|null b1bfab60861b0509 [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
 第25章 雾渡25|1038|false|6000 40bda20c03306630 [林月, 杜娘, 沈默, 老周, 顾长风, 白沙渡, 漕帮, 刘三]
-第25章 雾渡25|805|true|null 25417a0d23f012af [杜娘, 林月, 沈默, 老周, 顾长风, 刘三, 白沙渡]
-第25章 雾渡25|805|true|6000 040695fb3eab55d4 [杜娘, 林月, 沈默, 老周, 顾长风, 刘三, 白沙渡]
+第25章 雾渡25|805|true|null c0803ae544d711d7 [杜娘, 林月, 沈默, 老周, 顾长风, 刘三, 白沙渡]
+第25章 雾渡25|805|true|6000 897c35306cc6c231 [杜娘, 林月, 沈默, 老周, 顾长风, 刘三, 白沙渡]
 第25章 雾渡25|805|false|null 826c1f2d1cc8e171 [杜娘, 林月, 老周, 沈默, 顾长风, 刘三, 白沙渡]
 第25章 雾渡25|805|false|6000 b399762caaa7c7a5 [杜娘, 林月, 老周, 沈默, 顾长风, 刘三, 白沙渡]
 """.trim()
@@ -81,7 +81,8 @@ class BriefCostTest {
         val out = mutableListOf<String>()
         for (c in listOf(chapters[2], chapters.last())) for (text in listOf("", body, body.take(800) + "沈默和杜娘")) for (prose in listOf(true, false)) for (limit in listOf(null, 6000)) {
             val b = store.brief(workId, c.id, text, limit, prose = prose)!!
-            out += "${c.title}|${text.length}|$prose|$limit ${sha(b.render(prose = prose).orEmpty())} ${b.present}"
+            // 比挑出来的内容：统一按不写正文的说法拼（写正文的说法后来改过：伏笔、还不知道的事不带章号），说法变了不影响这里。
+            out += "${c.title}|${text.length}|$prose|$limit ${sha(b.render().orEmpty())} ${b.present}"
             // 节选写作规范用的出场人物和不写正文时挑资料认的一样。
             if (!prose) assertEquals(b.present, store.briefPresent(workId, c.id, text))
         }

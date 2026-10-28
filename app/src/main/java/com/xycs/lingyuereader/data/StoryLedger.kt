@@ -330,8 +330,10 @@ data class LedgerSnapshot(
     /**
      * 拼成给 AI 的文字，最多 [limit] 字：时间、人物状态、计划这一章收的伏笔放前面（最要紧），
      * 发生过的事、知情、开着的伏笔按离这一章近的先放，放不下的省略。为空返回 null。
+     * [prose] 为真时是写正文用的：后面才发生的事照样列着（好做铺垫），但不说第几章，只说“后面才会知道”“后面才收”，
+     * 并告诉模型这一章能做到哪一步——留个引子、轻轻提一笔，不说破、不收。
      */
-    fun render(limit: Int = 4_000): String? {
+    fun render(limit: Int = 4_000, prose: Boolean = false): String? {
         if (isEmpty) return null
         val out = StringBuilder("【故事账本：到第 $chapter 章为止的故事状态（以它为准；和设定包冲突时以账本为准，因为它记的是最新进展）】\n")
         var left = limit - out.length
@@ -360,10 +362,22 @@ data class LedgerSnapshot(
         section("谁知道什么（到这一章为止）：", known.map { e ->
             (if (e.subject.isNotBlank()) e.subject + "：" else "") + e.text + at(e) + (if (e.via.isNotBlank()) "，消息来自" + e.via else "")
         })
-        section("埋下了还没收的伏笔（别忘了，也别提前揭开）：", (open - due.toSet() - overdue.toSet()).map { it.text + at(it) })
-        section("到这一章人物还不知道的事（不要让人物提前知道或说破）：", notYet.map { e ->
-            (if (e.subject.isNotBlank()) e.subject + "要到" else "要到") + (e.from?.let { "第 $it 章" } ?: e.volume?.let { "第 $it 卷" } ?: "后面") + "才知道：" + e.text
-        })
+        val waiting = open - due.toSet() - overdue.toSet()
+        if (prose) {
+            // 只说哪章埋的（已经写过的事），不说计划哪章收：说了就是告诉模型后面第几章发生什么。
+            section("埋下了还没收的伏笔：", waiting.map { e ->
+                e.text + (e.from?.let { "（第 $it 章埋）" } ?: e.volume?.let { "（第 $it 卷埋）" }).orEmpty() + "——这条伏笔后面才收，这一章可以轻轻提一笔，别收。"
+            })
+            section("人物现在还不知道的事：", notYet.map { e ->
+                val who = e.subject.ifBlank { "人物" }
+                e.text.trimEnd('。') + "——这件事${who}现在还不知道，后面才会知道。这一章别让${who}知道或说破，可以留个引子。"
+            })
+        } else {
+            section("埋下了还没收的伏笔（别忘了，也别提前揭开）：", waiting.map { it.text + at(it) })
+            section("到这一章人物还不知道的事（不要让人物提前知道或说破）：", notYet.map { e ->
+                (if (e.subject.isNotBlank()) e.subject + "要到" else "要到") + (e.from?.let { "第 $it 章" } ?: e.volume?.let { "第 $it 卷" } ?: "后面") + "才知道：" + e.text
+            })
+        }
         section("只有作者知道的（只用来把握方向，不能写进正文，旁白也不能说破）：", secrets.map { e ->
             (if (e.subject.isNotBlank()) e.subject + "——" else "") + e.text
         })

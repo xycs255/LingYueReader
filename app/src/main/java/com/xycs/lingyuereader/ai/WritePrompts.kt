@@ -129,6 +129,8 @@ data class ProseTask(
     val previousHook: String = "",
     val instruction: String = "",
     val direction: WriteDirection? = null,
+    /** 这一章可以埋的伏笔（[com.xycs.lingyuereader.data.ChapterBrief.seeds]）：只点到为止。 */
+    val seeds: List<String> = emptyList(),
 )
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
@@ -407,8 +409,20 @@ object WritePrompts {
         }
         if (t.card.boundary.isNotBlank()) append("这一章不写到：").append(line(t.card.boundary)).append('\n')
         if (t.card.countdown.isNotBlank()) append("时间：").append(line(t.card.countdown)).append('\n')
+        // 后面的剧情只用来铺垫：能埋就埋一笔，但不能写到它发生。
+        if (t.seeds.isNotEmpty() && t.scope != ProseScope.REVISE) {
+            append(SEEDS_HEAD).append('\n')
+            t.seeds.forEach { append("- ").append(line(it)).append("（只点到为止）\n") }
+        }
         if (facts.isNotEmpty()) append("这些事要写出来，但写成场面和对话，不要列清单式交代。")
     }.trim()
+
+    /** 任务卡里“可以埋的伏笔”一节的开头，顺带一句铺垫的规矩。 */
+    const val SEEDS_HEAD = "这一章可以埋的伏笔（后面的事只用来铺垫：留个细节或疑点就行，别收、别说破、别让人物提前知道）："
+
+    /** 写正文时后文的用法：工具能查到后面的细纲、结局，只能拿来铺垫。 */
+    const val FORESHADOW_RULE = "后面的剧情只用来埋伏笔、做铺垫：可以留细节、留疑点，点到为止；不能让人物提前知道，不能说破，不能写出后面才发生的事。"
+
 
     /** 一拍出几个版本时这一版的方向（写进任务卡）：方向只管这一版怎么写，写什么、写到哪里照卡上的。 */
     fun directionRule(direction: WriteDirection): String = "【这一版的方向：${direction.label}】${direction.rule}"
@@ -472,6 +486,7 @@ object WritePrompts {
     fun proseToolGuide(catalog: List<String>): String = buildString {
         append("细节拿不准（人物、地名、前面写过的事）时再查：read_doc 读资料，search 搜关键词，read_chapter 读前面某一章的正文。")
         if (catalog.isNotEmpty()) append("能查的资料：").append(catalog.joinToString("") { "《$it》" }).append("。")
+        append("查到的资料里可能有后面章节的细纲和结局：").append(FORESHADOW_RULE)
         append("查完直接写正文。")
     }
 

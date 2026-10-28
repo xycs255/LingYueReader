@@ -74,6 +74,23 @@ data class ChapterBrief(
     /** 账本快照拼成的文字；没有为 null。 */
     val ledgerText: String? get() = ledger?.render(ledgerLimit)
 
+    /** 账本快照拼成的文字，[prose] 为真时是写正文的说法（见 [LedgerSnapshot.render]）。 */
+    fun ledgerText(prose: Boolean): String? = ledger?.render(ledgerLimit, prose)
+
+    /**
+     * 这一章可以埋的伏笔（写进任务卡）：账本里、伏笔表里还没收的，挑和这一章出场人物、所在地点相关的，最多 [max] 条。
+     * 计划这一章收的、过了期该收的不算（那是要收的，不是要埋的）；只有作者知道的不在里面。
+     */
+    fun seeds(max: Int = SEEDS): List<String> {
+        val places = ledger?.states.orEmpty().filter { it.aspect == "位置" && it.text.length in 2..12 }.map { it.text.trimEnd('。') }
+        val keys = (present + places).filter { it.length >= 2 }.distinct()
+        fun related(subject: String, text: String) = subject in present || keys.any { it in text || it in subject }
+        val fromLedger = ledger?.let { s -> s.open - s.due.toSet() - s.overdue.toSet() }.orEmpty()
+            .filter { related(it.subject, it.text) }.map { it.text }
+        val fromPack = (open - due.toSet()).filter { f -> f.payoff == null || f.payoff > chapter }.filter { related("", it.what) }.map { it.what }
+        return (fromLedger + fromPack).map { it.trim().trimEnd('。') }.filter { it.isNotEmpty() }.distinct().take(max)
+    }
+
     /**
      * 拼成给 AI 的文字。[prose] 为真时是写正文用的（见 [ChapterBriefs.build] 的 `ahead`）：开头一句只说这是什么，
      * 不讲优先级——写正文的模型拿到“以前面的为准”这类话，只会多一层核对的心思。
@@ -86,7 +103,7 @@ data class ChapterBrief(
         )
         if (present.isNotEmpty()) out.append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
         // 账本是最新进展：放在前情之后、察觉和伏笔之前。
-        val ledgerText = ledgerText
+        val ledgerText = ledgerText(prose)
         items.forEachIndexed { i, it ->
             if (i == ledgerAt && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
             out.append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n')
@@ -97,12 +114,16 @@ data class ChapterBrief(
             due.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
         val waiting = open - due.toSet()
-        if (waiting.isNotEmpty()) {
+        if (waiting.isNotEmpty() && prose) {
+            // 写正文：不说计划哪章收（那是后文），只说这一章能做到哪一步。
+            out.append("\n【已经埋下、还没回收的伏笔（后面才收：这一章可以轻轻提一笔，别收、别揭开）】\n")
+            waiting.forEach { out.append("- ").append(it.what).append(it.planted?.let { p -> "（第${p}章埋下）" }.orEmpty()).append('\n') }
+        } else if (waiting.isNotEmpty()) {
             out.append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n")
             waiting.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
         if (notYet.isNotEmpty()) {
-            out.append(if (prose) "\n【人物现在还不知道的（别让他们提前知道或说破）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
+            out.append(if (prose) "\n【人物现在还不知道的（后面才会知道：这一章别让他们知道或说破，可以留个引子）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
             notYet.forEach { out.append("- ").append(it).append('\n') }
         }
         if (hidden.isNotEmpty()) {
@@ -113,6 +134,9 @@ data class ChapterBrief(
     }
 
     companion object {
+        /** 任务卡里“这一章可以埋的伏笔”最多几条。 */
+        const val SEEDS = 5
+
         fun foreshadowWhen(f: Foreshadow): String = listOfNotNull(f.planted?.let { "第${it}章埋下" }, f.payoff?.let { "计划第${it}章回收" })
             .joinToString("，").let { if (it.isEmpty()) "" else "（$it）" }
     }
@@ -556,7 +580,7 @@ object ChapterBriefs {
         val ledgerAt = items.size
         val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
-        val ledgerText = shown?.render(ledgerLimit)
+        val ledgerText = shown?.render(ledgerLimit, prose = !ahead)
         ledgerText?.let { left -= it.length }
         if (ahead) snapshot?.secrets?.forEach { e -> hidden += (if (e.subject.isNotBlank()) e.subject + "——" else "") + cut(e.text, 300) }
         // 只用本章实际展示的快照替代察觉表。快照被预算截短时，保守保留察觉表，避免删掉恰好没列出的那条。

@@ -885,6 +885,7 @@ class WritingAi(
                     InlineMode.SCENE, InlineMode.CUSTOM -> ""
                 },
                 opening = head.isBlank(), previous = head.isBlank() && withPrevious, previousHook = kit.previousHook, instruction = d.instruction,
+                seeds = kit.seeds,
             )
             InlinePrep(kit.system, kit.stable, before, after, task, kit.tail, beatTask, reference, kit.project, prose)
         }
@@ -1315,6 +1316,8 @@ class WritingAi(
         val card: ChapterCard,
         val length: String,
         val project: Boolean,
+        /** 这一章可以埋的伏笔（任务卡里列出，只点到为止）。 */
+        val seeds: List<String> = emptyList(),
     )
 
     /**
@@ -1335,7 +1338,8 @@ class WritingAi(
             val previousHook = prior?.let { store.plannedCard(workId, it.id).card.hook }.orEmpty()
             val card = store.plannedCard(workId, chapterId).card
             val limit = if (localModel) LOCAL_BRIEF_LIMIT else (assist.briefLimit / 2).coerceIn(PROSE_BRIEF_MIN, PROSE_BRIEF_MAX)
-            val material = store.brief(workId, chapterId, text, limit, confirmedOnly = project, prose = true)?.render(prose = true).orEmpty()
+            val brief = store.brief(workId, chapterId, text, limit, confirmedOnly = project, prose = true)
+            val material = brief?.render(prose = true).orEmpty()
             // 作者的写作规范、称谓与语气、检查规则：只放这一份，去掉整章字数（篇幅只在任务卡里说）。
             val norms = ProsePack.tidy(ProseLengths.strip(writingRules(workId, chapterId, text)))
             val author = ProsePack.instructions(store.packSources(workId).raw, phase)
@@ -1343,7 +1347,7 @@ class WritingAi(
             val system = WritePrompts.proseSystem(work.title, assist, author, norms, material) +
                 (if (reference) "\n\n" + ReferenceWriting.SYSTEM_RULE else "")
             ProseKit(system, stable, previous, previousHook, WritePrompts.proseTail(assist, samples, norms + "\n" + author),
-                task?.chapter ?: store.chapterNo(work, chapterId), card, length, project)
+                task?.chapter ?: store.chapterNo(work, chapterId), card, length, project, brief?.seeds().orEmpty())
         }
     }
 
@@ -1353,7 +1357,7 @@ class WritingAi(
     /** 逐拍写某一拍的任务。 */
     private fun beatTask(kit: ProseKit, title: String, beat: BeatTask, instruction: String) = ProseTask(
         kit.chapter, title, kit.card, ProseScope.BEAT, beat = beat.beat.index, length = WritePrompts.beatLength(beat),
-        previousHook = kit.previousHook, instruction = instruction,
+        previousHook = kit.previousHook, instruction = instruction, seeds = kit.seeds,
     )
 
     /** 整章写（[written] 为空，从头写）或接着已写的写完（写到本章结尾，篇幅是剩下的）。 */
@@ -1362,7 +1366,7 @@ class WritingAi(
         beat = if (written.isBlank() || kit.card.beatsDone.isNotEmpty()) null
             else beats(kit.card).let { list -> Beats.covered(list, written).takeIf { it > 0 }?.let { minOf(it + 1, list.size) } },
         length = if (written.isBlank()) WritePrompts.chapterLength(kit.length) else WritePrompts.remaining(kit.length, written),
-        previousHook = kit.previousHook, instruction = instruction,
+        previousHook = kit.previousHook, instruction = instruction, seeds = kit.seeds,
     )
 
     // ---------- 文风范例 ----------
