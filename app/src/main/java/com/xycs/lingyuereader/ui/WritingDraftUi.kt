@@ -205,15 +205,27 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     // 审读绑定审读时的要求：界面上新改的要求只用于下一次写，不让当前稿的审读失效。
     // 只有审读过的稿子要比对；要求、篇幅和页面上的一样就用 [task]，不一样才另编一次。
     var reviewTask by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
+    /** [reviewTask] 是按哪次审读、哪组要求编的：同一组就不再编。 */
+    var reviewTaskFor by remember(workId, chapterId) { mutableStateOf<Any?>(null) }
     val reviewInput = draft?.let { (it.taskInstruction ?: it.instruction) to (it.taskTargetLength ?: it.targetLength) }
-    LaunchedEffect(workId, chapterId, draft?.assessment, reviewInput, task) {
+    val sameAsPage = reviewInput == taskInput && task != null
+    // 页面上的任务还没编好、编的正是审读时的要求：等它，不另编一份。
+    val pageWillServe = task == null && taskError == null && reviewInput == instruction to targetLength
+    // 键里只在要求一样时才放 [task]：作者改下一次写的要求时页面上的任务一遍遍重编，审读时的要求没变，不跟着重编
+    // （以前每次都另编一份，两份同时留在内存里）。
+    LaunchedEffect(workId, chapterId, draft?.assessment, reviewInput, task.takeIf { sameAsPage }, pageWillServe) {
+        val key = draft?.assessment to reviewInput
+        val reuse = reviewTask?.takeIf { reviewTaskFor == key }
         reviewTask = when {
             draft?.assessment == null -> null
-            reviewInput == taskInput && task != null -> task
+            sameAsPage -> task
+            pageWillServe -> null
+            reuse != null -> reuse
             else -> try { vm.writingAi.reviewTask(workId, chapterId) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Throwable) { if (e !is Exception) CrashLog.caught(e); null }
         }
+        reviewTaskFor = if (reviewTask != null) key else null
     }
     val reviewCurrent = draft?.assessment?.let { report -> reviewTask?.fingerprint == report.materials } == true
     // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
