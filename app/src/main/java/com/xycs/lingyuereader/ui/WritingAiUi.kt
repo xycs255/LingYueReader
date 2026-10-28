@@ -940,11 +940,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 }
             }
             if (temperatureOpen) {
-                GlassDialog(show = true, title = "写正文的温度", summary = "越高越不套路，也越容易跑偏；只用在写正文、改稿上", onDismissRequest = { temperatureOpen = false }) {
+                GlassDialog(show = true, title = "写正文的温度", summary = "越高越不套路，也越容易跑偏；只用在写正文、改稿上。拿不准就用标准 1.0", onDismissRequest = { temperatureOpen = false }) {
                     DialogOptionList(
                         WorkAssist.TEMPERATURES.map { it to temperatureLabel(it) },
                         selected = assist.temperature,
-                        description = { t -> if (t == 1.5f) "DeepSeek 推荐的创作值" else null },
+                        description = { t -> if (t == 1.1f) "最高到这里：再高 AI 会写成读不通的乱码" else null },
                         onPick = { t ->
                             temperatureOpen = false
                             vm.writingAi.updateAssist(workId) { it.copy(temperature = t) }
@@ -1055,9 +1055,9 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
 internal fun temperatureLabel(t: Float?): String = when (t) {
     null -> "服务商默认"
     0.7f -> "稳一点 0.7"
+    0.9f -> "略稳 0.9"
     1.0f -> "标准 1.0"
-    1.3f -> "放开些 1.3"
-    1.5f -> "很放开 1.5"
+    1.1f -> "放开些 1.1"
     else -> t.toString()
 }
 

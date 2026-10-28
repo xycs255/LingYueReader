@@ -95,7 +95,7 @@ data class ChapterBrief(
      * 拼成给 AI 的文字。[prose] 为真时是写正文用的（见 [ChapterBriefs.build] 的 `ahead`）：开头一句只说这是什么，
      * 不讲优先级——写正文的模型拿到“以前面的为准”这类话，只会多一层核对的心思。
      */
-    fun render(prose: Boolean = false): String? {
+    fun render(prose: Boolean = false, waitingMax: Int = Int.MAX_VALUE): String? {
         if (isEmpty) return null
         val out = StringBuilder(
             if (prose) "写第 $chapter 章用得上的资料（出场人物、设定、到这一章为止的进展）：\n"
@@ -113,7 +113,8 @@ data class ChapterBrief(
             out.append("\n【计划在这一章回收的伏笔】\n")
             due.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
-        val waiting = open - due.toSet()
+        val waitingAll = open - due.toSet()
+        val waiting = waiting(waitingAll, waitingMax)
         if (waiting.isNotEmpty() && prose) {
             // 写正文：不说计划哪章收（那是后文），只说这一章能做到哪一步。
             out.append("\n【已经埋下、还没回收的伏笔（后面才收：这一章可以轻轻提一笔，别收、别揭开）】\n")
@@ -122,6 +123,8 @@ data class ChapterBrief(
             out.append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n")
             waiting.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
         }
+        if (waitingAll.size > waiting.size) out.append("- 另有 ").append(waitingAll.size - waiting.size)
+            .append(" 条埋下还没收的伏笔没列出（不涉及出场人物、离这一章远），要核对时查伏笔表。\n")
         if (notYet.isNotEmpty()) {
             out.append(if (prose) "\n【人物现在还不知道的（后面才会知道：这一章别让他们知道或说破，可以留个引子）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
             notYet.forEach { out.append("- ").append(it).append('\n') }
@@ -133,9 +136,28 @@ data class ChapterBrief(
         return out.toString().trim()
     }
 
+    /**
+     * 列出来的“埋下还没收的伏笔”：最多 [max] 条（写正文、审读发给模型的用 [WAITING]）。真机上伏笔表几百条，原样全列，
+     * 一份本章资料光伏笔就近两万字，审读、写正文每次都发。先挑写到出场人物的，再挑计划回收最近的（过了期还没收的排最前），
+     * 其余只说一句有多少条。列出来的照原来的顺序。默认不限：本章任务里记的那份（进资料指纹）照旧全列，旧审读不因此失效。
+     */
+    private fun waiting(all: List<Foreshadow>, max: Int): List<Foreshadow> {
+        if (all.size <= max) return all
+        val keys = present.filter { it.length >= 2 }
+        val picked = all.withIndex().sortedWith(compareBy<IndexedValue<Foreshadow>>(
+            { f -> if (keys.any { it in f.value.what }) 0 else 1 },
+            { f -> f.value.payoff ?: Int.MAX_VALUE },
+            { f -> -(f.value.planted ?: 0) },
+        )).take(max).map { it.index }.toSet()
+        return all.filterIndexed { i, _ -> i in picked }
+    }
+
     companion object {
         /** 任务卡里“这一章可以埋的伏笔”最多几条。 */
         const val SEEDS = 5
+
+        /** 本章资料里“埋下还没收的伏笔”最多列几条（见 [waiting]）。 */
+        const val WAITING = 30
 
         fun foreshadowWhen(f: Foreshadow): String = listOfNotNull(f.planted?.let { "第${it}章埋下" }, f.payoff?.let { "计划第${it}章回收" })
             .joinToString("，").let { if (it.isEmpty()) "" else "（$it）" }

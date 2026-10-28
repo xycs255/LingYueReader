@@ -87,7 +87,7 @@ class WritingTemperatureTest {
         chapterId = work.chapters.single().id
         store.saveText(workId, chapterId, text, count = false)
         store.saveCard(workId, chapterId, ChapterCard(facts = "沈默到渡口，老周已经走了"))
-        store.updateAssist(workId) { it.copy(temperature = 1.5f) }
+        store.updateAssist(workId) { it.copy(temperature = 1.1f) }
     }
 
     @After
@@ -129,15 +129,15 @@ class WritingTemperatureTest {
         fun runTask(task: WriteAiTask) = temperatureOf(task.title, { ai.run(workId, chapterId, text, task) }) { ai.state.value?.loading == false }
 
         // 编辑器里接着写、写本章、润色扩写续写这类改正文：带温度。
-        assertEquals(1.5, temperatureOf("接着写", { ai.writeInline(workId, chapterId, text, text.length, InlineMode.SCENE) }) {
+        assertEquals(1.1, temperatureOf("接着写", { ai.writeInline(workId, chapterId, text, text.length, InlineMode.SCENE) }) {
             ai.inline.value?.loading == false
         })
         ai.discardInline()
-        assertEquals(1.5, temperatureOf("写本章", { ai.writeDraft(workId, chapterId) }) { ai.drafts.value[workId to chapterId]?.loading == false })
+        assertEquals(1.1, temperatureOf("写本章", { ai.writeDraft(workId, chapterId) }) { ai.drafts.value[workId to chapterId]?.loading == false })
         listOf(WriteAction.POLISH, WriteAction.VIVID, WriteAction.EXPAND, WriteAction.CONDENSE, WriteAction.CUSTOM).forEach { action ->
-            assertEquals(action.label, 1.5, runTask(WriteAiTask.Edit(action, "杜娘抬头看他。", 10, 17, instruction = "多写神态")))
+            assertEquals(action.label, 1.1, runTask(WriteAiTask.Edit(action, "杜娘抬头看他。", 10, 17, instruction = "多写神态")))
         }
-        assertEquals(1.5, runTask(WriteAiTask.Edit(WriteAction.CONTINUE, "", text.length, text.length)))
+        assertEquals(1.1, runTask(WriteAiTask.Edit(WriteAction.CONTINUE, "", text.length, text.length)))
 
         // 挑错（只改错，求稳）、灵感、读者点评、拟细纲、摘要：不带。
         assertEquals(null, runTask(WriteAiTask.Edit(WriteAction.PROOFREAD, "杜娘抬头看他。", 10, 17)))

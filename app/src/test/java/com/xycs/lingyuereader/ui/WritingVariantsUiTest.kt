@@ -147,15 +147,15 @@ class WritingVariantsUiTest {
         waitForText("越高越不套路，也越容易跑偏")
         waitForText("服务商默认")
         compose.onNodeWithText("写正文的温度").performClick()
-        // 选项对话框：五档，1.5 带一句说明。
-        waitForText("DeepSeek 推荐的创作值")
-        listOf("稳一点 0.7", "标准 1.0", "放开些 1.3").forEach { waitForText(it) }
-        compose.onNodeWithText("很放开 1.5").performClick()
-        waitFor { WorkStore(writingDir).assist(workId).temperature == 1.5f }
-        waitForText("很放开 1.5")
+        // 选项对话框：五档，最高一档带一句说明。
+        waitForText("最高到这里")
+        listOf("稳一点 0.7", "略稳 0.9", "标准 1.0").forEach { waitForText(it) }
+        compose.onNodeWithText("放开些 1.1").performClick()
+        waitFor { WorkStore(writingDir).assist(workId).temperature == 1.1f }
+        waitForText("放开些 1.1")
         // 改回服务商默认。
         compose.onNodeWithText("写正文的温度").performClick()
-        waitForText("DeepSeek 推荐的创作值")
+        waitForText("最高到这里")
         compose.onNodeWithText("服务商默认").performClick()
         waitFor { WorkStore(writingDir).assist(workId).temperature == null }
     }
@@ -188,7 +188,7 @@ class WritingVariantsUiTest {
 
     @Test
     fun threeDirectionsAreWrittenAndTheSelectedOneIsAccepted() {
-        WorkStore(writingDir).updateAssist(workId) { it.copy(temperature = 1.3f) }
+        WorkStore(writingDir).updateAssist(workId) { it.copy(temperature = 1.1f) }
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         val store = WorkStore(writingDir)
         writeBeatInThreeDirections(vm)
@@ -199,7 +199,7 @@ class WritingVariantsUiTest {
             assertTrue(ask.contains("只写第 2 拍"))
             assertTrue(ask.contains(d.rule))
         }
-        assertEquals(listOf(1.3, 1.3, 1.3), temperatures.toList())
+        assertEquals(listOf(1.1, 1.1, 1.1), temperatures.toList())
         // 花费是三版合计（按三次算）。
         assertEquals(3, vm.writingAi.inline.value!!.usage!!.requests)
         // 默认看第一版；切到“按下不发”，预览和采纳都换成它。

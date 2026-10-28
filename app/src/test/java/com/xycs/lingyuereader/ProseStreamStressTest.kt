@@ -171,7 +171,7 @@ class ProseStreamStressTest {
             beats = "1. 卯时林月到渡口，老周的船拴在桩上，船上没人（800字）\n2. 杜娘开门，说昨夜顾长风带人来过（900字）\n" +
                 "3. 沈默赶来，和林月在船舱夹板里找到另半张药方（1000字）\n4. 林月决定去白沙渡，沈默说要跟着去（700字）",
         ))
-        store.updateAssist(workId) { it.copy(temperature = 1.3f, thinking = false, aiCliche = true) }
+        store.updateAssist(workId) { it.copy(temperature = 1.1f, thinking = false, aiCliche = true) }
         writing = WritingAi(store, ai, scope) { }
     }
 

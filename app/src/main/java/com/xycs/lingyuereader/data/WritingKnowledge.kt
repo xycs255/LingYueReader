@@ -342,8 +342,8 @@ object ProsePack {
     private val repeatedTitle = Regex("【([^】\n]+)】\n#\\s*\\1\\s*\n")
 
     /** 能用工具查的资料（文档名），工作说明和检查规则不列（已经给了，或只给本机用）。 */
-    fun catalog(docs: List<Pair<PackDoc, String>>): List<String> =
-        ProjectSources.forPhase(docs, WritingPhase.CREATE)
+    fun catalog(docs: List<Pair<PackDoc, String>>, phase: WritingPhase = WritingPhase.CREATE): List<String> =
+        ProjectSources.forPhase(docs, phase)
             .filter { it.first.kind != PackKind.INSTRUCTION && it.first.kind != PackKind.RULES && it.second.isNotBlank() }
             .sortedWith(compareBy({ it.first.priority }, { it.first.kind.ordinal }, { it.first.title }))
             .map { it.first.title }.distinct()

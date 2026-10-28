@@ -276,7 +276,9 @@ class BeatWritingTest {
         assertEquals("沈默赶到渡口，船不见了（800字）\n杜娘开门\n老周的信（500字）", beats)
         val ask = prompts.single { "拆成 3 到 8 拍" in it }
         assertTrue(ask.contains("本章事实与结果：沈默到渡口，老周已经走了"))
-        assertTrue(ask.contains("全章篇幅3000 到 3000 字"))
+        // 全章篇幅和写本章用同一处（本章任务里的篇幅），各拍加起来不能超出。
+        assertTrue(ask.contains("全章篇幅3000—3000 字"))
+        assertTrue(ask.contains("各拍加起来等于全章篇幅，不要超出"))
         // 不直接存：卡片上还是原来的节拍。
         assertTrue(store.card(workId, chapterId).beats.startsWith("1. 沈默赶到渡口"))
     }
