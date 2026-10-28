@@ -585,6 +585,8 @@ internal fun AiWriteDialog(
     useReference: Boolean,
     onUseReference: (Boolean) -> Unit,
     onDismiss: () -> Unit,
+    /** 本章还没有节拍时“先拆节拍”：去细纲卡拆（拆好的给作者看过再用）。空时不显示。 */
+    onSplitBeats: (() -> Unit)? = null,
     onPick: (AiWriteChoice) -> Unit,
 ) {
     val list = card?.let(::beats).orEmpty()
@@ -607,6 +609,11 @@ internal fun AiWriteDialog(
                         doneLabel = "已写",
                     ) { chosen = InlineMode.BEAT to b.index }
                 }
+            }
+            // 还没有节拍：给一个“先拆节拍”，拆好以后这里就能一拍一拍写；不拆也照样按下面的写法写。
+            if (list.isEmpty() && onSplitBeats != null) {
+                DialogSectionLabel("写这一拍")
+                ActionRow("本章还没有节拍 · 先拆节拍") { onSplitBeats() }
             }
             DialogSectionLabel("写多少")
             AI_WRITE_MODES.forEach { m ->

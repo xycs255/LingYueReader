@@ -45,6 +45,7 @@ import com.xycs.lingyuereader.CrashLog
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.Beat
 import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.data.ReferenceExcerpt
@@ -93,6 +94,9 @@ private fun draftBudgetCost(preview: AiRequestBudgetPreview, usdRate: Double): S
 @Composable
 fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     val drafts by vm.writingAi.drafts.collectAsStateWithLifecycle()
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    // 一键写本章：缺细纲先拟、缺节拍先拆（作品级开关，默认开）。
+    val prepOn = assists[workId]?.draftPrep ?: true
     val methodMapState by vm.writingMethodMap.state.collectAsStateWithLifecycle()
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
@@ -132,8 +136,10 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var sourceExcerpt by remember(workId, chapterId) { mutableStateOf<ReferenceExcerpt?>(null) }
     var sourceError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
     var sourceLoading by remember(workId, chapterId) { mutableStateOf(false) }
+    var basisExpanded by rememberSaveable(workId, chapterId) { mutableStateOf(true) }
     LaunchedEffect(workId, chapterId) {
         vm.writingAi.loadDraft(workId, chapterId)
+        vm.writingAi.loadAssist(workId)
         card = vm.writing.cards(workId, chapterId).first.card
         try { analyses = vm.writing.referenceAnalyses(workId, chapterId) }
         catch (e: CancellationException) { throw e }
@@ -174,6 +180,28 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             taskError = e.message ?: "本章任务读取失败"
         }
     }
+    // 一键写本章补过细纲卡：页面上的细纲卡换成新的；本章任务直接用那边拟完细纲重编好的（要求、篇幅没改过时），不再另编一次。
+    val prepared = draft?.prepared
+    LaunchedEffect(prepared) {
+        val ready = prepared ?: return@LaunchedEffect
+        try { card = vm.writing.cards(workId, chapterId).first.card }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { CrashLog.caught(e) }
+        if (draft?.instruction == instruction && draft.targetLength == targetLength) {
+            task = ready
+            taskInput = instruction to targetLength
+            taskError = null
+        }
+        vm.writingAi.preparedSeen(workId, chapterId)
+    }
+    // 写完、停下、出错：细纲卡可能刚被写前准备改过（停在拆节拍时也留着拟好的细纲），重读一次。
+    val running = draft?.loading == true
+    LaunchedEffect(running) {
+        if (running || card == null) return@LaunchedEffect
+        try { card = vm.writing.cards(workId, chapterId).first.card }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { CrashLog.caught(e) }
+    }
     // 审读绑定审读时的要求：界面上新改的要求只用于下一次写，不让当前稿的审读失效。
     // 只有审读过的稿子要比对；要求、篇幅和页面上的一样就用 [task]，不一样才另编一次。
     var reviewTask by remember(workId, chapterId) { mutableStateOf<ChapterWritingTask?>(null) }
@@ -205,9 +233,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         vm.writingAi.saveDraftIntent(workId, chapterId, instruction, targetLength, savedWorkflowChoice)
     }
     val revisionWriteBlocked = draft?.revisionWarning?.contains("无法安全留底") == true
-    val canReview = draft != null && !revisionWriteBlocked && aiConfig.ready && chapter?.locked != true && taskError == null && task != null && task?.blocking?.isEmpty() == true
-    val canWrite = canReview &&
+    val canAsk = draft != null && !revisionWriteBlocked && aiConfig.ready && chapter?.locked != true && taskError == null && task != null
+    val canReview = canAsk && task?.blocking?.isEmpty() == true
+    // 一键写本章时，“没有事实与结果”那条不拦：写之前 AI 先拟一份补上。别的缺项照旧。
+    val writeBlocking = task?.let { if (prepOn) it.prepBlocking else it.blocking }.orEmpty()
+    val canWrite = canAsk && writeBlocking.isEmpty() &&
         (referenceId == null || !sourceLoading && sourceExcerpt != null && sourceError == null)
+    // 写本章前要补的几步：缺事实与结果拟一份、缺节拍拆一次，各一次小请求（算在“拟细纲”类）。
+    val prepNames = if (!prepOn || card == null) emptyList() else listOfNotNull(
+        "拟细纲".takeIf { card?.facts.isNullOrBlank() }, "拆节拍".takeIf { beatsOf(card).isEmpty() })
     // 预估按 [task] 编好时的要求、篇幅算，直接用编好的任务：改要求时等 [task] 重编完再估一次，不另外编。
     LaunchedEffect(workId, chapterId, taskInput, workflow, referenceId, text,
         sourceExcerpt?.fingerprint, task?.fingerprint, aiConfig, loading) {
@@ -249,7 +283,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         val action = {
             if (reviewOnly) vm.writingAi.reviewDraft(workId, chapterId, ask, targetLength)
             else vm.writingAi.writeDraft(workId, chapterId, ask, more = more, workflow = workflow,
-                targetLength = targetLength, referenceAnalysisId = referenceId)
+                targetLength = targetLength, referenceAnalysisId = referenceId, prepare = !more)
         }
         if (task?.project == true && task?.previousLabel?.startsWith("以细纲结果承接") == true && !planContinuationAccepted) {
             pendingContinuation = action
@@ -300,6 +334,14 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     sourceExcerpt != null -> 1
                     else -> 0
                 })
+                // 写过（或正在写）一版：上方列出这一版按的细纲和节拍，AI 拟的挂小标签，作者先看依据再看正文。
+                val basis = card
+                if ((text.isNotBlank() || loading) && basis != null && (basis.facts.isNotBlank() || beatList.isNotEmpty())) {
+                    DraftBasisSection(basis, beatList, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
+                        canRewrite = canWrite && !loading,
+                        onEdit = { vm.open(Screen.ChapterCard(workId, chapterId)) },
+                        onRewrite = { startDraft() })
+                }
                 GroupedSection(
                     header = "你的构思",
                     footer = when {
@@ -308,7 +350,10 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         taskError != null -> taskError
                         draft == null -> "正在读取已保存的候选稿……"
                         task == null -> "正在核对本章任务与资料……"
-                        workflow && task?.blocking?.isNotEmpty() == true -> task?.blocking?.joinToString("；")
+                        workflow && writeBlocking.isNotEmpty() -> writeBlocking.joinToString("；") +
+                            if (prepOn && writeBlocking.any { "章组" in it }) "。" + ChapterWritingTask.GROUP_HINT else ""
+                        prepNames.isNotEmpty() -> "写本章时，AI 先" + prepNames.joinToString("、") +
+                            "，存进细纲卡、标成“AI 拟的”等你确认，再一拍一拍写。也可以先自己写细纲卡。"
                         card?.isEmpty == true -> "这一章还没有细纲卡。项目包写作需要先确定本章事实与章界。"
                         workflow -> "创作、审读与修订分开进行；最多自动修订一轮，并重新审读。会发起多次 AI 请求，实际用量显示在稿件下方。通过后仍等你采纳，不会自动定稿。"
                         else -> "按本章资料写一版候选稿。篇幅依本章细纲或这次明确要求；参考样章、规划和未定稿正文不能当成已定前文。"
@@ -337,6 +382,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     row {
                         ToggleRow("创作后审读、修订", checked = workflow, subtitle = "按项目包核事实、专审对白与语气；审美建议另列，不把报告写进正文。") {
                             workflowChoice = it
+                        }
+                    }
+                    row {
+                        ToggleRow("缺细纲、节拍时 AI 先补上", checked = prepOn,
+                            subtitle = "细纲卡没有“本章事实与结果”先拟一份，没有节拍先拆，存进细纲卡等你确认；你写了的不动。关了就有什么写什么。") { on ->
+                            vm.writingAi.updateAssist(workId) { it.copy(draftPrep = on) }
                         }
                     }
                     task?.let { currentTask ->
@@ -400,6 +451,9 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     else -> Text("正在按本章资料估算……", color = c.secondary, fontSize = 12.sp)
                                 }
                                 if (text.isBlank() && !aiConfig.onDevice) Text("首轮费用含可能的缓存写入，仅为粗估范围，非封顶；缓存命中不保证。审读、修订与查阅还会产生费用。",
+                                    color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
+                                if (text.isBlank() && prepNames.isNotEmpty() && writeBlocking.isEmpty()) Text(
+                                    "写之前另加约 ${prepNames.size} 次小请求（${prepNames.joinToString("、")}，用量记在“拟细纲”类）；上面的首轮按现在的细纲卡估。",
                                     color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
                             }
                         }
@@ -504,9 +558,10 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         row {
                             Column {
                                 val writingBeat = draft?.beatWriting?.takeIf { loading && (!draft.workflow || draft.stage == DraftStage.CREATING) }
+                                val preparing = draft?.prep?.takeIf { loading }
                                 DraftStatusRow(WordCount.of(text), DraftStatus(loading, lookup, hits,
-                                    // 逐拍写时说写到第几拍。
-                                    writingBeat?.let { "正在写第 $it / ${beatList.size} 拍" } ?: draft?.takeIf { it.workflow }?.stage?.let { stage ->
+                                    // 写之前先拟细纲、拆节拍；逐拍写时说写到第几拍。
+                                    preparing?.label ?: writingBeat?.let { "正在写第 $it / ${beatList.size} 拍" } ?: draft?.takeIf { it.workflow }?.stage?.let { stage ->
                                     // 和“本稿审读”同一个判断：资料或要求变了，不再显示“可供采纳”。
                                     if (stage == DraftStage.READY && !loading && !reviewCurrent) STALE_REVIEW else stage.label
                                 }))
@@ -694,6 +749,47 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     DialogOkButton("取消", primary = false) { placing = false }
                 }
             }
+        }
+    }
+}
+
+/** 细纲卡的节拍（没有卡为空）。 */
+private fun beatsOf(card: ChapterCard?): List<Beat> = card?.let(::beats).orEmpty()
+
+/**
+ * 草稿页上方“这一章是按下面的细纲和节拍写的”：可折叠，列本章事实与结果和各拍；一键写本章时 AI 拟的、拆的挂小标签，
+ * 作者在细纲卡里改过或确认过就没了。两个按钮：去细纲卡改，回来按改过的重写一版。
+ */
+@Composable
+private fun DraftBasisSection(card: ChapterCard, beatList: List<Beat>, expanded: Boolean, onToggle: () -> Unit,
+                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val pending = card.aiOutline || card.aiBeats
+    GroupedSection(footer = if (expanded && pending) "“AI 拟的”“AI 拆的”是写本章时 AI 补的，还没经你确认；在细纲卡里改过或点了确认，标签就没了。" else null) {
+        row { ExpandRow("这一章是按下面的细纲和节拍写的", expanded, value = if (pending) "待确认" else null, onToggle = onToggle) }
+        if (expanded) {
+            if (card.facts.isNotBlank()) row {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("本章事实与结果", color = c.secondary, fontSize = 13.sp)
+                        if (card.aiOutline) Tag("AI 拟的", c.warning)
+                    }
+                    Text(card.facts.trim(), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                }
+            }
+            if (beatList.isNotEmpty()) row {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("节拍（${beatList.size} 拍）", color = c.secondary, fontSize = 13.sp)
+                        if (card.aiBeats) Tag("AI 拆的", c.warning)
+                    }
+                    beatList.forEach { b ->
+                        Text("${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                    }
+                }
+            }
+            row { NavRow("改细纲 / 节拍") { onEdit() } }
+            row { ActionRow("按改过的重写", enabled = canRewrite) { onRewrite() } }
         }
     }
 }

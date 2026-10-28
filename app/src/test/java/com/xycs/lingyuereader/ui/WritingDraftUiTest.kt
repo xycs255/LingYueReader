@@ -126,6 +126,8 @@ class WritingDraftUiTest {
             store.saveCard(w.id, two.id, ChapterCard(facts = "杜娘开门，门外来了人", hook = "门外的人不说话"))
             store.addPackDoc(w.id, PackKind.RULES, "检查规则", "字数：至少 10\n")
             store.addPackDoc(w.id, PackKind.STYLE, "写作规范", "对白要短。")
+            // 这里测的是整章一次写：关掉“缺细纲、节拍时 AI 先补上”（一键写本章另见 WritingOneClickUiTest）。
+            store.updateAssist(w.id) { it.copy(draftPrep = false) }
             workId = w.id
             c1 = w.chapters[0].id
             c2 = two.id

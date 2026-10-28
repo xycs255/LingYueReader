@@ -1178,6 +1178,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         aiState = currentAi,
         nextBeat = beatCard?.let { card -> Beats.firstUndone(card)?.let { n -> beats(card).firstOrNull { it.index == n } } },
         finished = finished,
+        cardMissing = beatCard?.let { it.facts.isBlank() || beats(it).isEmpty() } ?: false,
     )
     val scheme = MiuixTheme.colorScheme
 
@@ -2059,6 +2060,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     useReference = useReference,
                     onUseReference = { useReference = it },
                     onDismiss = { aiWriteOpen = false },
+                    onSplitBeats = {
+                        aiWriteOpen = false
+                        saveNow(); vm.open(Screen.ChapterCard(workId, chapterId))
+                    },
                 ) { choice ->
                     aiWriteOpen = false
                     if (choice.mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> writeChoice(choice, req) }

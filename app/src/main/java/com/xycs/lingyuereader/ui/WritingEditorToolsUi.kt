@@ -42,6 +42,8 @@ internal fun editorRecommendation(
     nextBeat: Beat? = null,
     /** 看着像写完了（细纲卡的节拍都写过了，或字数到了目标篇幅的下限）：为什么这么看，见 [finishHint]；不像为空。 */
     finished: String? = null,
+    /** 本章细纲卡缺“本章事实与结果”或没有节拍：推荐写整章草稿时说一句 AI 会先补上（一键写本章）。 */
+    cardMissing: Boolean = false,
 ): EditorRecommendation {
     if (inline != null) {
         val label = when {
@@ -87,7 +89,8 @@ internal fun editorRecommendation(
     if (start < end && text.subSequence(start, end).isNotBlank()) {
         return EditorRecommendation(EditorRecommendationKind.REVISE_SELECTION, "改写选中文字", "已选 ${end - start} 字")
     }
-    if (text.isBlank()) return EditorRecommendation(EditorRecommendationKind.DRAFT_CHAPTER, "AI 写整章草稿", "先看细纲，再生成候选稿")
+    if (text.isBlank()) return EditorRecommendation(EditorRecommendationKind.DRAFT_CHAPTER, "AI 写整章草稿",
+        if (cardMissing) "缺细纲、节拍也行：AI 先拟、先拆，再逐拍写" else "先看细纲，再生成候选稿")
     if (status == ChapterStatus.REVISION) return EditorRecommendation(EditorRecommendationKind.REVIEW_CHAPTER, "三道审稿", "本章正在修订")
     // 细纲卡还有没写的拍：一点就从光标处写下一拍，不弹面板（3 个方向、范本按记住的来）。
     if (nextBeat != null) return EditorRecommendation(EditorRecommendationKind.WRITE_BEAT, "写第 ${nextBeat.index} 拍", nextBeat.text)

@@ -572,7 +572,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
 
 /** 细纲卡、草稿页上“AI 拟的 / AI 拆的”那一行：左边小标签（提醒色，等作者确认），右边一句说明。 */
 @Composable
-internal fun AiDraftedNote(tag: String, text: String) {
+private fun AiDraftedNote(tag: String, text: String) {
     val c = LocalGroupedColors.current
     GroupedRow {
         Tag(tag, c.warning)
