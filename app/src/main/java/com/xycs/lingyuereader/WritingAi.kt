@@ -29,6 +29,7 @@ import com.xycs.lingyuereader.data.ChapterReview
 import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.withBeatDone
+import com.xycs.lingyuereader.data.withBeats
 import com.xycs.lingyuereader.ai.AiProtocol
 import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.InlineMode
@@ -1581,8 +1582,11 @@ class WritingAi(
     }
 
     /**
-     * AI 拟这一章的细纲卡：带上本章资料（按章挑的总纲、接续索引、人物、察觉、伏笔，前几章的细纲或摘要）、
-     * 上一章结尾、下一章已经定下的细纲。结果交给作者看过再用，不直接存。
+     * AI 拟这一章的细纲卡：带上本章资料（人物、前情、账本、伏笔，前几章的细纲或摘要，设定包里写这一章的原文）、
+     * 上一章结尾。结果交给作者看过再用（细纲卡页），或由一键写本章存成“AI 拟的”等作者确认。
+     *
+     * 防剧透：只用本章和以前的。不带下一章的细纲、后面章节的细纲和全书结局（[chapterHints] 的 `noAhead`），
+     * 不放整份设定包、不给查阅工具（整份设定包、read_doc 都能读到后面章节的细纲）。求稳：不带写正文的温度和思考开关。
      */
     suspend fun planCard(workId: String, chapterId: String): ChapterCard {
         if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
@@ -1591,14 +1595,13 @@ class WritingAi(
             val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
             val i = work.chapters.indexOfFirst { it.id == chapterId }
             val previous = work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty()
-            val next = work.chapters.getOrNull(i + 1)
             val text = store.text(workId, chapterId)
-            val pack = if (canUsePack) store.chapterHints(workId, chapterId, text) else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null)?.render()
-            WritePrompts.system(work.title, assistOf(workId), pack) to
-                WritePrompts.plan(chapter.title, previous, next?.let { store.plannedCard(workId, it.id).card }, next?.title, text)
+            val pack = if (canUsePack) store.chapterHints(workId, chapterId, text, upTo = true, noAhead = true)
+                else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, prose = true)?.render()
+            WritePrompts.system(work.title, assistOf(workId), pack) to WritePrompts.plan(chapter.title, previous, null, null, text)
         }
         val meter = AiMeter(AiFeature.PLAN, workId)
-        val answer = askWithPack("拟细纲", workId, system, prompt, whole = true, meter = meter)
+        val answer = askWithPack("拟细纲", workId, system, prompt, whole = true, useTools = false, toolsUpTo = chapterId, lean = true, meter = meter)
         val card = WritePrompts.parsePlan(answer)
         if (card.outlineEmpty) throw IllegalStateException("AI 没按格式回，换个模型或再试一次")
         log(workId, chapterId, "拟细纲", "", answer.trim(), meter)
@@ -1608,10 +1611,11 @@ class WritingAi(
     /**
      * AI 拆节拍：按 [card]（细纲卡页上现在的，可能还没存）的其他几项、本章资料和本章目标篇幅，拆成 3 到 8 拍。
      * 返回一行一拍的文字，交给作者改过再存，不直接存。请求方式和记账照拟细纲。
+     * [compiled] 是调用方刚编好的本章任务（一键写本章时）：有就拿它的篇幅，不再另编一次。
      */
-    suspend fun splitBeats(workId: String, chapterId: String, card: ChapterCard): String {
+    suspend fun splitBeats(workId: String, chapterId: String, card: ChapterCard, compiled: ChapterWritingTask? = null): String {
         if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
-        val task = writingTask(workId, chapterId)
+        val task = compiled ?: writingTask(workId, chapterId)
         val (system, prompt) = withContext(Dispatchers.IO) {
             val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
             val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
@@ -1936,6 +1940,72 @@ class WritingAi(
         return committed
     }
 
+    /**
+     * 一键写本章的写前准备：细纲卡没有“本章事实与结果”先让 AI 拟一份（[planCard]），没有节拍先拆（[splitBeats]），
+     * 各自一拿到就存进细纲卡、标成 AI 拟的（[ChapterCard.aiOutline]、[ChapterCard.aiBeats]），作者已经写了的不动。
+     * 中途停下或出错，存下的留着，下次不再拟；拟细纲那一步还没回来就停，什么都不存。
+     *
+     * 项目包里别的硬缺项（比如只有章组）拟细纲补不了：先拦住，不白花拟细纲的钱。拟完细纲卡变了，本章任务重编一次（单飞，
+     * 见 [writingTask]）；只拆节拍不重编（节拍不进任务的指纹，写的时候现读细纲卡）。返回写正文用的本章任务。
+     */
+    private suspend fun prepareCard(key: Pair<String, String>, run: Int, compiled: ChapterWritingTask,
+                                    instruction: String, targetLength: String): ChapterWritingTask {
+        val (workId, chapterId) = key
+        if (compiled.project) check(compiled.prepBlocking.isEmpty()) {
+            compiled.prepBlocking.joinToString("；") + if (compiled.prepBlocking.any { "章组" in it }) "。" + ChapterWritingTask.GROUP_HINT else ""
+        }
+        var task = compiled
+        var changed = false
+        try {
+            if (task.card.facts.isBlank()) {
+                updateDraft(key, run) { it.copy(prep = DraftPrep.PLAN) }
+                val planned = task.card
+                val proposal = prepStep("拟细纲") { planCard(workId, chapterId) }
+                withContext(draftDisk) {
+                    store.updateCard(workId, chapterId) { stored -> if (stored.facts.isNotBlank()) stored else stored.withAiOutline(planned, proposal) }
+                }
+                changed = true
+                forgetTasks(workId, chapterId)
+                task = writingTask(workId, chapterId, instruction, targetLength) ?: error("作品或章节不在了")
+            }
+            if (beats(task.card).isEmpty()) {
+                updateDraft(key, run) { it.copy(prep = DraftPrep.BEATS) }
+                val split = prepStep("拆节拍") { splitBeats(workId, chapterId, task.card, task) }
+                withContext(draftDisk) {
+                    store.updateCard(workId, chapterId) { stored -> if (stored.beats.isNotBlank()) stored else stored.withBeats(split).copy(aiBeats = true) }
+                }
+                changed = true
+            }
+        } finally {
+            // 补过细纲卡（哪怕后一步没成、停下了）：告诉草稿页换上新的细纲卡和任务。
+            updateDraft(key, run) { it.copy(prep = null, prepared = if (changed) task else it.prepared) }
+        }
+        return task
+    }
+
+    /** 写前准备的一步出错：说清楚是哪一步没成（停下、程序的毛病照原样往外抛）。 */
+    private suspend fun <T> prepStep(label: String, block: suspend () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (CrashLog.isBug(e)) throw e
+        throw IllegalStateException("${label}没成：${e.message ?: "请求失败"}", e)
+    }
+
+    /**
+     * 细纲卡刚被一键写本章改过：这一章还在编、编好了还没人取走的旧任务不再给后来的人用（它们按旧卡片编的）。
+     * 正在等的照样拿到它们那一份；后来的另起一次。
+     */
+    private fun forgetTasks(workId: String, chapterId: String) {
+        synchronized(taskCompiles) { taskCompiles.keys.removeAll { it[0] == workId && it[1] == chapterId } }
+    }
+
+    /** 草稿页取走了 [DraftState.prepared]（刷新了细纲卡和任务）：清掉，下次打开不再拿这份旧的。 */
+    fun preparedSeen(workId: String, chapterId: String) {
+        _drafts.update { m -> m[workId to chapterId]?.takeIf { it.prepared != null }?.let { m + ((workId to chapterId) to it.copy(prepared = null)) } ?: m }
+    }
+
     /** 逐拍写停下、出错后的提示：写到第几拍、接着写从哪一拍开始；各拍都写完了就只说前半句。 */
     private fun beatNotice(head: String, progress: DraftBeats): String =
         if (progress.written >= progress.total) head
@@ -1945,9 +2015,11 @@ class WritingAi(
      * AI 写整章草稿：[more] 为真时接着已有的草稿往下写，否则从头写一版（替换草稿）。边写边显示，写完存成草稿，
      * 作者看过再放进正文。
      */
-    fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false, workflow: Boolean = false, targetLength: String = "", referenceAnalysisId: String? = null) {
+    fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false, workflow: Boolean = false, targetLength: String = "", referenceAnalysisId: String? = null,
+                   /** 一键写本章（草稿页点“写本章”“重写一版”）：作品开着 [WorkAssist.draftPrep] 时，缺细纲先拟、缺节拍先拆，见 [prepareCard]。 */
+                   prepare: Boolean = false) {
         if (workflow) {
-            writeProjectDraft(workId, chapterId, instruction, targetLength, more = more, referenceAnalysisId = referenceAnalysisId)
+            writeProjectDraft(workId, chapterId, instruction, targetLength, more = more, referenceAnalysisId = referenceAnalysisId, prepare = prepare)
             return
         }
         if (!ready) {
@@ -1968,7 +2040,7 @@ class WritingAi(
         // Keep the saved candidate visible until this request actually produces replacement text.
         _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, previousCandidate)).copy(
             loading = true, error = null, instruction = instruction, targetLength = targetLength,
-            workflowChoice = workflow, notice = null, beatWriting = null, beatsText = null)) }
+            workflowChoice = workflow, notice = null, beatWriting = null, beatsText = null, prep = null, prepared = null)) }
         // 边收边清理（只看没写完的那一行）：停下时留下的也从这里拿。
         val written = WritePrompts.DraftStream()
         var newCandidateGenerated = false
@@ -1995,7 +2067,9 @@ class WritingAi(
                         throw RejectedReferenceWriting("原候选稿的范本来源未核验或已变化，请从头重写")
                     ReferenceWriting.verifyProse(previous.text, reference)
                 }
-                val taskSnapshot = writingTask(workId, chapterId, instruction, targetLength)
+                val taskSnapshot = writingTask(workId, chapterId, instruction, targetLength).let { compiled ->
+                    if (prepare && !more && compiled != null && assistOf(workId).draftPrep) prepareCard(key, run, compiled, instruction, targetLength) else compiled
+                }
                 if (taskSnapshot?.project == true) check(taskSnapshot.blocking.isEmpty()) { taskSnapshot.blocking.joinToString("；") }
                 val body = withContext(Dispatchers.IO) { store.text(workId, chapterId) }
                 val length = taskSnapshot?.targetLength ?: targetLength.ifBlank { withContext(Dispatchers.IO) { lengthOf(workId) } }
@@ -2330,7 +2404,8 @@ class WritingAi(
         return if (report.passed && d.stage == DraftStage.READY) null else "本稿仍有必改问题或资料缺项，请核对后重新审读"
     }
 
-    private fun writeProjectDraft(workId: String, chapterId: String, instruction: String, targetLength: String, more: Boolean = false, reviewOnly: Boolean = false, referenceAnalysisId: String? = null) {
+    private fun writeProjectDraft(workId: String, chapterId: String, instruction: String, targetLength: String, more: Boolean = false, reviewOnly: Boolean = false, referenceAnalysisId: String? = null,
+                                  prepare: Boolean = false) {
         if (!ready) {
             message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
             return
@@ -2354,7 +2429,7 @@ class WritingAi(
             referenceChapterLength = before?.referenceChapterLength,
             referenceValidated = before?.referenceValidated == true,
             referenceProvenanceBlocked = before?.referenceProvenanceBlocked == true,
-            beatWriting = null, beatsText = null,
+            beatWriting = null, beatsText = null, prep = null, prepared = null,
         )) }
         val createMeter = AiMeter(AiFeature.DRAFT, workId)
         val reviewMeter = AiMeter(AiFeature.REVIEW, workId)
@@ -2378,9 +2453,11 @@ class WritingAi(
                     throw RejectedReferenceWriting(before.error ?: "旧草稿来源无法核验，请从头重新生成")
                 if ((reviewOnly || more) && previousCandidate.isNotBlank() && before?.referenceAnalysisId != referenceAnalysisId)
                     throw RejectedReferenceWriting("本稿须沿用原候选稿的范本选择；切换范本请从头重写")
-                val task = writingTask(workId, chapterId, instruction, targetLength) ?: error("作品或章节不在了")
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: error("作品不在了")
                 check(work.chapter(chapterId)?.locked != true) { "这一章已定稿：要改先解锁并登记原因" }
+                val task = writingTask(workId, chapterId, instruction, targetLength).let { compiled ->
+                    if (prepare && !more && !reviewOnly && compiled != null && assistOf(workId).draftPrep) prepareCard(key, run, compiled, instruction, targetLength) else compiled
+                } ?: error("作品或章节不在了")
                 val reviewEvidence = withContext(Dispatchers.IO) { store.reviewEvidence(workId, chapterId, task) }
                 updateDraft(key, run) { it.copy(task = task, taskInstruction = instruction, taskTargetLength = targetLength) }
                 check(task.blocking.isEmpty()) { task.blocking.joinToString("；") }
@@ -3321,7 +3398,17 @@ data class DraftState(
     val beatWriting: Int? = null,
     /** 正在写的这一拍之前、已经写完存好的全文：这时停下就退回它，写了一半的那一拍不留。 */
     val beatsText: String? = null,
+    /** 一键写本章正在做的写前准备（拟细纲、拆节拍）；只在写的时候有意义，见 [DraftPrep]。 */
+    val prep: DraftPrep? = null,
+    /**
+     * 一键写本章刚补过细纲卡（拟了细纲或拆了节拍）以后的本章任务：草稿页拿它刷新细纲卡和任务，不再自己另编一次；
+     * 用过就清掉（[WritingAi.preparedSeen]）。
+     */
+    val prepared: ChapterWritingTask? = null,
 )
+
+/** 一键写本章写之前多出来的两步（进度里显示）。 */
+enum class DraftPrep(val label: String) { PLAN("正在拟细纲……"), BEATS("正在拆节拍……") }
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
 data class SentRequest(
