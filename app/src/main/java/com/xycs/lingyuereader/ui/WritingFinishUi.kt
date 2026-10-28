@@ -48,12 +48,15 @@ internal const val FINISH_FOLD_AT = 6
  */
 @Composable
 fun ChapterFinishScreen(vm: AppViewModel, workId: String, chapterId: String) {
-    LaunchedEffect(workId, chapterId) {
+    val all by vm.writingAi.finish.collectAsStateWithLifecycle()
+    val run = all?.takeIf { it.workId == workId && it.chapterId == chapterId }
+    // 别的章还在收尾：同一时间只收一章，不掐掉它（写入时更不能断）。它完成或停下以后这里再打开。
+    val blockedBy = all?.takeIf { it.busy && run == null }
+    LaunchedEffect(workId, chapterId, blockedBy == null) {
         vm.writingAi.loadAssist(workId)
         vm.writingAi.openFinish(workId, chapterId)
     }
-    val all by vm.writingAi.finish.collectAsStateWithLifecycle()
-    val run = all?.takeIf { it.workId == workId && it.chapterId == chapterId }
+    val works by vm.writing.works.collectAsStateWithLifecycle()
     val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     val snackbar = rememberWritingMessages(vm)
     // 本机检查：存盘的正文按检查规则、AI 腔清单再数一遍（和编辑器顶上那行一样的算法）。
@@ -86,6 +89,15 @@ fun ChapterFinishScreen(vm: AppViewModel, workId: String, chapterId: String) {
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
             overscrollEffect = null,
         ) {
+            if (run == null && blockedBy != null) {
+                item(key = "blocked") {
+                    val title = works.firstOrNull { it.id == blockedBy.workId }?.chapter(blockedBy.chapterId)?.title ?: "另一章"
+                    FinishBlocked(title, blockedBy, onOpen = { vm.replaceTop(Screen.ChapterFinish(blockedBy.workId, blockedBy.chapterId)) }) {
+                        vm.writingAi.stopFinish()
+                    }
+                }
+                return@LazyColumn
+            }
             if (run == null) {
                 item(key = "loading") { GroupedSection { row { LoadingRow("正在准备……") } } }
                 return@LazyColumn
@@ -104,6 +116,27 @@ fun ChapterFinishScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         vm.showMessage(message)
                         if ((vm.stack.value.lastOrNull() as? Screen.ChapterFinish)?.chapterId == chapterId) vm.back()
                     }
+                }
+            }
+        }
+    }
+}
+
+/** 别的章还在收尾时：说一声是哪章，可以去看看，或者先停下它（正在写入时停不了，只能等）。 */
+@Composable
+private fun FinishBlocked(title: String, other: FinishRun, onOpen: () -> Unit, onStop: () -> Unit) {
+    val c = LocalGroupedColors.current
+    val applying = other.stage == FinishStage.APPLYING
+    GroupedSection(
+        footer = if (applying) "同一时间只收一章。它正在写入设定包、定稿，不能打断，写完就轮到这一章。"
+            else "同一时间只收一章。停下它会丢掉它这次的进度（已经写进去的不受影响），这一章再从头开始。",
+    ) {
+        row {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("《$title》正在收尾，等它完成或先停下", color = c.warning, fontSize = 16.sp, lineHeight = 22.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("去看看", onClick = onOpen, style = PillStyle.Filled)
+                    if (!applying) PillButton("先停下它", onClick = onStop)
                 }
             }
         }

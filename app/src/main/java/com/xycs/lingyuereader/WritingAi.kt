@@ -335,6 +335,18 @@ class WritingAi(
         }
         _drafts.update { m -> m.mapValues { (_, d) -> if (d.loading) d.copy(loading = false, error = reason) else d } }
         _state.update { s -> s?.takeIf { it.loading }?.copy(loading = false, error = reason) ?: s }
+        // 收尾停在“在做”“正在写入”会卡住（停不了、换不了章）：退回能重试的地方。
+        _finish.update { r ->
+            when (r?.stage) {
+                FinishStage.RUNNING -> r.copy(stage = FinishStage.AI_FAILED,
+                    sync = if (r.sync == StepState.RUNNING) StepState.FAILED else r.sync,
+                    summary = if (r.summary == StepState.RUNNING) StepState.FAILED else r.summary,
+                    syncError = if (r.sync == StepState.RUNNING) reason else r.syncError,
+                    summaryError = if (r.summary == StepState.RUNNING) reason else r.summaryError)
+                FinishStage.APPLYING -> r.copy(stage = FinishStage.CONFIRM, writeError = reason)
+                else -> r
+            }
+        }
         message(reason)
     }
 
@@ -3091,16 +3103,22 @@ class WritingAi(
         review = options.review && ready,
     )
 
-    /** 打开收尾页：同一章接着上次的；别的章（或上次已经收完）从头来，勾选项用作品记住的。 */
-    fun openFinish(workId: String, chapterId: String) {
+    /**
+     * 打开收尾页：同一章接着上次的；上次已经收完或没开始的从头来，勾选项用作品记住的。
+     * 别的章还在收尾（[FinishRun.busy]）时不动它：以前这里直接取消，正在写入的那一章会写进去一半、没定稿，也没有重试的入口。
+     * 收尾页上看到的是“《A》正在收尾，等它完成或先停下”；它完成或停下以后再打开。返回真表示打开了这一章。
+     */
+    fun openFinish(workId: String, chapterId: String): Boolean {
         val now = _finish.value
-        if (now != null && now.workId == workId && now.chapterId == chapterId && now.stage != FinishStage.DONE) return
+        if (now != null && now.workId == workId && now.chapterId == chapterId && now.stage != FinishStage.DONE) return true
+        if (now != null && now.busy) return false
         finishJob?.cancel()
         _finish.value = FinishRun(workId, chapterId, _assists.value[workId]?.finish ?: FinishOptions())
         scope.launch {
             val saved = assistOf(workId).finish
             _finish.update { r -> if (r?.workId == workId && r.chapterId == chapterId && r.stage == FinishStage.SETUP) r.copy(options = saved) else r }
         }
+        return true
     }
 
     /** 改勾选项：这一次用，也按作品记住。 */
@@ -3206,8 +3224,9 @@ class WritingAi(
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                updateFinish(workId, chapterId) { it.copy(sync = StepState.FAILED, syncError = e.message ?: "请求失败") }
+            } catch (e: Throwable) {
+                // 内存不够这类 Error 也接住：停在“没成、可以重试”，不留在“在做”。
+                updateFinish(workId, chapterId) { it.copy(sync = StepState.FAILED, syncError = finishError(e, "请求失败")) }
             }
         }
         if (needSummary) {
@@ -3218,8 +3237,8 @@ class WritingAi(
                     summarize(workId, chapterId).takeIf { it.isNotBlank() } ?: throw IllegalStateException("AI 没写出摘要")
                 } catch (e: CancellationException) {
                     throw e
-                } catch (e: Exception) {
-                    updateFinish(workId, chapterId) { it.copy(summary = StepState.FAILED, summaryError = e.message ?: "请求失败") }
+                } catch (e: Throwable) {
+                    updateFinish(workId, chapterId) { it.copy(summary = StepState.FAILED, summaryError = finishError(e, "请求失败")) }
                     null
                 }
             }
@@ -3234,6 +3253,10 @@ class WritingAi(
         val old = if (o.summary) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrDefault("") } else ""
         updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, oldSummary = old, keepOld = old.isNotBlank()) }
     }
+
+    /** 收尾里一步没成的原因：平常的出错照原话；程序的毛病、内存不够这类记进闪退记录，只说出了意外。 */
+    private fun finishError(e: Throwable, fallback: String): String =
+        if (e is Exception && !CrashLog.isBug(e)) e.message ?: fallback else unexpected(e).also { CrashLog.caught(e) }
 
     /** 确认页上改摘要。 */
     fun editFinishSummary(text: String) = _finish.update { r -> r?.takeIf { it.stage == FinishStage.CONFIRM }?.copy(draft = text) ?: r }
@@ -3291,13 +3314,17 @@ class WritingAi(
                         FinishWrite.FINAL -> finalize(workId, chapterId)
                     }
                 } catch (e: CancellationException) {
+                    // 写入时不会被收尾页取消（停不了、换章也不掐）；真被取消了（页面所在的 ViewModel 没了）也退回确认，
+                    // 写成了的已经记在 wrote 里，重试从没写的那步接着。
+                    updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, failedWrite = step, writeError = "${step.label}没成：停下了") }
                     throw e
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // Error（写大设定包时内存不够、栈溢出）也接住：以前漏到兜底处理器，页面一直停在“正在写入”，停也停不了。
                     // 摘要被改过：把细纲卡里现在的摘要读回来，确认页上重新给“用新的 / 留旧的”。
                     val latest = if (step == FinishWrite.SUMMARY) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrNull() } else null
                     updateFinish(workId, chapterId) {
                         it.copy(
-                            stage = FinishStage.CONFIRM, failedWrite = step, writeError = "${step.label}没成：${e.message ?: "写入出错"}",
+                            stage = FinishStage.CONFIRM, failedWrite = step, writeError = "${step.label}没成：${finishError(e, "写入出错")}",
                             oldSummary = latest ?: it.oldSummary, keepOld = if (!latest.isNullOrBlank() && latest != it.oldSummary) true else it.keepOld,
                         )
                     }
