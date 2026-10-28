@@ -322,7 +322,7 @@ object ChapterOutlines {
 /** 细纲卡前六项的指纹：看作者改没改过提取出来的内容。 */
 internal fun ChapterCard.outlineHash(): Int = listOf(facts, boundary, pov, countdown, hook, threads).hashCode()
 
-/** 前六项换成从细纲提取的，记下指纹；摘要、细纲章号不动。 */
+/** 前六项换成从细纲提取的，记下指纹；摘要、细纲章号、节拍不动。 */
 fun ChapterCard.withOutline(o: ChapterCard): ChapterCard =
     copy(facts = o.facts, boundary = o.boundary, pov = o.pov, countdown = o.countdown, hook = o.hook, threads = o.threads, auto = o.outlineHash())
 
@@ -392,10 +392,10 @@ fun WorkStore.plannedCard(workId: String, chapterId: String, entries: List<Outli
     val where = found.map { it.doc }.distinct().joinToString("、") { "《$it》" } + " " +
         (if (first.single) "第 ${first.from} 章" else "第 ${first.from}—${first.to} 章") +
         first.title.let { if (it.isNotEmpty() && !ChapterOutlines.revision(it)) "「$it」" else "" }
-    val untouched = stored.isEmpty || (stored.auto != 0 && stored.auto == stored.outlineHash())
+    val untouched = stored.outlineEmpty || (stored.auto != 0 && stored.auto == stored.outlineHash())
     return if (untouched) {
         PlannedCard(stored.withOutline(outline), source = where, outline = outline, outlineSource = where)
     } else {
-        PlannedCard(stored, outline = outline.takeIf { !it.isEmpty && !it.sameFields(stored) }, outlineSource = where)
+        PlannedCard(stored, outline = outline.takeIf { !it.outlineEmpty && !it.sameFields(stored) }, outlineSource = where)
     }
 }

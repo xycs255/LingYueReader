@@ -10,6 +10,17 @@ data class DraftReferenceProvenance(
     val verified: Boolean,
 )
 
+/**
+ * 按节拍逐拍写的候选稿写到了第几拍：[written] 拍写完了（从 0 数到 [total]），[total] 是写的时候一共几拍。
+ * 它和候选稿正文记在同一份来源记录里、同一次保存里落盘（记录带正文指纹），中途断了也不会出现
+ * “正文是三拍、进度说两拍”的情况；“接着写”就从第 [written] + 1 拍开始。
+ */
+data class DraftBeats(val written: Int, val total: Int) {
+    init {
+        require(total in 1..Beats.MAX && written in 0..total) { "草稿节拍进度无效" }
+    }
+}
+
 data class DraftContent(
     val text: String,
     val reference: DraftReferenceProvenance? = null,
@@ -17,6 +28,8 @@ data class DraftContent(
     val blocked: Boolean = false,
     val revision: DraftRevisionSnapshot? = null,
     val revisionError: String? = null,
+    /** 逐拍写的进度；不是逐拍写的为空。 */
+    val beats: DraftBeats? = null,
 )
 
 /** The hash prevents a torn text/metadata pair from silently becoming an unreferenced draft. */
@@ -24,7 +37,7 @@ internal object DraftReferenceCodec {
     private const val MAX_BYTES = 2_048
     private val HASH = Regex("[a-f0-9]{64}")
 
-    fun encode(text: String, reference: DraftReferenceProvenance?, blocked: Boolean = false): JSONObject = JSONObject()
+    fun encode(text: String, reference: DraftReferenceProvenance?, blocked: Boolean = false, beats: DraftBeats? = null): JSONObject = JSONObject()
         .put("version", 1)
         .put("draftFingerprint", WritingReferences.fingerprint(text))
         .put("analysisId", reference?.analysisId.orEmpty())
@@ -32,8 +45,23 @@ internal object DraftReferenceCodec {
         .put("chapterLength", reference?.chapterLength ?: JSONObject.NULL)
         .put("verified", reference?.verified == true)
         .put("blocked", blocked)
+        // 不是逐拍写的稿子不写这两项：旧版本读得懂，记录也和以前一字不差。
+        .apply { if (beats != null) put("beatsWritten", beats.written).put("beatsTotal", beats.total) }
 
-    fun decode(raw: String, text: String): DraftContent {
+    /** 旧记录没有节拍进度；有就必须是一对合法的整数，坏了按来源记录损坏处理。 */
+    private fun beatsOf(value: JSONObject): DraftBeats? {
+        if (!value.has("beatsWritten") && !value.has("beatsTotal")) return null
+        val written = value.get("beatsWritten")
+        val total = value.get("beatsTotal")
+        require(written is Int && total is Int) { "草稿节拍进度无效" }
+        return DraftBeats(written, total)
+    }
+
+    fun decode(raw: String, text: String): DraftContent = decodeReference(raw, text).let { content ->
+        if (content.blocked) content else content.copy(beats = beatsOf(JSONObject(raw)))
+    }
+
+    private fun decodeReference(raw: String, text: String): DraftContent {
         require(raw.toByteArray().size <= MAX_BYTES) { "草稿范本来源记录过长" }
         val value = JSONObject(raw)
         require(value.getInt("version") == 1) { "草稿范本来源记录版本无效" }

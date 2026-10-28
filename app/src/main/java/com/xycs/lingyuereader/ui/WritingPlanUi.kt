@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
@@ -39,6 +40,9 @@ import com.xycs.lingyuereader.data.PlannedCard
 import com.xycs.lingyuereader.data.outlineHash
 import com.xycs.lingyuereader.data.withOutline
 import com.xycs.lingyuereader.data.WorkChapter
+import com.xycs.lingyuereader.data.beats
+import com.xycs.lingyuereader.data.withBeatDone
+import com.xycs.lingyuereader.data.withBeats
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -158,6 +162,13 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
         get(latest) != get(storedAtOpen) -> get(latest)
         else -> get(base)
     }
+    val beats = pick { it.beats }
+    // 编辑器里采纳了一拍会记进“已写”：这一页没动过勾时用盘上的。勾和节拍条数对不上（另一边改了条数）就清空。
+    val doneFrom = when {
+        edited.beatsDone != base.beatsDone -> edited
+        latest.beatsDone != storedAtOpen.beatsDone -> latest
+        else -> base
+    }
     return latest.copy(
         facts = pick { it.facts },
         boundary = pick { it.boundary },
@@ -167,6 +178,8 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
         threads = pick { it.threads },
         summary = pick { it.summary },
         plan = pick { it.plan },
+        beats = beats,
+        beatsDone = if (Beats.parse(doneFrom.beats).size == Beats.parse(beats).size) doneFrom.beatsDone else emptyList(),
         auto = when {
             edited.auto != base.auto -> edited.auto
             latest.auto != storedAtOpen.auto -> latest.auto
@@ -215,8 +228,27 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var proposal by remember { mutableStateOf<ChapterCard?>(null) }
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
+    var splitting by remember { mutableStateOf(false) }
+    var askOverwriteBeats by remember { mutableStateOf(false) }
+    var beatsProposal by remember { mutableStateOf<String?>(null) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    // AI 拆节拍：按这一页上现在的细纲卡（可能还没存）拆；拆好的先给作者看、改，用了才进卡片。
+    fun splitBeats() {
+        val now = card ?: return
+        splitting = true
+        scope.launch {
+            try {
+                beatsProposal = vm.writingAi.splitBeats(workId, chapterId, now)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                vm.showMessage(e.message ?: "拆节拍失败")
+            } finally {
+                splitting = false
+            }
+        }
+    }
     val snackbar = rememberWritingMessages(vm)
     LaunchedEffect(workId, chapterId) {
         val snapshot = vm.writing.cardSnapshot(workId, chapterId)
@@ -359,6 +391,37 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             }
                         }
                         GroupedSection(
+                            header = "节拍",
+                            footer = "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写本章会一拍一拍写；编辑器菜单里“写这一拍…”从光标处只写其中一拍，采纳后在下面勾成已写。",
+                        ) {
+                            row {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                    TextField(
+                                        value = now.beats,
+                                        onValueChange = { v -> card = now.withBeats(v) },
+                                        label = "节拍 · 比如：沈默赶到渡口，发现船不见了（800字）",
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 260.dp),
+                                    )
+                                }
+                            }
+                            row {
+                                BusyActionRow(splitting, busyText = "AI 正在拆节拍……", title = "AI 拆节拍", enabled = aiConfig.ready) {
+                                    if (now.beats.isNotBlank()) askOverwriteBeats = true else splitBeats()
+                                }
+                            }
+                            val done = now.beatsDone.toSet()
+                            beats(now).forEach { b ->
+                                row {
+                                    CheckboxRow(
+                                        "${b.index}. ${b.text}",
+                                        checked = b.index in done,
+                                        subtitle = listOfNotNull(if (b.index in done) "已写进正文" else null, b.length?.let { "约 $it 字" }).joinToString(" · ").ifEmpty { null },
+                                        titleMaxLines = 2,
+                                    ) { on -> card = (card ?: now).withBeatDone(b.index, on) }
+                                }
+                            }
+                        }
+                        GroupedSection(
                             header = "写完以后",
                             footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章），AI 就知道前面写了什么。" +
                                 "可以自己写，也可以让 AI 概括正文再改。",
@@ -414,6 +477,45 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         },
                         confirmText = "用这份",
                         dismissText = "不用",
+                    )
+                }
+            }
+            if (askOverwriteBeats) {
+                GlassDialog(show = true, title = "覆盖现有节拍？", onDismissRequest = { askOverwriteBeats = false }) {
+                    Text(
+                        "AI 拆好以后先给你看，用了才会换掉现在写的节拍；已写的勾会按新的条数重新算。",
+                        color = LocalGroupedColors.current.secondary,
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp,
+                    )
+                    DialogButtons(
+                        onDismiss = { askOverwriteBeats = false },
+                        onConfirm = {
+                            askOverwriteBeats = false
+                            splitBeats()
+                        },
+                        confirmText = "重新拆",
+                    )
+                }
+            }
+            beatsProposal?.let { proposed ->
+                var edited by remember(proposed) { mutableStateOf(proposed) }
+                GlassDialog(show = true, title = "AI 拆的节拍", summary = "按细纲卡和本章资料拆的，可以先改，用了才放进细纲卡", onDismissRequest = { beatsProposal = null }) {
+                    TextField(
+                        value = edited,
+                        onValueChange = { edited = it },
+                        label = "一行一拍，行尾可写篇幅",
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp),
+                    )
+                    DialogButtons(
+                        onDismiss = { beatsProposal = null },
+                        onConfirm = {
+                            beatsProposal = null
+                            card = card?.withBeats(edited.trim())
+                        },
+                        confirmText = "用这份",
+                        dismissText = "不用",
+                        confirmEnabled = edited.isNotBlank(),
                     )
                 }
             }

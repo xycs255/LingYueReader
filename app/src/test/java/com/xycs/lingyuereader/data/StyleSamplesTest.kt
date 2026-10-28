@@ -150,20 +150,20 @@ class StyleSamplesTest {
     }
 
     @Test
-    fun promptCarriesSamplesBetweenStyleAndChapterHints() {
+    fun promptCarriesSamplesInTheVoiceTailNotTheSystem() {
         val samples = StyleSamples.render(StyleSamples.pick(sources, options()))!!
         val assist = WorkAssist(style = "第三人称，冷峻")
-        val one = WritePrompts.system("渡口", assist, "本章提示：林月守渡口", examples = true, samples = samples)
-        val two = WritePrompts.system("渡口", assist, "本章提示：林月守渡口", examples = true, samples = samples)
-        assertEquals(one, two)
+        // 范例不进系统提示：系统提示只随设定变。
+        assertFalse(WritePrompts.system("渡口", assist, "本章提示：林月守渡口").contains(StyleSamples.HEADER))
+        // 在请求最后的写法要求里，排在文风要求后面；同样的输入一字不差。
+        val one = WritePrompts.voiceTail(assist, samples)
+        assertEquals(one, WritePrompts.voiceTail(assist, samples))
         val at = one.indexOf(StyleSamples.HEADER)
         assertTrue(at > one.indexOf("第三人称，冷峻"))
-        assertTrue(at < one.indexOf("本章提示"))
-        // 本章提示变了，范例以前的开头不变（服务商按相同开头缓存）。
-        val other = WritePrompts.system("渡口", assist, "本章提示：沈默过河", examples = true, samples = samples)
-        val end = at + samples.length
-        assertEquals(one.substring(0, end), other.substring(0, end))
-        assertFalse(WritePrompts.system("渡口", assist, "本章提示").contains(StyleSamples.HEADER))
+        val prompt = WritePrompts.draft("渡口", "", "", "3000 字", "", one)
+        assertTrue(prompt.endsWith(one))
+        assertTrue(prompt.indexOf(StyleSamples.HEADER) > prompt.indexOf("请写出这一章"))
+        assertFalse(WritePrompts.voiceTail(assist, null).contains(StyleSamples.HEADER))
         // 挑错不带；改稿、续写带。
         assertFalse(WritePrompts.usesSamples(WriteAction.PROOFREAD))
         listOf(WriteAction.POLISH, WriteAction.VIVID, WriteAction.EXPAND, WriteAction.CONDENSE, WriteAction.CUSTOM, WriteAction.CONTINUE)

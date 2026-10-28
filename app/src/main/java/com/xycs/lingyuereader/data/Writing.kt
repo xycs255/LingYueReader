@@ -48,9 +48,19 @@ data class ChapterCard(
     val auto: Int = 0,
     /** 独立于正文的修改时间；恢复旧备份时不能用正文时间覆盖后来写的细纲。 */
     val updatedAt: Long = 0,
+    /**
+     * 节拍：一行一拍，写这一章的哪一步（比如“沈默赶到渡口，发现船不见了（800字）”），见 [Beats]。
+     * 不算进 [auto] 的指纹：节拍是作者自己拆的，细纲文档改了也不跟着变。
+     */
+    val beats: String = "",
+    /** 哪几拍已经写进正文（拍的序号，从 1 数）。节拍条数变了就清空，见 [withBeats]。 */
+    val beatsDone: List<Int> = emptyList(),
 ) {
-    /** 细纲（写之前的六项）是不是空的；摘要不算。 */
-    val isEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
+    /** 写之前的六项是不是都空着：判断要不要从细纲提取、算不算作者手写的细纲时看它。 */
+    val outlineEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
+
+    /** 细纲卡是不是空的：六项和节拍都没写；摘要不算。只写了节拍也算有内容。 */
+    val isEmpty: Boolean get() = outlineEmpty && beats.isBlank()
 }
 
 /** 变更登记的种类。 */
@@ -146,14 +156,30 @@ data class WorkAssist(
     val draftWorkflows: Set<String> = emptySet(),
     /** 上次写这一章时的作者要求和目标篇幅，重启后仍可继续按同一任务写。 */
     val draftIntents: Map<String, DraftIntent> = emptyMap(),
+    /** 查 AI 腔：编辑器里按内置清单（[AiCliche]）在本机标出套话，生成正文时带上去 AI 腔的写法要求。 */
+    val aiCliche: Boolean = true,
+    /** 我的黑名单：作者不想再看到的说法（最旧的在前，最多 [KEEP_BANNED] 条）。本机全文禁用，生成时也告诉 AI 别用。 */
+    val banned: List<String> = emptyList(),
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
+
+    /** 把 [phrase] 加进黑名单：已有的挪到最后（最近加的），超过上限丢最旧的。 */
+    fun ban(phrase: String): WorkAssist = copy(banned = cleanBanned(banned.filter { it != phrase.trim() } + phrase))
+
+    /** 从黑名单里去掉 [phrase]。 */
+    fun unban(phrase: String): WorkAssist = copy(banned = banned - phrase)
 
     companion object {
         /** 采纳的修改最多记这么多条。 */
         const val KEEP_EXAMPLES = 20
         const val KEEP_REJECTED = 10
+        /** 黑名单最多记这么多条。 */
+        const val KEEP_BANNED = 200
+
+        /** 黑名单整理：去掉两头空白和空的、去重（留后加的那个位置），超过 [KEEP_BANNED] 条丢最旧的。 */
+        fun cleanBanned(list: List<String>): List<String> =
+            list.map { it.trim() }.filter { it.isNotEmpty() }.asReversed().distinct().asReversed().takeLast(KEEP_BANNED)
         val BRIEF_LIMITS = listOf(6_000, 12_000, 20_000, 32_000)
         val KNOWLEDGE_LIMITS = listOf(0, 30_000, 60_000, 100_000, 150_000, 300_000)
         val SUGGEST_KINDS = listOf("TYPO", "CANON", "STYLE", "VOICE")
@@ -837,11 +863,12 @@ class WorkStore(
 
     @Synchronized
     fun saveDraft(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance? = null,
-                  blocked: Boolean = false, revision: DraftRevisionSnapshot? = null) =
-        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked, revision) }
+                  blocked: Boolean = false, revision: DraftRevisionSnapshot? = null, beats: DraftBeats? = null) =
+        synchronized(processLock) { saveDraftLocked(workId, chapterId, text, reference, blocked, revision, beats) }
 
+    /** [beats] 是逐拍写的进度：和正文、来源记录在同一次保存里落盘（见 [DraftBeats]）。 */
     private fun saveDraftLocked(workId: String, chapterId: String, text: String, reference: DraftReferenceProvenance?,
-                                blocked: Boolean, revision: DraftRevisionSnapshot?) {
+                                blocked: Boolean, revision: DraftRevisionSnapshot?, beats: DraftBeats?) {
         recoverPendingSave(workId)
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能覆盖草稿" }
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
@@ -871,7 +898,7 @@ class WorkStore(
                 throw failure
             }
         } else {
-            val provenance = DraftReferenceCodec.encode(text, reference, blocked).toString()
+            val provenance = DraftReferenceCodec.encode(text, reference, blocked, beats).toString()
             val snapshot = revision?.let { DraftRevisionCodec.encode(text, it.initialText, it.alternateText).toString() }
             if (file.isFile && source.isFile && file.readText() == text && source.readText() == provenance &&
                 (if (snapshot == null) !revisionFile.exists() else revisionFile.isFile && revisionFile.readText() == snapshot)) return
@@ -1498,7 +1525,7 @@ class WorkStore(
             val cards = JSONObject().apply { w.chapters.forEach { c ->
                 val source = cardFile(w.id, c.id)
                 val card = if (source.isFile) component(source, "「${c.title}」的细纲卡读不出，没有放进备份") { JSONObject(it).toCard() } else ChapterCard()
-                card?.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 }
+                card?.takeIf { !it.isEmpty || it.summary.isNotBlank() || it.plan.isNotBlank() || it.auto != 0 || it.beatsDone.isNotEmpty() }
                     ?.let { put(c.id, it.toJson()) }
             } }
             val changesSource = File(dir(w.id), changesFile)
@@ -1631,8 +1658,12 @@ class WorkStore(
             raw.keys().asSequence().associateWith { id ->
                 require(id in chapterIds) { "备份细纲卡引用未知章节" }
                 val cardJson = raw.getJSONObject(id)
-                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan").forEach { key ->
+                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan", "beats").forEach { key ->
                     require(!cardJson.has(key) || cardJson.opt(key) is String) { "备份细纲卡结构损坏" }
+                }
+                if (cardJson.has("beatsDone")) {
+                    val done = cardJson.opt("beatsDone")
+                    require(done is JSONArray && (0 until done.length()).all { (done.opt(it) as? Number)?.toLong() in 1L..Beats.MAX.toLong() }) { "备份细纲卡节拍损坏" }
                 }
                 cardJson.checkedInteger("auto", Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份细纲卡指纹损坏")
                 cardJson.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份细纲卡时间损坏")
@@ -2040,9 +2071,13 @@ class WorkStore(
         private fun ChapterCard.toJson(): JSONObject = JSONObject()
             .put("facts", facts).put("boundary", boundary).put("pov", pov).put("countdown", countdown).put("hook", hook).put("threads", threads)
             .put("summary", summary).put("plan", plan).put("auto", auto).put("updatedAt", updatedAt)
+            .put("beats", beats).put("beatsDone", JSONArray(beatsDone))
 
+        // 旧卡片没有节拍两项：读成空的。
         private fun JSONObject.toCard() =
-            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"))
+            ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"),
+                beats = optString("beats"),
+                beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty())
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
@@ -2082,6 +2117,8 @@ class WorkStore(
             .put("sampleSkip", JSONArray(sampleSkip))
             .put("sampleShift", JSONObject().apply { sampleShift.forEach { (k, v) -> put(k, v) } })
             .put("draftWorkflows", JSONArray(draftWorkflows.sorted()))
+            .put("aiCliche", aiCliche)
+            .put("banned", JSONArray(banned))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2144,6 +2181,9 @@ class WorkStore(
                         DraftIntent(instruction, targetLength, choice)
                     }
                 } else emptyMap(),
+                // 旧数据没有这两项：默认查 AI 腔、黑名单空着。
+                aiCliche = optBoolean("aiCliche", true),
+                banned = WorkAssist.cleanBanned(optJSONArray("banned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
             )
         }
 

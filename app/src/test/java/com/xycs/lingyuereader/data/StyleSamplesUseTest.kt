@@ -94,15 +94,21 @@ class StyleSamplesUseTest {
     /** 最近一次要求里带 [marker] 的请求的系统提示。 */
     private fun systemFor(marker: String): String = sent.last { marker in it.first }.second
 
+    /** 最近一次带 [marker] 的请求本身（范例接在它的最后）。 */
+    private fun promptFor(marker: String): String = sent.last { marker in it.first }.first
+
     @Test
     fun writingEntriesCarrySamplesOthersDoNot() {
         val text = store.text(workId, ids[2])
         // AI 接着写。
         writing.writeInline(workId, ids[2], text, text.length, InlineMode.WORDS)
         waitFor("接着写") { writing.inline.value?.loading == false }
-        val inline = systemFor("请从光标处接着往下写正文")
+        val inline = promptFor("请从光标处接着往下写正文")
         assertTrue(inline.contains(StyleSamples.HEADER))
         assertTrue(inline.contains("第一章 渡口"))
+        // 范例在请求最后的写法要求里，不在系统提示里。
+        assertFalse(systemFor("请从光标处接着往下写正文").contains(StyleSamples.HEADER))
+        assertTrue(inline.indexOf(StyleSamples.HEADER) > inline.indexOf("请从光标处接着往下写正文"))
         // 防剧透：当前章之后的第四章不拿。
         val block = inline.substring(inline.indexOf(StyleSamples.HEADER)).substringBefore("\n\n")
         assertTrue(block.contains("第一章 渡口"))
@@ -112,25 +118,28 @@ class StyleSamplesUseTest {
         // 写本章草稿。
         writing.writeDraft(workId, ids[2])
         waitFor("写本章") { writing.drafts.value[workId to ids[2]]?.loading == false }
-        assertTrue(systemFor("请写出这一章").contains(StyleSamples.HEADER))
+        assertTrue(promptFor("请写出这一章").contains(StyleSamples.HEADER))
+        assertFalse(systemFor("请写出这一章").contains(StyleSamples.HEADER))
 
         // 润色带；挑错、读者点评不带。
         fun run(task: WriteAiTask, marker: String): String {
             writing.run(workId, ids[2], text, task)
             waitFor(marker) { writing.state.value?.loading == false && sent.any { marker in it.first } }
-            return systemFor(marker)
+            assertFalse(systemFor(marker).contains(StyleSamples.HEADER))
+            return promptFor(marker)
         }
         assertTrue(run(WriteAiTask.Edit(WriteAction.POLISH, "沈默在渡口等船。", 0, 8), "润色这段文字").contains(StyleSamples.HEADER))
         assertFalse(run(WriteAiTask.Edit(WriteAction.PROOFREAD, "沈默在渡口等船。", 0, 8), "只改错").contains(StyleSamples.HEADER))
         assertFalse(run(WriteAiTask.Review, "网文老读者").contains(StyleSamples.HEADER))
 
-        // 同样的章再写一次：系统提示一字不差（前缀稳定）。
-        val before = inline
+        // 同样的章再写一次：系统提示、请求都一字不差（前缀稳定）。
+        val before = systemFor("请从光标处接着往下写正文")
         writing.writeInline(workId, ids[2], text, text.length, InlineMode.WORDS)
         waitFor("再接着写") { writing.inline.value?.loading == false && sent.count { "请从光标处接着往下写正文" in it.first } == 2 }
         assertEquals(before, systemFor("请从光标处接着往下写正文"))
+        assertEquals(inline, promptFor("请从光标处接着往下写正文"))
         // 最近一次发给 AI 的内容里看得到范例。
-        assertTrue(writing.lastRequest.value!!.system.contains(StyleSamples.HEADER))
+        assertTrue(writing.lastRequest.value!!.prompt.contains(StyleSamples.HEADER))
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ai
 
+import com.xycs.lingyuereader.data.BeatTask
+import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.ChapterRefs
@@ -51,12 +53,16 @@ data class WriteIssue(
     val source: String = "",
 )
 
-/** 写作建议的几类：作者可以分别开关。 */
-enum class SuggestKind(val label: String, val ask: String) {
+/**
+ * 写作建议的几类：前四类作者可以分别开关（[realtime]），停笔时自动查；
+ * [CLICHE] 是作者点“去 AI 腔”才查的，结果和写作建议一样一条条改或忽略，不在设置里开关。
+ */
+enum class SuggestKind(val label: String, val ask: String, val realtime: Boolean = true) {
     TYPO("错字", "错别字、用错的词、漏字多字、标点误用、明显的病句"),
     CANON("设定", "和设定包冲突的：人数、生死、日期、地点、官职、称呼、物件；人物知道了按察觉表这时还不该知道的事；提前写出后面才发生的事"),
     STYLE("规范", "违反作者写作约定、写作规范的：禁用词、对白写法、旁白腔、篇幅节奏这类明写了的规矩（只按作者写明的规矩，不按你自己的口味）"),
     VOICE("口吻", "人物说话不像他：和设定包里这个人的身份、称谓、说话方式不符"),
+    CLICHE("AI 腔", "套话、神态模板、替读者解释和点题的句子", realtime = false),
     ;
 
     companion object {
@@ -70,6 +76,8 @@ enum class InlineMode(val label: String) {
     TO_END("写到本章结尾"),
     WORDS("写 500 字左右"),
     CUSTOM("按要求写…"),
+    /** 写细纲卡里的某一拍：不在“AI 接着写”的选项里，从编辑器菜单“写这一拍…”选拍后进来。 */
+    BEAT("写这一拍…"),
 }
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
@@ -77,13 +85,19 @@ data class BibleProposal(val name: String, val text: String, val existing: Boole
 
 /**
  * 写作助手发给模型的话。原则：保留作者的文风，不擅自改情节；改稿类只输出结果；
- * 设定集、作者的文风偏好、作者采纳过的改法都放进系统提示里。
+ * 设定集、作者的文风偏好放进系统提示里；生成正文的请求最后接上“写法要求”（[voiceTail]：文风、范例、
+ * 采纳过的改法、去 AI 腔、黑名单），离“请写”最近，最管用。
  */
 object WritePrompts {
     /** A complete chapter is composed from a bounded task, never from the review or repair template. */
-    fun projectDraft(task: ChapterWritingTask, rules: String): String = buildString {
+    fun projectDraft(task: ChapterWritingTask, rules: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
         append(task.render()).append("\n\n【当前阶段：创作】\n")
-        append("请写出这一章完整、连贯、好读的小说正文，篇幅遵守本次章节任务。先抓本章主戏与关键选择，再组织场面。")
+        if (beat == null) append("请写出这一章完整、连贯、好读的小说正文，篇幅遵守本次章节任务。先抓本章主戏与关键选择，再组织场面。")
+        else {
+            // 逐拍写：这一次只写第一拍，后面几拍另外请求，接着这一拍写。
+            append("本章按节拍逐拍写，这一次不写完整章节，只写本章开头的这一拍。\n").append(beatRule(beat, "")).append('\n')
+            append("先抓这一拍的主戏与关键选择，再组织场面。")
+        }
         append("只按当前材料和明确认可的前文写，不调用旧稿、旧版项目包或外部史料改写已定故事；未读取的不声称读过。\n")
         append("对白先想此人对谁说、双方关系、此刻所求和情绪。允许长说、答半句、改口、打断、重复和不接话，")
         append("保留普通生活话与自然语气，不让人人精准概括、轮流讲课或随时说明责任。\n")
@@ -94,7 +108,7 @@ object WritePrompts {
         if (rules.isNotBlank()) append("\n作者的写作规范与检查规则：\n").append(rules.trim()).append('\n')
         append("\n完成后在内部连读对白，再连读完整章节，修掉机械模板、统一神态和口号收尾；保留有效的普通话、直接心理和生活细节。")
         append("正文中不放准备、提纲、审校说明、待核增量或通过记录。当前请求的输出格式优先：只输出完整正文，一行一段，不加Markdown或解释；章名由软件单独管理。")
-    }
+    }, voice)
 
     /** Structured evidence is kept outside the manuscript; a missing source is not a proven error. */
     fun projectReview(task: ChapterWritingTask, text: String, rules: String, evidence: ReviewEvidence? = null): String = buildString {
@@ -122,7 +136,7 @@ object WritePrompts {
     }
 
     /** Repair is based on checked findings, not permission to invent new facts or replace every voice. */
-    fun projectRevision(task: ChapterWritingTask, text: String, review: String, rules: String): String = buildString {
+    fun projectRevision(task: ChapterWritingTask, text: String, review: String, rules: String, voice: String = ""): String = withVoice(buildString {
         append(task.render()).append("\n\n【当前阶段：修订】\n")
         append("当前完整章稿：\n").append(text).append("\n\n有可定位来源、仍须核对含义的待处理审读意见：\n").append(review).append("\n\n")
         if (rules.isNotBlank()) append("作者规范与规则：\n").append(rules.trim()).append("\n\n")
@@ -134,10 +148,10 @@ object WritePrompts {
         append("两遍校稿：第一遍连读对白并核事实、章界与机械套句；第二遍连读全章，检查改动造成的接话、动作与情绪断裂。")
         append("修改后旧审核与待核状态增量均作废，必须针对新稿重新检查；不把修改过视为已通过或作者已定。\n")
         append("只交付修订后的完整正文，一行一段，不加Markdown、说明或意见处理表；章名由软件单独管理。")
-    }
+    }, voice)
 
     /**
-     * 哪些改稿要带文风范例：要写出新句子的（润色、更生动、扩写、缩写、按要求改、续写）。
+     * 哪些改稿要带文风范例和写法要求（[voiceTail]）：要写出新句子的（润色、更生动、扩写、缩写、按要求改、续写）。
      * 挑错只改错字，不学文风；写作建议、审稿、整理进设定包等也不带。
      */
     fun usesSamples(action: WriteAction): Boolean = action != WriteAction.PROOFREAD
@@ -154,10 +168,9 @@ object WritePrompts {
 
     /**
      * [pack] 是拼好的设定包（见 [com.xycs.lingyuereader.data.PackContext]），为空时不带设定。
-     * [samples] 是文风范例（[com.xycs.lingyuereader.data.StyleSamples.render]）：放在文风要求之后、本章资料之前——
-     * 它在同一部作品里很少变，放在前面，连同知识库成为稳定的开头，服务商能缓存；本章资料每章不同，放在它后面。
+     * 文风范例、作者采纳过和没采纳的改法不在这里：生成正文时放在请求的最后（[voiceTail]），离“请写”近才管用。
      */
-    fun system(title: String, assist: WorkAssist, pack: String? = null, examples: Boolean = false, samples: String? = null): String = buildString {
+    fun system(title: String, assist: WorkAssist, pack: String? = null): String = buildString {
         append("你是写作软件“灵阅”里的编辑助手，在帮作者写长篇小说")
         if (title.isNotBlank()) append("《").append(title).append("》")
         append("。\n")
@@ -165,21 +178,63 @@ object WritePrompts {
         append("- 要你改写或续写时，只输出正文本身：不要解释，不要加标题、引号、序号或“修改后：”之类的话，不用 Markdown。\n")
         append("- 一行就是一段，段与段之间换行，不要空行，段首不要空格。\n")
         if (assist.style.isNotBlank()) append("\n作者对文风的要求（最优先，和下面的设定资料冲突时以这里为准）：").append(assist.style.trim()).append('\n')
-        if (!samples.isNullOrBlank()) append("\n").append(samples.trim()).append('\n')
         if (!pack.isNullOrBlank()) append("\n").append(pack).append("\n写的内容不要和这些设定矛盾。\n")
+    }
+
+    /** 去 AI 腔的写法要求：短、具体、能照着做（作品开了“查 AI 腔”时带）。 */
+    val VOICE_RULES = listOf(
+        "人物的反应用动作、对白和具体细节写出来，不写“嘴角勾起”“眼中闪过一丝”“瞳孔骤缩”这类神态套话。",
+        "不替读者解释人物心理和言外之意；段尾不总结、不点题、不升华，不写“他知道，……”“或许这就是……”。",
+        "少用“仿佛、宛如、一丝、一抹、不禁、莫名”；比喻一章不超过两三处，要贴合人物的身份和眼界。",
+        "对白要像人说话：短句、口语，可以答半句、打岔，不用书面语和成语堆砌。",
+        "不用排比收尾，不写“这一刻……”式的抒情句，不写“空气仿佛凝固”“死一般的寂静”这类氛围套话。",
+        "句子长短交错，不要每段都是“动作＋神态＋心理”三件套。",
+        "能删的形容词、副词就删：写一个准确的细节，不写三个泛泛的。",
+    )
+
+    /** 写法要求的标题：测试、发送内容里认它。 */
+    const val VOICE_HEADER = "【写法要求】（落笔时照这些写，和上面的事实、细纲不冲突）"
+
+    /**
+     * 写法要求：接在生成正文的请求最末尾（紧贴“请写”之后，离指令越近越管用），什么都没有时是空串。依次是：
+     * 1. 作者对文风的要求 [WorkAssist.style]（系统提示里那份也留着，这里再说一遍）；
+     * 2. 文风范例 [samples]（[com.xycs.lingyuereader.data.StyleSamples.render] 的结果，可空）；
+     * 3. [examples] 为真时，作者以前采纳过的修改、没采纳的改法（续写这类没有原文可比的传假）；
+     * 4. [WorkAssist.aiCliche] 开着时，去 AI 腔的写法要求（[VOICE_RULES]）；
+     * 5. 我的黑名单 [WorkAssist.banned]：一个都不要用。
+     *
+     * 用在写正文、改正文的地方（编辑器里接着写、写本章、接着写草稿、项目包的创作和修订、润色扩写这类改稿、去 AI 腔），
+     * 审稿、拟细纲、摘要、整理、写作建议、挑错不用。别的生成入口（比如逐拍写）也照这样接在请求的最后：
+     * `WritePrompts.withVoice(prompt, WritePrompts.voiceTail(assist, samples))`。
+     * 文风范例不再放进系统提示，所以调用 askWithPack 时不用再传 `stable`。
+     */
+    fun voiceTail(assist: WorkAssist, samples: String?, examples: Boolean = true): String = buildString {
+        if (assist.style.isNotBlank()) append("作者对文风的要求：").append(assist.style.trim()).append("\n\n")
+        if (!samples.isNullOrBlank()) append(samples.trim()).append("\n\n")
         if (examples) {
             val picked = assist.accepted.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(3)
             if (picked.isNotEmpty()) {
-                append("\n作者以前采纳过的修改（照这个分寸来改）：\n")
+                append("作者以前采纳过的修改（照这个分寸来改）：\n")
                 picked.forEach { e -> append("原文：").append(e.before).append("\n改为：").append(e.after).append('\n') }
+                append('\n')
             }
             val declined = assist.declined.filter { it.before.length <= 200 && it.after.length <= 260 }.takeLast(2)
             if (declined.isNotEmpty()) {
-                append("\n作者没有采纳的改法（不要这样改）：\n")
+                append("作者没有采纳的改法（不要这样改）：\n")
                 declined.forEach { e -> append("原文：").append(e.before).append("\n没采纳的改法：").append(e.after).append('\n') }
+                append('\n')
             }
         }
-    }
+        if (assist.aiCliche) {
+            append("去掉 AI 腔：\n")
+            VOICE_RULES.forEach { append("- ").append(it).append('\n') }
+            append('\n')
+        }
+        if (assist.banned.isNotEmpty()) append("下面这些说法一个都不要用：").append(assist.banned.joinToString("、") { "「$it」" }).append('\n')
+    }.trim().let { if (it.isEmpty()) it else "$VOICE_HEADER\n$it" }
+
+    /** 请求最后接上写法要求 [voice]（空的不接）。 */
+    fun withVoice(prompt: String, voice: String): String = if (voice.isBlank()) prompt else prompt.trimEnd() + "\n\n" + voice.trim()
 
     /**
      * 细纲卡带给 AI：本章的事实边界，加上一章留下的钩子和承接边界。都空着时为空。
@@ -201,8 +256,11 @@ object WritePrompts {
         }
     }.trim().ifEmpty { null }
 
-    /** 改一段：[target] 是要改的文字（续写时是光标前的上文），[before]、[after] 是它前后的原文。 */
-    fun edit(action: WriteAction, target: String, before: String, after: String, chapterTitle: String, instruction: String = ""): String = buildString {
+    /**
+     * 改一段：[target] 是要改的文字（续写时是光标前的上文），[before]、[after] 是它前后的原文。
+     * [voice] 是写法要求（[voiceTail]），接在最后；挑错只改错字，不带（见 [usesSamples]）。
+     */
+    fun edit(action: WriteAction, target: String, before: String, after: String, chapterTitle: String, instruction: String = "", voice: String = ""): String = withVoice(buildString {
         if (chapterTitle.isNotBlank()) append("章节：").append(chapterTitle).append('\n')
         if (action == WriteAction.CONTINUE) {
             append("上文：\n").append((before + target).takeLast(BEFORE_CHARS * 2)).append("\n\n")
@@ -216,7 +274,7 @@ object WritePrompts {
         if (after.isNotBlank()) append("后文（只作语境，不要改）：\n").append(after.take(AFTER_CHARS)).append("\n\n")
         append(if (action == WriteAction.CUSTOM) "按作者的要求改这段文字：" + instruction.trim() else action.instruction)
         append("\n只输出改好的“要改的文字”这一部分。")
-    }
+    }, if (usesSamples(action)) voice else "")
 
     /** 灵感：[recent] 是写到这里的原文（本章已写的部分，前面接上一章的结尾）。 */
     fun idea(kind: IdeaKind, recent: String, chapterTitle: String, extra: String = ""): String = buildString {
@@ -269,9 +327,9 @@ object WritePrompts {
 
     /**
      * 在编辑器里接着光标往下写：[before] 是光标前的正文（前面不够时接上一章结尾），[after] 是光标后面已经写了的。
-     * [length] 是全章篇幅要求，[instruction] 是作者这次的要求。
+     * [length] 是全章篇幅要求，[instruction] 是作者这次的要求，[voice] 是写法要求（[voiceTail]），接在最后。
      */
-    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String): String = buildString {
+    fun continueAt(title: String, before: String, after: String, mode: InlineMode, length: String, instruction: String, rules: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
         append("这一章「").append(title).append("」写到光标处的正文：\n").append(before).append("\n【光标在这里】\n")
         if (after.isNotBlank()) append("光标后面已经写了（只作语境，不要重复它，写的内容要能接上它）：\n").append(after).append('\n')
@@ -281,14 +339,15 @@ object WritePrompts {
                 InlineMode.SCENE -> "写完眼下这一场就停，停在场面自然收住的地方。"
                 InlineMode.TO_END -> "按细纲卡完成本章剩余的关键选择与结果，在既定章末自然收束；全章篇幅$length，不强加悬念。"
                 InlineMode.WORDS -> "写 500 字左右，停在一句话说完的地方。"
-                InlineMode.CUSTOM -> ""
+                InlineMode.CUSTOM, InlineMode.BEAT -> ""
             },
         )
+        if (beat != null) append('\n').append(beatRule(beat, "光标前的正文就是"))
         if (instruction.isNotBlank()) append("\n作者的要求：").append(instruction.trim())
         append("\n- 接着上文最后一个字写：上文最后一段没写完就接着写这一段，要另起一段就换行。不要重复上文。")
         append("\n- 细纲卡里的事实、人物知道什么不知道什么，以设定资料为准；拿不准就先用工具查。")
         append("\n- 只输出接下去的正文：一行一段，段首不空格；不要章名、小标题、解释。")
-    }
+    }, voice)
 
     fun proofread(paragraphs: List<String>): String = buildString {
         append("下面是作者刚写的几段小说正文，每段前面是编号：\n\n")
@@ -352,6 +411,58 @@ object WritePrompts {
         append("章末留下的钩子写一句。只写事实，不评价写法，不猜后文。只输出摘要本身。")
     }
 
+    /**
+     * 只写某一拍时的要求：只写这一拍、写到写完；上一拍已经写过（[written] 说明已写的在哪，第一拍为空），不要重写；
+     * 下一拍不要写到；篇幅；不另加情节。四处生成正文的提示词共用。
+     */
+    private fun beatRule(beat: BeatTask, written: String): String = buildString {
+        val n = beat.beat.index
+        append("- 这一段只写第 ").append(n).append(" 拍（共 ").append(beat.total).append(" 拍）：「").append(beat.beat.text).append("」。这件事必须写到、写完。\n")
+        beat.previous?.let { p ->
+            append("- 上一拍「").append(p.text).append("」已经写过了")
+            if (written.isNotEmpty()) append("，").append(written)
+            append("，不要重写，也不要再交代一遍。\n")
+        }
+        val next = beat.next
+        if (next != null) append("- 下一拍「").append(next.text).append("」不要写到：写到第 ").append(n).append(" 拍收住就停。\n")
+        else append("- 这是最后一拍：写完它，按细纲卡在既定章末自然收束，不强加悬念。\n")
+        if (beat.length != null) append("- 这一拍篇幅约 ").append(beat.length).append(" 字。\n")
+        else append("- 这一拍的篇幅按它的分量写，不注水。\n")
+        append("- 不要另外加情节；细纲卡的事实边界照旧。")
+    }
+
+    /**
+     * AI 拆节拍：按细纲卡的其他几项和本章资料（在系统提示里）把这一章拆成 3 到 8 拍，每拍一句话写“发生什么”，
+     * 不写文笔；[length] 是这一章的目标篇幅，按它给每拍分篇幅。[written] 是这一章已经写了的正文（可空）。
+     */
+    fun beatsSplit(title: String, card: ChapterCard, length: String, written: String): String = buildString {
+        val lines = listOf(
+            "本章事实与结果" to card.facts, "后文承接边界" to card.boundary, "视角人物" to card.pov,
+            "倒计时" to card.countdown, "章末钩子" to card.hook, "推进的线" to card.threads,
+        ).filter { it.second.isNotBlank() }
+        if (lines.isNotEmpty()) {
+            append("这一章「").append(title).append("」的细纲卡：\n")
+            lines.forEach { (k, v) -> append("- ").append(k).append("：").append(v.trim()).append('\n') }
+            append('\n')
+        }
+        if (written.isNotBlank()) append("这一章已经写了的开头：\n").append(written.take(3_000)).append("\n\n")
+        append("请把这一章「").append(title).append("」拆成 3 到 8 拍（作者按拍让 AI 一段段写）。\n")
+        append("- 每拍一句话，写这一步“发生什么”（谁、做了什么、结果），不写文笔、不写对白、不写景物描写。\n")
+        append("- 按事情发生的先后排，覆盖细纲卡里的事实与结果，最后一拍落在章末钩子上；不加细纲卡和资料里没有的大事件。\n")
+        append("- 全章篇幅").append(length).append("：按每拍的分量分篇幅，写在行尾，比如“（800字）”；分不出就不写。\n")
+        append("每拍一行，行首写序号，比如：\n1. 沈默赶到渡口，发现船不见了（800字）\n只输出节拍，不要别的话。")
+    }
+
+    /** 把拆好的节拍整理成细纲卡里的写法：一行一拍，去掉序号，篇幅写成“（800字）”；最多 8 拍。没拆出来时为空。 */
+    fun parseBeats(answer: String): String {
+        val lines = answer.lines().map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("#") }
+            // 开场白和小标题（“好的，拆成六拍：”“节拍：”）不是拍。
+            .filterNot { it.endsWith("：") || it.endsWith(":") || it.startsWith("好的") || it.startsWith("以下") }
+        return Beats.parse(lines.joinToString("\n")).take(8)
+            .joinToString("\n") { b -> b.text + (b.length?.let { "（${it}字）" } ?: "") }
+    }
+
     /** 拟细纲时各项的标签（AI 照这个格式回，按它拆回细纲卡）。 */
     private val PLAN_FIELDS = listOf("本章事实与结果", "后文承接边界", "视角人物", "倒计时", "章末钩子", "推进的线")
 
@@ -361,7 +472,7 @@ object WritePrompts {
      */
     fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String): String = buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
-        if (next != null && !next.isEmpty) {
+        if (next != null && !next.outlineEmpty) {
             append("下一章「").append(nextTitle.orEmpty()).append("」已经定下的细纲（这一章不能写到它的事，要能接上它）：\n")
             append(listOf(next.facts, next.boundary, next.hook).filter { it.isNotBlank() }.joinToString("\n")).append("\n\n")
         }
@@ -393,26 +504,37 @@ object WritePrompts {
 
     /**
      * AI 写一章：按细纲卡（在系统提示里）写，接上一章结尾，照写作规范和检查规则。
-     * [length] 是篇幅要求（“3000 到 6000 字”），[instruction] 是作者这次的补充要求（可空）。
+     * [length] 是篇幅要求（“3000 到 6000 字”），[instruction] 是作者这次的补充要求（可空），[voice] 是写法要求（[voiceTail]），接在最后。
      */
-    fun draft(title: String, previous: String, rules: String, length: String, instruction: String): String = buildString {
+    fun draft(title: String, previous: String, rules: String, length: String, instruction: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
-        append("请写出这一章「").append(title).append("」的正文。\n")
+        if (beat == null) append("请写出这一章「").append(title).append("」的正文。\n")
+        else {
+            // 逐拍写的第一拍：只写开头这一拍，后面几拍另外请求。
+            append("这一章「").append(title).append("」按节拍逐拍写。请只写本章开头的这一拍。\n")
+            append(beatRule(beat, "")).append('\n')
+        }
         append("- 按本章细纲卡写：保留事实成立的条件、关键选择和结果；事实底稿供核对，不逐项表演，不越过章界与后文承接边界，不提前写后面的事。\n")
         append("- 接上上一章的结尾和钩子，人物知道什么、不知道什么以设定资料为准。\n")
-        append("- 篇幅").append(length).append("；故事写完就收，不为凑字数加插曲。\n")
+        if (beat == null) append("- 篇幅").append(length).append("；故事写完就收，不为凑字数加插曲。\n")
+        else append("- 全章篇幅").append(length).append("，这一次只写其中这一拍；写完这一拍就收，不为凑字数加插曲。\n")
         if (instruction.isNotBlank()) append("- 作者这次的要求：").append(instruction.trim()).append('\n')
         append("- 一行一段，段首不空格；不要章名、小标题，不要写“本章完”，也不要任何解释。")
-    }
+    }, voice)
 
     /** 草稿没写完（被截断或作者要接着写）：从已写的结尾接下去。 */
-    fun draftMore(title: String, written: String, rules: String, length: String): String = buildString {
+    fun draftMore(title: String, written: String, rules: String, length: String, voice: String = "", beat: BeatTask? = null): String = withVoice(buildString {
         if (rules.isNotBlank()) append("作者的写作规范和检查规则（必须遵守）：\n").append(rules).append("\n\n")
-        append("这一章「").append(title).append("」已经写了下面这些（只给出最后一部分）：\n\n").append(written.takeLast(4_000)).append("\n\n")
-        append("请从最后一句接着往下写，完成细纲卡的关键选择与结果，在既定章末自然收束，不强加悬念。全章篇幅").append(length).append("。")
+        // 逐拍写时只带最后约 3000 字：前面几拍已经定了，AI 要的是接口处的语气和场面。
+        append("这一章「").append(title).append("」已经写了下面这些（只给出最后一部分）：\n\n").append(written.takeLast(if (beat == null) 4_000 else 3_000)).append("\n\n")
+        if (beat == null) append("请从最后一句接着往下写，完成细纲卡的关键选择与结果，在既定章末自然收束，不强加悬念。全章篇幅").append(length).append("。")
+        else {
+            append("本章按节拍逐拍写。请从最后一句接着往下写，只写下面这一拍；全章篇幅").append(length).append("。\n")
+            append(beatRule(beat, "上面已经写的正文就是")).append('\n')
+        }
         append("不要重复已经写的内容，不要总结。一行一段，不要任何解释。")
-    }
+    }, voice)
 
     /** 从写作规范里挑出能逐章数出来的硬规则，改写成灵阅的检查规则格式（见 [com.xycs.lingyuereader.data.CheckRules]）。 */
     fun rules(docs: String): String = buildString {
@@ -814,10 +936,31 @@ object WritePrompts {
     }
 
     /** 记一条采纳的修改：只留最近 [WorkAssist.KEEP_EXAMPLES] 条，太长的截断。 */
-    fun remember(assist: WorkAssist, action: WriteAction, before: String, after: String, at: Long): WorkAssist {
-        if (action == WriteAction.CONTINUE || before.isBlank()) return assist
-        val e = StyleExample(action.label, before.take(300), after.take(400), at)
+    fun remember(assist: WorkAssist, action: WriteAction, before: String, after: String, at: Long): WorkAssist =
+        if (action == WriteAction.CONTINUE) assist else remember(assist, action.label, before, after, at)
+
+    /** 记一条采纳的修改，[label] 是哪种改法（“润色”“去 AI 腔”）。 */
+    fun remember(assist: WorkAssist, label: String, before: String, after: String, at: Long): WorkAssist {
+        if (before.isBlank()) return assist
+        val e = StyleExample(label, before.take(300), after.take(400), at)
         return assist.copy(accepted = (assist.accepted + e).takeLast(WorkAssist.KEEP_EXAMPLES))
+    }
+
+    /**
+     * 去 AI 腔：[paragraphs] 是含标出说法的段落（段落原文、标出的那几处）。只改标出的说法和它所在的那一句，
+     * 最小改动；回答和写作建议一样的 JSON，按 [parseIssues] 读。
+     */
+    fun decliche(paragraphs: List<Pair<String, List<String>>>): String = buildString {
+        append("下面是作者小说里的几段正文，每段前面是编号，后面方括号里是本机标出的 AI 腔说法：\n\n")
+        paragraphs.forEachIndexed { i, (p, marks) ->
+            append(i + 1).append(". ").append(p).append('\n')
+            append("   [标出：").append(marks.joinToString("、") { "「$it」" }).append("]\n")
+        }
+        append("\n请去掉这些 AI 腔：只改标出的说法和它所在的那一句，能少改就少改。")
+        append("换成具体的动作、细节或直接删掉；不改情节，不改对白的内容，不动没标出的句子，不加新的比喻和形容词。\n")
+        append("wrong 必须是原文里一字不差的一小段（包含标出的说法，最长一句），right 是改好的这一小段（删掉就写空串），reason 用几个字说怎么改的。\n")
+        append("每处标出的说法最多一条；改不好、改了反而别扭的就不列。")
+        append("只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\"}]}，都不用改就输出 {\"issues\":[]}。")
     }
 }
 

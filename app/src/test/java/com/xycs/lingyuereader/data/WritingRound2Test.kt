@@ -108,9 +108,11 @@ class WritingRound2Test {
         s.updateAssist(w.id) { it.copy(declined = listOf(StyleExample("润色", "风很大。", "狂风呼啸，天地变色。", 1)), briefLimit = 20_000) }
         val a = s.assist(w.id)
         assertEquals(20_000, a.briefLimit)
-        val system = WritePrompts.system("长夜", a, examples = true)
-        assertTrue("作者没有采纳的改法（不要这样改）：\n原文：风很大。\n没采纳的改法：狂风呼啸，天地变色。" in system)
-        assertFalse("没有采纳" in WritePrompts.system("长夜", a, examples = false))
+        // 没采纳的改法在请求最后的写法要求里，不在系统提示里。
+        val voice = WritePrompts.voiceTail(a, null, examples = true)
+        assertTrue("作者没有采纳的改法（不要这样改）：\n原文：风很大。\n没采纳的改法：狂风呼啸，天地变色。" in voice)
+        assertFalse("没有采纳" in WritePrompts.voiceTail(a, null, examples = false))
+        assertFalse("没有采纳" in WritePrompts.system("长夜", a))
     }
 
     @Test

@@ -214,7 +214,7 @@ object StyleSamples {
         return java.lang.Long.toHexString(crc.value)
     }
 
-    /** 拼进系统提示的一节；没有范例时为空。 */
+    /** 接在请求最后（写法要求里，见 WritePrompts.voiceTail）的一节；没有范例时为空。 */
     fun render(samples: List<StyleSample>): String? {
         if (samples.isEmpty()) return null
         return buildString {
