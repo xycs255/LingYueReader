@@ -83,6 +83,7 @@ import com.xycs.lingyuereader.data.DraftRevisionSnapshot
 import com.xycs.lingyuereader.data.WritingPhase
 import com.xycs.lingyuereader.data.writingTask
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -269,17 +270,71 @@ internal fun emptyProseMessage(truncated: Boolean, suggestThinkingOff: Boolean):
 }
 
 /**
+ * 流式出字时的节流：[due] 为真才刷新界面，第一块马上刷，之后至少隔 [every] 毫秒。
+ * 模型去查资料、回答从头来时 [reset]，新的第一块也马上刷。
+ */
+internal class StreamTick(private val every: Long = WritingAi.STREAM_REFRESH_MS, private val now: () -> Long = System::currentTimeMillis) {
+    private var last = 0L
+    private var started = false
+
+    fun due(): Boolean {
+        val t = now()
+        if (started && t - last < every) return false
+        started = true
+        last = t
+        return true
+    }
+
+    fun reset() {
+        started = false
+    }
+}
+
+/**
  * 写作的 AI：选中文字改写、灵感、读者点评、写作建议、整理设定集。
  * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
  */
 class WritingAi(
     private val store: WorkStore,
     private val ai: AiAssistant,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
     /** 记写作建议每天发了几次（按作品、按日期，进程重启也接着算）；为空时只记在内存里。 */
     private val prefs: SharedPreferences? = null,
     private val message: (String) -> Unit,
 ) {
+    /**
+     * 写作 AI 的协程都在这里起。外面给的（viewModelScope）没有异常处理器：哪个协程漏出一个没接住的异常，整个 app 就闪退。
+     * 写正文的几条路径自己接住了（见 [failure]），这里是最后一道：记进闪退记录，在写的都停下报错，告诉作者一声。
+     */
+    private val scope = CoroutineScope(scope.coroutineContext + CoroutineExceptionHandler { _, e -> escaped(e) })
+
+    /** 没接住、漏到 [scope] 的异常：记下来（不带正文），在写的都标成出错，不让 app 闪退。 */
+    private fun escaped(e: Throwable) {
+        CrashLog.caught(e)
+        val reason = unexpected(e)
+        _inline.update { w ->
+            w?.takeIf { it.anyLoading }?.let { d ->
+                if (d.variants.isEmpty()) d.copy(loading = false, error = reason)
+                else d.copy(variants = d.variants.map { v -> if (v.loading) v.copy(loading = false, error = reason) else v }).synced()
+            } ?: w
+        }
+        _drafts.update { m -> m.mapValues { (_, d) -> if (d.loading) d.copy(loading = false, error = reason) else d } }
+        _state.update { s -> s?.takeIf { it.loading }?.copy(loading = false, error = reason) ?: s }
+        message(reason)
+    }
+
+    /**
+     * 写正文时出的错换成给作者看的一句话。平常的出错（网络、服务商、资料不全、写盘失败）照原来的说明；
+     * 意料之外的（下标越界、空指针、内存不够、栈溢出这类程序的毛病）记进闪退记录，以后好查，界面上只说出了意外、已经停下。
+     */
+    private fun failure(e: Throwable): String {
+        if (e is Exception && !CrashLog.isBug(e)) return e.message ?: "请求失败"
+        CrashLog.caught(e)
+        return unexpected(e)
+    }
+
+    private fun unexpected(e: Throwable) = "出了意外（${e.javaClass.simpleName}），已经停下；详情记在“我的 → 闪退记录”里"
+
     /** 整理写进了故事账本（作品 id）：账本页据此重读。 */
     var ledgerChanged: (String) -> Unit = {}
 
@@ -752,8 +807,9 @@ class WritingAi(
             } catch (e: CancellationException) {
                 slots.forEach { s -> updateInline(run, s, tokens.getValue(s)) { it.copy(loading = false) } }
                 throw e
-            } catch (e: Exception) {
-                slots.forEach { s -> updateInline(run, s, tokens.getValue(s)) { it.copy(loading = false, error = e.message ?: "请求失败") } }
+            } catch (e: Throwable) {
+                val error = failure(e)
+                slots.forEach { s -> updateInline(run, s, tokens.getValue(s)) { it.copy(loading = false, error = error) } }
                 return@launch
             }
             if (run != inlineRun) return@launch
@@ -786,64 +842,67 @@ class WritingAi(
             if (run == inlineRun) _inline.update { w -> w?.copy(beatTotal = list.size) }
             Beats.task(list, n, length)
         }
-        val head = text.substring(0, d.at)
-        // 光标前不够长：前面接上一章的结尾（截好的最后一段）。
-        val withPrevious = head.length < WritePrompts.ENDING_MAX && kit.previous.isNotBlank()
-        val before = (if (withPrevious) "（上一章结尾）\n" + kit.previous + "\n（本章）\n" else "") + head.takeLast(INLINE_BEFORE)
-        val after = text.substring(d.at).take(800)
-        val scope = when (d.mode) {
-            InlineMode.SCENE -> ProseScope.SCENE
-            InlineMode.TO_END -> ProseScope.TO_END
-            InlineMode.WORDS -> ProseScope.WORDS
-            InlineMode.CUSTOM -> ProseScope.CUSTOM
-            InlineMode.BEAT -> ProseScope.BEAT
+        val prose = proseOf(assistOf(workId))
+        // 下面要扫一遍光标前的全文（估写到第几拍、数已写的字）：长章节里不放在主线程上算。
+        return withContext(Dispatchers.Default) {
+            val head = text.substring(0, d.at)
+            // 光标前不够长：前面接上一章的结尾（截好的最后一段）。
+            val withPrevious = head.length < WritePrompts.ENDING_MAX && kit.previous.isNotBlank()
+            val before = (if (withPrevious) "（上一章结尾）\n" + kit.previous + "\n（本章）\n" else "") + head.takeLast(INLINE_BEFORE)
+            val after = text.substring(d.at).take(800)
+            val scope = when (d.mode) {
+                InlineMode.SCENE -> ProseScope.SCENE
+                InlineMode.TO_END -> ProseScope.TO_END
+                InlineMode.WORDS -> ProseScope.WORDS
+                InlineMode.CUSTOM -> ProseScope.CUSTOM
+                InlineMode.BEAT -> ProseScope.BEAT
+            }
+            // 写到本章结尾：作者没勾“已写”时，按正文估一估已经写到第几拍，剩下的才算这次要写的。
+            val from = if (d.mode != InlineMode.TO_END || kit.card.beatsDone.isNotEmpty()) null
+                else beats(kit.card).let { list -> Beats.covered(list, head).takeIf { it > 0 }?.let { minOf(it + 1, list.size) } }
+            val task = ProseTask(
+                kit.chapter, chapter.title, kit.card, scope, beat = beatTask?.beat?.index ?: from,
+                length = when (d.mode) {
+                    InlineMode.BEAT -> beatTask?.let(WritePrompts::beatLength).orEmpty()
+                    // 写到本章结尾：只给剩下的字数（全章篇幅减去已写的），模型不用自己算。
+                    InlineMode.TO_END -> WritePrompts.remaining(length, head)
+                    InlineMode.WORDS -> "约 500 字"
+                    InlineMode.SCENE, InlineMode.CUSTOM -> ""
+                },
+                opening = head.isBlank(), previous = head.isBlank() && withPrevious, previousHook = kit.previousHook, instruction = d.instruction,
+            )
+            InlinePrep(kit.system, kit.stable, before, after, task, kit.tail, beatTask, reference, kit.project, prose)
         }
-        // 写到本章结尾：作者没勾“已写”时，按正文估一估已经写到第几拍，剩下的才算这次要写的。
-        val from = if (d.mode != InlineMode.TO_END || kit.card.beatsDone.isNotEmpty()) null
-            else beats(kit.card).let { list -> Beats.covered(list, head).takeIf { it > 0 }?.let { minOf(it + 1, list.size) } }
-        val task = ProseTask(
-            kit.chapter, chapter.title, kit.card, scope, beat = beatTask?.beat?.index ?: from,
-            length = when (d.mode) {
-                InlineMode.BEAT -> beatTask?.let(WritePrompts::beatLength).orEmpty()
-                // 写到本章结尾：只给剩下的字数（全章篇幅减去已写的），模型不用自己算。
-                InlineMode.TO_END -> WritePrompts.remaining(length, head)
-                InlineMode.WORDS -> "约 500 字"
-                InlineMode.SCENE, InlineMode.CUSTOM -> ""
-            },
-            opening = head.isBlank(), previous = head.isBlank() && withPrevious, previousHook = kit.previousHook, instruction = d.instruction,
-        )
-        return InlinePrep(kit.system, kit.stable, before, after, task, kit.tail, beatTask, reference, kit.project, proseOf(assistOf(workId)))
     }
 
     /** 写一版：[slot] 是第几版（空是只写一版）。停下、出错只改这一版。 */
     private suspend fun writeVersion(run: Int, slot: Int?, token: Int, d: InlineWrite, head: String, prep: InlinePrep) {
         val direction = slot?.let { d.variants.getOrNull(it)?.direction }
         val reference = prep.reference
-        var written = ""
+        // 收到的字攒在这里（每块都拼一个新字符串，长回答里是平方级的复制）。
+        val written = StringBuilder()
         val meter = AiMeter(AiFeature.INLINE, d.workId)
         fun update(transform: (InlineVariant) -> InlineVariant) = updateInline(run, slot, token, transform)
         try {
-            val prompt = WritePrompts.continueAt(prep.before, prep.after, prep.task.copy(direction = direction), prep.voice, referenceText(reference))
+            val prompt = withContext(Dispatchers.Default) {
+                WritePrompts.continueAt(prep.before, prep.after, prep.task.copy(direction = direction), prep.voice, referenceText(reference))
+            }
             if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
-            // 长章节里每显示一次都要整章重排：流式的字最多每 [INLINE_REFRESH_MS] 毫秒更新一次显示。
-            var shown = 0L
+            // 长章节里每显示一次都要整章重排：流式的字最多每 [STREAM_REFRESH_MS] 毫秒更新一次显示。
+            val tick = StreamTick()
             val answer = askWithPack(
                 "在编辑器里写" + (direction?.let { " · ${it.label}" } ?: ""), d.workId, prep.system, prompt,
                 maxTokens = inlineOutputTokenLimit(ai.currentConfig, prep.prose.thinking), meter = meter,
                 toolsUpTo = d.chapterId, phase = WritingPhase.CREATE, confirmedOnly = true,
                 requireTools = prep.project, prose = prep.prose, lean = true, stable = prep.stable,
                 onReset = {
-                    written = ""
-                    shown = 0L
+                    written.setLength(0)
+                    tick.reset()
                     update { it.copy(text = "") }
                 },
             ) { piece ->
-                written += piece
-                val now = System.currentTimeMillis()
-                if (now - shown >= INLINE_REFRESH_MS) {
-                    shown = now
-                    update { it.copy(text = joinAt(head, written)) }
-                }
+                written.append(piece)
+                if (tick.due()) update { it.copy(text = joinAt(head, written.toString())) }
             }
             val truncated = answer.endsWith(TRUNCATED_NOTE)
             val note = when {
@@ -868,14 +927,14 @@ class WritingAi(
                 (direction?.let { "（${it.label}）" } ?: "") + d.instruction.let { if (it.isBlank()) "" else "：$it" }, clean, meter)
         } catch (e: CancellationException) {
             // 停下：已经写出来的（可能还没显示出来）留着。
-            val shownText = joinAt(head, written)
+            val shownText = joinAt(head, written.toString())
             update { it.copy(text = shownText, loading = false, note = if (shownText.isEmpty()) null else "停下了", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
             throw e
         } catch (e: RejectedReferenceWriting) {
-            written = ""
+            written.setLength(0)
             update { it.copy(text = "", loading = false, error = e.message, usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
-        } catch (e: Exception) {
-            update { it.copy(loading = false, error = e.message ?: "请求失败", usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
+        } catch (e: Throwable) {
+            update { it.copy(loading = false, error = failure(e), usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
         }
     }
 
@@ -1817,16 +1876,21 @@ class WritingAi(
             val base = committed
             val prefix = if (base.isBlank()) "" else base.trimEnd() + "\n"
             updateDraft(key, run) { it.copy(beatWriting = n, beatsText = base) }
-            val prompt = if (prefix.isEmpty()) first(beat) else more(beat, prefix)
+            val prompt = withContext(Dispatchers.Default) { if (prefix.isEmpty()) first(beat) else more(beat, prefix) }
             if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, key.first, key.second, reference) }
-            var written = ""
+            // 边收边清理（只看没写完的那一行），界面最多每 [STREAM_REFRESH_MS] 毫秒刷新一次。
+            val stream = WritePrompts.DraftStream()
+            val tick = StreamTick()
             val answer = request(prefix.isEmpty(), prompt, {
-                written = ""
+                stream.reset()
+                tick.reset()
                 updateDraft(key, run) { it.copy(text = base) }
             }) { piece ->
-                written += piece
-                val partial = WritePrompts.cleanDraft(written)
-                if (partial.isNotBlank()) updateDraft(key, run) { it.copy(text = prefix + partial) }
+                stream.append(piece)
+                if (stream.hasText && tick.due()) {
+                    val partial = stream.text()
+                    updateDraft(key, run) { it.copy(text = prefix + partial) }
+                }
             }
             val cleaned = WritePrompts.cleanDraft(answer)
             check(cleaned.isNotBlank()) { "第 $n 拍：" + emptyProseMessage(truncated = false, suggestThinkingOff = false) }
@@ -1886,7 +1950,8 @@ class WritingAi(
         _drafts.update { it + (key to (before ?: DraftState(workId, chapterId, previousCandidate)).copy(
             loading = true, error = null, instruction = instruction, targetLength = targetLength,
             workflowChoice = workflow, notice = null, beatWriting = null, beatsText = null)) }
-        var written = ""
+        // 边收边清理（只看没写完的那一行）：停下时留下的也从这里拿。
+        val written = WritePrompts.DraftStream()
         var newCandidateGenerated = false
         // 逐拍写时：已经写完存好的全文和进度。停下、出错时保留它，写了一半的那一拍不留。
         var beatsCommitted: Pair<String, DraftBeats>? = null
@@ -1918,8 +1983,11 @@ class WritingAi(
                 val kit = proseKit(workId, chapterId, body, taskSnapshot, length, reference != null)
                 val assist = assistOf(workId)
                 val refText = referenceText(reference)
-                val prompt = if (prefix.isEmpty()) WritePrompts.draft(kit.previous, chapterTask(kit, chapter.title, "", instruction), kit.tail, refText)
+                // 接着写要扫一遍已写的（估写到第几拍、数字数）：不放在主线程上算。
+                val prompt = withContext(Dispatchers.Default) {
+                    if (prefix.isEmpty()) WritePrompts.draft(kit.previous, chapterTask(kit, chapter.title, "", instruction), kit.tail, refText)
                     else WritePrompts.draftMore(prefix, chapterTask(kit, chapter.title, prefix, instruction), kit.tail, refText)
+                }
                 val system = kit.system
                 if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                 // 本章细纲卡有节拍：逐拍请求，每拍写完连同进度存一次。没有节拍时下面照原来整章写。
@@ -1949,22 +2017,27 @@ class WritingAi(
                         instruction.let { if (it.isBlank()) "" else "：$it" }, text.removePrefix(prefix), meter)
                     return@launch
                 }
+                val tick = StreamTick()
                 val answer = askWithPack(
                     if (prefix.isEmpty()) "写本章" else "接着写", workId, system, prompt, whole = true, maxTokens = draftTokens, meter = meter,
                     toolsUpTo = chapterId, phase = WritingPhase.CREATE, confirmedOnly = taskSnapshot?.project == true,
                     requireTools = taskSnapshot?.project == true, prose = proseOf(assist), lean = true, stable = kit.stable,
                     onReset = {
-                        written = ""
+                        written.reset()
+                        tick.reset()
                         newCandidateGenerated = false
                         updateDraft(key, run) { it.copy(text = previousCandidate,
                             workflow = before?.workflow == true).restoreDraftSource(before) }
                     },
                 ) { piece ->
-                    written += piece
-                    val partial = WritePrompts.cleanDraft(written)
-                    newCandidateGenerated = partial.isNotBlank()
-                    updateDraft(key, run) {
-                        if (!newCandidateGenerated) it.copy(text = previousCandidate,
+                    written.append(piece)
+                    val generated = written.hasText
+                    // 有没有写出字变了马上换；别的时候最多每 [STREAM_REFRESH_MS] 毫秒刷新一次。
+                    val changed = generated != newCandidateGenerated
+                    newCandidateGenerated = generated
+                    val partial = if (generated && (changed || tick.due())) written.text() else null
+                    if (changed || partial != null) updateDraft(key, run) {
+                        if (!generated) it.copy(text = previousCandidate,
                             workflow = before?.workflow == true).restoreDraftSource(before)
                         else it.copy(text = prefix + partial, workflow = false, referenceAnalysisId = referenceAnalysisId,
                             referenceFingerprint = reference?.excerpt?.fingerprint,
@@ -2002,7 +2075,7 @@ class WritingAi(
                     withContext(NonCancellable) { runCatching { persistDraft(key, run, kept.first, workflow = false) } }
                 } else if (draftRuns[key] == run) {
                     // An incomplete replacement never displaces a previously complete candidate.
-                    val cleaned = WritePrompts.cleanDraft(written)
+                    val cleaned = written.text()
                     val partial = if (cleaned.isNotBlank()) prefix + cleaned else previousCandidate
                     updateDraft(key, run) { state ->
                         val old = draftBaseline(key, run)
@@ -2026,12 +2099,13 @@ class WritingAi(
                     reconcileDraftAfterSaveFailure(key, run, before ?: DraftState(workId, chapterId, ""),
                         "旧候选稿保存失败", saveFailure)
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                val reason = failure(e)
                 val kept = beatsCommitted
                 if (kept != null) {
                     // 逐拍写到一半出错：已经写完的几拍留着（早已存盘），这一拍不要，“接着写”从这一拍重来。
                     updateDraft(key, run) { it.copy(text = kept.first, beats = kept.second, loading = false,
-                        notice = beatNotice("第 ${kept.second.written + 1} 拍没写成：${e.message ?: "请求失败"}", kept.second),
+                        notice = beatNotice("第 ${kept.second.written + 1} 拍没写成：$reason", kept.second),
                         usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost) }
                     _drafts.value[key]?.takeIf { draftRuns[key] == run }?.let { d ->
                         try { persistDraft(key, run, d.text, workflow = false) }
@@ -2039,11 +2113,13 @@ class WritingAi(
                     }
                     return@launch
                 }
+                // 界面上的字最多晚一次刷新：已经写出来的以收到的为准。
+                val partial = written.text()
                 updateDraft(key, run) { state ->
                     val old = draftBaseline(key, run)
-                    if (old != null) state.restoredFrom(old, "没写成：${e.message ?: "请求失败"}；已保留上一版")
-                    else state.copy(text = if (newCandidateGenerated) state.text else previousCandidate,
-                        workflow = false, loading = false, error = e.message ?: "请求失败",
+                    if (old != null) state.restoredFrom(old, "没写成：$reason；已保留上一版")
+                    else state.copy(text = if (newCandidateGenerated && partial.isNotBlank()) prefix + partial else if (newCandidateGenerated) state.text else previousCandidate,
+                        workflow = false, loading = false, error = reason,
                         initialText = null, alternateText = null,
                         // 没写成也照样花了钱（比如上限全用在思考上），显示这一次花了多少。
                         usage = meter.usage.takeIf { u -> !u.isEmpty }, cost = meter.cost)
@@ -2266,7 +2342,9 @@ class WritingAi(
                 }
                 check(!reviewOnly || saved.isNotBlank()) { "还没有可审读的草稿" }
                 val prefix = if (more && saved.isNotBlank()) saved.trimEnd() + "\n" else ""
-                var written = ""
+                // 边收边清理（只看没写完的那一行），界面最多每 [STREAM_REFRESH_MS] 毫秒刷新一次。
+                val written = WritePrompts.DraftStream()
+                val tick = StreamTick()
                 // 本章细纲卡有节拍：创作阶段逐拍写，写完各拍再照原来审读、修订。没有节拍时照原来整章写。
                 val plan = if (reviewOnly) emptyList() else withContext(Dispatchers.IO) { beats(store.plannedCard(workId, chapterId).card) }
                 val beatFrom = Beats.resume(plan.size, more, saved, before?.beats)
@@ -2293,8 +2371,10 @@ class WritingAi(
                                 },
                             ).also { beatsInProgress = false }
                         }
-                        val prompt = if (prefix.isBlank()) WritePrompts.draft(kit.previous, chapterTask(kit, task.title, "", task.instruction), voice, refText)
+                        val prompt = withContext(Dispatchers.Default) {
+                            if (prefix.isBlank()) WritePrompts.draft(kit.previous, chapterTask(kit, task.title, "", task.instruction), voice, refText)
                             else WritePrompts.draftMore(prefix, chapterTask(kit, task.title, prefix, task.instruction), voice, refText)
+                        }
                         if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
                         val answer = askWithPack(
                             "写本章", workId, system, prompt, whole = true, maxTokens = draftTokens,
@@ -2302,17 +2382,21 @@ class WritingAi(
                             // 创作、修订用作品设的温度和思考开关；审读求稳，不带。
                             meter = createMeter, prose = proseOf(assist), lean = true, stable = kit.stable,
                             onReset = {
-                                written = ""
+                                written.reset()
+                                tick.reset()
                                 newCandidateGenerated = false
                                 updateDraft(key, run) { it.copy(text = previousCandidate,
                                     workflow = before?.workflow == true).restoreDraftSource(before) }
                             },
                         ) { piece ->
-                            written += piece
-                            val partial = WritePrompts.cleanDraft(written)
-                            newCandidateGenerated = partial.isNotBlank()
-                            updateDraft(key, run) {
-                                if (!newCandidateGenerated) it.copy(text = previousCandidate,
+                            written.append(piece)
+                            val generated = written.hasText
+                            // 有没有写出字变了马上换；别的时候最多每 [STREAM_REFRESH_MS] 毫秒刷新一次。
+                            val changed = generated != newCandidateGenerated
+                            newCandidateGenerated = generated
+                            val partial = if (generated && (changed || tick.due())) written.text() else null
+                            if (changed || partial != null) updateDraft(key, run) {
+                                if (!generated) it.copy(text = previousCandidate,
                                     workflow = before?.workflow == true).restoreDraftSource(before)
                                 else it.copy(text = prefix + partial, workflow = true, referenceAnalysisId = referenceAnalysisId,
                                     referenceFingerprint = reference?.excerpt?.fingerprint,
@@ -2453,14 +2537,17 @@ class WritingAi(
                         cost = meters.fold(AiCost()) { all, m -> all + m.cost })
                 }
                 val kept = _drafts.value[key]
-                if (kept != null) persistDraft(key, run, kept.text, workflow = kept.workflow)
-            } catch (e: Exception) {
+                // 这里写盘失败不能再往外抛：协程里没接住的异常会让 app 闪退。
+                if (kept != null) try { persistDraft(key, run, kept.text, workflow = kept.workflow) }
+                catch (saveFailure: Exception) { reconcileDraftAfterSaveFailure(key, run, kept, "候选稿版本保存失败", saveFailure) }
+            } catch (e: Throwable) {
+                val failed = failure(e)
                 val kept = beatsCommitted?.takeIf { beatsInProgress }
                 if (kept != null) {
                     // 逐拍写到一半出错：已经写完的几拍留着（早已存盘），这一拍不要，“接着写”从这一拍重来。
                     updateDraft(key, run) { it.copy(text = kept.first, beats = kept.second, workflow = true, loading = false,
                         stage = DraftStage.ERROR, assessment = null,
-                        error = beatNotice("第 ${kept.second.written + 1} 拍没写成：${e.message ?: "请求失败"}", kept.second),
+                        error = beatNotice("第 ${kept.second.written + 1} 拍没写成：$failed", kept.second),
                         usage = meters.fold(AiUsage()) { all, m -> all + m.usage }, cost = meters.fold(AiCost()) { all, m -> all + m.cost }) }
                     _drafts.value[key]?.takeIf { draftRuns[key] == run }?.let { d ->
                         try { persistDraft(key, run, d.text, workflow = true) }
@@ -2471,7 +2558,7 @@ class WritingAi(
                 updateDraft(key, run) { state ->
                     val usage = meters.fold(AiUsage()) { all, m -> all + m.usage }
                     val cost = meters.fold(AiCost()) { all, m -> all + m.cost }
-                    val reason = e.message ?: "本章流程未完成"
+                    val reason = if (e is Exception) e.message ?: "本章流程未完成" else failed
                     val old = draftBaseline(key, run)
                     if (old != null) state.restoredFrom(old, "本次流程未完成：$reason；已保留上一版").copy(usage = usage, cost = cost)
                     else (if (newCandidateGenerated) state else state.copy(
@@ -3098,8 +3185,11 @@ class WritingAi(
         /** 整理时顺带写摘要（150 到 300 字）多留的 token。 */
         const val SUMMARY_TOKENS = 1_024
 
-        /** AI 在编辑器里写时，流式的字最多隔这么久刷新一次显示（每次都要整章重排）。 */
-        const val INLINE_REFRESH_MS = 150L
+        /**
+         * AI 写正文（编辑器里写、AI 写整章草稿、项目包流程）时，流式的字最多隔这么久刷新一次显示：
+         * 每刷新一次，编辑器、草稿页都要把整章重新排一遍，一块一刷，长章节里就卡。
+         */
+        const val STREAM_REFRESH_MS = 150L
 
         /** [com.xycs.lingyuereader.ai.AiClient] 在回答后面加的说明：被截断了、模型中途停了。 */
         private const val TRUNCATED_NOTE = "\n\n（回答太长，后面被截断了。）"

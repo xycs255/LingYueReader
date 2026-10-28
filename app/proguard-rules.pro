@@ -5,3 +5,7 @@
 -keep class com.google.mediapipe.** { *; }
 -dontwarn com.google.mediapipe.**
 -dontwarn com.google.auto.value.**
+
+# 闪退记录（CrashLog）里的堆栈要带行号：配合打包时生成的 mapping.txt 才查得到出错的那一行。
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile

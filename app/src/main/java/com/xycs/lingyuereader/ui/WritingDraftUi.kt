@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.CrashLog
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.ChapterCard
@@ -58,6 +59,8 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -228,9 +231,16 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         } else action()
     }
     val lookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
-    // 写完以后按检查规则看一遍（本机算）。
+    // 写完以后按检查规则看一遍（本机算，整章扫一遍放在后台；写的途中不算）。查不了（规则读不出）就不显示，不能让界面跟着崩。
     val hits by produceState<Int?>(null, text, loading) {
-        value = if (loading || text.isBlank()) null else vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { CheckRules.check(text, it).hits.size }
+        value = if (loading || text.isBlank()) null else try {
+            vm.writing.rules(workId).takeIf { !it.isEmpty }?.let { rules -> withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits.size } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            CrashLog.caught(e)
+            null
+        }
     }
     val snackbar = rememberWritingMessages(vm)
     val locked = chapter?.locked == true

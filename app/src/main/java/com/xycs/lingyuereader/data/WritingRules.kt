@@ -173,8 +173,19 @@ object CheckRules {
 
     private val wildcard = Regex("……|…|\\.\\.\\.|某某|某人")
 
-    /** 一个说法变成正则：“……”是一句之内的几个字，“某人”是不带标点的几个字。 */
-    internal fun pattern(form: String): Regex {
+    /**
+     * 一个说法变成正则：“……”是一句之内的几个字，“某人”是不带标点的几个字。
+     * 编出来的正则记住：编辑器停笔就查一遍全章，AI 腔清单加上作者的规则有上百个说法，每次都重新编一遍太费。
+     */
+    internal fun pattern(form: String): Regex = patterns[form] ?: compile(form).also {
+        if (patterns.size >= PATTERN_CACHE) patterns.clear()
+        patterns[form] = it
+    }
+
+    private val patterns = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+    private const val PATTERN_CACHE = 2_000
+
+    private fun compile(form: String): Regex {
         val out = StringBuilder()
         var last = 0
         val tokens = wildcard.findAll(form).toList()
@@ -211,9 +222,11 @@ object CheckRules {
 
     private fun isHan(ch: Char) = Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN
 
+    private val SENTENCE_BREAK = Regex("[。！？!?…\\n]+")
+
     fun stats(text: String, mask: BooleanArray = dialogueMask(text)): ChapterStats {
         val paragraphs = text.lines().map { WordCount.of(it) }.filter { it > 0 }
-        val sentences = text.split(Regex("[。！？!?…\\n]+")).map { WordCount.of(it) }.filter { it > 1 }
+        val sentences = text.split(SENTENCE_BREAK).map { WordCount.of(it) }.filter { it > 1 }
         val words = WordCount.of(text)
         val dialogue = text.indices.count { mask[it] && !text[it].isWhitespace() }
         return ChapterStats(

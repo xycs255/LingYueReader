@@ -549,7 +549,10 @@ class AiClient(private val connect: (URL) -> HttpURLConnection = { it.openConnec
             try {
                 while (true) {
                     val allow = useTools.isNotEmpty() && round < maxRounds
-                    fun body() = AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra, sampling)
+                    // 请求体是系统提示、整段对话（含查到的大段资料）拼成的 JSON，几万到十几万字：不在调用方（可能是主线程）上拼。
+                    suspend fun body() = withContext(Dispatchers.Default) {
+                        AiToolWire.body(config, system, turns, useTools, allow, cachePrefix, maxTokens, cacheExtra, sampling)
+                    }
                     val turn = try {
                         post(config, body(), whole, onText, sentTemperature(config, sampling))
                     } catch (e: AiTemperatureUnsupportedException) {

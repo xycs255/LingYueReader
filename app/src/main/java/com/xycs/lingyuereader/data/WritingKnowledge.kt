@@ -337,7 +337,9 @@ object ProsePack {
             .joinToString("\n\n").let(::tidy)
 
     /** 去掉和“【文档名】”重复的一级标题（“【写作规范】”下面紧跟的“# 写作规范”）。 */
-    fun tidy(text: String): String = text.replace(Regex("【([^】\n]+)】\n#\\s*\\1\\s*\n"), "【$1】\n")
+    fun tidy(text: String): String = text.replace(repeatedTitle, "【$1】\n")
+
+    private val repeatedTitle = Regex("【([^】\n]+)】\n#\\s*\\1\\s*\n")
 
     /** 能用工具查的资料（文档名），工作说明和检查规则不列（已经给了，或只给本机用）。 */
     fun catalog(docs: List<Pair<PackDoc, String>>): List<String> =

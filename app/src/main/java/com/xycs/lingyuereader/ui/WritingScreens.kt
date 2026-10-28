@@ -50,6 +50,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -59,6 +60,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -66,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -87,6 +90,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
+import com.xycs.lingyuereader.CrashLog
 import com.xycs.lingyuereader.ExportFormat
 import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.IdeaKind
@@ -954,7 +958,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             return@LaunchedEffect
         }
         snapshotFlow { current.text.toString() }.debounce(400).collectLatest { text ->
-            report = withContext(Dispatchers.Default) { CheckRules.check(text, rules) }
+            // 检查出了毛病（规则写得怪、正文怪）只是这一次不标，记进闪退记录；不能让编辑器跟着崩。
+            report = try {
+                withContext(Dispatchers.Default) { CheckRules.check(text, rules) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CrashLog.caught(e)
+                report
+            }
         }
     }
     val latest by rememberUpdatedState(current)
@@ -1345,6 +1357,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 val inlineFade = remember(current, inline?.selected) { InlineFade(effects) }
                 val inlineLength = inline?.text?.length ?: 0
                 SideEffect { inlineFade.update(inlineLength) }
+                val fadeNow by rememberUpdatedState(inlineFade)
                 val pendingStyle = SpanStyle(color = scheme.primary, background = scheme.primary.copy(alpha = 0.08f))
                 val inlineNow by rememberUpdatedState(inline)
                 val pendingNow by rememberUpdatedState(pendingStyle)
@@ -1356,9 +1369,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         if (d != null && d.text.isNotEmpty() && d.at <= length && length == d.base.length) {
                             replace(d.at, d.at, d.text)
                             addStyle(pendingNow, d.at, d.at + d.text.length)
-                            inlineFade.forEachFading(d.text.length) { from, to, alpha ->
-                                addStyle(SpanStyle(color = pendingNow.color.copy(alpha = pendingNow.color.alpha * alpha)), d.at + from, d.at + to)
-                            }
+                            // 新来的一截淡入不在这里改文字样式：样式一变整章就要重排，淡入的每一帧都排一遍，长章节里卡。
+                            // 改成在正文上面盖一层底色慢慢揭开（见下面的 drawInlineFade），只重画、不重排。
                         } else {
                             markFades.forEach { m, alpha -> if (alpha > 0f && m.start in 0 until m.end && m.end <= length) addStyle(m.style(alpha), m.start, m.end) }
                             accepted.range?.let { r ->
@@ -1446,6 +1458,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         // AI 写的字插在正文里显示时位置对不上，先不画（底色那边同样不叠）。
                                         .drawBehind {
                                             if (inlineNow?.text.isNullOrEmpty()) drawMarkLines(markFades, textLayout, textScroll.value.toFloat())
+                                        }
+                                        // AI 写的字新来的一截淡入：在字上面盖一层底色、慢慢揭开（只重画，不重排整章）。
+                                        .drawWithContent {
+                                            drawContent()
+                                            inlineNow?.takeIf { it.text.isNotEmpty() }?.let { d ->
+                                                drawInlineFade(fadeNow, textLayout, textScroll.value.toFloat(), d.at, d.text.length, scheme.surface)
+                                            }
                                         },
                                 ) {
                                     if (current.text.isEmpty()) {
@@ -1473,10 +1492,19 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
                 val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
-                // AI 写完、还没采纳的那段：本机数一下有几处 AI 腔、黑名单（只提醒，不拦采纳）。
-                val inlineCliche = remember(inline?.text, inline?.loading, voiceRules) {
-                    val w = inline
-                    if (w == null || w.loading || w.text.isBlank()) 0 else AiCliche.count(CheckRules.check(w.text, voiceRules).hits)
+                // AI 写完、还没采纳的那段：本机数一下有几处 AI 腔、黑名单（只提醒，不拦采纳）。写的途中不数，写完数一次，在后台数。
+                val inlineDone = inline?.takeIf { !it.loading && it.text.isNotBlank() }?.text
+                val inlineCliche by produceState(0, inlineDone, voiceRules) {
+                    value = 0
+                    val w = inlineDone ?: return@produceState
+                    value = try {
+                        withContext(Dispatchers.Default) { AiCliche.count(CheckRules.check(w, voiceRules).hits) }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        CrashLog.caught(e)
+                        0
+                    }
                 }
                 val panel: EditorPanel = when {
                     current == null -> EditorPanel.None
@@ -2125,6 +2153,25 @@ private fun DrawScope.drawMarkLines(fades: MarkFades, layout: TextLayoutResult?,
 }
 
 /**
+ * AI 写的字里还在淡入的几截：按排版结果 [layout]（插进 AI 写的字以后的那份）在字上面盖一层底色 [cover]，
+ * 透明度跟着淡入慢慢降到 0。[at] 是 AI 写的字在显示的正文里从哪开始，[length] 是它有多长，[scroll] 是正文滚了多少。
+ * 排版结果比字晚一帧时（刚来了新的一截）对不上的那截先不盖。
+ */
+private fun DrawScope.drawInlineFade(fade: InlineFade, layout: TextLayoutResult?, scroll: Float, at: Int, length: Int, cover: Color) {
+    if (layout == null) return
+    val total = layout.layoutInput.text.length
+    clipRect {
+        fade.forEachFading(length) { from, to, alpha ->
+            val start = at + from
+            val end = at + to
+            if (alpha >= 1f || start < 0 || start >= end || end > total) return@forEachFading
+            val path = layout.getPathForRange(start, end)
+            translate(top = -scroll) { drawPath(path, cover.copy(alpha = cover.alpha * (1f - alpha.coerceIn(0f, 1f)))) }
+        }
+    }
+}
+
+/**
  * 正文标记的淡入淡出：一次检查出来的新标记从无到有，去掉的留在原处淡掉再拿走（[Motion.SHORT]）；
  * 减少动效时直接出现、直接消失。透明度在 OutputTransformation 里读，一变正文的样式就跟着重画。
  */
@@ -2184,7 +2231,7 @@ private class MarkFades(private val scope: CoroutineScope) {
 
 /**
  * AI 写的字一截截来：每截从透明淡到浅色（[Motion.SHORT]），前面已经出来的不动，淡完就不再管。
- * 字变少了（重写、撤回）从头算；减少动效时直接出现。
+ * 字变少了（重写、撤回）从头算；减少动效时直接出现。淡入画在字上面（[drawInlineFade]），不改文字样式。
  */
 private class InlineFade(private val scope: CoroutineScope) {
     private val chunks = mutableStateListOf<Pair<Int, Animatable<Float, AnimationVector1D>>>()

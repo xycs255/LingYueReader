@@ -123,6 +123,8 @@ fun HomeScreen(vm: AppViewModel) {
                     HomeTab.Me -> MeScreen(vm)
                 }
             }
+            // 上次闪退了、还没问过：问一次要不要复制错误信息（对话框要挂在这个 Scaffold 的弹层上）。
+            CrashPrompt(vm)
         }
     }
 }

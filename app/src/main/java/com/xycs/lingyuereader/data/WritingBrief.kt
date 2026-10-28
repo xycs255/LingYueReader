@@ -449,14 +449,17 @@ object ChapterBriefs {
      */
     internal fun upTo(text: String, chapter: Int, volume: Int): String = buildString {
         val kept = text.lines().filterNot { laterLabel.containsMatchIn(it) }.joinToString("\n")
-        Regex("[^。；;\n]+[。；;]?\n?").findAll(kept).forEach { m ->
+        upToSentence.findAll(kept).forEach { m ->
             val chapters = ChapterRefs.find(m.value)
             val volumes = PackRanking.volumes(m.value)
             val later = chapters.any { it > chapter } || volumes.any { it > volume } || endingWords.containsMatchIn(m.value)
             // 去掉的一句是一行的末尾时，换行留着，下一行不接到上一行后面。
             if (!later) append(m.value) else if (m.value.endsWith("\n")) append('\n')
         }
-    }.replace(Regex("\n{2,}"), "\n").trim()
+    }.replace(blankLines, "\n").trim()
+
+    private val upToSentence = Regex("[^。；;\n]+[。；;]?\n?")
+    private val blankLines = Regex("\n{2,}")
 
     /**
      * 挑第 [chapter] 章（第 [volume] 卷）要带的资料。[text] 是这一章的正文，[card] 是细纲卡的文字（出场人物也从这里认），

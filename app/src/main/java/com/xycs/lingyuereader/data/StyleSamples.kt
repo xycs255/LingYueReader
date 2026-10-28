@@ -112,6 +112,9 @@ object StyleSamples {
                     kept
                 }
         }
+        // 每片的键（章 id 加文字指纹）只算一次：轮流挑的每一轮都要比“不用这段”，以前每轮每片都重新算一遍指纹。
+        val keys = HashMap<Piece, String>()
+        fun keyOf(p: Piece) = keys.getOrPut(p) { chapters[p.chapter].id + ":" + fingerprint(p.text) }
         val chosen = mutableListOf<Pair<SampleKind, Piece>>()
         var total = 0
         // 对白、动作、叙述轮流挑，直到放不下；叙述描写至多一段。
@@ -120,7 +123,7 @@ object StyleSamples {
             for (kind in ORDER) {
                 if (kind == SampleKind.NARRATION && chosen.any { it.first == kind }) continue
                 val usable = ranked.getValue(kind).filter { p ->
-                    sample(chapters, kind, p).key !in options.skip &&
+                    (options.skip.isEmpty() || keyOf(p) !in options.skip) &&
                         chosen.none { (_, q) -> q.chapter == p.chapter && p.from < q.to && q.from < p.to }
                 }
                 if (usable.isEmpty()) continue
@@ -148,25 +151,44 @@ object StyleSamples {
 
     /** 以天气、景物起笔：第一句前 [SCENERY_HEAD] 个字里写天气景物，又没有对白、没有动作。 */
     internal fun sceneryOpening(text: String): Boolean {
-        val first = text.trim().split(Regex("(?<=[。！？!?…\\n])")).first()
+        val first = text.trim().split(SENTENCE_END).first()
         if (quotedChars(first) > 0 || first.any { it in ACTION_CHARS }) return false
         return scenery.find(first)?.let { it.range.first < SCENERY_HEAD } == true
     }
 
     private const val SCENERY_HEAD = 12
 
+    /** 句末（切第一句用）。 */
+    private val SENTENCE_END = Regex("(?<=[。！？!?…\\n])")
+
     /**
      * 和这次要写的场面（[avoid]）高度重合的片段：共有 [OVERLAP] 个以上的二元组。到处都有的二元组（三成以上的片段里都有，
      * 多是人名、常用词）不算，只算少见的。
      */
     private fun overlapping(pieces: List<Piece>, avoid: String): Set<Piece> {
-        val target = PackRanking.bigrams(avoid)
+        val target = bigrams(avoid)
         if (target.isEmpty() || pieces.isEmpty()) return emptySet()
-        val grams = pieces.map { PackRanking.bigrams(it.text) }
-        val df = HashMap<String, Int>()
+        // 每片只记它和要写的场面共有的二元组：给几十章、几千片每片都建一整套二元组，一次要几十 MB，手机上逼着回收内存，界面跟着卡。
+        val grams = pieces.map { bigrams(it.text) { code -> code in target } }
+        val df = HashMap<Int, Int>()
         grams.forEach { g -> g.forEach { df[it] = (df[it] ?: 0) + 1 } }
         val common = maxOf(2, (pieces.size * 0.3).toInt())
-        return pieces.indices.filter { i -> grams[i].count { it in target && (df[it] ?: 0) < common } >= OVERLAP }.map { pieces[it] }.toSet()
+        return pieces.indices.filter { i -> grams[i].count { (df[it] ?: 0) < common } >= OVERLAP }.map { pieces[it] }.toSet()
+    }
+
+    /** 和 [PackRanking.bigrams] 一样的二元组（相邻两个字母或数字），两个字拼成一个整数，不造字符串；[keep] 为假的不要。 */
+    private inline fun bigrams(text: String, keep: (Int) -> Boolean = { true }): Set<Int> {
+        val out = HashSet<Int>()
+        var prev = ' '
+        for (ch in text) {
+            val ok = Character.isLetterOrDigit(ch)
+            if (ok && Character.isLetterOrDigit(prev)) {
+                val code = (prev.code shl 16) or ch.code
+                if (keep(code)) out += code
+            }
+            prev = if (ok) ch else ' '
+        }
+        return out
     }
 
     /** 片段里有一段（十个字以上）已经在请求里了。 */
@@ -226,6 +248,9 @@ object StyleSamples {
         return whole.filterKeys { kind -> each.filter { kind in it.second }.sumOf { it.first.length } >= DOMINANT * paragraphs.sumOf { it.length } }
     }
 
+    private val SENTENCES = Regex("[。！？!?…\\n]+")
+    private val DASH = Regex("——")
+
     /** 一片里至少多少比例的字要出自像这一类的段落。 */
     private const val DOMINANT = 0.6
 
@@ -233,12 +258,12 @@ object StyleSamples {
     internal fun score(text: String): Map<SampleKind, Double> {
         val chars = text.count { !it.isWhitespace() }.coerceAtLeast(1)
         val quoted = quotedChars(text).toDouble() / chars
-        val sentences = text.split(Regex("[。！？!?…\\n]+")).map { it.trim('“', '”', '「', '」', ' ', '　') }.filter { it.isNotEmpty() }
+        val sentences = text.split(SENTENCES).map { it.trim('“', '”', '「', '」', ' ', '　') }.filter { it.isNotEmpty() }
         val count = sentences.size.coerceAtLeast(1)
         val shortRatio = sentences.count { it.length <= 10 }.toDouble() / count
         val avgLen = sentences.sumOf { it.length }.toDouble() / count
         val actionDensity = text.count { it in ACTION_CHARS } * 100.0 / chars
-        val bangDash = (text.count { it == '！' || it == '!' } + Regex("——").findAll(text).count()) * 100.0 / chars
+        val bangDash = (text.count { it == '！' || it == '!' } + DASH.findAll(text).count()) * 100.0 / chars
         val out = HashMap<SampleKind, Double>()
         if (quoted >= 0.35) out[SampleKind.DIALOGUE] = quoted
         if (quoted <= 0.3 && actionDensity >= 1.5) out[SampleKind.ACTION] = shortRatio + actionDensity * 0.15 + bangDash * 0.1

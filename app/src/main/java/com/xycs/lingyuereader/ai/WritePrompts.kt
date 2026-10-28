@@ -766,16 +766,77 @@ object WritePrompts {
     }
 
     /** 写好的草稿：去掉 ``` 包裹、章名、“本章完”，一行一段、段首不空格。 */
-    fun cleanDraft(answer: String): String {
-        val lines = answer.trim().lines()
-            .map { it.trim().trim('　').trim() }
-            // Drop the entire fence line, including an optional `markdown` / `text` label.
-            .filter { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("~~~") }
-            .filterIndexed { i, l -> !(i == 0 && (l.startsWith("#") || ChapterTitles.isTxtChapterTitle(l))) }
-            .filterNot { Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$").matches(it) }
-            // 兜底：连接层给问答加的拒答、中途停止提示不是正文（整稿请求遇到拒答本该已经报错）。
-            .filterNot { it == "模型拒绝回答这个问题。" || it == "（模型中途停止了回答。）" }
-        return lines.joinToString("\n")
+    fun cleanDraft(answer: String): String =
+        answer.trim().lines().mapNotNull(::draftLine).filterIndexed { i, l -> keepDraftLine(l, first = i == 0) }.joinToString("\n")
+
+    /** 一行去掉前后空白（全角空格也算）；空行、``` 围栏那一行（连同 `markdown`、`text` 标记）不要，返回空。 */
+    private fun draftLine(raw: String): String? =
+        raw.trim().trim('　').trim().takeIf { it.isNotEmpty() && !it.startsWith("```") && !it.startsWith("~~~") }
+
+    /**
+     * 这一行留不留：第一行（[first]）是章名的不要；“本章完”这类不要；
+     * 兜底：连接层给问答加的拒答、中途停止提示不是正文（整稿请求遇到拒答本该已经报错）。
+     */
+    private fun keepDraftLine(line: String, first: Boolean): Boolean =
+        !(first && (line.startsWith("#") || ChapterTitles.isTxtChapterTitle(line))) && !DRAFT_END.matches(line) && line !in CLIENT_NOTES
+
+    private val DRAFT_END = Regex("^[（(]?(本章完|未完待续|全章完)[）)]?$")
+    private val CLIENT_NOTES = setOf("模型拒绝回答这个问题。", "（模型中途停止了回答。）")
+
+    /**
+     * 流式写正文时边收边清理，任何时候 [text] 都和对收到的全部字做 [cleanDraft] 一样。
+     * 写完的行清理一次就记下，每来一块只看还没写完的那一行：以前每来一块都把全文重新清理一遍，
+     * 一章几千块、每块几个字，越写越慢（平方级），还不停地造垃圾、逼着回收内存，界面跟着卡。
+     */
+    class DraftStream {
+        /** 清理好的整行，用换行连起来。 */
+        private val done = StringBuilder()
+        /** 过了第一道筛（不空、不是围栏）的行数：认第一行（章名）用。 */
+        private var counted = 0
+        /** 还没写完的那一行（原样）。 */
+        private val tail = StringBuilder()
+
+        fun append(piece: String) {
+            var from = 0
+            for (i in piece.indices) {
+                val ch = piece[i]
+                if (ch == '\n' || ch == '\r') {
+                    tail.append(piece, from, i)
+                    commit(tail.toString())
+                    tail.setLength(0)
+                    from = i + 1
+                }
+            }
+            tail.append(piece, from, piece.length)
+        }
+
+        private fun commit(raw: String) {
+            val line = draftLine(raw) ?: return
+            val first = counted == 0
+            counted++
+            if (!keepDraftLine(line, first)) return
+            if (done.isNotEmpty()) done.append('\n')
+            done.append(line)
+        }
+
+        /** 还没写完的那一行清理后留下的；不留为空。 */
+        private fun last(): String? = draftLine(tail.toString())?.takeIf { keepDraftLine(it, first = counted == 0) }
+
+        /** 写出正文了没有（只看最后一行，每来一块都能问）。 */
+        val hasText: Boolean get() = done.isNotEmpty() || last() != null
+
+        /** 现在清理好的全文（要拼全文，节流着叫）。 */
+        fun text(): String {
+            val last = last() ?: return done.toString()
+            return if (done.isEmpty()) last else "$done\n$last"
+        }
+
+        /** 模型去查资料了：之前说的不是回答，从头来。 */
+        fun reset() {
+            done.setLength(0)
+            tail.setLength(0)
+            counted = 0
+        }
     }
 
     /** 去掉模型回答里的 ``` 包裹和前后空行。 */
