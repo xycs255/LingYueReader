@@ -196,7 +196,7 @@ class WritingUiTest {
         waitForText("全部工具")
         compose.onNodeWithText("全部工具").performClick()
         // 旧菜单较长；小屏里目标项可能尚未进入弹层的可见语义树。
-        waitForText("AI 写本章")
+        waitForText("AI 写整章草稿")
         val referenceItem = hasText("从范本找写法")
         runCatching {
             compose.onNode(hasScrollToIndexAction()).performScrollToNode(referenceItem)

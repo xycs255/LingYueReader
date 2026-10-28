@@ -124,14 +124,13 @@ class WritingVariantsUiTest {
         waitForText("沈默推开茶馆的门")
     }
 
-    /** 编辑器“更多 → 写这一拍…”，勾上“出 3 个方向的版本”，写第 2 拍。 */
+    /** 编辑器“AI 写…”面板：默认选第 2 拍，勾上“出 3 个方向的版本”，写第 2 拍。 */
     private fun writeBeatInThreeDirections(vm: AppViewModel) {
         openEditor(vm)
-        compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("写这一拍…")
-        compose.onNodeWithText("写这一拍…").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         waitForText("写第 2 拍")
-        compose.onNodeWithText("出 3 个方向的版本（花费约 3 倍）").performClick()
+        compose.onNodeWithText("出 3 个方向的版本（花费约 3 倍）").performScrollTo().performClick()
         // 勾选按作品记住。
         waitFor { WorkStore(writingDir).assist(workId).beatVariants }
         compose.onNodeWithText("写第 2 拍").performClick()
@@ -216,11 +215,17 @@ class WritingVariantsUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         val store = WorkStore(writingDir)
         openEditor(vm)
-        // “AI 接着写”里的“写下一场 · 3 个方向”。
+        // “AI 写…”面板：选“写下一场”，勾“出 3 个方向的版本”。这个勾只对写这一拍、写下一场有效。
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        compose.onNodeWithText("AI 接着写").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         waitForText("从光标处往下写")
-        compose.onNodeWithText("写下一场 · 3 个方向").performClick()
+        val several = "出 3 个方向的版本（花费约 3 倍）"
+        compose.onNodeWithText("写到本章结尾").performScrollTo().performClick()
+        compose.onNodeWithText(several).performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("写下一场").performScrollTo().performClick()
+        compose.onNodeWithText(several).performScrollTo().assertIsEnabled().performClick()
+        waitFor { WorkStore(writingDir).assist(workId).beatVariants }
+        compose.onNodeWithText("开始写").performClick()
         WriteDirection.entries.forEach { waitForText("${it.label}·写好") }
         WriteDirection.entries.forEach { d -> assertTrue(prompt(d).single().contains("写完眼下这一场就停")) }
         // 没设温度：请求里不带。

@@ -112,8 +112,9 @@ class AiUsageUiTest {
         waitForText("沈默推开茶馆的门")
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length))
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        compose.onNodeWithText("AI 接着写").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         compose.onNodeWithText("写下一场").performClick()
+        compose.onNodeWithText("开始写").performClick()
         waitForText("AI 写了")
         // 续写面板写完：一行小字，花了约多少、缓存命中多少。
         waitForText("缓存命中 92%")

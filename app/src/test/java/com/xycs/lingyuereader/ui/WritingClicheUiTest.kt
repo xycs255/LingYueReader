@@ -178,8 +178,9 @@ class WritingClicheUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length))
         compose.onNodeWithContentDescription("AI 写作").performClick()
-        compose.onNodeWithText("AI 接着写").performClick()
+        compose.onNodeWithText("AI 写…").performClick()
         compose.onNodeWithText("写 500 字左右").performClick()
+        compose.onNodeWithText("开始写").performClick()
         waitForText("这段有 1 处 AI 腔")
         // 不拦采纳。
         compose.onNodeWithText("采纳").performClick()

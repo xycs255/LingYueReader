@@ -31,7 +31,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * 按节拍写：“AI 写本章”逐拍请求、每拍连同进度存一次，停下或出错后从下一拍接着写；
+ * 按节拍写：“AI 写整章草稿”逐拍请求、每拍连同进度存一次，停下或出错后从下一拍接着写；
  * 编辑器里只写某一拍，采纳后记成已写；AI 拆节拍。
  */
 class BeatWritingTest {

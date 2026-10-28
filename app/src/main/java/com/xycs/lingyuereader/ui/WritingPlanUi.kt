@@ -392,7 +392,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                         GroupedSection(
                             header = "节拍",
-                            footer = "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写本章会一拍一拍写；编辑器菜单里“写这一拍…”从光标处只写其中一拍，采纳后在下面勾成已写。",
+                            footer = "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写整章草稿会一拍一拍写；编辑器里“AI 写…”面板可以从光标处只写其中一拍，采纳后在下面勾成已写。",
                         ) {
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {

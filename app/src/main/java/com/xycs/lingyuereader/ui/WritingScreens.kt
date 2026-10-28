@@ -94,7 +94,9 @@ import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.beats
+import com.xycs.lingyuereader.data.withBeatDone
 import com.xycs.lingyuereader.data.ChapterSyncs
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.AiCliche
@@ -848,24 +850,27 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var punctuationBar by rememberSaveable { mutableStateOf(false) }
     var toolsOpen by remember(workId, chapterId) { mutableStateOf(false) }
     var toolGroup by remember(workId, chapterId) { mutableStateOf(EditorToolGroup.WRITE) }
-    var ideas by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var issuesOpen by remember { mutableStateOf(false) }
     var companionOpen by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
     var companionAnalyses by remember(workId, chapterId) { mutableStateOf<List<ReferenceAnalysis>>(emptyList()) }
     var companionSelection by remember(workId, chapterId) { mutableStateOf(vm.companionReference(workId, chapterId)) }
+    val chosenCompanionAnalysis = companionAnalyses.firstOrNull { it.id == companionSelection }
     val aiState by vm.writingAi.state.collectAsStateWithLifecycle()
     val aiLookup by vm.writingAi.lookup.collectAsStateWithLifecycle()
     // AI 在编辑器里写的那一段（这一章的才显示）；写的时候正文只读。
     val inlineAll by vm.writingAi.inline.collectAsStateWithLifecycle()
     val inline = inlineAll?.takeIf { it.workId == workId && it.chapterId == chapterId }
-    var inlineDialog by remember { mutableStateOf(false) }
-    // 本章细纲卡：菜单里的“写这一拍…”要知道有没有节拍、哪几拍写过。进来读一次，每次打开菜单再读（细纲卡页改过、刚采纳过一拍都跟得上）。
+    // “AI 写”面板：在光标处让 AI 写正文只从这里进（AI 条第一项、智能推荐）。
+    var aiWriteOpen by remember { mutableStateOf(false) }
+    // 书灵里选了范本时，“AI 写”面板和推荐的“写第 N 拍”带不带它；默认带，作者在面板里关了这一章就不带。
+    var useReference by remember(workId, chapterId) { mutableStateOf(true) }
+    // 本章细纲卡：“AI 写”面板列节拍、推荐“写第 N 拍”要知道有哪几拍、哪几拍写过。进来读一次，
+    // 打开菜单、打开面板、AI 写完（采纳或撤回）再读，细纲卡页改过也跟得上。
     var beatCard by remember(workId, chapterId) { mutableStateOf<ChapterCard?>(null) }
-    var beatDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(workId, chapterId, menu) {
-        try { beatCard = vm.writing.cards(workId, chapterId).first.card }
+    LaunchedEffect(workId, chapterId, menu, aiWriteOpen, inline == null) {
+        try { beatCard = mergeBeatsDone(vm.writing.cards(workId, chapterId).first.card, beatCard) }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (_: Exception) { }
     }
@@ -987,15 +992,58 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     }
 
     /** 从光标处让 AI 接着写（写的字先显示在光标处，采纳才进正文）。 */
-    fun startInline(mode: InlineMode, instruction: String = "", atEnd: Boolean = false, referenceAnalysisId: String? = null, beat: Int? = null, variants: Boolean = false) {
+    fun startInline(mode: InlineMode, instruction: String = "", referenceAnalysisId: String? = null, beat: Int? = null, variants: Boolean = false) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
             return
         }
         val text = st.text.toString()
-        val at = if (atEnd) text.length else st.selection.max
+        val at = st.selection.max
         vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat, variants)
+    }
+
+    /** 按“AI 写”面板选好的写；开着“照范本写法”且书灵里选的范本还在时带上范本（各种写法都能带，写完照样核验）。 */
+    fun writeChoice(choice: AiWriteChoice, instruction: String = "") {
+        val reference = chosenCompanionAnalysis?.id?.takeIf { choice.reference }
+        startInline(choice.mode, instruction, referenceAnalysisId = reference, beat = choice.beat, variants = choice.variants)
+    }
+
+    /** 打开“AI 写”面板。 */
+    fun openAiWrite() {
+        if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else aiWriteOpen = true
+    }
+
+    /**
+     * 推荐的“写第 N 拍”：不弹面板，按细纲卡现在的样子写第一拍没写的；3 个方向按作品记住的，范本按开关。
+     * 先重读一次细纲卡（细纲卡页可能改过节拍）。
+     */
+    fun writeNextBeat(scope: CoroutineScope) {
+        if (locked) {
+            vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+            return
+        }
+        scope.launch {
+            val disk = try { vm.writing.cards(workId, chapterId).first.card }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { null }
+            val card = disk?.let { mergeBeatsDone(it, beatCard) } ?: beatCard
+            beatCard = card
+            val n = card?.let { Beats.firstUndone(it) }
+            if (n == null) vm.showMessage("细纲卡的节拍都写过了")
+            else writeChoice(AiWriteChoice(InlineMode.BEAT, n, variants = assists[workId]?.beatVariants == true,
+                reference = chosenCompanionAnalysis != null && useReference))
+        }
+    }
+
+    /** 书灵里问主意：起名、随便问先问一句，别的直接问；结果在 AI 面板里看，可以插到光标处。 */
+    fun askIdea(kind: IdeaKind) {
+        companionOpen = false
+        when (kind) {
+            IdeaKind.NAMES -> asking = "给什么起名？" to { what -> runAi(WriteAiTask.Idea(kind, what)) }
+            IdeaKind.ASK -> asking = "想问什么？" to { q -> runAi(WriteAiTask.Idea(kind, q)) }
+            else -> runAi(WriteAiTask.Idea(kind))
+        }
     }
 
     /** 预览、审稿、草稿页要使用这一刻的编辑框，而不是等 800ms 自动保存。 */
@@ -1055,13 +1103,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         val st = current ?: return
         when (item) {
             AiBarItem.Cliche -> startCliche()
-            AiBarItem.Write -> if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else inlineDialog = true
+            AiBarItem.Write -> openAiWrite()
             is AiBarItem.Edit -> runEdit(item.action)
             AiBarItem.Custom -> {
                 if (editTarget(st.text.toString(), st.selection, WriteAction.CUSTOM) == null) vm.showMessage("先选中文字，或把光标放在要改的那段")
                 else asking = "想怎么改？" to { req -> runEdit(WriteAction.CUSTOM, req) }
             }
-            AiBarItem.Ideas -> ideas = true
             AiBarItem.Review, AiBarItem.Consistency ->
                 if (st.text.isBlank()) vm.showMessage("这一章还没有内容")
                 else runAi(if (item == AiBarItem.Review) WriteAiTask.Review else WriteAiTask.Consistency)
@@ -1079,6 +1126,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         aiReady = aiConfig.ready,
         inline = inline,
         aiState = currentAi,
+        nextBeat = beatCard?.let { card -> Beats.firstUndone(card)?.let { n -> beats(card).firstOrNull { it.index == n } } },
     )
     val scheme = MiuixTheme.colorScheme
 
@@ -1134,13 +1182,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         // 常用的在前：这一章的细纲和状态，再是 AI，最后是预览、历史、改名。
                                         add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
                                         add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
-                                        // AI 写本章：在正文末尾接着写到本章结尾，写的字先显示，采纳才进正文。
-                                        add("AI 写本章" to { startInline(InlineMode.TO_END, atEnd = true) })
-                                        // 细纲卡有节拍时：从光标处只写其中一拍。
-                                        if (beatCard?.let { beats(it).isNotEmpty() } == true) add("写这一拍…" to {
-                                            if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else beatDialog = true
-                                        })
-                                        add("AI 写一版草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
+                                        // 在光标处写（接着写、写这一拍、写到本章结尾）都在“AI 写”面板里，这里只留进草稿页的入口。
+                                        add("AI 写整章草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
                                         add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
                                         add("整理本章进设定包" to { startSync() })
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
@@ -1368,7 +1411,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 // AI 的结果面板、写作建议，都在键盘上方，不挡正在写的地方。一次放一样，按优先次序挑。
                 val aiPanel = aiState?.takeIf { it.chapterId == chapterId && it.workId == workId }
-                val chosenCompanionAnalysis = companionAnalyses.firstOrNull { it.id == companionSelection }
                 // AI 写完、还没采纳的那段：本机数一下有几处 AI 腔、黑名单（只提醒，不拦采纳）。
                 val inlineCliche = remember(inline?.text, inline?.loading, voiceRules) {
                     val w = inline
@@ -1381,7 +1423,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
                     issuesOpen && (realtimeOn || clicheOn) -> EditorPanel.Issues
                     rulesOpen -> EditorPanel.Rules
-                    companionOpen && !locked -> EditorPanel.Companion
+                    companionOpen -> EditorPanel.Companion
                     toolsOpen -> EditorPanel.Tools
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
                     shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
@@ -1411,23 +1453,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             source = chosenCompanionAnalysis?.let { "《${it.referenceTitle}》·${it.chapterTitle}（${it.part.label}）" },
                             model = if (aiConfig.ready) aiConfig.providerLabel else "AI 未设置",
                             ready = aiConfig.ready,
-                            onWriteHere = {
-                                when {
-                                    companionSelection != null && chosenCompanionAnalysis == null -> {
-                                        vm.showMessage("已选范本不在了，请重新选择")
-                                        companionChoosing = true
-                                    }
-                                    !st.selection.collapsed -> vm.showMessage("先点正文，把光标放在想写的地方")
-                                    else -> asking = "这一段要发生什么？" to { intent ->
-                                        startInline(InlineMode.CUSTOM, intent, referenceAnalysisId = chosenCompanionAnalysis?.id)
-                                    }
-                                }
-                            },
-                            onWriteChapter = {
-                                vm.writing.save(workId, chapterId, st.text.toString(), onSaved = {
-                                    vm.open(Screen.ChapterDraft(workId, chapterId))
-                                })
-                            },
+                            // 选过的范本已经不在了（删了、重新分析了）：说一声，范本那一行显示没选。
+                            missing = companionSelection != null && chosenCompanionAnalysis == null,
+                            onIdea = { kind -> askIdea(kind) },
                             onSelectReference = { companionChoosing = true },
                             onClearReference = {
                                 companionSelection = null
@@ -1440,11 +1468,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             selected = toolGroup,
                             shortcuts = when (toolGroup) {
                                 EditorToolGroup.WRITE -> listOf(
-                                    EditorToolShortcut("写本章草稿", LingYueIcons.Write) {
+                                    // 在光标处写从 AI 条“AI 写…”和智能推荐进；这里只留进草稿页的入口。
+                                    EditorToolShortcut("AI 写整章草稿", LingYueIcons.Write) {
                                         toolsOpen = false; saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("AI 接着写", LingYueIcons.Sparkle) {
-                                        toolsOpen = false; onAiItem(AiBarItem.Write)
                                     },
                                     EditorToolShortcut("润色", LingYueIcons.Polish) {
                                         toolsOpen = false; runEdit(WriteAction.POLISH)
@@ -1530,6 +1556,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     }
                                     // 刚放进正文的那一段从浅色过渡到正文色。
                                     effects.launch { accepted.play(w.at until w.at + w.text.length) }
+                                    // 写的是一拍：先在这里记成已写（细纲卡随后落盘），推荐马上换到下一拍。
+                                    w.beat?.let { n -> beatCard = beatCard?.takeIf { beats(it).size == w.beatTotal }?.withBeatDone(n, true) ?: beatCard }
                                 }
                             },
                             onRetry = { vm.writingAi.retryInline() },
@@ -1698,7 +1726,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         selected = aiBar,
                         longClickLabel = "说明",
                         onLongClick = {
-                            vm.showMessage(if (aiBar) "换回快捷标点条" else "AI 写作：切到 AI 工具条，接着写、润色、扩写、灵感等")
+                            vm.showMessage(if (aiBar) "换回快捷标点条" else "AI 写作：切到 AI 工具条，AI 写、润色、扩写、读者点评等")
                         },
                         onClick = {
                             if (aiBar) { aiBar = false; punctuationBar = true }
@@ -1709,13 +1737,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     LabeledIconButton(
                         LingYueIcons.Book,
                         label = "书灵",
-                        description = "书灵写作",
+                        description = "书灵",
                         selected = companionOpen,
                         longClickLabel = "说明",
-                        onLongClick = { vm.showMessage("书灵写作：说出这一段要发生什么，可选范本，让 AI 写候选稿给你审定") },
+                        onLongClick = { vm.showMessage("书灵：问主意（接下来怎么写、起名、卡文了……），选写作范本") },
                         onClick = {
                             when {
-                                locked -> vm.showMessage("这一章已定稿，要继续写请先解锁")
+                                // 问主意不改稿子：定稿的章也能打开书灵。
                                 inline != null -> vm.showMessage("先处理正在写入的 AI 正文")
                                 aiState?.let { it.workId == workId && it.chapterId == chapterId } == true ->
                                     vm.showMessage("先处理当前的 AI 结果，再打开书灵")
@@ -1755,7 +1783,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         EditorRecommendationKind.REVIEW_CHAPTER -> {
                                             saveNow(); vm.open(Screen.ChapterReview(workId, chapterId))
                                         }
-                                        EditorRecommendationKind.CONTINUE -> onAiItem(AiBarItem.Write)
+                                        EditorRecommendationKind.WRITE_BEAT -> writeNextBeat(effects)
+                                        EditorRecommendationKind.CONTINUE -> openAiWrite()
                                     }
                                 } else Modifier
                                 val label = if (current == null) "载入中" else recommendation.label
@@ -1911,34 +1940,19 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     },
                 )
             }
-            if (beatDialog) {
-                beatCard?.let { card ->
-                    BeatPickDialog(
-                        card,
-                        variants = assists[workId]?.beatVariants == true,
-                        onVariants = { on -> vm.writingAi.updateAssist(workId) { it.copy(beatVariants = on) } },
-                        onDismiss = { beatDialog = false },
-                    ) { n, variants ->
-                        beatDialog = false
-                        startInline(InlineMode.BEAT, beat = n, variants = variants)
-                    }
-                }
-            }
-            if (inlineDialog) {
-                InlineModeDialog(onDismiss = { inlineDialog = false }) { mode, variants ->
-                    inlineDialog = false
-                    if (mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> startInline(mode, req) }
-                    else startInline(mode, variants = variants)
-                }
-            }
-            if (ideas) {
-                IdeasDialog(onDismiss = { ideas = false }) { kind ->
-                    ideas = false
-                    when (kind) {
-                        IdeaKind.NAMES -> asking = "给什么起名？" to { what -> runAi(WriteAiTask.Idea(kind, what)) }
-                        IdeaKind.ASK -> asking = "想问什么？" to { q -> runAi(WriteAiTask.Idea(kind, q)) }
-                        else -> runAi(WriteAiTask.Idea(kind))
-                    }
+            if (aiWriteOpen) {
+                AiWriteDialog(
+                    card = beatCard,
+                    variants = assists[workId]?.beatVariants == true,
+                    onVariants = { on -> vm.writingAi.updateAssist(workId) { it.copy(beatVariants = on) } },
+                    reference = chosenCompanionAnalysis?.let { "《${it.referenceTitle}》·${it.chapterTitle}" },
+                    useReference = useReference,
+                    onUseReference = { useReference = it },
+                    onDismiss = { aiWriteOpen = false },
+                ) { choice ->
+                    aiWriteOpen = false
+                    if (choice.mode == InlineMode.CUSTOM) asking = "想让 AI 怎么写？" to { req -> writeChoice(choice, req) }
+                    else writeChoice(choice)
                 }
             }
             asking?.let { (title, then) ->
@@ -1950,6 +1964,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
     }
 }
+
+/**
+ * 编辑器里记着的细纲卡和刚从盘上读的合起来：采纳一拍时编辑器先把它记成已写，细纲卡随后才落盘，
+ * 这中间读到的卡还没记上。节拍没改过时两边的“已写”合起来算，免得推荐又回到刚写过的那一拍、重写一遍；
+ * 节拍改过了以盘上的为准。离开编辑器再回来，编辑器记着的就清了，细纲卡页取消的“已写”照样生效。
+ */
+private fun mergeBeatsDone(disk: ChapterCard, local: ChapterCard?): ChapterCard =
+    if (local != null && disk.beats == local.beats) disk.copy(beatsDone = (disk.beatsDone + local.beatsDone).distinct().sorted()) else disk
 
 /** 光标在一处划线上停稳多久才显示那条建议（光标掠过时不一闪一闪）。 */
 private const val CARET_SETTLE = 150L

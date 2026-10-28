@@ -1477,7 +1477,7 @@ class WritingAi(
         _summaries.value = null
     }
 
-    // ---------- AI 写本章 ----------
+    // ---------- AI 写整章草稿 ----------
 
     private val _drafts = MutableStateFlow<Map<Pair<String, String>, DraftState>>(emptyMap())
     /**
@@ -1721,7 +1721,7 @@ class WritingAi(
         else "$head：已写完第 ${progress.written} / ${progress.total} 拍，接着写从第 ${progress.written + 1} 拍开始"
 
     /**
-     * AI 写本章：[more] 为真时接着已有的草稿往下写，否则从头写一版（替换草稿）。边写边显示，写完存成草稿，
+     * AI 写整章草稿：[more] 为真时接着已有的草稿往下写，否则从头写一版（替换草稿）。边写边显示，写完存成草稿，
      * 作者看过再放进正文。
      */
     fun writeDraft(workId: String, chapterId: String, instruction: String = "", more: Boolean = false, workflow: Boolean = false, targetLength: String = "", referenceAnalysisId: String? = null) {

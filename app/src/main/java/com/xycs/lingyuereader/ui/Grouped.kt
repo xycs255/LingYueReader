@@ -81,6 +81,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -1265,7 +1266,7 @@ internal fun DialogButtons(
 
 /**
  * 对话框里“选一项”：一行一项，名字（下面可有灰色说明），点了就选。样子照 [CheckRow]，给了 [selected] 时当前那项打勾。
- * “AI 接着写”“新建什么”这类挑一种做法的对话框用它，不用一格格按钮；选项只有两三个、不用说明的用 [SegmentedControl]。
+ * “新建什么”这类挑一种做法的对话框用它，不用一格格按钮；选项只有两三个、不用说明的用 [SegmentedControl]。
  */
 @Composable
 internal fun <T> DialogOptionList(
@@ -1282,6 +1283,21 @@ internal fun <T> DialogOptionList(
             }
         }
     }
+}
+
+/**
+ * 对话框里一节的小标题（“AI 写”面板的“写这一拍”“写多少”）：次要色 13sp，和下面选项的文字左对齐；只是标签，不能点。
+ * 读屏当标题念，可以按标题跳。
+ */
+@Composable
+internal fun DialogSectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = LocalGroupedColors.current.secondary,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        modifier = modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp).semantics { heading() },
+    )
 }
 
 // ---------- 加载、空、出错 ----------
@@ -1382,7 +1398,7 @@ internal fun PanelCloseButton(label: String, onClick: () -> Unit, modifier: Modi
 }
 
 /**
- * 编辑器里贴在键盘上方的浮层面板（AI 结果、可能的问题、AI 接着写、写作建议、规则）：顶上 20dp 圆角、卡片底色；
+ * 编辑器里贴在键盘上方的浮层面板（AI 结果、可能的问题、AI 写的那一段、书灵、写作建议、规则）：顶上 20dp 圆角、卡片底色；
  * 标题一行左边可带强调色小图标，[status] 是标题右边的灰色小字（“生成中……”），最右是圆底关闭钮（[onClose] 为空时不显示）；
  * 内容在中间，[actions] 一排胶囊按钮（[PillButton]）在最下面，放不下左右滑。
  * 高矮变化（流式输出、换一条建议）平滑过去；出现、收起由调用处包 AnimatedVisibility（[Motion.edgeEnter] / [Motion.edgeExit]）。

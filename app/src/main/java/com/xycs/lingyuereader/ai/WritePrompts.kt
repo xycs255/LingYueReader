@@ -70,13 +70,13 @@ enum class SuggestKind(val label: String, val ask: String, val realtime: Boolean
     }
 }
 
-/** 在编辑器里让 AI 接着写：写多少。 */
+/** 在编辑器里让 AI 在光标处写（“AI 写”面板）：写多少。 */
 enum class InlineMode(val label: String) {
     SCENE("写下一场"),
     TO_END("写到本章结尾"),
     WORDS("写 500 字左右"),
     CUSTOM("按要求写…"),
-    /** 写细纲卡里的某一拍：不在“AI 接着写”的选项里，从编辑器菜单“写这一拍…”选拍后进来。 */
+    /** 写细纲卡里的某一拍：“AI 写”面板上面列的节拍，或智能推荐的“写第 N 拍”。 */
     BEAT("写这一拍…"),
 }
 

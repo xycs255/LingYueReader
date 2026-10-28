@@ -7,6 +7,7 @@ import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
+import com.xycs.lingyuereader.data.Beat
 import com.xycs.lingyuereader.data.ChapterStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -76,6 +77,20 @@ class WritingEditorToolsUiTest {
     @Test fun revisionChapterGetsReviewAndOtherTextGetsContinuation() {
         assertEquals(EditorRecommendationKind.REVIEW_CHAPTER, recommend(status = ChapterStatus.REVISION))
         assertEquals(EditorRecommendationKind.CONTINUE, recommend())
+    }
+
+    /** 细纲卡还有没写的拍：推荐“写第 N 拍”（说明是这一拍写什么）；空章、选了字、修订章照旧，前面那几样优先。 */
+    @Test fun anUnwrittenBeatIsRecommendedOverPlainContinuation() {
+        val beat = Beat(2, "杜娘开门")
+        val result = editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.DRAFT, true, nextBeat = beat)
+        assertEquals(EditorRecommendationKind.WRITE_BEAT, result.kind)
+        assertEquals("写第 2 拍", result.label)
+        assertEquals("杜娘开门", result.reason)
+        assertEquals(EditorRecommendationKind.DRAFT_CHAPTER, editorRecommendation("", TextRange(0), ChapterStatus.DRAFT, true, nextBeat = beat).kind)
+        assertEquals("AI 写整章草稿", editorRecommendation("", TextRange(0), ChapterStatus.DRAFT, true, nextBeat = beat).label)
+        assertEquals(EditorRecommendationKind.REVISE_SELECTION, editorRecommendation("主角推开门。", TextRange(0, 2), ChapterStatus.DRAFT, true, nextBeat = beat).kind)
+        assertEquals(EditorRecommendationKind.REVIEW_CHAPTER, editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.REVISION, true, nextBeat = beat).kind)
+        assertEquals(EditorRecommendationKind.CONTINUE, editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.DRAFT, true).kind)
     }
 
     @Test fun selectionIsClampedAfterTextEdits() {

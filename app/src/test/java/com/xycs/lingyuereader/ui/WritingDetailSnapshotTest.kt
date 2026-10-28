@@ -55,7 +55,7 @@ import java.net.InetSocketAddress
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写本章、三道审稿、设定包、生词本。只截图供设计复核，不做像素断言；
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
 @RunWith(AndroidJUnit4::class)
@@ -297,7 +297,7 @@ class WritingDetailSnapshotTest {
         capture("detail-editor-bottom")
 
         openTools()
-        waitForDescription("写本章草稿")
+        waitForDescription("AI 写整章草稿")
         waitForDescription("快捷标点")
         capture("detail-editor-tools-write")
         pickGroup("查", "三道审稿")
@@ -336,9 +336,9 @@ class WritingDetailSnapshotTest {
         waitForGone("设置写作 AI")
         capture("detail-editor-bottom-ai")
 
-        // AI 写本章：没有候选稿。
+        // AI 写整章草稿：没有候选稿。
         openTools()
-        compose.onNodeWithContentDescription("写本章草稿").performClick()
+        compose.onNodeWithContentDescription("AI 写整章草稿").performClick()
         waitForText("开始创作")
         waitForGone("正在读取已保存的候选稿")
         waitForGone("正在核对本章任务与资料")

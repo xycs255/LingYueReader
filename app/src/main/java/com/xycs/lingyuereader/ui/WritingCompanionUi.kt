@@ -1,25 +1,34 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import top.yukonga.miuix.kmp.basic.Icon
+import com.xycs.lingyuereader.ai.IdeaKind
 import top.yukonga.miuix.kmp.basic.Text
 
-/** The human supplies the scene intent; AI writes a candidate and the human decides whether to accept it. */
+/**
+ * 书灵：只管两件事——问主意和选范本。写正文不在这里，从 AI 条“AI 写…”或智能推荐进；
+ * 选好的范本在“AI 写”面板里可以开关。问主意只给建议，不改稿子，结果在 AI 面板里看、可以插到光标处。
+ * 主意按钮放不下时换行，不横着溢出。
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun WritingCompanionPanel(
+    /** 选的范本（“《书名》·章名（哪部分）”）；没选为空。 */
     source: String?,
     model: String,
     ready: Boolean,
-    onWriteHere: () -> Unit,
-    onWriteChapter: () -> Unit,
+    /** 选过的范本已经不在了。 */
+    missing: Boolean = false,
+    onIdea: (IdeaKind) -> Unit,
     onSelectReference: () -> Unit,
     onClearReference: () -> Unit,
     onConfigureAi: () -> Unit,
@@ -27,31 +36,48 @@ internal fun WritingCompanionPanel(
 ) {
     val c = LocalGroupedColors.current
     InlinePanel(
-        title = "书灵写作",
+        title = "书灵",
         icon = LingYueIcons.Book,
-        status = if (source == null) model else "$model · $source",
+        status = model,
         onClose = onClose,
+        closeLabel = "关闭书灵",
         actions = {
-            if (ready) PillButton("交给 AI 写这一段", onWriteHere, style = PillStyle.Filled)
-            else PillButton("设置 AI", onConfigureAi, style = PillStyle.Filled)
-            PillButton("写本章草稿", onWriteChapter)
+            if (!ready) PillButton("设置 AI", onConfigureAi, style = PillStyle.Filled)
             PillButton(if (source == null) "选择范本" else "换范本", onSelectReference)
-            if (source != null) PillButton("不用范本", onClearReference)
+            if (source != null || missing) PillButton("不用范本", onClearReference)
         },
     ) {
-        Row(Modifier.fillMaxWidth().padding(bottom = 5.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("你的构思", color = c.secondary, fontSize = 12.sp)
-            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
-            Text("AI 写候选稿", color = c.tint, fontSize = 12.sp)
-            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
-            Text("你来审定", color = c.secondary, fontSize = 12.sp)
+        CompanionLabel("问主意")
+        if (ready) {
+            FlowRow(
+                Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IdeaKind.entries.forEach { k -> PillButton(k.label, { onIdea(k) }, style = PillStyle.Tinted) }
+            }
+            Text("根据写到这里的内容和设定包出主意，不会改你的稿子。", color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp,
+                modifier = Modifier.padding(bottom = 6.dp))
+        } else {
+            Text("先设置写作 AI，才能问主意。", color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(bottom = 6.dp))
         }
+        CompanionLabel("范本")
         Text(
-            if (source == null) "先说这一段要发生什么。范本可选；AI 写出的文字会先给你审定。"
-            else "范本只借叙事与对白手法；人物、事件与结果依本书构思。AI 写出的文字先给你审定。",
-            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
-            modifier = Modifier.padding(bottom = 3.dp),
+            when {
+                missing -> "选过的范本不在了，请重新选择。"
+                source == null -> "没选范本。选了以后，“AI 写…”面板里可以照它的写法写。"
+                else -> "$source\n“AI 写…”时只借它的叙事与对白手法；人物、事件与结果依本书构思。"
+            },
+            color = if (missing) c.warning else c.secondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
+}
+
+/** 书灵面板里一节的小标题。 */
+@Composable
+private fun CompanionLabel(text: String) {
+    Text(text, color = LocalGroupedColors.current.label, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp).semantics { heading() })
 }

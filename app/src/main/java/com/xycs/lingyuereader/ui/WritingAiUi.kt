@@ -69,7 +69,6 @@ import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.WriteAiTask
 import com.xycs.lingyuereader.ai.BibleProposal
-import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.TextDiff
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.ai.WriteIssue
@@ -117,13 +116,9 @@ internal sealed interface AiBarItem {
         override val label = "按要求改…"
     }
 
-    /** 在光标处直接写（先显示、采纳才进正文）。 */
+    /** 打开“AI 写”面板：在光标处写（先显示、采纳才进正文）。 */
     data object Write : AiBarItem {
-        override val label = "AI 接着写"
-    }
-
-    data object Ideas : AiBarItem {
-        override val label = "灵感…"
+        override val label = "AI 写…"
     }
 
     data object Review : AiBarItem {
@@ -148,7 +143,6 @@ internal val AI_BAR = listOf(
     AiBarItem.Edit(WriteAction.CONDENSE),
     AiBarItem.Edit(WriteAction.PROOFREAD),
     AiBarItem.Custom,
-    AiBarItem.Ideas,
     AiBarItem.Review,
     AiBarItem.Consistency,
 )
@@ -611,57 +605,80 @@ private fun variantStatus(v: com.xycs.lingyuereader.InlineVariant): String = whe
 /** 出 3 个方向的版本：选项后面的说明。 */
 internal const val VARIANTS_NOTE = "冲突升级、按下不发、意外插入各写一版，你挑一版采纳；花费约 3 倍"
 
-/** 选写多少：写下一场、写下一场 · 3 个方向、写到本章结尾、写 500 字左右、按要求写。[onPick] 的第二项为真是出 3 个方向的版本。 */
-@Composable
-internal fun InlineModeDialog(onDismiss: () -> Unit, onPick: (InlineMode, Boolean) -> Unit) {
-    GlassDialog(show = true, title = "AI 接着写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
-        // “写这一拍…”要先挑拍，从编辑器菜单进，不放在这里。“写下一场”紧跟一项出 3 个方向的。
-        val options = buildList {
-            InlineMode.entries.filter { it != InlineMode.BEAT }.forEach { m ->
-                add((m to false) to m.label)
-                if (m == InlineMode.SCENE) add((m to true) to "${m.label} · 3 个方向")
-            }
-        }
-        DialogOptionList(options, onPick = { (m, variants) -> onPick(m, variants) },
-            description = { (_, variants) -> VARIANTS_NOTE.takeIf { variants } })
-        TextButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-    }
-}
+/** “AI 写”面板选好的写法：写第几拍（[InlineMode.BEAT]）或写多少、出不出 3 个方向、照不照范本写。 */
+internal data class AiWriteChoice(val mode: InlineMode, val beat: Int? = null, val variants: Boolean = false, val reference: Boolean = false)
+
+/** 出 3 个方向的版本只对“写这一拍”“写下一场”有效：写到本章结尾、按字数、按要求写篇幅不定，三版对不齐。 */
+internal fun InlineMode.allowsVariants(): Boolean = this == InlineMode.BEAT || this == InlineMode.SCENE
+
+/** “写多少”一节的几项（“写这一拍”另列在上面的节拍里）。 */
+private val AI_WRITE_MODES = listOf(InlineMode.SCENE, InlineMode.TO_END, InlineMode.WORDS, InlineMode.CUSTOM)
 
 /**
- * 挑写哪一拍：列出细纲卡的各拍（序号和文字，最多两行），写过的打勾、淡一点；默认选第一拍没写的。
- * 选好从光标处只写这一拍，写的字先显示，采纳后这一拍记成已写。
+ * “AI 写”面板：让 AI 在光标处写正文只有这一个入口。从上到下：本章细纲卡有节拍时先列“写这一拍”（已写的打勾、淡一点，
+ * 默认选第一拍没写的），再是“写多少”，然后“出 3 个方向的版本”（按作品记住，只对写这一拍、写下一场有效），
+ * 书灵里选了范本时最后一行“照范本写法”（默认开）。节拍和写法是一组单选，选好点下面的按钮才写。
  */
 @Composable
-internal fun BeatPickDialog(
-    card: ChapterCard,
+internal fun AiWriteDialog(
+    /** 本章细纲卡；没有或没有节拍时不显示“写这一拍”。 */
+    card: ChapterCard?,
     /** 上次勾没勾“出 3 个方向的版本”（按作品记住），[onVariants] 在勾、取消时记下来。 */
-    variants: Boolean = false,
-    onVariants: (Boolean) -> Unit = {},
+    variants: Boolean,
+    onVariants: (Boolean) -> Unit,
+    /** 书灵里选的范本名；空时不显示范本那一行。 */
+    reference: String?,
+    useReference: Boolean,
+    onUseReference: (Boolean) -> Unit,
     onDismiss: () -> Unit,
-    onPick: (Int, Boolean) -> Unit,
+    onPick: (AiWriteChoice) -> Unit,
 ) {
-    val list = beats(card)
-    val done = card.beatsDone.toSet()
-    var chosen by remember(card) { mutableStateOf(Beats.firstUndone(card) ?: 1) }
+    val list = card?.let(::beats).orEmpty()
+    val done = card?.beatsDone.orEmpty().toSet()
+    // 选中的是哪一拍（模式为 BEAT）或哪种写法；有没写的拍先选它。
+    var chosen by remember(card) {
+        mutableStateOf(card?.takeIf { list.isNotEmpty() }?.let { Beats.firstUndone(it) }?.let { InlineMode.BEAT to it } ?: (InlineMode.SCENE to null))
+    }
     var several by remember { mutableStateOf(variants) }
-    GlassDialog(show = true, title = "写这一拍", summary = "从光标处只写细纲卡里的这一拍，写到它收住就停；采纳后记成已写", onDismissRequest = onDismiss) {
-        Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-            list.forEach { b ->
-                MarkedOptionRow(
-                    "${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""),
-                    selected = b.index == chosen,
-                    done = b.index in done,
-                    doneLabel = "已写",
-                ) { chosen = b.index }
+    val (mode, beat) = chosen
+    GlassDialog(show = true, title = "AI 写", summary = "从光标处往下写，带着设定包、细纲卡和写作规范；写的字先显示，采纳才放进正文", onDismissRequest = onDismiss) {
+        Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+            if (list.isNotEmpty()) {
+                DialogSectionLabel("写这一拍")
+                list.forEach { b ->
+                    MarkedOptionRow(
+                        "${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""),
+                        selected = mode == InlineMode.BEAT && beat == b.index,
+                        done = b.index in done,
+                        doneLabel = "已写",
+                    ) { chosen = InlineMode.BEAT to b.index }
+                }
+            }
+            DialogSectionLabel("写多少")
+            AI_WRITE_MODES.forEach { m ->
+                MarkedOptionRow(m.label, selected = mode == m, done = false, doneLabel = "") { chosen = m to null }
+            }
+            // 关键的一段：按三个方向各写一版，作者挑。默认不勾，勾了按作品记住。
+            CheckboxRow(
+                "出 3 个方向的版本（花费约 3 倍）", several,
+                subtitle = if (mode.allowsVariants()) VARIANTS_NOTE.substringBefore("；") else "只对“写这一拍”“写下一场”有效",
+                enabled = mode.allowsVariants(), dimChecked = false,
+            ) { on ->
+                several = on
+                onVariants(on)
+            }
+            if (reference != null) {
+                ToggleRow("照范本写法：$reference", useReference, subtitle = "只借叙事和对白的手法，写完核验没有照抄原文") { onUseReference(it) }
             }
         }
-        // 关键的一拍：按三个方向各写一版，作者挑。默认不勾，勾了按作品记住。
-        CheckboxRow("出 3 个方向的版本（花费约 3 倍）", several, subtitle = VARIANTS_NOTE.substringBefore("；"), dimChecked = false) { on ->
-            several = on
-            onVariants(on)
-        }
-        DialogButtons(onDismiss = onDismiss, onConfirm = { onPick(chosen, several) }, confirmText = "写第 $chosen 拍")
+        DialogButtons(
+            onDismiss = onDismiss,
+            onConfirm = {
+                onPick(AiWriteChoice(mode, beat, several && mode.allowsVariants(), reference != null && useReference))
+            },
+            // 写法选项的名字已经在上面，按钮不再重复一遍（读屏、找按钮都不混）。
+            confirmText = if (mode == InlineMode.BEAT) "写第 $beat 拍" else "开始写",
+        )
     }
 }
 
@@ -733,14 +750,6 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
         TextField(value = text, onValueChange = { text = it }, label = hint, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
         DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(text.trim()) }, confirmText = confirm, confirmEnabled = text.isNotBlank())
-    }
-}
-
-/** 选灵感的哪一种。 */
-@Composable
-internal fun IdeasDialog(onDismiss: () -> Unit, onPick: (IdeaKind) -> Unit) {
-    GlassDialog(show = true, title = "灵感", summary = "根据写到这里的内容和设定集给建议，不会改你的稿子。", onDismissRequest = onDismiss) {
-        DialogOptionList(IdeaKind.entries.map { it to it.label }, onPick = onPick)
     }
 }
 

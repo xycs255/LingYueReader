@@ -84,7 +84,7 @@ private fun draftBudgetCost(preview: AiRequestBudgetPreview, usdRate: Double): S
 }
 
 /**
- * AI 写本章：按细纲卡、本章资料、上一章结尾、写作规范和检查规则写一版草稿。边写边显示，写完存成草稿；
+ * AI 写整章草稿：按细纲卡、本章资料、上一章结尾、写作规范和检查规则写一版草稿。边写边显示，写完存成草稿；
  * 作者看过以后放进正文（替换或接在后面，原来的正文先存一版），也可以接着写、重写。AI 写的字不算码字数。
  */
 @Composable
@@ -248,7 +248,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         }
     }
 
-    SubPageScaffold("AI 写本章", onBack = { vm.back() }, snackbar = snackbar) { padding ->
+    SubPageScaffold("AI 写整章草稿", onBack = { vm.back() }, snackbar = snackbar) { padding ->
         // 配色在骨架提供的配色里面读。
         val c = LocalGroupedColors.current
         LazyColumn(

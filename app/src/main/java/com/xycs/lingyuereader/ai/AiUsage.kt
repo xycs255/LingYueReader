@@ -95,7 +95,7 @@ data class AiCost(val cny: Double = 0.0, val usd: Double = 0.0, val unpriced: In
 enum class AiFeature(val label: String) {
     SUGGEST("写作建议"),
     INLINE("AI 接着写"),
-    DRAFT("写本章草稿"),
+    DRAFT("AI 写整章草稿"),
     EDIT("改稿"),
     CLICHE("去 AI 腔"),
     IDEA("灵感与点评"),
