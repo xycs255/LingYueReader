@@ -232,14 +232,16 @@ class WritingAiUiTest {
         assertTrue(prompts.isEmpty())
         // 改了最后一段：停笔几秒，只发改过的这一段（短段不发）。
         typeAtEnd("。")
-        waitForText("1 条写作建议")
+        // 状态行合成一个数（这一章没有检查规则、没有 AI 腔）。
+        waitForText("1 处问题")
         val prompt = prompts.single()
         assertTrue("1. 他再门口等着，天色以晚。" in prompt)
         assertFalse("风很大。" in prompt || "他推门进来。" in prompt)
         // 带设定包，但不给工具：一次请求就答。今天发了几次按作品记在盘上（进程重启也接着算）。
         assertFalse(bodies.single().has("tools"))
         assertEquals("${LocalDate.now()}|1", context.getSharedPreferences("writing_ai", Context.MODE_PRIVATE).getString("suggest_count.$workId", null))
-        compose.onNodeWithText("1 条写作建议", substring = true).performClick()
+        // 点状态行打开问题面板：这条在“建议”里，能改。
+        compose.onNodeWithText("1 处问题", substring = true).performClick()
         waitForText("错别字")
         compose.onNodeWithText("改").performClick()
         val store = WorkStore(writingDir)
@@ -292,6 +294,8 @@ class WritingAiUiTest {
         Thread.sleep(3_500)
         ShadowLooper.idleMainLooper()
         assertEquals(1, prompts.size)
+        // 没查成写在问题面板里：点状态行打开。
+        compose.onNodeWithText("写作建议已开", substring = true).performClick()
         slowSuggestionGate.countDown()
         waitForText("写作建议没查成")
         waitForText("缺少 issues 数组")
@@ -311,7 +315,7 @@ class WritingAiUiTest {
         openEditor()
         waitForText("写作建议已开")
         typeAtEnd("。")
-        waitForText("1 条写作建议")
+        waitForText("1 处问题")
         // 只查错字：普通的挑错，不带设定包。
         assertTrue("只找明显的错误" in prompts.single())
         assertFalse("药铺掌柜的女儿" in systems.single())
@@ -323,6 +327,8 @@ class WritingAiUiTest {
         openEditor()
         waitForText("写作建议已开")
         typeAtEnd("。")
+        // 为什么没查写在问题面板里。
+        compose.onNodeWithText("写作建议已开", substring = true).performClick()
         waitForText("今天的 50 次用完了")
         assertTrue(prompts.isEmpty())
     }

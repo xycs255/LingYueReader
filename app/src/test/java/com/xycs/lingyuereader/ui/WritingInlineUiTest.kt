@@ -193,7 +193,7 @@ class WritingInlineUiTest {
         // 打完第二段：只发改过的这一段。
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length - 1))
         compose.onNodeWithContentDescription("正文").performTextInput("。")
-        waitForText("1 条写作建议")
+        waitForText("1 处问题")
         // 发的是写作建议：带着设定包，按开着的几类挑。
         val ask = prompts.first { "只找下面这几类问题" in it }
         assertTrue("- 规范：" in ask && "- 口吻：" in ask && "1. 杜娘抬头看他，说老周昨夜就死了。" in ask)

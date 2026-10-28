@@ -41,7 +41,7 @@ import java.time.LocalDate
 import java.util.Collections
 
 /**
- * 去 AI 腔的界面：编辑器里标出 AI 腔、状态行写“N 处 AI 腔”，点到一处能加进黑名单；
+ * 去 AI 腔的界面：编辑器里标出 AI 腔、状态行的“N 处问题”按处数算，点到一处能加进黑名单；
  * “去 AI 腔”把标出的段发给（假的）AI，结果一条条改或忽略（写作建议没开也能用）；
  * AI 接着写完还没采纳时提醒“这段有 N 处 AI 腔”；作品 AI 设置里的开关和我的黑名单页。
  */
@@ -123,9 +123,8 @@ class WritingClicheUiTest {
     @Test
     fun clichesAreMarkedCountedAndCanBeBanned() {
         openEditor()
-        // 状态行：AI 腔按处数，和“条不合规则”分开（这章没有检查规则）。
-        waitForText("2 处 AI 腔")
-        assertTrue(compose.onAllNodesWithText("条不合规则", substring = true).fetchSemanticsNodes().isEmpty())
+        // 状态行：AI 腔按处数算进“N 处问题”（这章没有检查规则，写作建议没开）。
+        waitForText("2 处问题")
         // 光标点到“嘴角勾起”：提示是 AI 腔，可以“以后都不要”。
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(3))
         waitForText("以后都不要")
@@ -134,7 +133,7 @@ class WritingClicheUiTest {
         val store = WorkStore(writingDir)
         waitFor { store.assist(workId).banned == listOf("嘴角勾起") }
         // 进了黑名单：同一处也算黑名单命中，处数跟着变。
-        waitForText("3 处 AI 腔")
+        waitForText("3 处问题")
         // 不花钱：一个请求都没发。
         assertTrue(prompts.isEmpty())
     }
@@ -142,7 +141,7 @@ class WritingClicheUiTest {
     @Test
     fun declicheSendsMarkedParagraphsAndFixesOneByOne() {
         openEditor()
-        waitForText("2 处 AI 腔")
+        waitForText("2 处问题")
         compose.onNodeWithContentDescription("AI 写作").performClick()
         // 有命中才出现入口；写作建议没开也能用。
         compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()

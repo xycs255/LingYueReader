@@ -1,24 +1,18 @@
 package com.xycs.lingyuereader.ui
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,9 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -36,12 +28,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
-import com.xycs.lingyuereader.ai.SuggestKind
-import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterStats
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.PackKind
-import com.xycs.lingyuereader.data.RuleHit
 import com.xycs.lingyuereader.data.RuleReport
 import com.xycs.lingyuereader.data.RuleSet
 import com.xycs.lingyuereader.data.WorkChapter
@@ -276,69 +265,4 @@ private fun RulesDraftDialog(text: String, replacing: Boolean, onDismiss: () -> 
 private fun FadeInOnce(key: Any, content: @Composable () -> Unit) {
     val shown = remember(key) { MutableTransitionState(Effects.noMotion).apply { targetState = true } }
     AnimatedVisibility(shown, enter = fadeIn(Motion.standard(Motion.SHORT)), exit = ExitTransition.None) { content() }
-}
-
-/** 编辑器里的规则检查：本章统计和不合规则的地方；点一条，依次选中正文里出现的位置。 */
-@Composable
-internal fun RulesPanel(
-    report: RuleReport?,
-    hasRules: Boolean,
-    onJump: (RuleHit) -> Unit,
-    onOpenRules: () -> Unit,
-    onClose: () -> Unit,
-    /** 有 AI 腔、黑名单命中时：“去 AI 腔”，把那几段发给 AI。 */
-    onCliche: (() -> Unit)? = null,
-) {
-    val c = LocalGroupedColors.current
-    // 没规则、在检查、检查完三种：原地淡过去，高矮由面板平滑跟上。
-    val phase = when {
-        !hasRules -> 0
-        report == null -> 1
-        else -> 2
-    }
-    InlinePanel(
-        "规则检查",
-        onClose = onClose,
-        closeLabel = "收起",
-        actions = {
-            if (onCliche != null) PillButton("去 AI 腔", onCliche, style = PillStyle.Filled)
-            PillButton("管理规则", onOpenRules)
-        },
-    ) {
-        AnimatedContent(phase, transitionSpec = { Motion.fadeThrough() using null }, label = "rulesPhase") { p ->
-            when {
-                p == 0 -> Text(
-                    "还没有检查规则。在设定包里写一份“检查规则”，比如篇幅、口头禅每章至多几次、禁用词，灵阅就能逐章检查。",
-                    color = c.secondary,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    modifier = Modifier.padding(vertical = 6.dp),
-                )
-                p == 1 || report == null -> PanelBusy("正在检查……", Modifier.padding(vertical = 8.dp))
-                else -> Column {
-                    Text(statsLine(report.stats), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp))
-                    Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
-                        if (report.hits.isEmpty()) Text("都合规则。", color = c.success, fontSize = 15.sp, modifier = Modifier.padding(vertical = 8.dp))
-                        report.hits.forEach { h ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable(enabled = h.ranges.isNotEmpty()) { onJump(h) }
-                                    .padding(vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                // AI 腔、黑名单的命中标出来源，和作者自己定的规则分开。
-                                if (AiCliche.isVoice(h)) {
-                                    Tag(if (AiCliche.isBanned(h)) AiCliche.BANNED_DOC else "AI 腔", suggestColor(SuggestKind.CLICHE.name, c), Modifier.padding(end = 8.dp))
-                                }
-                                Text(h.message, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.weight(1f))
-                                if (h.ranges.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

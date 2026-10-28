@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
@@ -64,7 +63,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.xycs.lingyuereader.AppViewModel
-import com.xycs.lingyuereader.RealtimeState
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.WriteAiTask
@@ -333,53 +331,6 @@ internal fun WriteAiPanel(
                         Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                     }
                     UsageNote(state.usage, state.cost, Modifier.padding(top = 6.dp))
-                }
-            }
-        }
-    }
-}
-
-/**
- * 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。改掉、忽略的那条淡出，下面的平滑补上来。
- * 去 AI 腔的结果也列在这里（带“AI 腔”标签）：正在去时显示一行“正在……”，没成、不用改时显示一句。
- */
-@Composable
-internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, onIgnore: (WriteIssue) -> Unit, onClose: () -> Unit) {
-    val c = LocalGroupedColors.current
-    InlinePanel("可能的问题", onClose = onClose, closeLabel = "收起") {
-        when {
-            realtime.cliche -> PanelBusy("正在去 AI 腔……", Modifier.padding(vertical = 8.dp))
-            realtime.clicheError != null -> ErrorText("去 AI 腔没成：${realtime.clicheError}", Modifier.padding(vertical = 8.dp))
-            realtime.clicheNote != null && realtime.issues.isEmpty() ->
-                Text(realtime.clicheNote, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-            realtime.issues.isEmpty() -> Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-        }
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
-            items(realtime.issues, key = { "${it.paragraph}\u0000${it.wrong}" }) { i ->
-                Column(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 8.dp)) {
-                    if (i.kind == SuggestKind.CLICHE.name) SuggestTag(i.kind, c, Modifier.padding(bottom = 4.dp))
-                    Text(
-                        buildAnnotatedString {
-                            withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(i.wrong) }
-                            append("  →  ")
-                            withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(i.right) }
-                        },
-                        color = c.label,
-                        fontSize = 16.sp,
-                    )
-                    val at = i.paragraph.indexOf(i.wrong)
-                    val snippet = i.paragraph.substring((at - 12).coerceAtLeast(0), (at + i.wrong.length + 12).coerceAtMost(i.paragraph.length))
-                    Text(
-                        (if (i.reason.isNotBlank()) i.reason + "：" else "") + "……$snippet……",
-                        color = c.secondary,
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillButton("改", { onFix(i) }, style = PillStyle.Filled)
-                        PillButton("忽略", { onIgnore(i) })
-                    }
                 }
             }
         }

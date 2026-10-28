@@ -197,7 +197,7 @@ class WritingEditorMotionUiTest {
         openEditor(vm)
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length - 1))
         compose.onNodeWithContentDescription("正文").performTextInput("。")
-        waitForText("1 条写作建议")
+        waitForText("1 处问题")
         val at = text.indexOf("昨夜就死了")
         compose.mainClock.autoAdvance = false
         // 光标掠过划线的地方（停了不到 150 毫秒就挪开）：建议条不出来，不闪。
