@@ -121,4 +121,17 @@ class VoiceTailTest {
         assertFalse(SuggestKind.CLICHE.realtime)
         assertTrue(SuggestKind.entries.filter { it.realtime }.none { it == SuggestKind.CLICHE })
     }
+
+    /** 查设定交给审稿的事实关：写作建议能选的只剩错字、规范、口吻，提示词里不再要 AI 查设定。 */
+    @Test
+    fun suggestionsNoLongerCheckCanon() {
+        assertEquals(listOf(SuggestKind.TYPO, SuggestKind.STYLE, SuggestKind.VOICE), SuggestKind.entries.filter { it.realtime })
+        val p = WritePrompts.suggest(listOf("林月推门进来。"), setOf(SuggestKind.TYPO, SuggestKind.STYLE, SuggestKind.VOICE))
+        assertFalse("- 设定：" in p || "CANON" in p || "设定、规范" in p)
+        assertTrue("- 规范：" in p && "- 口吻：" in p && "规范、口吻这两类必须在上面给出的设定里有明确依据" in p)
+        // 只查错字：不提“要有依据”。
+        assertFalse("明确依据" in WritePrompts.suggest(listOf("林月推门进来。"), setOf(SuggestKind.TYPO)))
+        // 以前的建议、旧设置里还有这一类：名字照样认得，不当成错字。
+        assertEquals(SuggestKind.CANON, SuggestKind.of("CANON"))
+    }
 }

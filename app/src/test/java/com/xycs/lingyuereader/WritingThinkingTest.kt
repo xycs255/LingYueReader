@@ -152,14 +152,13 @@ class WritingThinkingTest {
         val chapter = draft().single()
         assertEquals("disabled", chapter.thinking)
         assertEquals(32_768, chapter.maxTokens)
-        // 润色这类改稿：关思考；挑错、灵感、读者点评、矛盾检查照服务商默认。
+        // 润色这类改稿：关思考；挑错、灵感、读者点评照服务商默认。
         listOf(WriteAction.POLISH, WriteAction.EXPAND, WriteAction.CUSTOM).forEach { action ->
             assertEquals(action.label, "disabled", task(WriteAiTask.Edit(action, "杜娘抬头看他。", 10, 17, instruction = "多写神态")).thinking)
         }
         assertNull(task(WriteAiTask.Edit(WriteAction.PROOFREAD, "杜娘抬头看他。", 10, 17)).thinking)
         assertNull(task(WriteAiTask.Idea(IdeaKind.NEXT)).thinking)
         assertNull(task(WriteAiTask.Review).thinking)
-        assertNull(task(WriteAiTask.Consistency).thinking)
         // 拟细纲、摘要：不是写正文，什么都不写。
         var planned = false
         assertNull(requestsOf("拟细纲", { runBlocking { runCatching { writing.planCard(workId, chapterId) }; planned = true } }) { planned }.single().thinking)

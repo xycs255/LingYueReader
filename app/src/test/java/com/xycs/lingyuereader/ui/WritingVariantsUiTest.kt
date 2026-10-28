@@ -170,10 +170,11 @@ class WritingVariantsUiTest {
             .forEach { compose.onNodeWithText(it).performScrollTo() }
         listOf("知识库上限", "本章资料上限", "两次至少隔", "一天最多", "最多带", "看看挑了哪几段", "记住的采纳", "最近一次发给 AI 的内容")
             .forEach { assertTrue("$it 收进了高级设置", compose.onAllNodesWithText(it).fetchSemanticsNodes().isEmpty()) }
-        // 开了写作建议才带出四类子开关。
+        // 开了写作建议才带出三类子开关；查设定交给审稿的事实关，这里没有。
         compose.onNodeWithText("写作时给建议").performScrollTo().performClick()
         waitFor { WorkStore(writingDir).assist(workId).realtime }
-        listOf("查错字", "查设定", "查规范", "查口吻").forEach { compose.onNodeWithText(it).performScrollTo() }
+        listOf("查错字", "查规范", "查口吻").forEach { compose.onNodeWithText(it).performScrollTo() }
+        assertTrue(compose.onAllNodesWithText("查设定").fetchSemanticsNodes().isEmpty())
 
         compose.onNodeWithText("高级设置").performScrollTo().performClick()
         waitForText("知识库上限")

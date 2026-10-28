@@ -17,6 +17,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInputSelection
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
@@ -30,11 +32,15 @@ import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.Appearance
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.GateResult
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.PackKind
+import com.xycs.lingyuereader.data.ReviewGate
+import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ThemeMode
 import com.xycs.lingyuereader.data.WorkStore
@@ -58,7 +64,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页。只截图供设计复核，不做像素断言；
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页、
+ * 编辑器的“问题”面板（状态行的“N 处问题”、全部和各个筛选）。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
 @RunWith(AndroidJUnit4::class)
@@ -119,7 +126,8 @@ class WritingDetailSnapshotTest {
                         val answer = if (FINISH_SYNC in asked) {
                             finishGate.await(20, TimeUnit.SECONDS)
                             FINISH_ANSWER
-                        } else "1. 让门外有脚步声。"
+                        } else if ("只找明显的错误" in asked || "只找下面这几类问题" in asked) PROBLEMS_SUGGEST
+                        else "1. 让门外有脚步声。"
                         val bytes = JSONObject().put("choices", JSONArray().put(JSONObject()
                             .put("message", JSONObject().put("content", answer)).put("finish_reason", "stop")))
                             .toString().toByteArray()
@@ -319,7 +327,7 @@ class WritingDetailSnapshotTest {
         waitForDescription("快捷标点")
         capture("detail-editor-tools-write")
         pickGroup("查", "三道审稿")
-        waitForDescription("规则检查")
+        waitForDescription("问题")
         capture("detail-editor-tools-check")
         pickGroup("整理", "整理入账")
         waitForDescription("历史版本")
@@ -592,7 +600,73 @@ class WritingDetailSnapshotTest {
     @Test
     fun einkFinishChapterAiPages() = finishChapter("eink-finish")
 
+    /**
+     * 编辑器的“问题”面板：第 3 章有一条检查规则的命中、一处 AI 腔、两条写作建议（打完最后一句才查）、上次审稿没处理的两条。
+     * 拍状态行的“N 处问题”，再拍面板的全部和四个筛选。
+     */
+    private fun problemsPanel(prefix: String) {
+        val store = WorkStore(File(context.filesDir, "writing"))
+        store.addPackDoc(workId, PackKind.RULES, "检查规则", "禁用：没抬头\n")
+        store.saveText(workId, chapterThree, "林月把半块玉佩攥在手心，嘴角勾起。\n\n“今晚还有船吗？”她问。\n\n老周没抬头：“封航了，明天也末必有")
+        store.updateAssist(workId) { it.copy(realtime = true) }
+        store.saveReview(
+            workId, chapterThree,
+            ChapterReview(
+                1, System.currentTimeMillis(),
+                listOf(
+                    GateResult(ReviewGate.FACT, listOf(ReviewIssue("“今晚还有船吗？”她问。", "细纲卡里林月上一章已经知道封航，不该再问", "改成她明知封航还来求老周"))),
+                    GateResult(ReviewGate.CRAFT, listOf(ReviewIssue("林月把半块玉佩攥在手心，嘴角勾起。", "写作规范：不写心理独白，神态少用套话"))),
+                ),
+            ),
+        )
+        openChapterThree()
+        val body = compose.onNodeWithContentDescription("正文")
+        body.performTextInputSelection(androidx.compose.ui.text.TextRange(body.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.EditableText].length))
+        body.performTextInput("。”")
+        waitForText("6 处问题")
+        capture("$prefix-problems-status")
+        compose.onNodeWithText("6 处问题", substring = true).performClick()
+        waitForText("全部 6")
+        waitForText("「嘴角勾起」")
+        capture("$prefix-problems-all")
+        compose.onNodeWithText("规则 1").performClick()
+        waitForText("「没抬头」1 处，不用")
+        capture("$prefix-problems-rules")
+        compose.onNodeWithText("AI 腔 1").performClick()
+        waitForText("以后都不要")
+        capture("$prefix-problems-cliche")
+        compose.onNodeWithText("建议 2").performClick()
+        waitForText("老周说话短")
+        capture("$prefix-problems-suggest")
+        compose.onNodeWithText("审稿 2").performClick()
+        waitForText("上次审稿")
+        waitForText("按这条让 AI 改")
+        capture("$prefix-problems-review")
+        // AI 条：没有“矛盾检查”，读者点评是最后一项。
+        compose.onNodeWithContentDescription("收起").performClick()
+        waitForGone("上次审稿")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("读者点评").performScrollTo()
+        check(count("矛盾检查") == 0)
+        capture("$prefix-problems-ai-bar")
+    }
+
+    @Test
+    fun problemsPanelAi() = problemsPanel("after")
+
+    @Test
+    fun einkProblemsPanelAi() = problemsPanel("eink-after")
+
+    @Test
+    fun inkProblemsPanelAi() = problemsPanel("ink-after")
+
     private companion object {
+        /** 问题面板截图里写作建议的回答：一处错字、一处口吻（都在打完的最后一段里）。 */
+        val PROBLEMS_SUGGEST: String = JSONObject().put("issues", JSONArray()
+            .put(JSONObject().put("p", 1).put("wrong", "末必").put("right", "未必").put("reason", "错别字").put("kind", "TYPO"))
+            .put(JSONObject().put("p", 1).put("wrong", "封航了，明天也末必有").put("right", "封航了。").put("reason", "老周说话短，不解释")
+                .put("kind", "VOICE").put("source", "《人物档案》老周"))).toString()
+
         /** 认出整理请求的一句（见 WritePrompts.sync）。 */
         const val FINISH_SYNC = "作者写完了这一章，请整理它"
 

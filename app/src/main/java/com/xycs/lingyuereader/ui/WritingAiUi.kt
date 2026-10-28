@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.TextFieldState
@@ -64,7 +63,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.xycs.lingyuereader.AppViewModel
-import com.xycs.lingyuereader.RealtimeState
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.WriteAiTask
@@ -125,10 +123,6 @@ internal sealed interface AiBarItem {
         override val label = "读者点评"
     }
 
-    data object Consistency : AiBarItem {
-        override val label = "矛盾检查"
-    }
-
     /** 本章有 AI 腔、黑名单命中时才出现：把标出的段落发给 AI，只改那几处。 */
     data object Cliche : AiBarItem {
         override val label = "去 AI 腔"
@@ -144,7 +138,6 @@ internal val AI_BAR = listOf(
     AiBarItem.Edit(WriteAction.PROOFREAD),
     AiBarItem.Custom,
     AiBarItem.Review,
-    AiBarItem.Consistency,
 )
 
 /**
@@ -259,7 +252,7 @@ internal fun PanelBusy(text: String, modifier: Modifier = Modifier) {
 
 /**
  * 写作助手的结果面板：改稿类先显示对比（删的划掉、加的标绿），可以切到“改后”看全文；
- * 采纳才改稿。灵感、点评、矛盾检查只给人看，灵感可以插到光标处。
+ * 采纳才改稿。灵感、点评只给人看，灵感可以插到光标处。
  * 流式输出时跟着滚到底；“正在想”和结果、对比和改后之间原地淡过去（高矮由面板平滑跟上）。
  */
 @Composable
@@ -338,53 +331,6 @@ internal fun WriteAiPanel(
                         Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                     }
                     UsageNote(state.usage, state.cost, Modifier.padding(top = 6.dp))
-                }
-            }
-        }
-    }
-}
-
-/**
- * 写作建议找出的问题：一条条列出，“改”就换掉，“忽略”就不再提。改掉、忽略的那条淡出，下面的平滑补上来。
- * 去 AI 腔的结果也列在这里（带“AI 腔”标签）：正在去时显示一行“正在……”，没成、不用改时显示一句。
- */
-@Composable
-internal fun IssuesPanel(realtime: RealtimeState, onFix: (WriteIssue) -> Unit, onIgnore: (WriteIssue) -> Unit, onClose: () -> Unit) {
-    val c = LocalGroupedColors.current
-    InlinePanel("可能的问题", onClose = onClose, closeLabel = "收起") {
-        when {
-            realtime.cliche -> PanelBusy("正在去 AI 腔……", Modifier.padding(vertical = 8.dp))
-            realtime.clicheError != null -> ErrorText("去 AI 腔没成：${realtime.clicheError}", Modifier.padding(vertical = 8.dp))
-            realtime.clicheNote != null && realtime.issues.isEmpty() ->
-                Text(realtime.clicheNote, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-            realtime.issues.isEmpty() -> Text("都改好了。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 8.dp))
-        }
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
-            items(realtime.issues, key = { "${it.paragraph}\u0000${it.wrong}" }) { i ->
-                Column(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 8.dp)) {
-                    if (i.kind == SuggestKind.CLICHE.name) SuggestTag(i.kind, c, Modifier.padding(bottom = 4.dp))
-                    Text(
-                        buildAnnotatedString {
-                            withStyle(SpanStyle(color = c.destructive, textDecoration = TextDecoration.LineThrough)) { append(i.wrong) }
-                            append("  →  ")
-                            withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(i.right) }
-                        },
-                        color = c.label,
-                        fontSize = 16.sp,
-                    )
-                    val at = i.paragraph.indexOf(i.wrong)
-                    val snippet = i.paragraph.substring((at - 12).coerceAtLeast(0), (at + i.wrong.length + 12).coerceAtMost(i.paragraph.length))
-                    Text(
-                        (if (i.reason.isNotBlank()) i.reason + "：" else "") + "……$snippet……",
-                        color = c.secondary,
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillButton("改", { onFix(i) }, style = PillStyle.Filled)
-                        PillButton("忽略", { onIgnore(i) })
-                    }
                 }
             }
         }
@@ -821,7 +767,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     GroupedSection(
                         footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：“AI 写…”从光标处写正文；选中文字（或把光标放在那段）润色、扩写、缩写、挑错；" +
-                            "也可以请 AI 以读者视角点评本章、检查前后矛盾，问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
+                            "也可以请 AI 以读者视角点评本章（前后矛盾在“三道审稿”的事实关里查），问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
@@ -881,7 +827,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     GroupedSection(
                         header = "写作建议",
                         footer = "开启后，你停笔几秒，灵阅会把打开这一章以后新写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
-                            "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。设定、规范、口吻要设定包里有依据，拿不准的不提；" +
+                            "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。规范、口吻要设定包里有依据，拿不准的不提；和设定对不上的在“三道审稿”的事实关里查；" +
                             "只查错字时不带设定包；本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费，两次之间至少隔几秒、一天最多几次在“高级设置”里设。" +
                             "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
                     ) {
@@ -903,7 +849,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "记录",
-                        footer = "灵感、读者点评、矛盾检查、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
+                        footer = "灵感、读者点评、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
                             "“用量”按天、按功能记这部作品花了多少（只有数字）。",
                     ) {
                         // 同一张卡片里的行要么都带图标、要么都不带：这两行都不带。

@@ -365,8 +365,23 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             else EmptyRow(result.error)
                         }
                     }
-                    result?.issues?.let { ordered(gate, it) }?.forEach { issue ->
-                        row { IssueRow(issue) { acting = gate to issue } }
+                    if (gate == ReviewGate.RULES) {
+                        // 规则关的命中和编辑器问题面板的“规则”是同一份，不在这里再列一遍：只给条数，点过去看。
+                        if (result != null && result.issues.isNotEmpty()) {
+                            row {
+                                NavRow("在编辑器的“问题”里看", value = "${result.issues.size} 条") {
+                                    vm.writing.showProblems.value = chapterId
+                                    // 下面就是这一章的编辑器就返回；从收尾页进来的，换成编辑器。
+                                    val below = vm.stack.value.dropLast(1).lastOrNull()
+                                    if (below is Screen.Editor && below.workId == workId && below.chapterId == chapterId) vm.back()
+                                    else vm.replaceTop(Screen.Editor(workId, chapterId))
+                                }
+                            }
+                        }
+                    } else {
+                        result?.issues?.let { ordered(gate, it) }?.forEach { issue ->
+                            row { IssueRow(issue) { acting = gate to issue } }
+                        }
                     }
                 }
             }
@@ -389,11 +404,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             IssueAction.JUMP -> jump(issue)
                             IssueAction.AI_FIX -> {
                                 // 发起改稿不等于已经改好：失败、关闭或未采纳时，问题仍应保持未处理。
-                                jump(
-                                    issue,
-                                    listOf(issue.problem, issue.fix).filter { it.isNotBlank() }.joinToString("。改法：", prefix = "审稿意见：") + "。只改这一句和必要的上下文。",
-                                    review?.let { ReviewFix(gate, issue, it.at, it.textHash) },
-                                )
+                                jump(issue, reviewFixInstruction(issue), review?.let { ReviewFix(gate, issue, it.at, it.textHash) })
                             }
                         }
                     })

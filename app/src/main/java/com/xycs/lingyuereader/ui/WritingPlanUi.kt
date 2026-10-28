@@ -348,7 +348,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         val outline = planned?.outline?.takeIf { it.outlineHash() != now.outlineHash() }
                         GroupedSection(
                             header = "本章",
-                            footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、查矛盾时都会带上它，以及上一章的钩子和承接边界。",
+                            footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、审稿时都会带上它，以及上一章的钩子和承接边界。",
                         ) {
                             val note = when {
                                 fromOutline -> "从${planned?.source}自动提取。细纲文档改了，这里跟着变；在这里改过以后就按你改的来。"

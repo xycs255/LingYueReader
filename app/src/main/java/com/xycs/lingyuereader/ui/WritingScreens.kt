@@ -71,6 +71,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -847,7 +848,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var toolsOpen by remember(workId, chapterId) { mutableStateOf(false) }
     var toolGroup by remember(workId, chapterId) { mutableStateOf(EditorToolGroup.WRITE) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
-    var issuesOpen by remember { mutableStateOf(false) }
     var companionOpen by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
     var companionAnalyses by remember(workId, chapterId) { mutableStateOf<List<ReferenceAnalysis>>(emptyList()) }
@@ -879,8 +879,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var statusDialog by remember { mutableStateOf(false) }
     // 标为定稿以后问一句“要不要顺手整理进设定包”。
     var syncTip by remember { mutableStateOf(false) }
-    // 规则检查：规则从设定包读（文档改过就重读），正文停笔 0.4 秒重新检查，都在本机算。
-    var rulesOpen by remember(workId, chapterId) { mutableStateOf(check) }
+    // 问题面板：本章的检查规则、AI 腔、写作建议、审稿没处理的都列在这里；从检查规则页点进来时直接打开、看规则。
+    var problemsOpen by remember(workId, chapterId) { mutableStateOf(check) }
+    var problemFilter by remember(workId, chapterId) { mutableStateOf(if (check) ProblemFilter.RULE else ProblemFilter.ALL) }
+    // 检查规则从设定包读（文档改过就重读），正文停笔 0.4 秒重新检查，都在本机算。
     val packs by vm.writing.packs.collectAsStateWithLifecycle()
     var ruleSet by remember(workId) { mutableStateOf<RuleSet?>(null) }
     LaunchedEffect(workId) { vm.writing.loadPack(workId) }
@@ -895,9 +897,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         if (locked || realtime.chapterId != chapterId) RealtimeState()
         else realtime.copy(issues = realtime.issues.filter { realtimeOn || it.kind == SuggestKind.CLICHE.name })
     }
-    val clicheOn = shownRealtime.cliche || shownRealtime.clicheError != null || shownRealtime.clicheNote != null ||
-        shownRealtime.issues.any { it.kind == SuggestKind.CLICHE.name }
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    // 本章最近一次审稿：没处理的问题也列进问题面板，标了已改、不改写回同一份（审稿页上一样）。
+    val reviewRuns by vm.writingAi.reviews.collectAsStateWithLifecycle()
+    LaunchedEffect(workId, chapterId) { vm.writingAi.loadReview(workId, chapterId) }
+    val chapterReview = reviewRuns[workId to chapterId]?.review
     // 自动排版：先在键盘上方给预览（按类勾掉的不排），排好作为一步编辑写进正文。
     val formatSettings = assists[workId]?.format ?: FormatSettings()
     var formatOpen by remember(workId, chapterId) { mutableStateOf(false) }
@@ -968,10 +972,25 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
     }
 
+    // 本章所有的问题：状态行的“N 处问题”和问题面板用同一份，数目对得上。
+    val problemText = current?.text?.toString().orEmpty()
+    val problems = remember(problemText, report, shownRealtime.issues, chapterReview) {
+        collectProblems(problemText, report, shownRealtime.issues, chapterReview)
+    }
+
+    /** 打开问题面板，看 [filter] 这一类；别的面板收起。 */
+    fun openProblems(filter: ProblemFilter = ProblemFilter.ALL) {
+        problemFilter = filter
+        problemsOpen = true
+        toolsOpen = false
+        companionOpen = false
+        formatOpen = false
+    }
+
     /** 跑一个 AI 任务：用编辑框里现在的全文（可能还没存盘）。 */
     fun runAi(task: WriteAiTask) {
         val st = current ?: return
-        issuesOpen = false
+        problemsOpen = false
         vm.writingAi.run(workId, chapterId, st.text.toString(), task)
     }
 
@@ -1102,9 +1121,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         }
         val text = st.text.toString()
         val ranges = CheckRules.check(text, voiceRules).hits.filter(AiCliche::isVoice).flatMap { it.ranges }
+        // 去 AI 腔的改法和写作建议一样，在问题面板的“建议”里一条条改或忽略。
         if (ranges.isNotEmpty() && vm.writingAi.ready) {
-            rulesOpen = false
-            issuesOpen = true
+            problemsOpen = true
+            problemFilter = ProblemFilter.SUGGEST
         }
         vm.writingAi.decliche(workId, chapterId, text, ranges)
     }
@@ -1119,9 +1139,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 if (editTarget(st.text.toString(), st.selection, WriteAction.CUSTOM) == null) vm.showMessage("先选中文字，或把光标放在要改的那段")
                 else asking = "想怎么改？" to { req -> runEdit(WriteAction.CUSTOM, req) }
             }
-            AiBarItem.Review, AiBarItem.Consistency ->
+            AiBarItem.Review ->
                 if (st.text.isBlank()) vm.showMessage("这一章还没有内容")
-                else runAi(if (item == AiBarItem.Review) WriteAiTask.Review else WriteAiTask.Consistency)
+                else runAi(WriteAiTask.Review)
         }
     }
 
@@ -1159,21 +1179,32 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BackButton(vm)
-                    Column(
-                        Modifier.weight(1f).padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp)).combinedClickableCompat { renaming = true },
-                    ) {
-                        Text(chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // 点章名改名；点下面一行（有问题时）打开问题面板。
+                    Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+                        Text(
+                            chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { renaming = true },
+                        )
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
                         val head = (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · "
                         val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
-                        // 作者自己的规则按条数，AI 腔按标出的处数，分开写：一眼看出哪些是 AI 腔。
-                        val ruleCount = report?.hits?.count { !AiCliche.isVoice(it) } ?: 0
-                        val clicheCount = report?.hits?.let(AiCliche::count) ?: 0
-                        val tail = (if (ruleCount > 0) " · $ruleCount 条不合规则" else "") + (if (clicheCount > 0) " · $clicheCount 处 AI 腔" else "") +
-                            if (realtimeOn) " · 写作建议已开" else ""
+                        // 规则、AI 腔、写作建议、审稿没处理的合成一个数；分类在问题面板里看。写作建议开着留一个短标识。
+                        val issues = if (problems.isNotEmpty()) " · ${problems.size} 处问题" else ""
+                        val tail = if (realtimeOn) " · 写作建议已开" else ""
                         // 保存状态“编辑中 / 已保存”只淡入淡出（[Motion.SHORT]），不挪动别的字（几种状态都是三个字宽）；读屏照旧念一整行。
-                        Row(Modifier.clearAndSetSemantics { this.text = AnnotatedString(head + saving + tail) }) {
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier)
+                                .clearAndSetSemantics {
+                                    this.text = AnnotatedString(head + saving + issues + tail)
+                                    onClick(label = if (problemsOpen) "收起问题面板" else "打开问题面板") {
+                                        if (problemsOpen) problemsOpen = false else openProblems()
+                                        true
+                                    }
+                                },
+                        ) {
                             Text(head, color = c.secondary, fontSize = 12.sp, maxLines = 1)
                             AnimatedContent(
                                 saving,
@@ -1182,6 +1213,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 },
                                 label = "saveState",
                             ) { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1) }
+                            // “N 处问题”用提醒色，看得出能点。
+                            if (issues.isNotEmpty()) Text(issues, color = c.warning, fontSize = 12.sp, maxLines = 1)
                             Text(tail, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         }
                     }
@@ -1210,7 +1243,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
                                         add("故事账本" to { vm.open(Screen.WorkLedger(workId, chapterId)) })
                                         add("从范本找写法" to { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) })
-                                        add("规则检查" to { rulesOpen = true })
+                                        add("问题" to { openProblems() })
                                         add("自动排版" to {
                                             when {
                                                 locked -> vm.showMessage("这一章已定稿：要排版先解锁")
@@ -1267,6 +1300,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 // “按这条改”：选中的这句交给 AI 按意见改，结果照常先看对比再采纳。
                                 j.instruction?.let { runEdit(WriteAction.CUSTOM, it, j.reviewFix) }
                             }
+                        }
+                    }
+                    // 审稿页的规则关：规则的命中只在问题面板里列，从那里点过来直接看“规则”。
+                    LaunchedEffect(current) {
+                        vm.writing.showProblems.collect { id ->
+                            if (id != chapterId) return@collect
+                            vm.writing.showProblems.value = null
+                            openProblems(ProblemFilter.RULE)
                         }
                     }
                 }
@@ -1442,15 +1483,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     inline != null -> EditorPanel.Inline(inline)
                     formatOpen -> EditorPanel.Format
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
-                    issuesOpen && (realtimeOn || clicheOn) -> EditorPanel.Issues
-                    rulesOpen -> EditorPanel.Rules
+                    problemsOpen -> EditorPanel.Problems
                     companionOpen -> EditorPanel.Companion
                     toolsOpen -> EditorPanel.Tools
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
-                    shownRule != null && !rulesOpen -> EditorPanel.Rule(shownRule)
-                    shownRealtime.issues.isNotEmpty() ||
-                        (realtimeOn && realtime.chapterId == chapterId && (realtime.checking || realtime.error != null || realtime.waiting != null)) ->
-                        EditorPanel.Realtime
+                    shownRule != null -> EditorPanel.Rule(shownRule)
                     else -> EditorPanel.None
                 }
                 AnimatedContent(
@@ -1504,8 +1541,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     EditorToolShortcut("三道审稿", LingYueIcons.Search) {
                                         toolsOpen = false; saveNow(); vm.open(Screen.ChapterReview(workId, chapterId))
                                     },
-                                    EditorToolShortcut("规则检查", LingYueIcons.Check) {
-                                        toolsOpen = false; rulesOpen = true
+                                    // 规则、AI 腔、写作建议、审稿没处理的都在“问题”里；三道审稿是去跑审稿的入口。
+                                    EditorToolShortcut("问题", LingYueIcons.Check) {
+                                        openProblems()
                                     },
                                     EditorToolShortcut("细纲卡", LingYueIcons.ListView) {
                                         toolsOpen = false; vm.open(Screen.ChapterCard(workId, chapterId))
@@ -1697,39 +1735,59 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         vm.showMessage("「$ph」加进了我的黑名单")
                                     }
                                 },
-                            ) { rulesOpen = true }
+                            ) { openProblems(if (AiCliche.isVoice(hit)) ProblemFilter.CLICHE else ProblemFilter.RULE) }
                         }
-                        EditorPanel.Issues -> IssuesPanel(
-                            shownRealtime,
-                            onFix = { i -> fixIssue(st, i) },
-                            onIgnore = { vm.writingAi.ignoreIssue(it) },
+                        EditorPanel.Problems -> ProblemsPanel(
+                            problems,
+                            filter = problemFilter,
+                            onFilter = { problemFilter = it },
+                            text = textNow,
+                            report = report,
+                            hasRules = ruleSet?.isEmpty == false,
+                            realtime = shownRealtime,
+                            realtimeOn = realtimeOn && realtime.chapterId == chapterId,
+                            review = chapterReview,
+                            actions = ProblemActions(
+                                // 跳到位置：选中那几个字（规则有几处时依次选下一处），面板留着，接着看下一条。
+                                jump = jump@{ hit, range ->
+                                    val r = range ?: run {
+                                        if (hit.ranges.isEmpty()) return@jump
+                                        val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
+                                        lastJump = hit.key to i
+                                        hit.ranges[i % hit.ranges.size]
+                                    }
+                                    st.edit { selection = clampRange(r, length) }
+                                    runCatching { focus.requestFocus() }
+                                },
+                                ban = { ph ->
+                                    vm.writingAi.updateAssist(workId) { it.ban(ph) }
+                                    vm.showMessage("「$ph」加进了我的黑名单")
+                                },
+                                fix = { i -> fixIssue(st, i) },
+                                ignore = { vm.writingAi.ignoreIssue(it) },
+                                mute = { k -> vm.writingAi.muteKind(workId, k) },
+                                // 审稿的几样照审稿页的做法：去原文、让 AI 改都走回到编辑器的那条路（选中原句，找不到只提示）。
+                                jumpReview = { issue -> vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, issue.quote) },
+                                markReview = { gate, issue, state -> vm.writingAi.markIssue(workId, chapterId, gate, issue, state) },
+                                fixReview = { gate: com.xycs.lingyuereader.data.ReviewGate, issue: com.xycs.lingyuereader.data.ReviewIssue ->
+                                    vm.writing.jump.value = com.xycs.lingyuereader.Jump(
+                                        chapterId, issue.quote, reviewFixInstruction(issue),
+                                        chapterReview?.let { com.xycs.lingyuereader.ReviewFix(gate, issue, it.at, it.textHash) },
+                                    )
+                                }.takeIf { !locked },
+                            ),
                             onClose = {
-                                issuesOpen = false
+                                problemsOpen = false
                                 vm.writingAi.clearClicheNote()
                             },
-                        )
-                        EditorPanel.Rules -> RulesPanel(
-                            report,
-                            hasRules = rules?.isEmpty == false,
                             onCliche = { startCliche() }.takeIf { !locked && report?.hits?.any(AiCliche::isVoice) == true },
-                            onJump = jump@{ hit ->
-                                if (hit.ranges.isEmpty()) return@jump
-                                val i = lastJump?.takeIf { it.first == hit.key }?.second?.plus(1) ?: 0
-                                val r = hit.ranges[i % hit.ranges.size]
-                                lastJump = hit.key to i
-                                st.edit { selection = clampRange(r, length) }
-                                runCatching { focus.requestFocus() }
-                            },
                             onOpenRules = { vm.open(Screen.WorkRules(workId)) },
-                            onClose = { rulesOpen = false },
+                            onOpenReview = { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) },
                         )
-                        EditorPanel.Realtime -> RealtimeLine(if (realtimeOn) shownRealtime else shownRealtime.copy(checking = false, error = null, waiting = null)) {
-                            if (shownRealtime.issues.isNotEmpty()) issuesOpen = true
-                        }
                         EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }
                 }
-                AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !rulesOpen && !issuesOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
+                AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !problemsOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
                 // 平时只占一行：两个带字的旧入口 + 上下文推荐 + 四组工具。旧 AI / 标点条仍可切换，功能不丢。
@@ -1777,8 +1835,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     if (companionOpen) {
                                         toolsOpen = false
                                         formatOpen = false
-                                        issuesOpen = false
-                                        rulesOpen = false
+                                        problemsOpen = false
                                     }
                                 }
                             }
@@ -1910,8 +1967,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 if (toolsOpen) {
                                     companionOpen = false
                                     formatOpen = false
-                                    issuesOpen = false
-                                    rulesOpen = false
+                                    problemsOpen = false
                                 }
                             }
                         },
@@ -2010,10 +2066,8 @@ private sealed interface EditorPanel {
     data class Ai(val state: WriteAiState) : EditorPanel
     data class Suggestion(val issue: WriteIssue) : EditorPanel
     data class Rule(val hit: RuleHit) : EditorPanel
-    data object Issues : EditorPanel
+    data object Problems : EditorPanel
     data object Format : EditorPanel
-    data object Rules : EditorPanel
-    data object Realtime : EditorPanel
     data object None : EditorPanel
 }
 
@@ -2026,37 +2080,6 @@ private fun barEnter(): EnterTransition =
 
 private fun barExit(): ExitTransition =
     Effects.exit(shrinkVertically(Motion.exit(), shrinkTowards = Alignment.Bottom) + fadeOut(Motion.exit()))
-
-/** 写作建议的一行状态：几条建议、在查（带小转圈）、在等、没查成。 */
-@Composable
-private fun RealtimeLine(realtime: RealtimeState, onClick: () -> Unit) {
-    val c = LocalGroupedColors.current
-    Row(
-        Modifier.fillMaxWidth().background(c.background).combinedClickableCompat(onClick).padding(horizontal = 18.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (realtime.checking && realtime.issues.isEmpty()) Spinner() else Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(16.dp))
-        val text = when {
-            realtime.issues.isNotEmpty() -> "${realtime.issues.size} 条写作建议（正文里划线的地方，光标点上去看）"
-            realtime.checking -> "正在看刚写的段落……"
-            realtime.waiting != null -> realtime.waiting
-            else -> null
-        }
-        if (text != null) {
-            Text(
-                text,
-                color = if (realtime.issues.isNotEmpty()) c.tint else c.secondary,
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 6.dp),
-            )
-        } else {
-            ErrorText("写作建议没查成：${realtime.error}", Modifier.weight(1f).padding(start = 6.dp))
-        }
-        if (realtime.issues.isNotEmpty()) Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
-    }
-}
 
 /**
  * 正文里的一处标记：[key] 认的是哪条建议、哪条规则的第几处，不是位置（正文一改位置就变）。

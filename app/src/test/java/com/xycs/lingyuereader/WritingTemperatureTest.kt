@@ -139,10 +139,9 @@ class WritingTemperatureTest {
         }
         assertEquals(1.5, runTask(WriteAiTask.Edit(WriteAction.CONTINUE, "", text.length, text.length)))
 
-        // 挑错（只改错，求稳）、灵感、矛盾检查、读者点评、拟细纲、摘要：不带。
+        // 挑错（只改错，求稳）、灵感、读者点评、拟细纲、摘要：不带。
         assertEquals(null, runTask(WriteAiTask.Edit(WriteAction.PROOFREAD, "杜娘抬头看他。", 10, 17)))
         assertEquals(null, runTask(WriteAiTask.Idea(IdeaKind.NEXT)))
-        assertEquals(null, runTask(WriteAiTask.Consistency))
         assertEquals(null, runTask(WriteAiTask.Review))
         var planned = false
         assertEquals(null, temperatureOf("拟细纲", { runBlocking { runCatching { ai.planCard(workId, chapterId) }; planned = true } }) { planned })

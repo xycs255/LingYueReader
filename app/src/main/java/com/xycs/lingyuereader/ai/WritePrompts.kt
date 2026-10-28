@@ -54,12 +54,14 @@ data class WriteIssue(
 )
 
 /**
- * 写作建议的几类：前四类作者可以分别开关（[realtime]），停笔时自动查；
+ * 写作建议的几类：[realtime] 的几类作者可以分别开关，停笔时自动查；
  * [CLICHE] 是作者点“去 AI 腔”才查的，结果和写作建议一样一条条改或忽略，不在设置里开关。
+ * [CANON]（查设定）交给三道审稿的事实关，不再能选、也不再要 AI 查；留着这一类，是为了以前的建议、
+ * 旧设置里存着它时照常显示（颜色、划线）而不报错。
  */
 enum class SuggestKind(val label: String, val ask: String, val realtime: Boolean = true) {
     TYPO("错字", "错别字、用错的词、漏字多字、标点误用、明显的病句"),
-    CANON("设定", "和设定包冲突的：人数、生死、日期、地点、官职、称呼、物件；人物知道了按察觉表这时还不该知道的事；提前写出后面才发生的事"),
+    CANON("设定", "和设定包冲突的：人数、生死、日期、地点、官职、称呼、物件；人物知道了按察觉表这时还不该知道的事；提前写出后面才发生的事", realtime = false),
     STYLE("规范", "违反作者写作约定、写作规范的：禁用词、对白写法、旁白腔、篇幅节奏这类明写了的规矩（只按作者写明的规矩，不按你自己的口味）"),
     VOICE("口吻", "人物说话不像他：和设定包里这个人的身份、称谓、说话方式不符"),
     CLICHE("AI 腔", "套话、神态模板、替读者解释和点题的句子", realtime = false),
@@ -169,7 +171,7 @@ object WritePrompts {
     /** 改稿时带上前文多少字、后文多少字。 */
     const val BEFORE_CHARS = 1_500
     const val AFTER_CHARS = 300
-    /** 整章点评、矛盾检查最多发多少字。 */
+    /** 整章点评最多发多少字。 */
     const val CHAPTER_CHARS = 14_000
 
     /** 能查设定包时加在系统提示后面：要用就查，别凭印象编；查完直接作答。 */
@@ -309,15 +311,6 @@ object WritePrompts {
         append("说真话，不要客套，也不要全盘否定。纯文本分条，总共不超过 500 字。")
     }
 
-    /** 前后矛盾检查：设定集在系统提示里，这里给上一章结尾和本章。 */
-    fun consistency(previous: String, chapter: String, chapterTitle: String): String = buildString {
-        if (previous.isNotBlank()) append("上一章的结尾：\n").append(previous).append("\n\n")
-        append("本章「").append(chapterTitle).append("」：\n").append(chapter.take(CHAPTER_CHARS)).append("\n\n")
-        append("检查本章和作品设定、和上一章之间有没有前后矛盾：人名地名写法不一致、人物的年龄身份能力关系对不上、")
-        append("已经死去或离开的人物又出现、时间线和季节天气冲突、物品下落不一致、伏笔被遗忘等。\n")
-        append("逐条列出发现的问题，每条写明本章原文的哪句话、和什么矛盾。只列有把握的；没有发现就只回答“没有发现明显的前后矛盾”。")
-    }
-
     /** 没有设定包时的写作建议：几段刚写的文字，让模型挑出明显的错字、用词和标点错误，回 JSON。 */
     /**
      * 写作建议：作者刚写的几段，按开着的几类挑问题。设定、规范、口吻都要有依据（设定包里写明的），
@@ -329,7 +322,7 @@ object WritePrompts {
         append("\n只找下面这几类问题，别的不要管（不要改文风、不要提“可以写得更好”的建议、不要改人物故意的说法）：\n")
         kinds.forEach { append("- ").append(it.label).append("：").append(it.ask).append('\n') }
         // 写作建议发得勤，不给工具（一次请求就答）：只按上面整份给出的设定判断。
-        append("设定、规范、口吻这几类必须在上面给出的设定里有明确依据，拿不准就不提。\n")
+        if (kinds.any { it == SuggestKind.STYLE || it == SuggestKind.VOICE }) append("规范、口吻这两类必须在上面给出的设定里有明确依据，拿不准就不提。\n")
         append("wrong 必须是原文里一字不差的一小段（尽量短，三五个字到一句话），right 是改好的这一小段，reason 用一句话说原因，")
         append("kind 是 ").append(kinds.joinToString("、") { it.name + "（" + it.label + "）" }).append(" 之一，source 写依据出自哪份文档哪一节（错字不用写）。\n")
         append("每段最多 3 处；没有问题的段不要列。只输出 JSON：{\"issues\":[{\"p\":1,\"wrong\":\"\",\"right\":\"\",\"reason\":\"\",\"kind\":\"\",\"source\":\"\"}]}，全都没问题就输出 {\"issues\":[]}。")

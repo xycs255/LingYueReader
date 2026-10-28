@@ -695,6 +695,9 @@ class WritingModel(
     /** 从审稿页点了一处问题：回到编辑器，选中原文里的这一句；带了 [Jump.instruction] 时接着按它让 AI 改。编辑器用掉后清空。 */
     val jump = MutableStateFlow<Jump?>(null)
 
+    /** 从审稿页的规则关点“在问题面板里看”：回到编辑器，打开问题面板的“规则”（值是哪一章）。编辑器用掉后清空。 */
+    val showProblems = MutableStateFlow<String?>(null)
+
     /** 伏笔表里的伏笔（[Foreshadow.doc] 是文档 id），以及写到了第几章（有字的章里最大的章号）。 */
     suspend fun foreshadows(workId: String): Pair<List<Foreshadow>, Int> = withContext(disk) {
         val docs = store.pack(workId).filter { it.kind == PackKind.FORESHADOW }.map { it.id to store.packText(workId, it.id) }

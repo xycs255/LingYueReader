@@ -142,7 +142,9 @@ class WritingReviewUiTest {
         waitForGate("事实关：1 处")
         waitForGate("写法关：没发现问题")
         waitForGate("规则关：1 处")
-        waitForText("「笑了笑」1 处，不用")
+        // 规则关的命中只在编辑器的问题面板里列，这里给条数和入口，不再列一遍。
+        waitForText("在编辑器的“问题”里看")
+        assertTrue(compose.onAllNodesWithText("「笑了笑」1 处，不用", substring = true).fetchSemanticsNodes().isEmpty())
 
         // 事实关：设定包的知识库整份在前面（人物档案、察觉表），后面是这一章的提示：出场人物、还不该知道的事、该回收的伏笔。
         val (system, user) = asked.first { "请做事实审稿" in it.second }

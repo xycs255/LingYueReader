@@ -121,10 +121,6 @@ sealed interface WriteAiTask {
     data object Review : WriteAiTask {
         override val title = "读者点评"
     }
-
-    data object Consistency : WriteAiTask {
-        override val title = "前后矛盾检查"
-    }
 }
 
 /** 写作助手面板：结果一段段长出来。 */
@@ -269,7 +265,7 @@ internal fun emptyProseMessage(truncated: Boolean, suggestThinkingOff: Boolean):
 }
 
 /**
- * 写作的 AI：选中文字改写、灵感、读者点评、矛盾检查、写作建议、整理设定集。
+ * 写作的 AI：选中文字改写、灵感、读者点评、写作建议、整理设定集。
  * 除了写作建议（每部作品单独开，默认关），都是作者点了才发请求；结果只给作者看，作者点“采纳”才改稿。
  */
 class WritingAi(
@@ -370,7 +366,7 @@ class WritingAi(
                     val i = chapters.indexOfFirst { it.id == chapterId }
                     if (taskSnapshot?.project == true) taskSnapshot.previous else chapters.getOrNull(i - 1)?.let { store.text(workId, it.id) }.orEmpty()
                 }
-                // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感、矛盾检查都带上。
+                // 本章资料（常用文档、出场人物、察觉、伏笔、提到这一章的小节），加上这一章的细纲卡：改稿、灵感都带上。
                 val pack = withContext(Dispatchers.IO) { chapterContext(workId, chapterId, text, style = true) }
                 // 改稿类（挑错除外）带上定稿章里挑的文风范例。
                 val samples = if (task is WriteAiTask.Edit && WritePrompts.usesSamples(task.action)) samplesFor(workId, chapterId) else null
@@ -390,13 +386,11 @@ class WritingAi(
                         WritePrompts.system(work.title, assist, pack) to WritePrompts.idea(task.kind, recent, title, task.extra)
                     }
                     WriteAiTask.Review -> WritePrompts.system(work.title, assist) to WritePrompts.review(text, title)
-                    WriteAiTask.Consistency -> WritePrompts.system(work.title, assist, pack) to WritePrompts.consistency(previous.takeLast(2_000), text, title)
                 }
                 val label = when (task) {
                     is WriteAiTask.Edit -> task.action.label
                     is WriteAiTask.Idea -> task.kind.label
                     WriteAiTask.Review -> "读者点评"
-                    WriteAiTask.Consistency -> "矛盾检查"
                 }
                 val onPiece: (String) -> Unit = { piece -> _state.update { s -> s?.takeIf { it.task === task }?.copy(text = s.text + piece) ?: s } }
                 val feature = when (task) {
@@ -409,12 +403,12 @@ class WritingAi(
                 else askWithPack(label, workId, system, prompt, whole = task is WriteAiTask.Edit, toolsUpTo = chapterId,
                     confirmedOnly = taskSnapshot?.project == true, requireTools = taskSnapshot?.project == true,
                     meter = meter,
-                    // 润色、扩写、续写这类改正文的用作品设的温度和思考开关；挑错只改错，求稳，不用。灵感、矛盾检查也不用。
+                    // 润色、扩写、续写这类改正文的用作品设的温度和思考开关；挑错只改错，求稳，不用。灵感也不用。
                     prose = proseOf(assist).takeIf { task is WriteAiTask.Edit && task.action != WriteAction.PROOFREAD },
                     onReset = { _state.update { s -> s?.takeIf { it.task === task }?.copy(text = "") ?: s } }, onText = onPiece)
                 val final = if (task is WriteAiTask.Edit) WritePrompts.clean(answer, task.original) else answer.trim()
                 _state.update { s -> s?.takeIf { it.task === task }?.copy(text = final, loading = false, usage = meter.usage, cost = meter.cost) ?: s }
-                // 灵感、点评、矛盾检查记下来，关了面板还能回头翻。
+                // 灵感、点评记下来，关了面板还能回头翻。
                 if (task !is WriteAiTask.Edit) log(workId, chapterId, label, (task as? WriteAiTask.Idea)?.extra.orEmpty(), final, meter)
             } catch (e: CancellationException) {
                 throw e
@@ -533,7 +527,7 @@ class WritingAi(
             _realtime.update { it.copy(checking = true, waiting = null, error = null, today = count) }
             try {
                 val work = withContext(Dispatchers.IO) { store.get(workId) }
-                // 只查错字（或本机模型）：不带设定包，一问一答。要查设定、规范、口吻：带上设定包和本章提示，
+                // 只查错字（或本机模型）：不带设定包，一问一答。要查规范、口吻：带上设定包和本章提示，
                 // 但不给工具，一次请求就答（写作建议发得勤，不能每次查好几轮）。
                 val typoOnly = !canUsePack || kinds == setOf(SuggestKind.TYPO)
                 val answer = if (!typoOnly) {
@@ -1161,7 +1155,7 @@ class WritingAi(
         val budget = knowledgeBudget(workId)
         val stage = phase ?: when (label) {
             "写本章", "接着写", "在编辑器里写", "续写" -> WritingPhase.CREATE
-            "事实关", "写法关", "矛盾检查", "读者点评", "写作建议" -> WritingPhase.REVIEW
+            "事实关", "写法关", "读者点评", "写作建议" -> WritingPhase.REVIEW
             "整理本章" -> WritingPhase.SYNC
             "润色", "更生动", "扩写", "缩写", "按要求改", "挑错" -> WritingPhase.REVISE
             else -> WritingPhase.ASSIST
@@ -1267,7 +1261,7 @@ class WritingAi(
     private val draftTokens: Int?
         get() = draftOutputTokenLimit(ai.currentConfig)
 
-    /** 记一条写作 AI 的结果（灵感、点评、矛盾检查、写本章）。 */
+    /** 记一条写作 AI 的结果（灵感、点评、写本章）。 */
     private suspend fun log(workId: String, chapterId: String, kind: String, ask: String, text: String, meter: AiMeter? = null) {
         if (text.isBlank()) return
         withContext(Dispatchers.IO) {

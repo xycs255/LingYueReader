@@ -97,6 +97,33 @@ class WritingRound2Test {
         assertEquals(WriteRecord.KEEP, s.aiLog(w.id).size)
     }
 
+    /** 写作建议不再查设定（审稿的事实关做）：旧设置里存着 CANON 的照常读，读出来没有它；没存过的默认三类。 */
+    @Test
+    fun oldSuggestKindsWithCanonStillRead() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("长夜")
+        assertEquals(listOf("TYPO", "STYLE", "VOICE"), s.assist(w.id).suggestKinds)
+        // 照旧版本存下的样子：四类都在，还夹着一个认不得的。
+        s.updateAssist(w.id) { it.copy(realtime = true, suggestKinds = listOf("TYPO", "CANON", "STYLE", "VOICE", "WHATEVER")) }
+        val a = s.assist(w.id)
+        assertTrue(a.realtime)
+        assertEquals(listOf("TYPO", "STYLE", "VOICE"), a.suggestKinds)
+        // 只开了查设定的：读出来一类都没有，不报错。
+        s.updateAssist(w.id) { it.copy(suggestKinds = listOf("CANON")) }
+        assertEquals(emptyList<String>(), s.assist(w.id).suggestKinds)
+    }
+
+    /** “矛盾检查”去掉了（审稿的事实关做这件事）：以前记下的那几条照样读得出、列得出，名字不变。 */
+    @Test
+    fun oldConsistencyRecordsStillRead() {
+        val s = WorkStore(tmp.newFolder())
+        val w = s.create("长夜")
+        s.addAiLog(w.id, WriteRecord("old", 10L, w.chapters[0].id, "第1章", "矛盾检查", "", "林月第三章说的是左臂受伤。"))
+        s.addAiLog(w.id, WriteRecord("new", 20L, w.chapters[0].id, "第1章", "读者点评", "", "节奏稍慢。"))
+        assertEquals(listOf("读者点评", "矛盾检查"), s.aiLog(w.id).map { it.kind })
+        assertEquals("林月第三章说的是左臂受伤。", s.aiLog(w.id).last().text)
+    }
+
     @Test
     fun issueMarksAndDeclinedEditsAreStored() {
         val r = ChapterReview(1, 2, listOf(GateResult(ReviewGate.FACT, listOf(ReviewIssue("一句", "问题", "改法", ReviewIssue.IGNORED)))))

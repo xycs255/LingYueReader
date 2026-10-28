@@ -110,11 +110,14 @@ class WritingRulesUiTest {
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId, check = true)) }
         waitForText("「点了点头」2 次，至多 1")
         waitForText("本章 20 字，少于 100")
-        waitForText("2 条不合规则")
-        // 点一条：依次选中它在正文里出现的地方。
-        compose.onNodeWithText("「点了点头」2 次，至多 1").performClick()
+        // 从检查全书点进来：问题面板停在“规则”，状态行合成一个数。
+        waitForText("2 处问题")
+        waitForText("规则 2")
+        // 字数这条没有位置，只有说明；点“跳到位置”依次选中它在正文里出现的地方。
+        assertEquals(1, compose.onAllNodesWithText("跳到位置").fetchSemanticsNodes().size)
+        compose.onNodeWithText("跳到位置").performClick()
         waitFor { selection() == TextRange(1, 5) }
-        compose.onNodeWithText("「点了点头」2 次，至多 1").performClick()
+        compose.onNodeWithText("跳到位置").performClick()
         waitFor { selection() == TextRange(8, 12) }
 
         // 定稿前提醒还有几条不合规则（不拦着）。
@@ -127,7 +130,7 @@ class WritingRulesUiTest {
         // 改掉一处，这一条就没了。
         compose.onNodeWithContentDescription("正文").performTextReplacement("他点了点头。老周没接话。\n她看了他一眼。")
         waitFor { compose.onAllNodesWithText("「点了点头」", substring = true).fetchSemanticsNodes().isEmpty() }
-        waitForText("1 条不合规则")
+        waitForText("1 处问题")
     }
 
     @Test
