@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -203,7 +205,8 @@ class WritingBeatsUiTest {
         // 节拍只读地列出来，带“去改节拍”。
         waitForText("去改节拍")
         waitForText("3. 老周的信")
-        waitFor { compose.onAllNodesWithText("写本章").fetchSemanticsNodes().isNotEmpty() }
+        // 按钮要等本章任务编好才可点：在慢机器上先出现、后可点，点早了会被忽略。
+        waitFor { compose.onAllNodes(hasText("写本章") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("写本章").performScrollTo().performClick()
         val all = beatText.values.joinToString("\n")
         waitFor { store.draft(workId, chapterId) == all }
