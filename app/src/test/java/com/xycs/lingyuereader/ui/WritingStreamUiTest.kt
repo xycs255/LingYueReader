@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -157,6 +159,8 @@ class WritingStreamUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     @Test
     fun theEditorAndTheDraftPageKeepUpWithALongStream() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
@@ -186,6 +190,7 @@ class WritingStreamUiTest {
         waitFor { (vm.writingAi.inline.value?.text?.length ?: 0) > 300 }
         compose.runOnUiThread { vm.writingAi.selectInline(1) }
         waitFor { vm.writingAi.inline.value?.loading == false }
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { vm.writingAi.inline.value == null }
         // 写的途中去草稿页、再回来。

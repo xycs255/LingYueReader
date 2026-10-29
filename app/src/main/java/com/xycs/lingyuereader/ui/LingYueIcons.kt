@@ -700,4 +700,112 @@ object LingYueIcons {
             }
         }
     }
+
+    /** 灵感：一只灯泡，底下两道灯座。 */
+    val Bulb by lazy {
+        glyph("Bulb") {
+            trace {
+                moveTo(9.2f, 15.5f)
+                quadTo(9.2f, 13.6f, 7.9f, 12.4f)
+                quadTo(6f, 10.6f, 6f, 9.2f)
+                quadTo(6f, 3.5f, 12f, 3.5f)
+                quadTo(18f, 3.5f, 18f, 9.2f)
+                quadTo(18f, 10.6f, 16.1f, 12.4f)
+                quadTo(14.8f, 13.6f, 14.8f, 15.5f)
+                close()
+                moveTo(9.5f, 18.2f); lineTo(14.5f, 18.2f)
+                moveTo(10.5f, 20.8f); lineTo(13.5f, 20.8f)
+            }
+        }
+    }
+
+    /** 改名：一行字的底线，上面一道竖着的光标。 */
+    val Rename by lazy {
+        glyph("Rename", autoMirror = true) {
+            trace {
+                moveTo(4.5f, 8f); lineTo(11.5f, 8f)
+                moveTo(8f, 8f); lineTo(8f, 16f)
+                moveTo(16.5f, 5f); lineTo(16.5f, 19f)
+                moveTo(14.5f, 5f); lineTo(18.5f, 5f)
+                moveTo(14.5f, 19f); lineTo(18.5f, 19f)
+                moveTo(4.5f, 19.5f); lineTo(12f, 19.5f)
+            }
+        }
+    }
+
+    /** 不变量、承接边界：一把挂锁，锁梁是半圆、锁身圆角方块，中间一道锁孔。 */
+    val Lock by lazy {
+        glyph("Lock") {
+            trace {
+                moveTo(8f, 10.5f); lineTo(8f, 8f)
+                arcTo(4f, 4f, 0f, false, true, 16f, 8f)
+                lineTo(16f, 10.5f)
+                moveTo(7f, 10.5f); lineTo(17f, 10.5f)
+                quadTo(18.5f, 10.5f, 18.5f, 12f)
+                lineTo(18.5f, 18.5f); quadTo(18.5f, 20f, 17f, 20f)
+                lineTo(7f, 20f); quadTo(5.5f, 20f, 5.5f, 18.5f)
+                lineTo(5.5f, 12f); quadTo(5.5f, 10.5f, 7f, 10.5f)
+                close()
+                moveTo(12f, 14f); lineTo(12f, 16.5f)
+            }
+        }
+    }
+
+    /** 硬性设定（年代、地理、势力）：一张三折的地图，折痕两道。 */
+    val MapFold by lazy {
+        glyph("MapFold") {
+            trace {
+                moveTo(3.5f, 6.5f); lineTo(9f, 4.5f); lineTo(15f, 6.5f); lineTo(20.5f, 4.5f)
+                lineTo(20.5f, 17.5f); lineTo(15f, 19.5f); lineTo(9f, 17.5f); lineTo(3.5f, 19.5f)
+                close()
+                moveTo(9f, 4.5f); lineTo(9f, 17.5f)
+                moveTo(15f, 6.5f); lineTo(15f, 19.5f)
+            }
+        }
+    }
+
+    /** 称谓与语气：一个说话的气泡，左下一个小尾巴，里面两行字。 */
+    val Chat by lazy {
+        glyph("Chat", autoMirror = true) {
+            trace {
+                moveTo(6.5f, 4.5f); lineTo(17.5f, 4.5f)
+                quadTo(20f, 4.5f, 20f, 7f)
+                lineTo(20f, 13f); quadTo(20f, 15.5f, 17.5f, 15.5f)
+                lineTo(10f, 15.5f); lineTo(6f, 19.5f); lineTo(6f, 15.5f)
+                quadTo(4f, 15.2f, 4f, 13f)
+                lineTo(4f, 7f); quadTo(4f, 4.5f, 6.5f, 4.5f)
+                close()
+                moveTo(8f, 8.5f); lineTo(16f, 8.5f)
+                moveTo(8f, 11.8f); lineTo(13f, 11.8f)
+            }
+        }
+    }
+
+    /** 章末钩子：一只鱼钩，上端一个小环。 */
+    val Hook by lazy {
+        glyph("Hook") {
+            trace {
+                moveTo(13f, 3.5f)
+                arcTo(1.6f, 1.6f, 0f, true, true, 12.99f, 3.5f)
+                moveTo(13f, 6.7f); lineTo(13f, 15f)
+                arcTo(4f, 4f, 0f, false, true, 5f, 15f)
+                lineTo(5f, 12.5f)
+                lineTo(7.5f, 14.5f)
+            }
+        }
+    }
+
+    /** 推进的线：两条并行的波浪线，一条在上、一条在下。 */
+    val Threads by lazy {
+        glyph("Threads") {
+            trace {
+                moveTo(3.5f, 9f)
+                curveTo(6.5f, 5f, 9f, 13f, 12f, 9f)
+                curveTo(15f, 5f, 17.5f, 13f, 20.5f, 9f)
+                moveTo(3.5f, 16f)
+                curveTo(6.5f, 12f, 9f, 20f, 12f, 16f)
+                curveTo(15f, 12f, 17.5f, 20f, 20.5f, 16f)
+            }
+        }
+    }
 }

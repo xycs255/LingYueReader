@@ -80,7 +80,7 @@ class WritingPlanUiTest {
         waitForText("草稿 · 5 字")
 
         // 定稿：正文锁定。
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
         compose.onNodeWithText("章节状态").performClick()
         waitForText("的状态")
         statusTab("定稿").performClick()
@@ -96,6 +96,7 @@ class WritingPlanUiTest {
         assertEquals("他推开门。", store.text(workId, chapterId))
         // AI 改稿也不行。
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("先解锁并登记原因")
 
@@ -127,6 +128,8 @@ class WritingPlanUiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
         waitForText("本章事实与结果")
+        // 细纲卡的几项是小卡片：点开“本章事实与结果”，它的文本框排在最前面。
+        compose.onNodeWithText("本章事实与结果").performClick()
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("护送队十二人到石桥")
         waitFor { store.card(workId, chapterId).facts == "护送队十二人到石桥" }
         // 从这里也能改状态：点章名那一行。

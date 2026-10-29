@@ -20,6 +20,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.text.contextmenu.builder.item
+import androidx.compose.foundation.text.contextmenu.modifier.appendTextContextMenuComponents
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -37,6 +39,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -56,6 +60,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Dp
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -98,6 +105,8 @@ import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterMove
+import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.beats
@@ -139,6 +148,7 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
+import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -178,6 +188,8 @@ import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.data.RuleHit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -200,6 +212,40 @@ internal fun whenLabel(at: Long, now: Long = System.currentTimeMillis()): String
         then.year == today.year -> "${then.monthValue}月${then.dayOfMonth}日"
         else -> "${then.year}年${then.monthValue}月${then.dayOfMonth}日"
     }
+}
+
+/**
+ * 带“撤销”的提示，同一时间只留最新的一条：新的出来前先关掉旧的（连拖两次时，点到的“撤销”总是撤最近这一次；
+ * 旧提示排在前面时点它撤的是上一次，目录已经变了会被拒绝）。旧的关掉就算没点撤销。
+ */
+internal class UndoTips(private val host: SnackbarHostState) {
+    private var job: Job? = null
+    private var shown: String? = null
+
+    fun show(scope: CoroutineScope, message: String, onUndo: () -> Unit) {
+        val old = job
+        val oldMessage = shown
+        shown = message
+        job = scope.launch {
+            if (old != null && old.isActive) {
+                // 旧的已经显示出来了：关掉；还在排队：停下它，不再显示。
+                listOf(host.newestSnackbarData(), host.oldestSnackbarData()).firstOrNull { it?.visuals?.message == oldMessage }?.dismiss()
+                old.cancelAndJoin()
+            }
+            if (host.showSnackbar(message, actionLabel = "撤销") == SnackbarResult.ActionPerformed) onUndo()
+        }
+    }
+}
+
+/**
+ * 移动后的提示：说移到了目录第几个。固定了细纲章号时章号不跟着目录变（账本、设定包仍按原来的章号），
+ * 说“目录第 N 个”，并说这一章按设定仍是第几章，免得作者以为章号变了。
+ */
+internal fun moveTip(move: ChapterMove): String {
+    if (move.pinned.isEmpty()) return "已把《${move.title}》移到第 ${move.position} 章"
+    val kept = move.pinned[move.chapterId]?.let { ChapterRefs.number(it) ?: it.toIntOrNull() }
+    val self = if (kept != null) "，章号仍按第 $kept 章" else ""
+    return "已把《${move.title}》移到目录第 ${move.position} 个$self（${move.pinned.size} 章固定了细纲章号）"
 }
 
 /** 页面上方显示 [AppViewModel.messages] 的提示条。 */
@@ -400,6 +446,15 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     // 长按哪一章 / 点了哪一卷弹出菜单；菜单里选了改名、删除再弹对话框。
     var chapterMenu by remember { mutableStateOf<String?>(null) }
     var volumeMenu by remember { mutableStateOf<String?>(null) }
+    // 作品页色块长按弹出的菜单（和规划树长按同一份菜单，弹在那一格上）。
+    var mapMenu by remember { mutableStateOf<String?>(null) }
+    // 规划树每章的小标记（细纲卡、节拍、伏笔），作品或账本变了重读。
+    var treeMarks by remember { mutableStateOf<Map<String, com.xycs.lingyuereader.data.ChapterTreeMarks>>(emptyMap()) }
+    val stats by vm.writing.stats.collectAsStateWithLifecycle()
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    val drag = remember(listState) { TreeDragController(listState) }
+    val scope = rememberCoroutineScope()
     var collapsedVolumeIds by rememberWritingTreeIds(workId, "volumes")
     var reorderMode by rememberSaveable(workId) { mutableStateOf(false) }
     var renamingChapter by remember { mutableStateOf<WorkChapter?>(null) }
@@ -411,7 +466,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val pendingChanges = allChanges[workId].orEmpty().count { it.pending }
     // 检查规则有几条（设定包改过就重读）；改状态时顺便看看这一章合不合规则。
     var ruleCount by remember { mutableStateOf<Int?>(null) }
-    LaunchedEffect(workId, pack) { ruleCount = vm.writing.rules(workId).rules.size }
+    // 检查规则里写的篇幅：规划树每章的字数小条按它画。
+    var lengthRule by remember { mutableStateOf<CheckRule.Length?>(null) }
+    LaunchedEffect(workId, pack) {
+        val rules = vm.writing.rules(workId).rules
+        ruleCount = rules.size
+        lengthRule = rules.filterIsInstance<CheckRule.Length>().firstOrNull()
+    }
     val summaryProgress by vm.writingAi.summaries.collectAsStateWithLifecycle()
     // 整理进设定包：批量整理的进度、哪些章还没整理（正文改过的也算），标为定稿后的提示。
     val syncAll by vm.writingAi.sync.collectAsStateWithLifecycle()
@@ -441,9 +502,43 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     val lastSummary = remember { arrayOfNulls<SummaryProgress>(1) }
     if (summary != null) lastSummary[0] = summary
 
+    LaunchedEffect(workId, work, ledgers[workId]) { treeMarks = vm.writing.treeMarks(workId) }
+
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
     if (work == null) return
+    drag.resolve = { ch, y -> treeDropAt(work, ch.id, collapsedVolumeIds, drag.slots(), y) }
+
+    val moveTips = remember(snackbar) { UndoTips(snackbar) }
+    val treeActions = WritingTreeActions(
+        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
+        onToggleVolume = { id ->
+            collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
+        },
+        onOpenVolumeMenu = { volumeMenu = it.id },
+        onDismissVolumeMenu = { volumeMenu = null },
+        onRenameVolume = { renamingVolume = it },
+        onDeleteVolume = { deletingVolume = it },
+        onOpenChapter = { vm.open(Screen.Editor(workId, it.id)) },
+        onOpenCard = { vm.open(Screen.ChapterCard(workId, it.id)) },
+        onOpenChapterMenu = { chapterMenu = it.id },
+        onDismissChapterMenu = { chapterMenu = null },
+        onRenameChapter = { renamingChapter = it },
+        onStatusChapter = { statusFor = it },
+        onMoveChapter = { ch, delta -> vm.writing.moveChapter(workId, ch.id, delta) },
+        onDeleteChapter = { deletingChapter = it },
+        onAddChapter = { v ->
+            vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
+        },
+        onToggleReorder = { reorderMode = !reorderMode },
+        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
+        onDropChapter = { ch, volumeId, index ->
+            vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
+                // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。只留最新一次的提示。
+                moveTips.show(scope, moveTip(move)) { vm.writing.undoChapterMove(workId, move) { vm.showMessage("已撤销移动") } }
+            }
+        },
+    )
 
     val launchers = ExportFormat.entries.associateWith { f ->
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(f.mime)) { uri -> uri?.let { vm.exportWork(workId, f, it) } }
@@ -490,9 +585,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     ) { padding ->
         // 配色在骨架提供的配色里面读。
         val c = LocalGroupedColors.current
+        val density = LocalDensity.current
+        drag.topInset = with(density) { padding.calculateTopPadding().toPx() }
+        drag.bottomInset = with(density) { padding.calculateBottomPadding().toPx() }
+        TreeDragAutoScroll(drag)
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
+                Modifier.fillMaxSize().overScrollVertical().onGloballyPositioned { drag.listCoordinates = it },
+                state = listState,
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
                 overscrollEffect = null,
             ) {
@@ -540,6 +640,13 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         foreshadowNote = foreshadowNote,
                         ruleCount = ruleCount,
                         busy = busy,
+                        unsyncedIds = if (pack?.isNotEmpty() == true) unsynced else emptySet(),
+                        openPromises = ledgers[workId]?.count { it.kind == com.xycs.lingyuereader.data.LedgerKind.PROMISE && !it.done },
+                        aiProvider = aiConfig.takeIf { it.ready }?.providerLabel,
+                        todayWords = stats.on(LocalDate.now()),
+                        dailyGoal = stats.goal,
+                        mapMenuId = mapMenu,
+                        chapterMenu = { ch -> ChapterMenuPopup(true, ch, treeActions, onDismiss = { mapMenu = null }) },
                         actions = WritingWorkOverviewActions(
                             openChapter = { ch -> vm.open(Screen.Editor(workId, ch.id)) },
                             newChapter = {
@@ -562,6 +669,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                     else -> syncConfirm = true
                                 }
                             },
+                            openChapterMenu = { mapMenu = it.id },
                         ),
                     )
                 }
@@ -573,30 +681,14 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     reorderMode = reorderMode,
                     volumeMenuId = volumeMenu,
                     chapterMenuId = chapterMenu,
-                    actions = WritingTreeActions(
-                        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
-                        onToggleVolume = { id ->
-                            collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
-                        },
-                        onOpenVolumeMenu = { volumeMenu = it.id },
-                        onDismissVolumeMenu = { volumeMenu = null },
-                        onRenameVolume = { renamingVolume = it },
-                        onDeleteVolume = { deletingVolume = it },
-                        onOpenChapter = { vm.open(Screen.Editor(workId, it.id)) },
-                        onOpenCard = { vm.open(Screen.ChapterCard(workId, it.id)) },
-                        onOpenChapterMenu = { chapterMenu = it.id },
-                        onDismissChapterMenu = { chapterMenu = null },
-                        onRenameChapter = { renamingChapter = it },
-                        onStatusChapter = { statusFor = it },
-                        onMoveChapter = { ch, delta -> vm.writing.moveChapter(workId, ch.id, delta) },
-                        onDeleteChapter = { deletingChapter = it },
-                        onAddChapter = { v ->
-                            vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
-                        },
-                        onToggleReorder = { reorderMode = !reorderMode },
-                    ),
+                    actions = treeActions,
+                    marks = treeMarks,
+                    length = lengthRule,
+                    drag = drag,
                 )
             }
+            // 规划树拖着的那一章浮在列表上面跟手。
+            TreeDragGhost(drag)
             // 预览、导出时的忙碌条浮在标题栏下面，不占地方：出现、消失时页面不被往下顶。
             AnimatedVisibility(
                 visible = busy,
@@ -846,11 +938,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var savedText by remember(workId, chapterId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
-    // 旧 AI / 标点操作仍可切换；平时显示更省空间的上下文推荐。
-    var aiBar by rememberSaveable { mutableStateOf(false) }
-    var punctuationBar by rememberSaveable { mutableStateOf(false) }
-    var toolsOpen by remember(workId, chapterId) { mutableStateOf(false) }
-    var toolGroup by remember(workId, chapterId) { mutableStateOf(EditorToolGroup.WRITE) }
+    // 底栏标签展开的那一排（四个标签之一，或 ✦ 的几项推荐），一次一排；“写”那排还能换成改稿的几样、快捷标点。
+    var row by remember(workId, chapterId) { mutableStateOf<EditorRow?>(null) }
+    var writeSub by remember(workId, chapterId) { mutableStateOf(WriteSub.TILES) }
+    // 菜单挪到了底部：第一次打开新编辑器时提示一次，整个应用只提示这一次（不分作品）。
+    // 真显示出来了才记成提示过（见下面提示那里）；旋转屏幕重建时记着还没看过的，接着提示。
+    var tabsTip by rememberSaveable { mutableStateOf(vm.editorTabsTipPending()) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var companionOpen by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
@@ -913,7 +1006,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     // 定稿了、AI 开始写了：收起排版预览（这时不能排）。
     LaunchedEffect(locked, inline != null) { if (locked || inline != null) formatOpen = false }
     LaunchedEffect(inline, aiState) {
-        if (inline != null || aiState?.let { it.workId == workId && it.chapterId == chapterId } == true) toolsOpen = false
+        if (inline != null || aiState?.let { it.workId == workId && it.chapterId == chapterId } == true) row = null
     }
 
     LaunchedEffect(workId, chapterId) {
@@ -1001,14 +1094,30 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     fun openProblems(filter: ProblemFilter = ProblemFilter.ALL) {
         problemFilter = filter
         problemsOpen = true
-        toolsOpen = false
+        row = null
         companionOpen = false
         formatOpen = false
+    }
+
+    val currentAi = aiState?.takeIf { it.workId == workId && it.chapterId == chapterId }
+
+    /**
+     * AI 的结果还在写、或写好了等采纳：不再发起新的，提示先处理。新的一发起，上一个结果就被悄悄换掉了。
+     * 出错的那份没什么可采纳的，可以直接换一样再试。选中菜单、底栏、✦ 都走这里，说法和 ✦ 上的“在上方采纳或放弃”对得上。
+     * 现读 AI 的状态，不用组合时记下的：选中菜单的回调可能是早先那次组合留下的。
+     */
+    fun blockedByPendingAi(): Boolean {
+        val edit = vm.writingAi.state.value?.takeIf { it.workId == workId && it.chapterId == chapterId && it.error == null }
+        val writing = vm.writingAi.inline.value?.takeIf { it.workId == workId && it.chapterId == chapterId }
+        if (edit == null && writing == null) return false
+        vm.showMessage(PENDING_AI_MESSAGE)
+        return true
     }
 
     /** 跑一个 AI 任务：用编辑框里现在的全文（可能还没存盘）。 */
     fun runAi(task: WriteAiTask) {
         val st = current ?: return
+        if (blockedByPendingAi()) return
         problemsOpen = false
         vm.writingAi.run(workId, chapterId, st.text.toString(), task)
     }
@@ -1032,6 +1141,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
             return
         }
+        if (blockedByPendingAi()) return
         val text = st.text.toString()
         val at = st.selection.max
         vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat, variants)
@@ -1045,7 +1155,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 
     /** 打开“AI 写”面板。 */
     fun openAiWrite() {
-        if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else aiWriteOpen = true
+        if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else if (!blockedByPendingAi()) aiWriteOpen = true
     }
 
     /**
@@ -1124,16 +1234,25 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             !ChapterSyncs.isSynced(assist?.synced?.get(chapterId), text)
     }
 
-    /** 采纳一条建议：换掉正文里那几个字；去 AI 腔的还记进采纳过的修改，以后当例子学。 */
+    /**
+     * 采纳一条建议：换掉正文里那几个字；去 AI 腔的还记进采纳过的修改，以后当例子学。
+     * 这是 AI 提的改法：学习数据里那段原稿跟着换（收尾比对时不算作者改的）。
+     */
     fun fixIssue(st: TextFieldState, issue: WriteIssue) {
         if (!applyIssue(st, issue)) vm.showMessage("那段已经改动了")
-        else if (issue.kind == SuggestKind.CLICHE.name) vm.writingAi.acceptCliche(workId, issue)
+        else {
+            vm.writingAi.recordAiEdit(workId, chapterId, issue.paragraph, issue.paragraph.replaceFirst(issue.wrong, issue.right))
+            if (issue.kind == SuggestKind.CLICHE.name) vm.writingAi.acceptCliche(workId, issue)
+        }
         vm.writingAi.dismissIssue(issue)
     }
 
-    /** 去 AI 腔：按现在的正文重新数一遍标出的 AI 腔、黑名单（停笔检查可能还没跟上），把那几段发给 AI。 */
+    /**
+     * 去 AI 腔：按现在的正文重新数一遍标出的 AI 腔、黑名单（停笔检查可能还没跟上），把那几段发给 AI。
+     * 给了 [within]（选中的文字）时只改和它沾边的那几处。
+     */
     val clicheScope = rememberCoroutineScope()
-    fun startCliche() {
+    fun startCliche(within: TextRange? = null) {
         val st = current ?: return
         if (locked) {
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
@@ -1144,6 +1263,12 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         clicheScope.launch {
             // 整章按内置清单、黑名单查一遍（八十来个说法各跑一遍正则）：几万字的章要几十毫秒，不放在主线程上。
             val ranges = withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits.filter(AiCliche::isVoice).flatMap { it.ranges } }
+                .filter { r -> within == null || (r.first < within.max && r.last >= within.min) }
+            // 菜单、✦ 按停笔时的检查结果给的“去 AI 腔”，刚改过字可能对不上：这一章别处也许还有，只说选中的这段。
+            if (within != null && ranges.isEmpty()) {
+                vm.showMessage("选中的文字里没有标出的 AI 腔")
+                return@launch
+            }
             // 去 AI 腔的改法和写作建议一样，在问题面板的“建议”里一条条改或忽略。
             if (ranges.isNotEmpty() && vm.writingAi.ready) {
                 problemsOpen = true
@@ -1171,19 +1296,24 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 
     val chapters = work?.chapters.orEmpty()
     val index = chapters.indexOfFirst { it.id == chapterId }
-    val currentAi = aiState?.takeIf { it.workId == workId && it.chapterId == chapterId }
-    val pendingAi = inline != null || currentAi != null
     // 推荐“这章写完了”：节拍都写过了，或字数到了检查规则里写的下限（按汉字算的按汉字数）。
     val lengthRule = ruleSet?.rules?.filterIsInstance<CheckRule.Length>()?.firstOrNull { it.min != null }
+    // 字数接近目标（九成以上）也算：✦ 只在章末给“这章写完了”。
+    val words = report?.stats?.let { if (lengthRule?.han == true) it.han else it.words } ?: 0
     val finished = finishHint(
         beatCount = beatCard?.let { beats(it).size } ?: 0,
         beatsLeft = beatCard?.let { Beats.firstUndone(it) } != null,
-        words = report?.stats?.let { if (lengthRule?.han == true) it.han else it.words } ?: 0,
+        words = words,
         minWords = lengthRule?.min,
-    )
-    val recommendation = editorRecommendation(
+    ) ?: nearFinishHint(words, lengthRule?.min)
+    val picked = current?.selection ?: TextRange(0)
+    // 选中的文字命中了本机标出的 AI 腔：✦ 和选中菜单才给“去 AI 腔”。
+    val selectionCliche = !picked.collapsed && !locked &&
+        report?.hits?.any { h -> AiCliche.isVoice(h) && h.ranges.any { it.first < picked.max && it.last >= picked.min } } == true
+    // ✦ 按光标位置给的 1–3 项：第一项在底栏上，一点就做；其余点“+N”展开。
+    val spark = sparkActions(
         text = current?.text ?: "",
-        selection = current?.selection ?: TextRange(0),
+        selection = picked,
         status = if (locked) ChapterStatus.FINAL else chapter?.status,
         aiReady = aiConfig.ready,
         inline = inline,
@@ -1191,7 +1321,106 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         nextBeat = beatCard?.let { card -> Beats.firstUndone(card)?.let { n -> beats(card).firstOrNull { it.index == n } } },
         finished = finished,
         cardMissing = beatCard?.let { it.facts.isBlank() || beats(it).isEmpty() } ?: false,
+        selectionCliche = selectionCliche,
     )
+    val lastChapter = index == chapters.lastIndex && index >= 0
+
+    /** 换到别的章（上一章、下一章、写下一章）。 */
+    fun goTo(id: String) = vm.replaceTop(Screen.Editor(workId, id))
+
+    /**
+     * 底栏标签、右上“⋯”、顶栏箭头里的每一项。进别的页、开面板、弹对话框的先收起那一排；
+     * “改稿”“标点”在“写”那排里换成改稿的几样、快捷标点，排还开着。
+     */
+    fun onEntry(entry: EditorEntry) {
+        val st = current ?: return
+        if (entry != EditorEntry.REVISE && entry != EditorEntry.PUNCTUATION) row = null
+        when (entry) {
+            EditorEntry.AI_WRITE -> openAiWrite()
+            EditorEntry.IDEAS -> when {
+                // 问主意不改稿子：定稿的章也能打开灵感（书灵）面板。
+                inline != null -> vm.showMessage("先处理正在写入的 AI 正文")
+                currentAi != null -> vm.showMessage("先处理当前的 AI 结果，再打开灵感")
+                else -> {
+                    companionOpen = true
+                    formatOpen = false
+                    problemsOpen = false
+                }
+            }
+            EditorEntry.DRAFT -> { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) }
+            EditorEntry.REVISE -> writeSub = WriteSub.REVISE
+            EditorEntry.PUNCTUATION -> writeSub = WriteSub.PUNCTUATION
+            EditorEntry.PROBLEMS -> openProblems()
+            EditorEntry.BRIEF -> vm.open(Screen.ChapterBrief(workId, chapterId))
+            EditorEntry.LEDGER -> vm.open(Screen.WorkLedger(workId, chapterId))
+            EditorEntry.REVIEW -> { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) }
+            EditorEntry.CARD -> vm.open(Screen.ChapterCard(workId, chapterId))
+            EditorEntry.FINISH -> openFinish()
+            EditorEntry.FORMAT -> when {
+                locked -> vm.showMessage("这一章已定稿：要排版先解锁")
+                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
+                else -> {
+                    formatOpen = true
+                    companionOpen = false
+                    problemsOpen = false
+                }
+            }
+            // 先把现在的正文存成一版，历史列表里就有“刚才”这一版。
+            EditorEntry.HISTORY -> {
+                vm.writing.save(workId, chapterId, st.text.toString(), closing = true)
+                vm.open(Screen.WorkHistory(workId, chapterId))
+            }
+            EditorEntry.STATUS -> statusDialog = true
+            EditorEntry.RENAME -> renaming = true
+            // 预览、听稿要用刚打的字：不等自动保存，先存一次（排在预览前面落盘）。
+            EditorEntry.PREVIEW -> { saveNow(); vm.previewWork(workId, chapterId) }
+            EditorEntry.LISTEN -> { saveNow(); vm.previewWork(workId, chapterId, listen = true) }
+            EditorEntry.NEW_CHAPTER -> work?.volumeOf(chapterId)?.let { volume -> vm.writing.addChapter(workId, volume.id) { goTo(it.id) } }
+            EditorEntry.SYNC -> startSync()
+            EditorEntry.REFERENCE -> { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) }
+            EditorEntry.PACK -> vm.open(Screen.WorkPack(workId))
+            EditorEntry.PREV_CHAPTER -> chapters.getOrNull(index - 1)?.let { goTo(it.id) }
+            EditorEntry.NEXT_CHAPTER -> if (index >= 0) chapters.getOrNull(index + 1)?.let { goTo(it.id) }
+        }
+    }
+
+    /** 做 ✦ 推荐的一项：都是到现有流程的入口，AI 写的、改的照样先看再采纳。 */
+    fun runSpark(r: EditorRecommendation, scope: CoroutineScope) {
+        when (r.kind) {
+            EditorRecommendationKind.PENDING_AI -> Unit // 只是状态；采纳等操作在上方结果面板。
+            EditorRecommendationKind.UNLOCK -> statusDialog = true
+            EditorRecommendationKind.CONFIGURE_AI -> vm.open(Screen.Ai)
+            EditorRecommendationKind.DRAFT_CHAPTER -> { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) }
+            EditorRecommendationKind.REVISE_SELECTION, EditorRecommendationKind.POLISH_PARAGRAPH -> runEdit(WriteAction.POLISH)
+            EditorRecommendationKind.EXPAND_SELECTION, EditorRecommendationKind.EXPAND_PARAGRAPH -> runEdit(WriteAction.EXPAND)
+            EditorRecommendationKind.CONDENSE_SELECTION -> runEdit(WriteAction.CONDENSE)
+            EditorRecommendationKind.DECLICHE_SELECTION -> current?.let { startCliche(it.selection) }
+            EditorRecommendationKind.REVIEW_CHAPTER -> { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) }
+            EditorRecommendationKind.WRITE_BEAT -> writeNextBeat(scope)
+            EditorRecommendationKind.FINISH_CHAPTER -> openFinish()
+            // 接着写：不弹面板，从光标处写下一场（范本按开关带）；要别的写法从“写”里的“AI 写…”进。
+            EditorRecommendationKind.CONTINUE -> writeChoice(AiWriteChoice(InlineMode.SCENE, reference = chosenCompanionAnalysis != null && useReference))
+        }
+    }
+
+    /** 选中文字后菜单里加的几样：和 AI 条、✦ 走同一条改稿流程（先看对比再采纳）。 */
+    fun onSelectionAction(action: SelectionAction) {
+        val st = current ?: return
+        // 菜单照样弹出（系统的复制、粘贴还要用），点了改稿的几样先看有没有等采纳的结果。
+        if (blockedByPendingAi()) return
+        when (action) {
+            SelectionAction.POLISH -> runEdit(WriteAction.POLISH)
+            SelectionAction.EXPAND -> runEdit(WriteAction.EXPAND)
+            SelectionAction.CONDENSE -> runEdit(WriteAction.CONDENSE)
+            SelectionAction.DECLICHE -> startCliche(st.selection)
+            SelectionAction.ASK -> {
+                val text = st.text.toString()
+                val picked = text.substring(st.selection.min.coerceIn(0, text.length), st.selection.max.coerceIn(0, text.length))
+                if (picked.isBlank()) vm.showMessage("先选中文字")
+                else asking = "关于选中的文字，想问什么？" to { q -> runAi(WriteAiTask.Idea(IdeaKind.ASK, "选中的文字：「$picked」\n$q")) }
+            }
+        }
+    }
     val scheme = MiuixTheme.colorScheme
 
     ProvideGroupedColors {
@@ -1204,8 +1433,10 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BackButton(vm)
+                    // 章名左右是上一章、下一章；第一章、最后一章那一边变灰。
+                    StepIconButton(LingYueIcons.ChevronBackward, "上一章", enabled = index > 0, onClick = { onEntry(EditorEntry.PREV_CHAPTER) })
                     // 点章名改名；点下面一行（有问题时）打开问题面板。
-                    Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+                    Column(Modifier.weight(1f)) {
                         Text(
                             chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { renaming = true },
@@ -1243,58 +1474,23 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             Text(tail, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         }
                     }
+                    StepIconButton(LingYueIcons.ChevronForward, "下一章", enabled = index >= 0 && index < chapters.lastIndex, onClick = { onEntry(EditorEntry.NEXT_CHAPTER) })
                     IconButton(onClick = { if (!readOnly) current?.undoState?.undo() }, enabled = !readOnly && current?.undoState?.canUndo == true) {
                         Icon(LingYueIcons.Undo, contentDescription = "撤销")
                     }
                     IconButton(onClick = { if (!readOnly) current?.undoState?.redo() }, enabled = !readOnly && current?.undoState?.canRedo == true) {
                         Icon(LingYueIcons.Redo, contentDescription = "重做")
                     }
-                    Box(Modifier.padding(end = 8.dp)) {
+                    // 常用的都在底栏四个标签里；右上“⋯”只留不常用的几样。
+                    Box(Modifier.padding(end = 4.dp)) {
                         IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
                         OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
                             GlassMenu {
                                 ListPopupColumn {
-                                    // 预览、听稿要用刚打的字：不等自动保存，先存一次（排在预览前面落盘）。
-                                    val items = buildList<Pair<String, () -> Unit>> {
-                                        // 常用的在前：这一章的细纲和状态，再是 AI，最后是预览、历史、改名。
-                                        add("细纲卡" to { vm.open(Screen.ChapterCard(workId, chapterId)) })
-                                        add((if (locked) "解锁修改" else "章节状态") to { statusDialog = true })
-                                        // 一处收尾：审稿、整理入账、写摘要、定稿。定稿的章不显示。
-                                        if (!locked) add("这章写完了" to { openFinish() })
-                                        // 在光标处写（接着写、写这一拍、写到本章结尾）都在“AI 写”面板里，这里只留进草稿页的入口。
-                                        add("AI 写整章草稿" to { saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId)) })
-                                        add("三道审稿" to { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) })
-                                        add("整理本章进设定包" to { startSync() })
-                                        add("本章资料" to { vm.open(Screen.ChapterBrief(workId, chapterId)) })
-                                        add("故事账本" to { vm.open(Screen.WorkLedger(workId, chapterId)) })
-                                        add("从范本找写法" to { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) })
-                                        add("问题" to { openProblems() })
-                                        add("自动排版" to {
-                                            when {
-                                                locked -> vm.showMessage("这一章已定稿：要排版先解锁")
-                                                inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
-                                                else -> formatOpen = true
-                                            }
-                                        })
-                                        // 先把现在的正文存成一版，历史列表里就有“刚才”这一版。
-                                        add("历史版本" to {
-                                            current?.text?.toString()?.let { vm.writing.save(workId, chapterId, it, closing = true) }
-                                            vm.open(Screen.WorkHistory(workId, chapterId))
-                                        })
-                                        add("预览本章" to { saveNow(); vm.previewWork(workId, chapterId) })
-                                        add("听本章" to { saveNow(); vm.previewWork(workId, chapterId, listen = true) })
-                                        add("改章名" to { renaming = true })
-                                        chapters.getOrNull(index - 1)?.let { p -> add("上一章" to { vm.replaceTop(Screen.Editor(workId, p.id)) }) }
-                                        chapters.getOrNull(index + 1)?.let { n -> add("下一章" to { vm.replaceTop(Screen.Editor(workId, n.id)) }) }
-                                        if (index == chapters.lastIndex && index >= 0) {
-                                            val volume = work?.volumeOf(chapterId)
-                                            if (volume != null) add("写下一章" to { vm.writing.addChapter(workId, volume.id) { vm.replaceTop(Screen.Editor(workId, it.id)) } })
-                                        }
-                                    }
-                                    items.forEach { (label, action) ->
-                                        LingYueMenuItem(label, selected = false) {
+                                    EDITOR_OVERFLOW.forEach { entry ->
+                                        LingYueMenuItem(entryLabel(entry, locked), selected = false) {
                                             menu = false
-                                            action()
+                                            onEntry(entry)
                                         }
                                     }
                                 }
@@ -1306,7 +1502,19 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             snackbarHost = { SnackbarHost(snackbar) },
             contentWindowInsets = WindowInsets(0),
         ) { padding ->
-            Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+          // 矮屏（键盘弹出后剩下的地方不多）：底栏展开的那一排和标签合成一行，正文多留几行。
+          // 键盘升起、收起时每一帧高度都在变：只量出高度、越过门槛才翻这个开关，整块编辑器不跟着每帧重组
+          // （BoxWithConstraints 每次量都要把里面整块重组一遍）。
+          var compact by remember { mutableStateOf(false) }
+          val density = LocalDensity.current
+          Box(
+              Modifier.fillMaxSize().imePadding().navigationBarsPadding().onSizeChanged { size ->
+                  val next = compactEditor(with(density) { size.height.toDp() }, compact)
+                  if (next != compact) compact = next
+              },
+          ) {
+            Column(Modifier.fillMaxSize()) {
+                SideEffect { EditorTrace.bodyCompositions++ }
                 val focus = remember { FocusRequester() }
                 // 从审稿页点回来：选中那一句。找不到整句（可能改过了）只提示，不按开头几个字猜，免得选中、改到别处。
                 if (current != null) {
@@ -1457,8 +1665,23 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 .fillMaxSize()
                                 .focusRequester(focus)
                                 .onFocusChanged { editorFocused = it.isFocused }
+                                // 选中文字后，系统的剪切、复制、粘贴后面加上润色、扩写、缩写、去 AI 腔（选中的命中了才有）、问 AI。
+                                // 定稿、AI 在写的时候正文只读，不加。
+                                .appendTextContextMenuComponents {
+                                    val sel = latest?.selection
+                                    if (sel != null && !sel.collapsed && !readOnly) {
+                                        separator()
+                                        selectionMenu(selectionCliche).forEach { action ->
+                                            item(key = action, label = action.label) {
+                                                close()
+                                                onSelectionAction(action)
+                                            }
+                                        }
+                                    }
+                                }
                                 .semantics { contentDescription = "正文" }
-                                .padding(start = 22.dp, end = 22.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
+                                // 矮屏（键盘弹出）时底下少留一点，多露半行正文。
+                                .padding(start = 22.dp, end = 22.dp, top = padding.calculateTopPadding() + 12.dp, bottom = if (compact) 4.dp else 12.dp),
                             // 每段首行空两格（只是显示，存的正文不带缩进），段和折行一眼分得清。
                             textStyle = TextStyle(color = scheme.onSurface, fontSize = 18.sp, lineHeight = 32.sp, textIndent = TextIndent(firstLine = 2.em)),
                             cursorBrush = SolidColor(if (companionPosition == null) scheme.primary else Color.Unspecified),
@@ -1528,7 +1751,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     aiPanel != null -> EditorPanel.Ai(aiPanel)
                     problemsOpen -> EditorPanel.Problems
                     companionOpen -> EditorPanel.Companion
-                    toolsOpen -> EditorPanel.Tools
                     shownIssue != null && !locked -> EditorPanel.Suggestion(shownIssue)
                     shownRule != null -> EditorPanel.Rule(shownRule)
                     else -> EditorPanel.None
@@ -1564,86 +1786,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             },
                             onConfigureAi = { vm.open(Screen.Ai) },
                             onClose = { companionOpen = false },
-                        )
-                        EditorPanel.Tools -> WritingEditorToolsPanel(
-                            selected = toolGroup,
-                            shortcuts = when (toolGroup) {
-                                EditorToolGroup.WRITE -> listOf(
-                                    // 在光标处写从 AI 条“AI 写…”和智能推荐进；这里只留进草稿页的入口。
-                                    EditorToolShortcut("AI 写整章草稿", LingYueIcons.Write) {
-                                        toolsOpen = false; saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("润色", LingYueIcons.Polish) {
-                                        toolsOpen = false; runEdit(WriteAction.POLISH)
-                                    },
-                                    EditorToolShortcut("快捷标点", LingYueIcons.Punctuation) {
-                                        toolsOpen = false; aiBar = false; punctuationBar = true
-                                    },
-                                )
-                                EditorToolGroup.CHECK -> listOf(
-                                    EditorToolShortcut("三道审稿", LingYueIcons.Search) {
-                                        toolsOpen = false; saveNow(); vm.open(Screen.ChapterReview(workId, chapterId))
-                                    },
-                                    // 规则、AI 腔、写作建议、审稿没处理的都在“问题”里；三道审稿是去跑审稿的入口。
-                                    EditorToolShortcut("问题", LingYueIcons.Check) {
-                                        openProblems()
-                                    },
-                                    EditorToolShortcut("细纲卡", LingYueIcons.ListView) {
-                                        toolsOpen = false; vm.open(Screen.ChapterCard(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("本章资料", LingYueIcons.Info) {
-                                        toolsOpen = false; vm.open(Screen.ChapterBrief(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("设定包", LingYueIcons.Folder) {
-                                        toolsOpen = false; vm.open(Screen.WorkPack(workId))
-                                    },
-                                )
-                                EditorToolGroup.ORGANIZE -> listOfNotNull(
-                                    // 第一格：写完一章一处收尾；定稿的章不显示。
-                                    EditorToolShortcut("这章写完了", LingYueIcons.Check) {
-                                        toolsOpen = false; openFinish()
-                                    }.takeIf { !locked },
-                                    EditorToolShortcut("整理入账", LingYueIcons.Download) {
-                                        toolsOpen = false; startSync()
-                                    },
-                                    EditorToolShortcut("故事账本", LingYueIcons.Book) {
-                                        toolsOpen = false; vm.open(Screen.WorkLedger(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("章节状态", LingYueIcons.Flag) {
-                                        toolsOpen = false; statusDialog = true
-                                    },
-                                    EditorToolShortcut("历史版本", LingYueIcons.History) {
-                                        toolsOpen = false
-                                        st.text.toString().let { vm.writing.save(workId, chapterId, it, closing = true) }
-                                        vm.open(Screen.WorkHistory(workId, chapterId))
-                                    },
-                                )
-                                EditorToolGroup.MORE -> listOf(
-                                    // “全部工具”放在第一格：小屏换行后也直接看得到完整旧菜单。
-                                    EditorToolShortcut("全部工具", LingYueIcons.More) {
-                                        toolsOpen = false; menu = true
-                                    },
-                                    EditorToolShortcut("范本写法", LingYueIcons.Notes) {
-                                        toolsOpen = false; saveNow(); vm.open(Screen.WritingReference(workId, chapterId))
-                                    },
-                                    EditorToolShortcut("自动排版", LingYueIcons.Format) {
-                                        toolsOpen = false
-                                        when {
-                                            locked -> vm.showMessage("这一章已定稿：要排版先解锁")
-                                            inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再排版")
-                                            else -> formatOpen = true
-                                        }
-                                    },
-                                    EditorToolShortcut("预览本章", LingYueIcons.Preview) {
-                                        toolsOpen = false; saveNow(); vm.previewWork(workId, chapterId)
-                                    },
-                                    EditorToolShortcut("听本章", LingYueIcons.VolumeUp) {
-                                        toolsOpen = false; saveNow(); vm.previewWork(workId, chapterId, listen = true)
-                                    },
-                                )
-                            },
-                            onSelect = { toolGroup = it },
-                            onClose = { toolsOpen = false },
                         )
                         is EditorPanel.Inline -> InlineBar(
                             p.write,
@@ -1721,6 +1863,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 val before = st.text.toString()
                                 when (applyEdit(st, task, result)) {
                                     EditApply.DONE -> {
+                                        // AI 改的、接着写的字记成 AI 原稿：收尾学习时不当成作者自己的改法。
+                                        vm.writingAi.recordAiEdit(workId, chapterId, if (task.action == WriteAction.CONTINUE) "" else task.original, result)
                                         vm.writingAi.accepted(workId, task.action, task.original, result)
                                         val after = st.text.toString()
                                         task.reviewFix?.takeIf { before != after }?.let { fix ->
@@ -1746,7 +1890,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 if (locked) {
                                     vm.showMessage("这一章已定稿：要改先解锁并登记原因")
                                 } else {
+                                    val replaced = st.selection.let { sel -> st.text.substring(sel.min, sel.max) }
                                     st.edit { replace(selection.min, selection.max, result) }
+                                    vm.writingAi.recordAiEdit(workId, chapterId, replaced, result)
                                     vm.writingAi.close()
                                 }
                             },
@@ -1833,190 +1979,76 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !problemsOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
-                // 平时只占一行：两个带字的旧入口 + 上下文推荐 + 四组工具。旧 AI / 标点条仍可切换，功能不丢。
-                Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
-                val stripMode = when {
-                    aiBar -> "ai"
-                    punctuationBar -> "punctuation"
-                    else -> "smart"
+                // 一次性提示放在底栏上面、和面板一样占地方：不浮在正文上，盖不住正在写的最后两行。
+                if (current != null && tabsTip) {
+                    // 一打字就收起（作者已经在写了，不用再看提示）。
+                    LaunchedEffect(current) {
+                        val start = current.text.toString()
+                        snapshotFlow { current.text.toString() }.first { it != start }
+                        tabsTip = false
+                    }
                 }
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 56.dp).background(c.background).padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 左边两个入口图标下面写着字，长按再给一句说明，不只靠 ✦ 和书本猜。
-                    LabeledIconButton(
-                        LingYueIcons.Sparkle,
-                        label = if (aiBar) "标点" else "AI",
-                        description = if (aiBar) "换回标点" else "AI 写作",
-                        selected = aiBar,
-                        longClickLabel = "说明",
-                        onLongClick = {
-                            vm.showMessage(if (aiBar) "换回快捷标点条" else "AI 写作：切到 AI 工具条，AI 写、润色、扩写、读者点评等")
-                        },
-                        onClick = {
-                            if (aiBar) { aiBar = false; punctuationBar = true }
-                            else { aiBar = true; punctuationBar = false }
-                            toolsOpen = false
-                        },
-                    )
-                    LabeledIconButton(
-                        LingYueIcons.Book,
-                        label = "书灵",
-                        description = "书灵",
-                        selected = companionOpen,
-                        longClickLabel = "说明",
-                        onLongClick = { vm.showMessage("书灵：问主意（接下来怎么写、起名、卡文了……），选写作范本") },
-                        onClick = {
-                            when {
-                                // 问主意不改稿子：定稿的章也能打开书灵。
-                                inline != null -> vm.showMessage("先处理正在写入的 AI 正文")
-                                aiState?.let { it.workId == workId && it.chapterId == chapterId } == true ->
-                                    vm.showMessage("先处理当前的 AI 结果，再打开书灵")
-                                else -> {
-                                    companionOpen = !companionOpen
-                                    if (companionOpen) {
-                                        toolsOpen = false
-                                        formatOpen = false
-                                        problemsOpen = false
-                                    }
-                                }
-                            }
-                        },
-                    )
-                    AnimatedContent(
-                        stripMode,
-                        modifier = Modifier.weight(1f),
-                        transitionSpec = {
-                            Effects.enter(fadeIn(Motion.standard(Motion.SHORT))) togetherWith
-                                Effects.exit(fadeOut(Motion.exit()))
-                        },
-                        label = "editorToolStrip",
-                    ) { mode ->
-                        when (mode) {
-                            "smart" -> {
-                                val enabled = current != null && recommendation.enabled
-                                val action = if (enabled) Modifier.combinedClickableCompat {
-                                    when (recommendation.kind) {
-                                        EditorRecommendationKind.PENDING_AI -> Unit // 状态行无点击；采纳等操作只在上方结果面板。
-                                        EditorRecommendationKind.UNLOCK -> statusDialog = true
-                                        EditorRecommendationKind.CONFIGURE_AI -> vm.open(Screen.Ai)
-                                        EditorRecommendationKind.DRAFT_CHAPTER -> {
-                                            saveNow(); vm.open(Screen.ChapterDraft(workId, chapterId))
-                                        }
-                                        EditorRecommendationKind.REVISE_SELECTION -> runEdit(WriteAction.POLISH)
-                                        EditorRecommendationKind.REVIEW_CHAPTER -> {
-                                            saveNow(); vm.open(Screen.ChapterReview(workId, chapterId))
-                                        }
-                                        EditorRecommendationKind.WRITE_BEAT -> writeNextBeat(effects)
-                                        EditorRecommendationKind.FINISH_CHAPTER -> openFinish()
-                                        EditorRecommendationKind.CONTINUE -> openAiWrite()
-                                    }
-                                } else Modifier
-                                val label = if (current == null) "载入中" else recommendation.label
-                                // 正文才是主角：推荐用淡强调色底、强调色字，不铺整条实心色；
-                                // 还没设置写作 AI 时只是一枚描边的次要按钮，不带副标题。
-                                val setup = enabled && recommendation.kind == EditorRecommendationKind.CONFIGURE_AI
-                                val shape = RoundedCornerShape(12.dp)
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 48.dp)
-                                        .clip(shape)
-                                        .then(
-                                            when {
-                                                setup -> Modifier.border(1.dp, c.tertiary.copy(alpha = 0.45f), shape)
-                                                enabled -> Modifier.background(c.tint.copy(alpha = 0.12f))
-                                                else -> Modifier.background(c.fill)
-                                            },
-                                        )
-                                        .then(action)
-                                        .semantics {
-                                            contentDescription = if (enabled) "智能推荐：$label，${recommendation.reason}"
-                                                else "当前状态：$label，${recommendation.reason}"
-                                            if (!enabled) disabled()
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (setup) {
-                                        Text(label, color = c.label, fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("✦ $label", color = if (enabled) c.tint else c.label,
-                                            fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(recommendation.reason, color = c.secondary,
-                                            fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
-                            }
-                            else -> Row(
-                                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (mode == "ai") {
-                                    val clicheHere = !locked && report?.hits?.any(AiCliche::isVoice) == true
-                                    (if (clicheHere) AI_BAR.take(1) + AiBarItem.Cliche + AI_BAR.drop(1) else AI_BAR).forEach { item ->
-                                        Box(
-                                            Modifier
-                                                .padding(horizontal = 2.dp)
-                                                .widthIn(min = 48.dp).heightIn(min = 48.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .combinedClickableCompat { onAiItem(item) }
-                                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) { Text(item.label, color = c.label, fontSize = 14.sp, maxLines = 1) }
-                                    }
-                                } else {
-                                    Box(
-                                        Modifier.widthIn(min = 48.dp).heightIn(min = 48.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .combinedClickableCompat { punctuationBar = false }
-                                            .semantics { contentDescription = "返回智能推荐" },
-                                        contentAlignment = Alignment.Center,
-                                    ) { Icon(LingYueIcons.Sparkle, contentDescription = null, tint = c.tint, modifier = Modifier.size(18.dp)) }
-                                    QUICK_INSERTS.forEach { s ->
-                                        Box(
-                                            Modifier
-                                                .padding(horizontal = 2.dp)
-                                                .widthIn(min = 48.dp).heightIn(min = 48.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .combinedClickableCompat {
-                                                    when {
-                                                        locked -> vm.showMessage("这一章已定稿：要改先解锁并登记原因")
-                                                        inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再改正文")
-                                                        else -> current?.let { insert(it, s) }
-                                                    }
-                                                }
-                                                .semantics { contentDescription = "插入$s" }
-                                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) { Text(s, color = c.label, fontSize = 17.sp, maxLines = 1) }
+                AnimatedVisibility(tabsTip && current != null, enter = barEnter(), exit = barExit()) {
+                    // 进了界面才算提示过：正文还没读出来就离开、旋转，下次照样提示。
+                    SideEffect { if (vm.editorTabsTipPending()) vm.editorTabsTipShown() }
+                    EditorTip("菜单挪到底部了：写 / 查 / 整理 / 更多") { tabsTip = false }
+                }
+                // 底栏：左边“写 / 查 / 整理 / 更多”四个标签，右边 ✦ 推荐。点标签在上面展开一排大图标，再点一次收起。
+                EditorBottomBar(
+                    row = row,
+                    compact = compact,
+                    spark = spark,
+                    ready = current != null,
+                    problems = problems.size,
+                    onRow = { r ->
+                        tabsTip = false
+                        if (r != row) writeSub = WriteSub.TILES
+                        row = r
+                        // 一次只开一样：展开一排时收起问题、灵感、排版面板，键盘上方不叠两层。
+                        if (r != null) {
+                            companionOpen = false
+                            formatOpen = false
+                            problemsOpen = false
+                        }
+                    },
+                    onSpark = { r -> runSpark(r, effects) },
+                ) { r ->
+                    when {
+                        r is EditorRow.Tab && r.group == EditorToolGroup.WRITE && writeSub == WriteSub.REVISE -> {
+                            val clicheHere = !locked && report?.hits?.any(AiCliche::isVoice) == true
+                            EditorChipRow(backDescription = "返回“写”", onBack = { writeSub = WriteSub.TILES }) {
+                                (if (clicheHere) listOf(AiBarItem.Edit(WriteAction.POLISH), AiBarItem.Cliche) + AI_BAR.drop(2) else AI_BAR.drop(1)).forEach { item ->
+                                    EditorChip(item.label) {
+                                        row = null
+                                        onAiItem(item)
                                     }
                                 }
                             }
                         }
-                    }
-                    LabeledIconButton(
-                        LingYueIcons.Tools,
-                        label = "工具",
-                        description = if (toolsOpen) "关闭四组工具" else "打开四组工具",
-                        selected = toolsOpen,
-                        onClick = {
-                            if (pendingAi) vm.showMessage("先处理当前的 AI 结果，再打开工具")
-                            else {
-                                toolsOpen = !toolsOpen
-                                if (toolsOpen) {
-                                    companionOpen = false
-                                    formatOpen = false
-                                    problemsOpen = false
+                        r is EditorRow.Tab && r.group == EditorToolGroup.WRITE && writeSub == WriteSub.PUNCTUATION ->
+                            EditorChipRow(backDescription = "返回“写”", onBack = { writeSub = WriteSub.TILES }) {
+                                QUICK_INSERTS.forEach { mark ->
+                                    EditorChip(mark, description = "插入$mark", fontSize = 17) {
+                                        when {
+                                            locked -> vm.showMessage("这一章已定稿：要改先解锁并登记原因")
+                                            inline != null -> vm.showMessage("AI 写的还没采纳或撤回，先处理它再改正文")
+                                            else -> current?.let { insert(it, mark) }
+                                        }
+                                    }
                                 }
                             }
-                        },
-                    )
+                        r is EditorRow.Tab -> EditorTiles(
+                            editorTabEntries(r.group, locked, lastChapter).map { e -> ToolTile(entryLabel(e, locked), entryIcon(e)) { onEntry(e) } },
+                            compact = compact,
+                        )
+                        else -> EditorTiles(
+                            spark.map { rec -> ToolTile(rec.label, sparkIcon(rec.kind)) { row = null; runSpark(rec, effects) } },
+                            compact = compact,
+                        )
+                    }
                 }
             }
+          }
             if (renaming && chapter != null) {
                 NameDialog("章名", chapter.title, "保存", onDismiss = { renaming = false }) {
                     renaming = false
@@ -2102,13 +2134,30 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 private fun mergeBeatsDone(disk: ChapterCard, local: ChapterCard?): ChapterCard =
     if (local != null && disk.beats == local.beats) disk.copy(beatsDone = (disk.beatsDone + local.beatsDone).distinct().sorted()) else disk
 
+/** 测试看编辑器正文那一大块重组了几次（键盘动画的每一帧不该都重组）。只在主线程上加。 */
+internal object EditorTrace {
+    var bodyCompositions = 0
+}
+
+/** AI 的结果还在等采纳时又要发起新的：选中菜单、底栏、✦ 说同一句。 */
+private const val PENDING_AI_MESSAGE = "先采纳或放弃上一个结果"
+
 /** 光标在一处划线上停稳多久才显示那条建议（光标掠过时不一闪一闪）。 */
 private const val CARET_SETTLE = 150L
+
+/**
+ * 编辑器（去掉键盘以后）矮于 [COMPACT_ENTER] 时进矮屏（底栏展开的那一排和标签合成一行），高过 [COMPACT_EXIT] 才退出。
+ * 中间留一段回差：输入法的候选栏展开收起、切表情面板，剩下的高常在 480dp 上下晃，没有回差就在两种布局之间来回跳。
+ */
+internal fun compactEditor(height: Dp, wasCompact: Boolean): Boolean =
+    if (wasCompact) height <= COMPACT_EXIT else height < COMPACT_ENTER
+
+private val COMPACT_ENTER = 460.dp
+private val COMPACT_EXIT = 500.dp
 
 /** 键盘上方那块放什么：一次放一样，换了种类才升起、落下，同一种只换里面的字。 */
 private sealed interface EditorPanel {
     data object Companion : EditorPanel
-    data object Tools : EditorPanel
     data class Inline(val write: InlineWrite) : EditorPanel
     data class Ai(val state: WriteAiState) : EditorPanel
     data class Suggestion(val issue: WriteIssue) : EditorPanel

@@ -191,7 +191,6 @@ class WritingProblemsUiTest {
         // 收起再从工具“查”里打开：是同一个面板。
         compose.onNodeWithContentDescription("收起").performClick()
         waitFor { count("上次审稿") == 0 }
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
         compose.onNodeWithText("查").performClick()
         waitFor { compose.onAllNodesWithContentDescription("问题").fetchSemanticsNodes().isNotEmpty() }
         assertEquals(0, compose.onAllNodesWithContentDescription("规则检查").fetchSemanticsNodes().size)
@@ -271,10 +270,12 @@ class WritingProblemsUiTest {
     fun aiBarHasNoConsistencyCheckAndSettingsHaveNoCanon() {
         openEditor()
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("读者点评").performScrollTo()
         assertEquals(0, count("矛盾检查"))
 
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        // 写作建议挪进了“高级设置”。
+        compose.runOnUiThread { vm.open(Screen.WorkAiAdvanced(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("查口吻").performScrollTo()
         assertEquals(0, compose.onAllNodesWithText("查设定").fetchSemanticsNodes().size)

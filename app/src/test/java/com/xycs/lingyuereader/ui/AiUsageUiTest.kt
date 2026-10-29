@@ -134,8 +134,7 @@ class AiUsageUiTest {
         compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo().performClick()
         waitForText("输入 1.2 万 token（缓存命中 1.1 万）")
         compose.onNodeWithText("好").performClick()
-        compose.onNodeWithContentDescription("返回").performClick()
-        waitForText("写作范本")
+        // “用量”和它在同一页（高级设置的“记录”里）。
         compose.onNodeWithText("用量").performScrollTo().performClick()
 
         // 用量页：先只看这部作品，按功能；切到全部再看按作品。
@@ -164,10 +163,10 @@ class AiUsageUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         waitForText("写作范本")
-        // 设置页只有开关；挑了哪几段在高级设置里。
-        compose.onNodeWithText("用定稿章当文风范例").performScrollTo()
+        // 首屏没有挑了哪几段；开关和挑了哪几段都在高级设置里。
         assertTrue(compose.onAllNodesWithText("看看挑了哪几段").fetchSemanticsNodes().isEmpty())
         compose.onNodeWithText("高级设置").performScrollTo().performClick()
+        compose.onNodeWithText("用定稿章当文风范例").performScrollTo()
         compose.onNodeWithText("看看挑了哪几段").performScrollTo().performClick()
         waitForText("出自「第一章 渡口」")
         val before = vm.writingAi.stylePickBlocking()

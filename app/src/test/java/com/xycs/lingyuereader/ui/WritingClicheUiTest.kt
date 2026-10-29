@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -113,6 +115,8 @@ class WritingClicheUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun openEditor() {
@@ -143,6 +147,7 @@ class WritingClicheUiTest {
         openEditor()
         waitForText("2 处问题")
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         // 有命中才出现入口；写作建议没开也能用。
         compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()
         waitForText("林月笑了一下，")
@@ -173,6 +178,23 @@ class WritingClicheUiTest {
     }
 
     @Test
+    fun aFixAcceptedFromTheSuggestionsReplacesTheAiOriginal() {
+        // 这章是 AI 写的（记了原稿）；去 AI 腔的改法是 AI 提的，采纳以后原稿跟着换，收尾时不算作者改的。
+        WorkStore(writingDir).recordAiText(workId, chapterId, text)
+        openEditor()
+        waitForText("2 处问题")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
+        compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()
+        waitForText("林月笑了一下，")
+        compose.onAllNodesWithText("改").onFirst().performClick()
+        val store = WorkStore(writingDir)
+        waitFor { store.text(workId, chapterId).startsWith("林月笑了一下，看着窗外的雨。") }
+        waitFor { store.learning(workId).originals[chapterId]?.singleOrNull()?.text?.startsWith("林月笑了一下，看着窗外的雨。\n") == true }
+        assertFalse("嘴角勾起" in store.learning(workId).originals.getValue(chapterId).single().text)
+    }
+
+    @Test
     fun inlineWriteWarnsAboutClichesButStillAccepts() {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length))
@@ -182,6 +204,7 @@ class WritingClicheUiTest {
         compose.onNodeWithText("开始写").performClick()
         waitForText("这段有 1 处 AI 腔")
         // 不拦采纳。
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.text(workId, chapterId).endsWith("杜娘嘴角勾起，没再说话。") }
@@ -190,12 +213,14 @@ class WritingClicheUiTest {
     @Test
     fun settingsSwitchAndBlacklistPage() {
         val store = WorkStore(writingDir)
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        // “查 AI 腔”挪进了“高级设置”，“我的黑名单”还在首屏。
+        compose.runOnUiThread { vm.open(Screen.WorkAiAdvanced(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("查 AI 腔").performScrollTo()
         waitForText("本机按内置清单标出套话，不花钱")
         compose.onNodeWithText("查 AI 腔").performClick()
         waitFor { !store.assist(workId).aiCliche }
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         compose.onNodeWithText("我的黑名单").performScrollTo().performClick()
         waitForText("不想再看到的说法")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("说来话长")

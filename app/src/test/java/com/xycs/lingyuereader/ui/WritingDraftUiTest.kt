@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.assertIsOff
@@ -93,6 +94,7 @@ class WritingDraftUiTest {
                         WorkStore(writingDir).let { it.saveCard(workId, c2, it.card(workId, c2).copy(summary = "作者自己写的摘要")) }
                     }
                     val answer = when {
+                        "交给下一章接着写" in user -> """{"scene":"渡口","people":[],"mood":"","open":[],"hook":""}"""
                         "只返回一个 JSON 对象" in user -> """{"nodes":[{"kind":"信息","label":"声响引题","quote":"夜里有人叩门"},{"kind":"动作","label":"靠近灯盏","quote":"移近灯盏"}],"dialogue":null}"""
                         validWorkflowReview && "【当前阶段：审读】" in user -> """{"summary":["对白语气需作者最终确认"],"missing":[],"issues":[]}"""
                         "写到哪里停：写完整章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"
@@ -144,6 +146,9 @@ class WritingDraftUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -188,6 +193,7 @@ class WritingDraftUiTest {
         waitFor { compose.onAllNodesWithContentDescription("范本开头，选中第", substring = true).fetchSemanticsNodes().isNotEmpty() }
         assertTrue("选范本与看范围不能自行发起 AI 请求", asked.isEmpty())
 
+        waitForEnabled("生成写法图（会发送一次 AI 请求）")
         compose.onNodeWithText("生成写法图（会发送一次 AI 请求）").performScrollTo().performClick()
         waitForText("声响引题")
         waitForText("靠近灯盏")
@@ -201,6 +207,7 @@ class WritingDraftUiTest {
         compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
         waitForText("声响引题")
 
+        waitForEnabled("写本章")
         compose.onNodeWithText("写本章").performScrollTo().performClick()
         waitFor { asked.any { (system, user) -> "夜里有人叩门" in system + user } }
         waitForText("杜娘把门打开")
@@ -223,11 +230,14 @@ class WritingDraftUiTest {
 
         compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
         waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("AI 写整章草稿").performClick()
+        // “写好了 2 章的摘要”的提示盖在底栏上：等它收起再点“写”。
+        waitFor { compose.onAllNodesWithText("写好了", substring = true).fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("整章草稿").performClick()
         waitForText("这一章想怎么写")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("多写对白")
         waitForText("本章写作任务")
+        waitForEnabled("写本章")
         compose.onNodeWithText("写本章").performScrollTo().performClick()
         waitForText("杜娘把门打开，雪灌了进来。")
         // 章名和“本章完”去掉了；草稿存下来了。
@@ -249,9 +259,11 @@ class WritingDraftUiTest {
         assertTrue(system.startsWith("你是和作者一起写这部小说"))
 
         // 接着写：接在草稿后面。
+        waitForEnabled("接着写")
         compose.onNodeWithText("接着写").performScrollTo().performClick()
         waitFor { store.draft(workId, c2).endsWith("门外的人没有回答。") }
 
+        waitForEnabled("放进正文")
         compose.onNodeWithText("放进正文").performScrollTo().performClick()
         compose.onNodeWithText("替换正文").performClick()
         waitFor { store.text(workId, c2) == "杜娘把门打开，雪灌了进来。\n“谁？”她问。\n门外的人没有回答。" }

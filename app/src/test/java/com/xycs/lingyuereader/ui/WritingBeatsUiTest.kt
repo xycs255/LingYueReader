@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -97,6 +99,9 @@ class WritingBeatsUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -117,6 +122,7 @@ class WritingBeatsUiTest {
         waitForText("AI 拆节拍")
         // 一句说明：一行一拍，行尾可写篇幅。
         waitForText("一行一拍，可以在行尾写篇幅")
+        waitForEnabled("AI 拆节拍")
         compose.onNodeWithText("AI 拆节拍").performScrollTo().performClick()
         // 拆好的先给作者看、改，没用之前不进卡片。
         waitForText("AI 拆的节拍")
@@ -132,6 +138,7 @@ class WritingBeatsUiTest {
         waitForText("已写进正文")
 
         // 已经有节拍：先问一句，不用就不动。
+        waitForEnabled("AI 拆节拍")
         compose.onNodeWithText("AI 拆节拍").performScrollTo().performClick()
         waitForText("覆盖现有节拍？")
         compose.onNodeWithText("重新拆").performClick()
@@ -164,6 +171,7 @@ class WritingBeatsUiTest {
         assertTrue(ask.contains("别开始第 3 拍"))
         // 采纳以后才记成已写。
         assertEquals(listOf(1), store.card(workId, chapterId).beatsDone)
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text + "\n" + beatText.getValue(2) }
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
@@ -183,11 +191,13 @@ class WritingBeatsUiTest {
         // 没有弹“AI 写”面板，直接写了第 2 拍。
         assertTrue(compose.onAllNodesWithText("写多少").fetchSemanticsNodes().isEmpty())
         assertTrue(prompts.single().contains("只写第 2 拍"))
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
         waitFor { compose.onAllNodesWithContentDescription("智能推荐：写第 3 拍", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("智能推荐：写第 3 拍", substring = true).performClick()
         waitForText("AI 写了")
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2, 3) }
         waitFor { compose.onAllNodesWithContentDescription("智能推荐：这章写完了，细纲卡的 3 拍都写完了", substring = true).fetchSemanticsNodes().isNotEmpty() }
@@ -203,7 +213,8 @@ class WritingBeatsUiTest {
         // 节拍只读地列出来，带“去改节拍”。
         waitForText("去改节拍")
         waitForText("3. 老周的信")
-        waitFor { compose.onAllNodesWithText("写本章").fetchSemanticsNodes().isNotEmpty() }
+        // 按钮要等本章任务编好才可点：在慢机器上先出现、后可点，点早了会被忽略。
+        waitFor { compose.onAllNodes(hasText("写本章") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("写本章").performScrollTo().performClick()
         val all = beatText.values.joinToString("\n")
         waitFor { store.draft(workId, chapterId) == all }

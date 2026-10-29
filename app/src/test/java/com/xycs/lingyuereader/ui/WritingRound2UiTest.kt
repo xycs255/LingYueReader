@@ -8,6 +8,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -111,6 +112,9 @@ class WritingRound2UiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -200,10 +204,8 @@ class WritingRound2UiTest {
         compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo().performClick()
         waitForText("系统提示（")
         compose.onNodeWithText("好").performClick()
-        compose.runOnUiThread { vm.back() }
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
 
+        // “AI 记录”也在高级设置的“记录”里。
         compose.onNodeWithText("AI 记录").performScrollTo().performClick()
         waitForText("让门外有脚步声")
         compose.onAllNodesWithText("让门外有脚步声", substring = true)[0].performClick()
@@ -221,6 +223,8 @@ class WritingRound2UiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
         waitForText("自动提取")
         waitForText("《第一卷细纲》 第 1 章「渡口」")
+        // 细纲卡的几项是小卡片：点开“章末钩子”那张，下面才有文本框。
+        compose.onNodeWithText("章末钩子").performScrollTo().performClick()
         assertEquals(1, compose.onAllNodes(hasSetTextAction() and hasText("船没来。")).fetchSemanticsNodes().size)
         assertEquals(0, compose.onAllNodesWithText("用细纲里的替换").fetchSemanticsNodes().size)
 
@@ -240,6 +244,7 @@ class WritingRound2UiTest {
         store.addPackDoc(workId, PackKind.VOLUME, "第一卷细纲", "- **第五章 对岸**：沈默过河。\n")
         compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
         waitForText("没找到这一章")
+        waitForEnabled("AI 拟这一章的细纲")
         compose.onNodeWithText("AI 拟这一章的细纲").performClick()
         waitForText("AI 拟的细纲")
         waitForText("对岸亮起一盏灯。")

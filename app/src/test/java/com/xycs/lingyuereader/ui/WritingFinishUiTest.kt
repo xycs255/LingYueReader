@@ -101,8 +101,11 @@ class WritingFinishUiTest {
                     val body = JSONObject(ex.requestBody.readBytes().decodeToString())
                     val messages = body.getJSONArray("messages")
                     val user = (0 until messages.length()).map { messages.getJSONObject(it) }.last { it.optString("role") == "user" }.optString("content")
-                    asked += user
+                    // 收尾里的“整理交接卡”另算（见 WritingHandoffUiTest）：这里只数整理、摘要、审稿的请求。
+                    val handoff = "交给下一章接着写" in user
+                    if (!handoff) asked += user
                     val answer = when {
+                        handoff -> """{"scene":"渡口","people":[],"mood":"","open":[],"hook":""}"""
                         isSync(user) -> syncAnswer("\"summary\"" in user)
                         isSummary(user) -> summary
                         isReview(user) -> reviewAnswer
@@ -179,10 +182,10 @@ class WritingFinishUiTest {
         waitForText("渡口起了雾")
     }
 
-    /** 从编辑器右上角“更多”进收尾页。 */
+    /** 从编辑器底栏“整理”进收尾页。 */
     private fun openFinishFromMenu() {
         openEditor()
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("整理").performClick()
         compose.onNodeWithText("这章写完了").performClick()
         waitForText("收尾要做的")
     }
@@ -214,8 +217,7 @@ class WritingFinishUiTest {
         // 接着写到字数够了：推荐换成“这章写完了”。
         compose.onNodeWithContentDescription("正文").performTextReplacement(text)
         waitFor { hasDescription("智能推荐：这章写完了，已写") }
-        // 工具“整理”组的第一格也是它。
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        // 底栏“整理”里也有它。
         compose.onNodeWithText("整理").performClick()
         waitFor { hasDescription("这章写完了") }
     }
@@ -248,9 +250,11 @@ class WritingFinishUiTest {
         // 定稿照旧：存了历史版本，登记里有一笔定稿。
         assertTrue(store.changes(workId).any { it.kind == ChangeKind.FINALIZE && it.chapterId == chapterId })
         assertTrue(store.history(workId, chapterId).isNotEmpty())
-        // 定稿后入口都不在了：更多菜单里没有“这章写完了”。
-        compose.onNodeWithContentDescription("更多").performClick()
+        // 定稿后入口都不在了：“更多”里是“解锁修改”，“整理”里没有“这章写完了”。
+        compose.onNodeWithContentDescription("更多工具").performClick()
         waitForText("解锁修改")
+        compose.onNodeWithText("整理").performClick()
+        waitForText("细纲卡")
         assertFalse(has("这章写完了"))
         assertEquals(1, asked.size)
     }

@@ -47,10 +47,14 @@ class WritingPackAiUiTest {
             server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
                 createContext("/v1/chat/completions") { ex ->
                     val body = JSONObject(ex.requestBody.readBytes().decodeToString())
-                    bodies += body
                     val msgs = body.getJSONArray("messages")
+                    // 写本章前整理上一章交接卡的那一次另算（见 HandoffFlowTest）：这里只看写正文的请求。
+                    val handoff = (0 until msgs.length()).any { "交给下一章接着写" in msgs.getJSONObject(it).optString("content") }
+                    if (!handoff) bodies += body
                     val looked = (0 until msgs.length()).any { msgs.getJSONObject(it).getString("role") == "tool" }
-                    val message = if (!looked && body.has("tools")) {
+                    val message = if (handoff) {
+                        JSONObject().put("role", "assistant").put("content", """{"scene":"茶馆","people":[],"mood":"","open":[],"hook":""}""")
+                    } else if (!looked && body.has("tools")) {
                         JSONObject().put("role", "assistant").put("content", "我先看看第一章。").put(
                             "tool_calls",
                             JSONArray().put(JSONObject().put("id", "c1").put("type", "function").put("function", JSONObject().put("name", "read_chapter").put("arguments", "{\"chapter\":\"1\"}"))),
@@ -58,7 +62,7 @@ class WritingPackAiUiTest {
                     } else {
                         JSONObject().put("role", "assistant").put("content", "沈默推开茶馆的门，雪还在下。")
                     }
-                    val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message).put("finish_reason", if (looked) "stop" else "tool_calls")))
+                    val bytes = JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message).put("finish_reason", if (looked || handoff) "stop" else "tool_calls")))
                         .toString().toByteArray()
                     ex.responseHeaders.add("Content-Type", "application/json")
                     ex.sendResponseHeaders(200, bytes.size.toLong())

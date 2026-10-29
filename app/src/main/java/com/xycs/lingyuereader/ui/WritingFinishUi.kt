@@ -31,6 +31,8 @@ import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.CheckRules
 import com.xycs.lingyuereader.data.FinishOptions
+import com.xycs.lingyuereader.data.EditLearning
+import com.xycs.lingyuereader.data.LearnKind
 import com.xycs.lingyuereader.data.SyncItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -143,12 +145,13 @@ private fun FinishBlocked(title: String, other: FinishRun, onOpen: () -> Unit, o
     }
 }
 
-/** 开始前：四个勾选项、本机检查的提醒、“开始”。 */
+/** 开始前：几个勾选项（这章有 AI 原稿时多一项“从这章的改稿里学”）、本机检查的提醒、“开始”。 */
 @Composable
 private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?, onBack: () -> Unit) {
     val c = LocalGroupedColors.current
     val o = run.options
     val syncBlocked = vm.writingAi.syncBlocked
+    val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val aiBlocked = vm.writingAi.finishAiBlocked
     fun set(options: FinishOptions) = vm.writingAi.setFinishOptions(options)
     Column {
@@ -183,6 +186,27 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
                     enabled = aiBlocked == null,
                     dimChecked = false,
                 ) { set(o.copy(review = it)) }
+            }
+            // 这章有采纳进正文的 AI 原稿才有得比。
+            if (run.learnable) row {
+                CheckboxRow(
+                    "从这章的改稿里学",
+                    checked = o.learn,
+                    subtitle = "把 AI 原稿和你改后的定稿逐段比对，提出几条黑名单词和写法规则；你勾了才记下，以后写正文照着写" +
+                        if (aiBlocked == null && !aiConfig.onDevice) "（另发一次请求请 AI 归纳）" else "（只在本机比对）",
+                    dimChecked = false,
+                ) { set(o.copy(learn = it)) }
+            }
+            row {
+                // 交接卡要 AI 整理：本机模型不整理，写下一章时本机从结尾抽一份。
+                val handoffBlocked = aiBlocked ?: if (aiConfig.onDevice) "本机模型不整理；写下一章时本机从结尾抽人名、地点" else null
+                CheckboxRow(
+                    "整理交接卡",
+                    checked = o.handoff && handoffBlocked == null,
+                    subtitle = handoffBlocked ?: "记下这一章结尾的场面、在场人物、情绪和没了结的事，写下一章时开头先接住；你改过的交接卡不盖掉",
+                    enabled = handoffBlocked == null,
+                    dimChecked = false,
+                ) { set(o.copy(handoff = it)) }
             }
         }
         val (rules, cliche) = local ?: (0 to 0)
@@ -223,6 +247,8 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
             }
             row { StepRow("整理入账", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
             row { StepRow("写本章摘要", run.summary.mark(), run.summary.label, run.summaryError) }
+            if (run.options.learn) row { StepRow("从改稿里学", run.learn.mark(), run.learn.label, run.learnError.takeIf { run.learn == StepState.FAILED }) }
+            if (run.options.handoff) row { StepRow("整理交接卡", run.handoff.mark(), run.handoff.label, run.handoffError ?: run.handoffNote) }
             row { StepRow("定稿", StepMark.WAITING, StepState.WAITING.label, "确认以后再做") }
         }
         when (run.stage) {
@@ -320,6 +346,64 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                             onPayoff = { vm.writingAi.editFinishSyncPayoff(item.key, it) },
                             onJump = { onJump(item) },
                         )
+                    }
+                }
+            }
+        }
+    }
+    // 交接卡整理好就存下了，不用再确认：这里只说一句结果（没成的原因照实说，不拦收尾）。
+    if (run.options.handoff && (run.handoffError ?: run.handoffNote) != null) item(key = "handoff") {
+        val c = LocalGroupedColors.current
+        GroupedSection(header = "交接卡", footer = "写下一章时在草稿页“接上一章”里能看、能改。") {
+            row {
+                val error = run.handoffError
+                if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            }
+        }
+    }
+    if (run.options.learn) item(key = "learn") {
+        val c = LocalGroupedColors.current
+        val written = FinishWrite.LEARN in run.wrote
+        GroupedSection(
+            header = "从改稿里学到的",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提，" +
+                "AI 归纳的点了“不要”才不再提。都能在作品 AI 设置里看、删。",
+        ) {
+            run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
+            if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }
+            run.candidates.forEach { cand ->
+                row {
+                    Column {
+                        CheckboxRow(
+                            (if (cand.kind == LearnKind.BAN) "黑名单词：「${cand.text}」" else "写法规则：${cand.text}"),
+                            checked = cand.key in run.learnPicked,
+                            subtitle = cand.source,
+                            enabled = !busy && !written,
+                            dimChecked = false,
+                        ) { vm.writingAi.toggleFinishLearn(cand.key, it) }
+                        // 例子：一行“原来 → 你改成”，看得懂为什么提这条。
+                        if (cand.before.isNotBlank()) Text(
+                            when {
+                                cand.after == EditLearning.DELETED -> "原来「${cand.before}」→ 你整段删掉了"
+                                cand.after.isBlank() -> "原来「${cand.before}」→ 你点了“这段不行”"
+                                else -> "原来「${cand.before}」→ 你改成「${cand.after}」"
+                            },
+                            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                            modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
+                        )
+                        // AI 归纳的默认不勾：没勾不等于不要，作者点了“不要”才记进“不再提”。
+                        if (cand.source == EditLearning.FROM_AI && cand.key !in run.learnPicked) {
+                            val declined = cand.key in run.learnDeclined
+                            PillButton(
+                                if (declined) "已不要，以后不再提" else "不要",
+                                onClick = { vm.writingAi.declineFinishLearn(cand.key, !declined) },
+                                modifier = Modifier.padding(start = 40.dp, bottom = 4.dp),
+                                style = if (declined) PillStyle.Tinted else PillStyle.Plain,
+                                enabled = !busy && !written,
+                            )
+                        }
                     }
                 }
             }

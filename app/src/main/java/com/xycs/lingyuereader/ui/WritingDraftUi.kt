@@ -55,6 +55,8 @@ import com.xycs.lingyuereader.data.ProseBudget
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.DraftStage
+import com.xycs.lingyuereader.data.FixReason
+import com.xycs.lingyuereader.ParagraphFix
 import com.xycs.lingyuereader.ai.AiPricing
 import com.xycs.lingyuereader.ai.AiRequestBudgetPreview
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -150,6 +152,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var sourceError by remember(workId, chapterId) { mutableStateOf<String?>(null) }
     var sourceLoading by remember(workId, chapterId) { mutableStateOf(false) }
     var basisExpanded by rememberSaveable(workId, chapterId) { mutableStateOf(true) }
+    // “这段不行”：点的是哪一行（弹出选原因），选了哪些原因、“其他”写的那一句。
+    var rejecting by remember(workId, chapterId) { mutableStateOf<Int?>(null) }
+    var rejectReasons by remember(workId, chapterId) { mutableStateOf(setOf<FixReason>()) }
+    var rejectNote by remember(workId, chapterId) { mutableStateOf("") }
+    val paragraphFixes by vm.writingAi.paragraphFix.collectAsStateWithLifecycle()
+    val paragraphFix = paragraphFixes?.takeIf { it.workId == workId && it.chapterId == chapterId }
     LaunchedEffect(workId, chapterId) {
         vm.writingAi.loadDraft(workId, chapterId)
         vm.writingAi.loadAssist(workId)
@@ -209,6 +217,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
     // 写完、停下、出错：细纲卡可能刚被写前准备改过（停在拆节拍时也留着拟好的细纲），重读一次。
     val running = draft?.loading == true
+    // 上一章的交接卡：写完、停下以后再读一次（一键写本章可能刚整理过）。
+    val handoff = rememberHandoff(vm, workId, chapterId, refresh = running)
     LaunchedEffect(running) {
         if (running || card == null) return@LaunchedEffect
         try { card = vm.writing.cards(workId, chapterId).first.card }
@@ -368,12 +378,17 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     else -> 0
                 })
                 // 写过（或正在写）一版：上方列出这一版按的细纲和节拍，AI 拟的挂小标签，作者先看依据再看正文。
+                // “接上一章”：有上一章就显示（写之前也能先看、先改），交接卡在这一栏里展开。
                 val basis = card
-                if ((text.isNotBlank() || loading) && basis != null && (basis.facts.isNotBlank() || beatList.isNotEmpty())) {
-                    DraftBasisSection(basis, beatList, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
+                val showBasis = (text.isNotBlank() || loading) && basis != null && (basis.facts.isNotBlank() || beatList.isNotEmpty())
+                if (showBasis || handoff.view != null) {
+                    DraftBasisSection(basis, beatList, showBasis, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
                         canRewrite = canWrite && !loading,
                         onEdit = { vm.open(Screen.ChapterCard(workId, chapterId)) },
-                        onRewrite = { startDraft() })
+                        onRewrite = { startDraft() }) {
+                        handoffRows(handoff, aiReady = aiConfig.ready && !aiConfig.onDevice, onEdit = { handoff.editing = true },
+                            onRefresh = { handoff.refresh(vm, scope) })
+                    }
                 }
                 GroupedSection(
                     header = "你的构思",
@@ -418,8 +433,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                     row {
-                        ToggleRow("缺细纲、节拍时 AI 先补上", checked = prepOn,
-                            subtitle = "细纲卡没有“本章事实与结果”先拟一份，没有节拍先拆，存进细纲卡等你确认；你写了的不动。关了就有什么写什么。") { on ->
+                        ToggleRow("缺细纲、节拍时 AI 先补上", checked = prepOn, subtitle = DRAFT_PREP_NOTE) { on ->
                             vm.writingAi.updateAssist(workId) { it.copy(draftPrep = on) }
                         }
                     }
@@ -651,12 +665,18 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { versionView = it }
                             }
                             row {
+                                // 写完、不在审读时每段能点“这段不行”；在写、在审读、在重写别的段时按不了。
                                 DraftRevisionBody(if (counterpart == null) DraftVersionView.CURRENT else versionView,
-                                    text, counterpart, counterpartLabel)
+                                    text, counterpart, counterpartLabel,
+                                    onReject = if (loading) null else { i -> rejectReasons = emptySet(); rejectNote = ""; rejecting = i },
+                                    rejectEnabled = !locked && !revisionWriteBlocked && aiConfig.ready && draft?.referenceProvenanceBlocked == false &&
+                                        paragraphFix?.loading != true)
                             }
                         }
                     }
                 }
+                paragraphFix?.let { fix -> ParagraphFixSection(fix, locked = locked,
+                    onAccept = { vm.writingAi.acceptParagraphFix() }, onDrop = { vm.writingAi.dropParagraphFix() }) }
                 draft?.assessment?.let { report ->
                     GroupedSection(header = "本稿审读", footer = "结果只对应这一版稿件与项目资料。改稿或资料变化后要重新审读；流程通过不代表作者已定稿。") {
                         row {
@@ -755,6 +775,25 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }, confirmText = "按这个方向重写")
             }
         }
+        rejecting?.let { index ->
+            GlassDialog(show = true, title = "这段不行", summary = "哪里不行？可以多选。AI 只重写这一段（前后各带一段作语境），写好了先对比给你看，采纳才换。",
+                onDismissRequest = { rejecting = null }) {
+                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                    FixReason.entries.forEach { r ->
+                        CheckboxRow(r.label, checked = r in rejectReasons, dimChecked = false) { on ->
+                            rejectReasons = if (on) rejectReasons + r else rejectReasons - r
+                        }
+                    }
+                    if (FixReason.OTHER in rejectReasons) TextField(value = rejectNote, onValueChange = { rejectNote = it.replace("\n", "") },
+                        label = "说一句哪里不行（可空）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                }
+                DialogButtons(onDismiss = { rejecting = null }, onConfirm = {
+                    vm.writingAi.fixParagraph(workId, chapterId, index, rejectReasons, rejectNote)
+                    rejecting = null
+                }, confirmText = "重写这段", confirmEnabled = rejectReasons.isNotEmpty())
+            }
+        }
+        HandoffEditDialog(vm, handoff, scope)
         if (editingDraft) {
             GlassDialog(show = true, title = "修改候选稿", summary = "只修改这份候选稿。保存后旧审读结果失效，需要针对新稿重新审读。", onDismissRequest = { editingDraft = false }) {
                 TextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
@@ -823,6 +862,44 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
 }
 
+/** “这段不行”的结果：在写、没写成，或者原段 / 新段对比，采纳或放弃。 */
+@Composable
+private fun ParagraphFixSection(fix: ParagraphFix, locked: Boolean, onAccept: () -> Unit, onDrop: () -> Unit) {
+    val c = LocalGroupedColors.current
+    GroupedSection(
+        header = "这段重写",
+        footer = if (!fix.loading && fix.error == null) "采纳后草稿里只换这一段，原来那版留着能换回；审读要重新做。" else null,
+    ) {
+        when {
+            fix.loading -> {
+                row { LoadingRow("AI 在按“${fix.reasons.sortedBy { it.ordinal }.joinToString("、") { it.label }}”重写这一段……") }
+                row { ActionRow("停止", destructive = true, onClick = onDrop) }
+            }
+            fix.error != null -> {
+                row { ErrorText("这段没重写成：${fix.error}", Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) }
+                row { ActionRow("放弃", onClick = onDrop) }
+            }
+            else -> {
+                row {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("原段", color = c.destructive, fontSize = 12.sp, modifier = Modifier.padding(bottom = 3.dp))
+                        Text(fix.original, color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
+                            modifier = Modifier.fillMaxWidth().background(c.destructive.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).padding(8.dp))
+                        Text("新段", color = c.success, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp, bottom = 3.dp))
+                        Text(fix.text, color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
+                            modifier = Modifier.fillMaxWidth().background(c.success.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).padding(8.dp))
+                        UsageNote(fix.usage, fix.cost, Modifier.padding(top = 8.dp))
+                        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PillButton("采纳这段", onClick = onAccept, style = PillStyle.Filled, enabled = !locked)
+                            PillButton("放弃", onClick = onDrop)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** 细纲卡的节拍（没有卡为空）。 */
 private fun beatsOf(card: ChapterCard?): List<Beat> = card?.let(::beats).orEmpty()
 
@@ -831,13 +908,15 @@ private fun beatsOf(card: ChapterCard?): List<Beat> = card?.let(::beats).orEmpty
  * 作者在细纲卡里改过或确认过就没了。两个按钮：去细纲卡改，回来按改过的重写一版。
  */
 @Composable
-private fun DraftBasisSection(card: ChapterCard, beatList: List<Beat>, expanded: Boolean, onToggle: () -> Unit,
-                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit) {
+private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasis: Boolean, expanded: Boolean, onToggle: () -> Unit,
+                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit,
+                              /** 卡片最后加的几行（“接上一章”）。 */
+                              extra: GroupedSectionScope.() -> Unit = {}) {
     val c = LocalGroupedColors.current
-    val pending = card.aiOutline || card.aiBeats
-    GroupedSection(footer = if (expanded && pending) "“AI 拟的”“AI 拆的”是写本章时 AI 补的，还没经你确认；在细纲卡里改过或点了确认，标签就没了。" else null) {
-        row { ExpandRow("这一章是按下面的细纲和节拍写的", expanded, value = if (pending) "待确认" else null, onToggle = onToggle) }
-        if (expanded) {
+    val pending = card != null && (card.aiOutline || card.aiBeats)
+    GroupedSection(footer = if (showBasis && expanded && pending) "“AI 拟的”“AI 拆的”是写本章时 AI 补的，还没经你确认；在细纲卡里改过或点了确认，标签就没了。" else null) {
+        if (showBasis && card != null) row { ExpandRow("这一章是按下面的细纲和节拍写的", expanded, value = if (pending) "待确认" else null, onToggle = onToggle) }
+        if (showBasis && card != null && expanded) {
             if (card.facts.isNotBlank()) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -861,6 +940,7 @@ private fun DraftBasisSection(card: ChapterCard, beatList: List<Beat>, expanded:
             row { NavRow("改细纲 / 节拍") { onEdit() } }
             row { ActionRow("按改过的重写", enabled = canRewrite) { onRewrite() } }
         }
+        extra()
     }
 }
 

@@ -75,7 +75,7 @@ class SyncPlanCostTest {
         val items = proposals(ledger)
         val docs = docs()
         PackSync.plan(items.take(4), docs, ledger)
-        val times = (0 until 3).map {
+        val times = (0 until 5).map {
             val t = System.nanoTime()
             val planned = PackSync.plan(items, docs, ledger)
             ((System.nanoTime() - t) / 1_000_000) to planned
@@ -84,7 +84,8 @@ class SyncPlanCostTest {
         println("整理入账查重（40 条提议 × 3000 条账本、${names.size} 个人名）：改前约 390–640 毫秒；改后 " + times.joinToString("、") { "${it.first} 毫秒" })
         // 结果和改前一样：丢掉的、标“可能重复”的、改成冲突的都对得上（改前跑出来的摘要）。
         assertEquals(BEFORE, "${planned.size} ${planned.count { it.maybeSame != null }} ${sha(signature(planned))}")
-        assertTrue("改后 ${times.minOf { it.first }} 毫秒", times.minOf { it.first } < 150)
+        // 本机约 50 毫秒，CI 共享机器慢时到过 166 毫秒；上限 300 毫秒仍低于改前本机的最快一次（约 0.4 秒），退回三重循环会超。
+        assertTrue("改后 ${times.minOf { it.first }} 毫秒", times.minOf { it.first } < 300)
     }
 
     companion object {

@@ -37,6 +37,7 @@ import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.EditLearning
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.importReference
 import com.xycs.lingyuereader.data.saveReferenceAnalysis
@@ -166,6 +167,8 @@ class WritingAiUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun openEditor() {
@@ -175,11 +178,33 @@ class WritingAiUiTest {
     }
 
     @Test
+    fun acceptingAPolishReplacesTheAiOriginalSoItIsNotLearnedAsTheAuthors() {
+        // 这章是 AI 写的（记了原稿）；作者在编辑器里让 AI 润色一段并采纳。
+        WorkStore(writingDir).recordAiText(workId, chapterId, draft)
+        openEditor()
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
+        compose.onNodeWithText("润色").performClick()
+        waitForText("风刮得很大猛。")
+        waitForEnabled("采纳")
+        compose.onNodeWithText("采纳").performClick()
+        val store = WorkStore(writingDir)
+        val after = "他推门进来。\n风刮得很猛。\n他再门口等着，天色以晚。"
+        waitFor { store.text(workId, chapterId) == after }
+        // 原稿跟着换成 AI 改后的：收尾比对时这段算原样留着，不算作者改的。
+        waitFor { store.learning(workId).originals[chapterId]?.map { it.text } == listOf(after) }
+        val edits = EditLearning.compare(store.learning(workId).originals.getValue(chapterId), store.text(workId, chapterId))!!
+        assertTrue(edits.pairs.isEmpty() && edits.deleted.isEmpty())
+    }
+
+    @Test
     fun polishTheParagraphAtTheCursorAndAcceptIt() {
         openEditor()
         // 光标放在“风很大。”这一段里。
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         // 先看对比：删掉的“大”还在（划掉显示），加上的“刮得”“猛”插在里面；“修改后：”这种多余的话去掉了。
         waitForText("风刮得很大猛。")
@@ -189,6 +214,7 @@ class WritingAiUiTest {
         assertTrue("要改的文字：\n风很大。" in prompt)
         assertTrue("前文（只作语境，不要改）：\n他推门进来。" in prompt)
 
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.text(workId, chapterId) == "他推门进来。\n风刮得很猛。\n他再门口等着，天色以晚。" }
@@ -203,7 +229,8 @@ class WritingAiUiTest {
         // 问主意在书灵里（AI 条上不再有“灵感…”）。
         compose.onNodeWithContentDescription("AI 写作").performClick()
         assertTrue(compose.onAllNodesWithText("灵感…").fetchSemanticsNodes().isEmpty())
-        compose.onNodeWithContentDescription("书灵").performClick()
+        // 书灵（问主意、范本）在“写”里叫“灵感”。
+        compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         listOf("细节和描写", "起名", "卡文了", "随便问").forEach { waitForText(it) }
         compose.onNodeWithText("接下来怎么写").performClick()
@@ -338,11 +365,14 @@ class WritingAiUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         // 扩写被长度上限截断：报错，不能采纳。
         compose.onNodeWithText("扩写").performScrollTo().performClick()
         waitForText("回答太长")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
         // 缩写时模型中途停了（拒答或内容过滤）：整段改稿按失败处理，不能采纳，那行说明也不出现。
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("缩写").performScrollTo().performClick()
         waitForText("模型拒绝回答，或内容被服务商过滤")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
@@ -358,6 +388,7 @@ class WritingAiUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("风刮得很大猛。")
         // 没看完就离开编辑器：面板收起，但不记成“作者不要这种改法”。
@@ -383,7 +414,8 @@ class WritingAiUiTest {
     @Test
     fun theCompanionAsksForNamesAndTheIdeaCanBeInserted() {
         openEditor()
-        compose.onNodeWithContentDescription("书灵").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         compose.onNodeWithText("起名").performClick()
         waitForText("给什么起名？")
@@ -401,7 +433,8 @@ class WritingAiUiTest {
     fun aiWriterUsesAnExplicitReferenceAndWaitsForAuthorAcceptance() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         openEditor()
-        compose.onNodeWithContentDescription("书灵").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("灵感").performClick()
         waitForText("没选范本")
         compose.onNodeWithText("选择范本").performClick()
         waitForText("本章还没有范本分析")
@@ -425,7 +458,8 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.back() }
         waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
         if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
-            compose.onNodeWithContentDescription("书灵").performClick()
+            compose.onNodeWithContentDescription("AI 写作").performClick()
+            compose.onNodeWithText("灵感").performClick()
         }
         waitForText("选择范本")
         compose.onNodeWithText("选择范本").performClick()
@@ -454,6 +488,7 @@ class WritingAiUiTest {
         assertTrue(prompts.single().contains("门外有人叩门"))
         assertEquals("作者采纳前，候选正文不写入章节", candidate.base, store.text(workId, chapterId))
 
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val accepted = candidate.base.substring(0, candidate.at) + candidate.text + candidate.base.substring(candidate.at)
         waitFor { store.text(workId, chapterId) == accepted }
@@ -467,7 +502,8 @@ class WritingAiUiTest {
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("对文风的要求").performScrollTo()
         // 同一个事件里输入并返回，不给 600ms 防抖机会；退出补存必须读到字段的最新值。
-        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
+        // 首屏“这部书的口味”排在“文风”前面：文风是第二个文本框。
+        compose.onAllNodes(hasSetTextAction())[1].performSemanticsAction(SemanticsActions.SetText) { set ->
             set(AnnotatedString(requested))
             vm.back()
         }
@@ -484,7 +520,7 @@ class WritingAiUiTest {
         compose.onNodeWithText("这部书的口味").performScrollTo()
         compose.onNodeWithText(FLAVOR_EXAMPLE).assertExists()
         val flavor = "合成样本：轻松带吐槽，主角爱算计，叙述者偶尔玩梗。"
-        compose.onAllNodes(hasSetTextAction())[1].performSemanticsAction(SemanticsActions.SetText) { set ->
+        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
             set(AnnotatedString(flavor))
             vm.back()
         }
@@ -546,13 +582,16 @@ class WritingAiUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
         waitForText("设定包还是空的")
-        compose.onNodeWithText("导入设定包").performClick()
+        // “导入设定包”在分类格下面：先滚过去。
+        waitForEnabled("导入设定包")
+        compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件").performClick()
         val files = org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, files.action)
         waitFor { compose.onAllNodesWithText("导入文件夹").fetchSemanticsNodes().isEmpty() }
-        compose.onNodeWithText("导入设定包").performClick()
+        waitForEnabled("导入设定包")
+        compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件夹").performClick()
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE, org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity.action)

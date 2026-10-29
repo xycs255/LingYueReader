@@ -1,14 +1,19 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -27,9 +32,13 @@ private sealed interface DraftDiffUiState {
     data class Aligned(val pieces: List<DraftParagraphDiff.Piece>) : DraftDiffUiState
 }
 
-/** The comparison runs off the UI thread; an unalignable rewrite shows two complete texts. */
+/**
+ * The comparison runs off the UI thread; an unalignable rewrite shows two complete texts.
+ * [onReject] 不为空时，当前稿每段下面有“这段不行”（参数是这段在草稿里是第几行），[rejectEnabled] 为假时按不了（在写、在审读）。
+ */
 @Composable
-internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterpart: String?, counterpartLabel: String) {
+internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterpart: String?, counterpartLabel: String,
+                               onReject: ((Int) -> Unit)? = null, rejectEnabled: Boolean = true) {
     val c = LocalGroupedColors.current
     val comparison = counterpart?.takeIf { it.isNotBlank() }
     val diff = produceState<DraftDiffUiState>(DraftDiffUiState.Loading, view, current, comparison) {
@@ -42,7 +51,7 @@ internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterp
     SelectionContainer {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             when (view) {
-                DraftVersionView.CURRENT -> DraftVersionText(current)
+                DraftVersionView.CURRENT -> if (onReject == null) DraftVersionText(current) else DraftRejectableText(current, rejectEnabled, onReject)
                 DraftVersionView.COUNTERPART -> DraftVersionText(comparison ?: current)
                 DraftVersionView.DIFFERENCE -> if (comparison == null) DraftVersionText(current)
                 else if (diff == DraftDiffUiState.Loading) {
@@ -77,3 +86,28 @@ private fun DraftVersionText(text: String) {
         style = androidx.compose.ui.text.TextStyle(textIndent = TextIndent(firstLine = 2.em)),
         modifier = Modifier.fillMaxWidth())
 }
+
+/**
+ * 当前稿逐段排，每段右下一个“这段不行”：点了选原因，AI 只重写这一段。
+ * 按钮不进选区（长按全选复制稿子时不混进一串“这段不行”）；读屏念出是第几段、段首几个字，几十个按钮分得清。
+ */
+@Composable
+private fun DraftRejectableText(text: String, enabled: Boolean, onReject: (Int) -> Unit) {
+    var n = 0
+    text.split('\n').forEachIndexed { i, line ->
+        if (line.isBlank()) return@forEachIndexed
+        n++
+        val trimmed = line.trim()
+        DraftVersionText(trimmed)
+        val label = "这段不行：第 $n 段「${trimmed.take(DRAFT_REJECT_HEAD)}${if (trimmed.length > DRAFT_REJECT_HEAD) "…" else ""}」"
+        DisableSelection {
+            Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.End) {
+                PillButton("这段不行", onClick = { onReject(i) }, enabled = enabled,
+                    modifier = Modifier.semantics { contentDescription = label })
+            }
+        }
+    }
+}
+
+/** 读屏念“这段不行”时带上段首几个字。 */
+private const val DRAFT_REJECT_HEAD = 8

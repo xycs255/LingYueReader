@@ -6,6 +6,8 @@ enum class WritingPhase { CREATE, REVIEW, REVISE, ASSIST, SYNC }
 /**
  * The immutable brief for one requested chapter, separate from the candidate manuscript and its review.
  * [previous] contains only the immediately preceding chapter explicitly marked FINAL by the author.
+ * [previousDraft] 是紧邻上一章还没定稿时它现在正文的结尾（[com.xycs.lingyuereader.ai.WritePrompts.ending] 截好的）：
+ * 只用来接住场面和语气，不是已定前文，审读时不能当 FACT 依据（见 [ReviewEvidence.tentative]）。
  * [context] is selected reference material, not a claim that every planned event has already happened.
  */
 data class ChapterWritingTask(
@@ -23,8 +25,12 @@ data class ChapterWritingTask(
     val project: Boolean,
     val fingerprint: String,
     val context: String = "",
+    val previousDraft: String = "",
 ) {
     companion object {
+        /** 未定稿的上一章结尾在请求里的标题。 */
+        const val PREVIOUS_DRAFT = "上一章（未定稿，只用来接住场面和语气；事实以细纲卡和已定资料为准）"
+
         /**
          * 项目包里本章没有“事实与结果”时的那条硬缺项。一键写本章（[WorkAssist.draftPrep]）会先让 AI 拟一份补上，
          * 所以写本章时不拿它拦；别的缺项照旧。
@@ -55,6 +61,7 @@ data class ChapterWritingTask(
         field("章末钩子", card.hook)
         field("本章推进的线", card.threads)
         if (previous.isNotBlank()) field("用户已定前章结尾（正文事实）", previous)
+        if (previous.isBlank() && previousDraft.isNotBlank()) field(PREVIOUS_DRAFT, previousDraft)
         if (context.isNotBlank()) field("按本章挑选的资料（其中规划只用于约束，不冒充已发生）", context)
         if (warnings.isNotEmpty()) field("资料提示", warnings.joinToString("\n") { "- $it" })
         if (blocking.isNotEmpty()) field("必须补齐的硬资料", blocking.joinToString("\n") { "- $it" })
@@ -221,10 +228,15 @@ fun WorkStore.writingTask(
     val index = work.chapters.indexOfFirst { it.id == chapterId }
     val prior = work.chapters.getOrNull(index - 1)
     val previous = prior?.takeIf { it.status == ChapterStatus.FINAL }?.let { text(workId, it.id).takeLast(6_000) }.orEmpty()
+    // 上一章还没定稿：照样带它现在的结尾（同样的截法和长度），标明未定稿，只接场面和语气；空章照旧不带。
+    // 以前一个字都不带，AI 连写几章、还没定稿时，每一章都像重新起了个头。
+    val previousDraft = if (prior == null || previous.isNotBlank()) ""
+        else com.xycs.lingyuereader.ai.WritePrompts.ending(text(workId, prior.id))
     val previousLabel = when {
         prior == null && (number ?: 1) <= 1 -> "开篇，没有已定前章；以本章细纲为准"
         prior == null -> "以细纲结果承接；目录中没有可核验的前章正文"
         prior.status == ChapterStatus.FINAL && previous.isNotBlank() -> "用户定稿《${prior.title}》"
+        previousDraft.isNotBlank() -> "以细纲结果承接；带了未定稿的《${prior.title}》结尾，只接场面和语气"
         else -> "以细纲结果承接；紧邻前章尚无可核验的用户定稿正文"
     }
     if (prior != null && previous.isBlank()) warnings += "前章草稿、未审样章和流程通过记录均不自动视为用户已定前文。"
@@ -264,6 +276,8 @@ fun WorkStore.writingTask(
     val (sampleSources, sampleFallback) = StyleSamples.sources(work.chapters, index, writingAssist.sampleFallback)
     val sampleSignature = StyleSamples.signature(sampleSources, sampleFallback, writingAssist.sampleOptions)
     val state = listOf(work.title, chapter.title, number.toString(), volume.toString(), instruction.trim(), length, card.facts, card.boundary, card.pov, card.countdown, card.hook, card.threads, previous, context) +
+        // 只在带了未定稿结尾时才进指纹：没有它的任务指纹和以前一样，旧的审读不因升级失效。
+        listOfNotNull(previousDraft.takeIf { it.isNotBlank() }?.let { "previousDraft\u0000$it" }) +
         warnings + blocking + listOf(
             // 润色的采纳、不采纳记录只是文风范例，与审读依据无关：不进指纹，免得改别章时让所有章的审读失效。
             StoryLedger.toJson(currentLedger).toString(), writingAssist.style, sampleSignature,
@@ -274,7 +288,8 @@ fun WorkStore.writingTask(
     // 和以前把整串拼起来再算的指纹一模一样，只是边读边算：设定包的正文不再拼成一整串、转成一整块字节。
     val fingerprint = sha256Joined(state.asSequence() +
         material.fingerprintSources.asSequence().flatMap { sequenceOf(it.first.title, it.first.kind.name, it.second) })
-    return ChapterWritingTask(chapter.title, number, volume, instruction.trim(), length, previous, previousLabel, card, sources, warnings, blocking, project, fingerprint, context)
+    return ChapterWritingTask(chapter.title, number, volume, instruction.trim(), length, previous, previousLabel, card, sources, warnings, blocking, project, fingerprint, context,
+        previousDraft)
 }
 
 /** Read a scoped length, never treat a book-wide opening exception as the length for every chapter. */

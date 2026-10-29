@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
@@ -11,6 +12,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -54,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
@@ -63,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
@@ -70,6 +75,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -101,6 +108,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -1567,7 +1575,8 @@ internal fun ToolTileGrid(
                                 .background(c.fill)
                                 .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = tile.onClick)
                                 .semantics { contentDescription = tile.label }
-                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                                // 左右只留 2dp：窄格（编辑器矮屏时五格挤一行）里四个字的名字也放得下。
+                                .padding(horizontal = 2.dp, vertical = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
@@ -1634,6 +1643,69 @@ internal fun LabeledIconButton(
     ) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
         Text(label, color = color, fontSize = 10.sp, lineHeight = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
+/**
+ * 文字标签：底栏一排“写 / 查 / 整理 / 更多”这样的一两个字，点了展开下面那一排、再点收起。
+ * 看着 36dp 高、10dp 圆角，能点 48dp 高、至少 48dp 宽；选中时淡强调色底、强调色半粗字，否则次要色字、没有底（颜色 [Motion.SHORT] 渐变）。
+ * 读屏是“标签”，念 [description]（给了的话，不给念 [label]）和选没选中；[badge] 是右上一个提醒色的小数字。
+ */
+@Composable
+internal fun TextTab(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    description: String? = null,
+    badge: String? = null,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val text by animateColorAsState(if (selected) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "textTab")
+    val back by animateColorAsState(if (selected) c.tint.copy(alpha = 0.12f) else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "textTabBack")
+    Box(
+        modifier
+            .widthIn(min = 48.dp)
+            .heightIn(min = 48.dp)
+            .pressScale(source, 0.95f)
+            .selectable(selected = selected, role = Role.Tab, interactionSource = source, indication = null, onClick = onClick)
+            .semantics { if (description != null) contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(back).padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = text, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+                // 角标：提醒色的小数字（“查”上的问题数），读屏另在 [description] 里说。
+                if (badge != null) Text(badge, color = c.warning, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 一步一步走的小箭头（编辑器顶栏的上一章、下一章）：图形 20dp，占 32dp 宽、48dp 高，挤在章名两边不占地方；
+ * 能点的范围 Compose 会自动补到 48dp（小于最小触控尺寸的点击区往外扩）。到头不能点时图形变成第三级灰（[Motion.SHORT] 渐变），
+ * 读屏仍念 [description]，并说不能点。
+ */
+@Composable
+internal fun StepIconButton(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val tint by animateColorAsState(if (enabled) c.label else c.tertiary.copy(alpha = 0.5f), Motion.standard(Motion.SHORT), label = "stepIcon")
+    Box(
+        modifier
+            .size(width = 32.dp, height = 48.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(pressHighlight(source.collectIsPressedAsState().value && enabled))
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -1766,4 +1838,350 @@ internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
         lineHeight = 18.sp,
         modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
     )
+}
+
+// ---------- 进度与入口卡片 ----------
+
+/**
+ * 一个比例第一次出现时从 0 填到 [target]（[Motion.LONG] 标准缓动），之后变了用 [Motion.MEDIUM] 过去；减少动效、墨水屏时直接到位。
+ * 记在可保存状态里：放在懒列表的行里，滚出去再滚回来不再从 0 填一遍。
+ */
+@Composable
+internal fun animatedFraction(target: Float): Float {
+    val goal = target.coerceIn(0f, 1f)
+    var filled by rememberSaveable { mutableStateOf(false) }
+    val value = remember { Animatable(if (filled || Effects.noMotion) goal else 0f) }
+    LaunchedEffect(goal) {
+        value.animateTo(goal, Motion.standard(if (filled) Motion.MEDIUM else Motion.LONG))
+        filled = true
+    }
+    return value.value
+}
+
+/**
+ * 进度环：底圈是 [GroupedColors.fill]，进度用 [color]（默认强调色）、圆头，从 12 点顺时针；中间放 [content]（总字数这类）。
+ * 第一次出现填一次（[animatedFraction]）。读屏念 [description]，并按进度条报比例。
+ */
+@Composable
+internal fun ProgressRing(
+    fraction: Float,
+    description: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 96.dp,
+    stroke: Dp = 8.dp,
+    color: Color = LocalGroupedColors.current.tint,
+    content: @Composable () -> Unit = {},
+) {
+    val c = LocalGroupedColors.current
+    val shown = animatedFraction(fraction)
+    Box(
+        modifier.size(size).semantics {
+            contentDescription = description
+            progressBarRangeInfo = ProgressBarRangeInfo(fraction.coerceIn(0f, 1f), 0f..1f)
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = stroke.toPx()
+            val topLeft = Offset(w / 2, w / 2)
+            val arc = Size(this.size.width - w, this.size.height - w)
+            drawArc(c.fill, 0f, 360f, false, topLeft, arc, style = Stroke(w))
+            if (shown > 0f) drawArc(color, -90f, 360f * shown, false, topLeft, arc, style = Stroke(w, cap = StrokeCap.Round))
+        }
+        content()
+    }
+}
+
+/**
+ * 细进度条：[fraction] 那一截用 [color]（默认强调色），底是 [GroupedColors.fill]，两头圆。
+ * [animate] 为真时第一次出现填一次（[animatedFraction]）；一屏有很多条的（规划树每章的字数小条）传假，直接画。
+ */
+@Composable
+internal fun FillBar(
+    fraction: Float,
+    modifier: Modifier = Modifier,
+    color: Color = LocalGroupedColors.current.tint,
+    height: Dp = 4.dp,
+    animate: Boolean = true,
+) {
+    val c = LocalGroupedColors.current
+    val shown = if (animate) animatedFraction(fraction) else fraction.coerceIn(0f, 1f)
+    Canvas(modifier.height(height)) {
+        val r = CornerRadius(this.size.height / 2)
+        drawRoundRect(c.fill, cornerRadius = r)
+        if (shown > 0f) drawRoundRect(color, size = Size(maxOf(this.size.height, this.size.width * shown), this.size.height), cornerRadius = r)
+    }
+}
+
+/**
+ * 大入口卡片（作品页的 2×2）：左上一个淡底图标（同 [RowIcon]），右上小箭头；下面名字（15sp 半粗）和要紧的状态（次要色 12sp，最多两行）。
+ * 卡片底色、16dp 圆角、至少 84dp 高，整张能点，按下有和行一样的灰底；读屏把名字和状态连成一句念。
+ */
+@Composable
+internal fun EntryCard(
+    title: String,
+    value: String?,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Column(
+        modifier
+            .heightIn(min = 84.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.cell)
+            .background(pressHighlight(pressed))
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RowIcon(icon, c.tint)
+            Spacer(Modifier.weight(1f))
+            Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(14.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(title, color = if (enabled) c.label else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (value != null) Text(value, color = c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// ---------- 分类色、彩色小卡片 ----------
+
+/**
+ * 分类色：设定包十几类文档、细纲卡几项各挂一个颜色时用。都从语义色来——强调色、提醒色、成功色、次要色，
+ * 加上写作建议里口吻的紫、AI 腔的青（[suggestPalette]），再加一种蓝；蓝和别的撞了就转色相（[distinctFrom]）。
+ * 删除色不在里面：红留给“放不下、出错”。颜色只是帮着认，卡片上同时有图标和文字，墨水屏、色弱下靠它们分。
+ */
+internal enum class CategoryTone { TINT, BLUE, WARNING, PURPLE, CYAN, SUCCESS, NEUTRAL }
+
+/** 蓝的基准色（总纲、卷纲这类“纲”）：离强调色的朱砂、提醒色的橙都远。 */
+private val BlueLight = Color(0xFF2F64A8)
+private val BlueDark = Color(0xFF86B3EE)
+
+internal fun categoryColor(tone: CategoryTone, c: GroupedColors): Color =
+    (synchronized(categoryPalettes) { categoryPalettes[c] } ?: computeCategoryPalette(c).also { fresh ->
+        synchronized(categoryPalettes) { categoryPalettes[c] = fresh }
+    }).getValue(tone)
+
+/** 最近用过的几套配色（同 [suggestPalette]：每张卡片都要取一次，转色相要试几十次）。 */
+private val categoryPalettes = object : LinkedHashMap<GroupedColors, Map<CategoryTone, Color>>(8, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<GroupedColors, Map<CategoryTone, Color>>?) = size > 8
+}
+
+private fun computeCategoryPalette(c: GroupedColors): Map<CategoryTone, Color> {
+    val cards = listOf(c.cell, c.background)
+    val suggest = suggestPalette(c)
+    val purple = suggest.getValue(SuggestKind.VOICE)
+    val cyan = suggest.getValue(SuggestKind.CLICHE)
+    val blue = (if (c.dark) BlueDark else BlueLight).distinctFrom(listOf(c.tint, c.destructive, c.warning, purple, cyan, c.success), cards)
+    return CategoryTone.entries.associateWith { t ->
+        when (t) {
+            CategoryTone.TINT -> c.tint
+            CategoryTone.BLUE -> blue
+            CategoryTone.WARNING -> c.warning
+            CategoryTone.PURPLE -> purple
+            CategoryTone.CYAN -> cyan
+            CategoryTone.SUCCESS -> c.success
+            CategoryTone.NEUTRAL -> c.secondary
+        }.readableOn(cards)
+    }
+}
+
+/** 分类色的淡底：浅色 8%、深色 16%，叠在卡片底上。 */
+internal fun categoryFill(color: Color, c: GroupedColors): Color = lerp(c.cell, color, if (c.dark) 0.16f else 0.08f)
+
+/**
+ * 按宽度排的格子：每格不窄于 [minTileWidth]，至少 [minColumns] 列、至多 [maxColumns] 列（手机竖屏三列，宽屏多几列），
+ * 格子等宽铺满，同一行一样高；最后一行不满时左对齐、右边留空。[tile] 画第几格。
+ */
+@Composable
+internal fun AdaptiveTileGrid(
+    count: Int,
+    modifier: Modifier = Modifier,
+    minColumns: Int = 3,
+    maxColumns: Int = 6,
+    minTileWidth: Dp = 112.dp,
+    spacing: Dp = 8.dp,
+    tile: @Composable (index: Int, modifier: Modifier) -> Unit,
+) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val columns = ((maxWidth + spacing) / (minTileWidth + spacing)).toInt().coerceIn(minColumns, maxColumns)
+        Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
+            (0 until count).chunked(columns).forEach { line ->
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                    line.forEach { i -> tile(i, Modifier.weight(1f).fillMaxHeight()) }
+                    repeat(columns - line.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 彩色统计小卡片（设定包的分类格）：左上分类色淡底的图标，右上一个小标记（[badge]，“常用”“按需”），
+ * 下面名字（13sp 半粗）和一两行数字（次要色 12sp）。底是分类色的淡色、12dp 圆角、至少 84dp 高；
+ * 选中时描一道 1.5dp 的分类色边、名字变分类色。[dimmed] 为真（这类还空着）时底和图标都用灰，字用第三级灰。
+ * 整张能点，读屏念 [description]，选中的念“已选中”。
+ */
+@Composable
+internal fun StatTile(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    lines: List<String>,
+    description: String,
+    modifier: Modifier = Modifier,
+    badge: String? = null,
+    selected: Boolean = false,
+    dimmed: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val shape = RoundedCornerShape(12.dp)
+    val tone = if (dimmed) c.tertiary else color
+    Column(
+        modifier
+            .heightIn(min = 84.dp)
+            .clip(shape)
+            .background(if (dimmed) c.cell else categoryFill(color, c))
+            .background(pressHighlight(pressed))
+            .then(if (selected) Modifier.border(1.5.dp, color, shape) else Modifier)
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = description
+                this.selected = selected
+                role = Role.Button
+            }
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            if (badge != null) {
+                Text(badge, color = if (dimmed) c.tertiary else c.secondary, fontSize = 11.sp, maxLines = 1, modifier = Modifier.padding(start = 4.dp))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            title,
+            color = when {
+                dimmed -> c.tertiary
+                selected -> color
+                else -> c.label
+            },
+            fontSize = 13.sp,
+            lineHeight = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        lines.forEach { line ->
+            Text(line, color = if (dimmed) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/**
+ * 分段条：一根 [height] 高、两头圆的条，按 [segments]（字数，颜色）一段段排开，段间留 2dp 缝（颜色之外还靠缝分段）；
+ * [scale] 大于各段之和时，余下的部分是 [GroupedColors.fill] 的底（上限还没用完）。不做填充动画，一次画好。读屏念 [description]。
+ */
+@Composable
+internal fun SegmentBar(segments: List<Pair<Int, Color>>, description: String, modifier: Modifier = Modifier, scale: Int = 0, height: Dp = 10.dp) {
+    val c = LocalGroupedColors.current
+    val total = maxOf(segments.sumOf { it.first }, scale).coerceAtLeast(1)
+    Canvas(modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2)).semantics { contentDescription = description }) {
+        drawRect(c.fill)
+        val gap = 2.dp.toPx()
+        var x = 0f
+        segments.filter { it.first > 0 }.forEach { (n, color) ->
+            val w = size.width * n / total
+            drawRect(color, topLeft = Offset(x, 0f), size = Size(if (w - gap > 1f) w - gap else maxOf(w, 1f), size.height))
+            x += w
+        }
+    }
+}
+
+/**
+ * 能就地展开编辑的彩色小卡片（细纲卡的几项）：顶上一行分类色淡底图标、项名（次要色 12sp）和朝下的小箭头，下面内容摘要（15sp，收着时最多三行），
+ * 空的写第三级灰的“未填”、图标也变灰；摘要下面可挂一个小标签（[tag]，“AI 拟的·待确认”）。点卡片头展开，
+ * 下面露出 [content]（文本框），再点收起；高度标准缓动，减少动效时直接换。读屏把项名、内容、标签连起来念，再念“已展开 / 已收起”。
+ */
+@Composable
+internal fun FieldCard(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    emptyText: String = "未填",
+    /** 摘要下面的小标签（文字、颜色）。 */
+    tag: Pair<String, Color>? = null,
+    /** 收着、展开都显示的一块（节拍卡的各拍和勾），在卡片头下面。 */
+    always: (@Composable ColumnScope.() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val empty = summary.isBlank()
+    val tone = if (empty) c.tertiary else color
+    val turn by animateFloatAsState(if (expanded) 180f else 0f, if (Effects.noMotion) snap() else Motion.standard(Motion.SHORT), label = "fieldArrow")
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (empty) c.cell else categoryFill(color, c))
+            .animateHeightChanges(),
+    ) {
+        // 图标和小箭头一行，项名、内容、标签各占整宽往下排：两张一排的窄卡片（360dp 宽约 160dp）里标签、项名也放得下。
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .background(pressHighlight(pressed))
+                .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onToggle)
+                // 项名、内容、标签连成一句念（合并子节点的文字，测试和读屏都按文字找得到）。
+                .semantics(mergeDescendants = true) {
+                    stateDescription = if (expanded) "已展开" else "已收起"
+                    role = Role.Button
+                }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
+                }
+                Text(title, color = if (empty) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Icon(
+                    LingYueIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = c.tertiary,
+                    modifier = Modifier.padding(start = 4.dp).size(16.dp).graphicsLayer { rotationZ = turn },
+                )
+            }
+            Text(
+                summary.ifBlank { emptyText },
+                color = if (empty) c.tertiary else c.label,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                maxLines = if (expanded) 1 else 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            if (tag != null) Tag(tag.first, tag.second, Modifier.padding(top = 6.dp))
+        }
+        if (always != null) Column(Modifier.fillMaxWidth().padding(bottom = 6.dp), content = always)
+        if (expanded) Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp), content = content)
+    }
 }
