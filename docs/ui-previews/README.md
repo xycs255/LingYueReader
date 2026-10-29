@@ -5,7 +5,7 @@
 | 区域 | 亮色 | 暗色 |
 | --- | --- | --- |
 | 首页 | [书架](paper-shelf.png) · [写作](paper-writing.png) · [生词本](paper-vocabulary.png) · [统计](paper-stats.png) · [我的](paper-me.png) | [写作](ink-writing.png) · [我的](ink-me.png) |
-| 写作 | [作品](paper-work.png) · [规划树](paper-work-tree.png) · [编辑器](paper-editor.png) · [四组工具](paper-editor-tools.png) · [故事账本](paper-ledger.png) · [360 × 640 小屏工具](paper-editor-compact-tools.png) | [作品](ink-work.png) · [编辑器](ink-editor.png) · [四组工具](ink-editor-tools.png) |
+| 写作 | [作品](paper-work.png) · [规划树](paper-work-tree.png) · [编辑器](paper-editor.png) · [底栏“写”](paper-editor-tools.png) · [故事账本](paper-ledger.png) · [360 × 640 小屏“写”](paper-editor-compact-tools.png) | [作品](ink-work.png) · [编辑器](ink-editor.png) · [底栏“写”](ink-editor-tools.png) |
 | 阅读 | [纸色正文](paper-reader.png) · [紧凑划选](selection-compact.png) | [目录侧栏](night-catalog.png) · [排版面板](night-typography.png) |
 | 设置与统计 | [主题设置](paper-theme.png) · [统计展开态](stats-expanded.png) | [主题设置](ink-theme.png) |
 

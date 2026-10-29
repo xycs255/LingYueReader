@@ -182,6 +182,7 @@ class WritingAiUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("风刮得很大猛。")
         compose.onNodeWithText("采纳").performClick()
@@ -200,6 +201,7 @@ class WritingAiUiTest {
         // 光标放在“风很大。”这一段里。
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         // 先看对比：删掉的“大”还在（划掉显示），加上的“刮得”“猛”插在里面；“修改后：”这种多余的话去掉了。
         waitForText("风刮得很大猛。")
@@ -223,7 +225,8 @@ class WritingAiUiTest {
         // 问主意在书灵里（AI 条上不再有“灵感…”）。
         compose.onNodeWithContentDescription("AI 写作").performClick()
         assertTrue(compose.onAllNodesWithText("灵感…").fetchSemanticsNodes().isEmpty())
-        compose.onNodeWithContentDescription("书灵").performClick()
+        // 书灵（问主意、范本）在“写”里叫“灵感”。
+        compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         listOf("细节和描写", "起名", "卡文了", "随便问").forEach { waitForText(it) }
         compose.onNodeWithText("接下来怎么写").performClick()
@@ -358,11 +361,14 @@ class WritingAiUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         // 扩写被长度上限截断：报错，不能采纳。
         compose.onNodeWithText("扩写").performScrollTo().performClick()
         waitForText("回答太长")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
         // 缩写时模型中途停了（拒答或内容过滤）：整段改稿按失败处理，不能采纳，那行说明也不出现。
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("缩写").performScrollTo().performClick()
         waitForText("模型拒绝回答，或内容被服务商过滤")
         compose.onNodeWithText("采纳").assertIsNotEnabled()
@@ -378,6 +384,7 @@ class WritingAiUiTest {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("风刮得很大猛。")
         // 没看完就离开编辑器：面板收起，但不记成“作者不要这种改法”。
@@ -403,7 +410,8 @@ class WritingAiUiTest {
     @Test
     fun theCompanionAsksForNamesAndTheIdeaCanBeInserted() {
         openEditor()
-        compose.onNodeWithContentDescription("书灵").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         compose.onNodeWithText("起名").performClick()
         waitForText("给什么起名？")
@@ -421,7 +429,8 @@ class WritingAiUiTest {
     fun aiWriterUsesAnExplicitReferenceAndWaitsForAuthorAcceptance() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         openEditor()
-        compose.onNodeWithContentDescription("书灵").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("灵感").performClick()
         waitForText("没选范本")
         compose.onNodeWithText("选择范本").performClick()
         waitForText("本章还没有范本分析")
@@ -445,7 +454,8 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.back() }
         waitFor { compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isNotEmpty() }
         if (compose.onAllNodesWithText("选择范本").fetchSemanticsNodes().isEmpty()) {
-            compose.onNodeWithContentDescription("书灵").performClick()
+            compose.onNodeWithContentDescription("AI 写作").performClick()
+            compose.onNodeWithText("灵感").performClick()
         }
         waitForText("选择范本")
         compose.onNodeWithText("选择范本").performClick()

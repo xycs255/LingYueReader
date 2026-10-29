@@ -1572,7 +1572,8 @@ internal fun ToolTileGrid(
                                 .background(c.fill)
                                 .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = tile.onClick)
                                 .semantics { contentDescription = tile.label }
-                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                                // 左右只留 2dp：窄格（编辑器矮屏时五格挤一行）里四个字的名字也放得下。
+                                .padding(horizontal = 2.dp, vertical = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
@@ -1639,6 +1640,69 @@ internal fun LabeledIconButton(
     ) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
         Text(label, color = color, fontSize = 10.sp, lineHeight = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
+/**
+ * 文字标签：底栏一排“写 / 查 / 整理 / 更多”这样的一两个字，点了展开下面那一排、再点收起。
+ * 看着 36dp 高、10dp 圆角，能点 48dp 高、至少 48dp 宽；选中时淡强调色底、强调色半粗字，否则次要色字、没有底（颜色 [Motion.SHORT] 渐变）。
+ * 读屏是“标签”，念 [description]（给了的话，不给念 [label]）和选没选中；[badge] 是右上一个提醒色的小数字。
+ */
+@Composable
+internal fun TextTab(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    description: String? = null,
+    badge: String? = null,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val text by animateColorAsState(if (selected) c.tint else c.secondary, Motion.standard(Motion.SHORT), label = "textTab")
+    val back by animateColorAsState(if (selected) c.tint.copy(alpha = 0.12f) else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "textTabBack")
+    Box(
+        modifier
+            .widthIn(min = 48.dp)
+            .heightIn(min = 48.dp)
+            .pressScale(source, 0.95f)
+            .selectable(selected = selected, role = Role.Tab, interactionSource = source, indication = null, onClick = onClick)
+            .semantics { if (description != null) contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(back).padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = text, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+                // 角标：提醒色的小数字（“查”上的问题数），读屏另在 [description] 里说。
+                if (badge != null) Text(badge, color = c.warning, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 一步一步走的小箭头（编辑器顶栏的上一章、下一章）：图形 20dp，占 32dp 宽、48dp 高，挤在章名两边不占地方；
+ * 能点的范围 Compose 会自动补到 48dp（小于最小触控尺寸的点击区往外扩）。到头不能点时图形变成第三级灰（[Motion.SHORT] 渐变），
+ * 读屏仍念 [description]，并说不能点。
+ */
+@Composable
+internal fun StepIconButton(icon: ImageVector, description: String, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val tint by animateColorAsState(if (enabled) c.label else c.tertiary.copy(alpha = 0.5f), Motion.standard(Motion.SHORT), label = "stepIcon")
+    Box(
+        modifier
+            .size(width = 32.dp, height = 48.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(pressHighlight(source.collectIsPressedAsState().value && enabled))
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
     }
 }
 

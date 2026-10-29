@@ -141,7 +141,8 @@ class WritingInlineUiTest {
         waitFor { store.text(workId, chapterId) == text }
         // 等着采纳时正文只读：快捷标点、撤销重做都改不了正文。
         compose.onNodeWithContentDescription("重做").performClick()
-        compose.onNodeWithContentDescription("换回标点").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("标点").performClick()
         compose.onNodeWithContentDescription("插入，").performScrollTo().performClick()
         waitForText("AI 写的还没采纳或撤回")
         Thread.sleep(1_200)
@@ -149,7 +150,7 @@ class WritingInlineUiTest {
         assertEquals(text, store.text(workId, chapterId))
         // 提示条盖在键盘上方那一排上：等它收起再切回 AI 操作。
         waitFor { compose.onAllNodesWithText("AI 写的还没采纳或撤回", substring = true).fetchSemanticsNodes().isEmpty() }
-        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithContentDescription("返回“写”").performClick()
         val ask = prompts.first { "【光标在这里】" in it }
         assertTrue("杜娘抬头看他，说老周昨夜就死了。\n【光标在这里】" in ask && "写完眼下这一场就停" in ask)
 

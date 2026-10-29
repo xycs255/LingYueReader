@@ -2,6 +2,8 @@ package com.xycs.lingyuereader.ui
 
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
@@ -268,7 +270,7 @@ class WritingSyncUiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         waitForText("渡口起了雾")
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
         compose.onNodeWithText("章节状态").performClick()
         waitForText("的状态")
         compose.onAllNodesWithText("定稿").onLast().performClick()
@@ -276,7 +278,8 @@ class WritingSyncUiTest {
         waitForText("要不要顺手整理进设定包？")
         // 勾“不再提示”，这次“整理”：打开结果页，以后不再问。
         compose.onNodeWithText("不再提示").performClick()
-        compose.onNodeWithText("整理").performClick()
+        // 底栏也有个“整理”标签：点的是对话框里的按钮。
+        compose.onNode(hasText("整理") and !SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
         waitForText("新人物：杜娘")
         waitFor { !store.assist(workId).syncTip }
         assertTrue(store.get(workId)!!.chapter(chapterId)!!.locked)

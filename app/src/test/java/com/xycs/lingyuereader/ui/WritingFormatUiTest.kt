@@ -96,10 +96,11 @@ class WritingFormatUiTest {
         waitFor { compose.onAllNodes(androidx.compose.ui.test.hasContentDescription("正文")).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    /** 自动排版在底栏“整理”里。 */
     private fun menu(item: String) {
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("整理").performClick()
         waitForText(item)
-        compose.onNodeWithText(item).performScrollTo().performClick()
+        compose.onNodeWithText(item).performClick()
     }
 
     private fun today() = store.stats().on(LocalDate.now())
@@ -175,8 +176,8 @@ class WritingFormatUiTest {
         field.performTextInput("\"")
         waitFor { body() == "林月，“”" }
         // 从写作工具里切到快捷标点，旧的插入操作仍可用。
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
-        compose.onNodeWithText("快捷标点").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("标点").performClick()
         compose.onNodeWithContentDescription("插入……").performClick()
         waitFor { body() == "林月，“”……" }
 

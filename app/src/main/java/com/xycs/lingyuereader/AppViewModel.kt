@@ -1468,6 +1468,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearCompanionReference(workId: String, chapterId: String) {
         companionChoices.edit { remove("$workId/$chapterId") }
     }
+
+    /** 编辑器的一次性提示（不分作品，整个应用记一次）。 */
+    private val editorTips = app.getSharedPreferences("writing_editor", android.content.Context.MODE_PRIVATE)
+
+    /** “菜单挪到底部了”还没提示过。 */
+    fun editorTabsTipPending(): Boolean = !editorTips.getBoolean("tabs_tip", false)
+
+    /** 提示过了：以后打开哪部作品的编辑器都不再提示。 */
+    fun editorTabsTipShown() {
+        editorTips.edit { putBoolean("tabs_tip", true) }
+    }
     val aiConfig: StateFlow<AiConfig> = assistant.config
     val ai: StateFlow<AiSession?> = assistant.session
     val aiGloss: StateFlow<AiGloss?> = assistant.gloss

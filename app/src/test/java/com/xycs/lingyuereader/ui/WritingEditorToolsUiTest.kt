@@ -11,6 +11,7 @@ import com.xycs.lingyuereader.data.Beat
 import com.xycs.lingyuereader.data.ChapterStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The compact entry changes its recommendation, but never takes a candidate as an action. */
@@ -144,5 +145,119 @@ class WritingEditorToolsUiTest {
         }
         assertEquals(EditorRecommendationKind.REVISE_SELECTION,
             recommendation(text, selection = TextRange(0, 2)).kind)
+    }
+
+    // ---------- ✦ 按位置推荐 ----------
+
+    private fun spark(
+        text: String,
+        selection: TextRange,
+        status: ChapterStatus = ChapterStatus.DRAFT,
+        nextBeat: Beat? = null,
+        finished: String? = null,
+        cliche: Boolean = false,
+    ) = sparkActions(text, selection, status, true, nextBeat = nextBeat, finished = finished, selectionCliche = cliche)
+
+    private val two = "林月推开门。\n沈默坐在柜台后面。"
+
+    @Test fun theCaretSpotIsReadFromTheTextAroundIt() {
+        assertEquals(CaretSpot.EMPTY_CHAPTER, caretSpot("  \n", TextRange(1)))
+        assertEquals(CaretSpot.SELECTION, caretSpot(two, TextRange(0, 2)))
+        // 只选了空白不算选中。
+        assertEquals(CaretSpot.BLANK_LINE, caretSpot("林月。\n \n沈默。", TextRange(4, 5)))
+        assertEquals(CaretSpot.CHAPTER_END, caretSpot(two, TextRange(two.length)))
+        assertEquals(CaretSpot.CHAPTER_END, caretSpot("$two\n\n", TextRange(two.length + 1)))
+        assertEquals(CaretSpot.PARAGRAPH_END, caretSpot(two, TextRange(6)))
+        assertEquals(CaretSpot.BLANK_LINE, caretSpot("林月推开门。\n\n沈默。", TextRange(7)))
+        assertEquals(CaretSpot.MID_PARAGRAPH, caretSpot(two, TextRange(2)))
+    }
+
+    @Test fun aSelectionGetsPolishThenExpandOrCondenseAndDeclicheOnlyWhenItHits() {
+        val short = spark(two, TextRange(0, 5))
+        assertEquals(listOf("润色", "扩写"), short.map { it.label })
+        assertEquals(EditorRecommendationKind.REVISE_SELECTION, short[0].kind)
+        assertEquals("已选 5 字", short[0].reason)
+        val long = "林".repeat(LONG_SELECTION + 10)
+        assertEquals(listOf("润色", "缩写"), spark(long, TextRange(0, LONG_SELECTION)).map { it.label })
+        assertEquals(listOf("润色", "扩写", "去 AI 腔"), spark(two, TextRange(0, 5), cliche = true).map { it.label })
+        assertEquals(EditorRecommendationKind.DECLICHE_SELECTION, spark(two, TextRange(0, 5), cliche = true)[2].kind)
+    }
+
+    @Test fun theChapterEndGetsTheNextBeatOrFinishingThenContinuation() {
+        val beat = Beat(2, "杜娘开门")
+        assertEquals(listOf("写第 2 拍", "AI 接着写"), spark(two, TextRange(two.length), nextBeat = beat).map { it.label })
+        assertEquals(listOf("AI 接着写"), spark(two, TextRange(two.length)).map { it.label })
+        val done = spark(two, TextRange(two.length), finished = "已写 2800 字，接近目标 3000 字")
+        assertEquals(listOf(EditorRecommendationKind.FINISH_CHAPTER, EditorRecommendationKind.CONTINUE), done.map { it.kind })
+        assertEquals("这章写完了", done[0].label)
+        assertEquals("已写 2800 字，接近目标 3000 字", done[0].reason)
+        // 不在章末：看着写完了也不推荐收尾。
+        assertFalse(spark(two, TextRange(6), finished = "细纲卡的 3 拍都写完了").any { it.kind == EditorRecommendationKind.FINISH_CHAPTER })
+        assertEquals(3, spark(two, TextRange(two.length), status = ChapterStatus.REVISION, nextBeat = beat, finished = "x").size)
+        assertEquals(EditorRecommendationKind.REVIEW_CHAPTER, spark(two, TextRange(two.length), status = ChapterStatus.REVISION)[0].kind)
+    }
+
+    @Test fun blankLinesParagraphEndsAndTheMiddleOfAParagraph() {
+        val beat = Beat(3, "林月识破沈默")
+        assertEquals(listOf("写第 3 拍", "AI 接着写"), spark(two, TextRange(6), nextBeat = beat).map { it.label })
+        assertEquals(listOf("AI 接着写"), spark("林月推开门。\n\n沈默。", TextRange(7)).map { it.label })
+        assertEquals(listOf("润色这段", "扩写这段"), spark(two, TextRange(2), nextBeat = beat).map { it.label })
+    }
+
+    @Test fun anEmptyChapterIsWrittenAndBusyOrLockedChaptersOnlyShowTheirState() {
+        val empty = spark("", TextRange(0))
+        assertEquals(listOf(EditorRecommendationKind.DRAFT_CHAPTER), empty.map { it.kind })
+        assertEquals("写本章", empty[0].label)
+        assertEquals(listOf(EditorRecommendationKind.UNLOCK), spark(two, TextRange(0, 2), status = ChapterStatus.FINAL).map { it.kind })
+        assertEquals(listOf(EditorRecommendationKind.CONFIGURE_AI), sparkActions(two, TextRange(0, 2), ChapterStatus.DRAFT, false).map { it.kind })
+        val inline = InlineWrite("work", "chapter", 0, "", InlineMode.SCENE, loading = true)
+        val busy = sparkActions(two, TextRange(0, 2), ChapterStatus.DRAFT, true, inline = inline)
+        assertEquals(1, busy.size)
+        assertFalse(busy[0].enabled)
+    }
+
+    @Test fun nearlyThereCountsFromNinetyPercent() {
+        assertEquals("已写 2700 字，接近目标 3000 字", nearFinishHint(2700, 3000))
+        assertEquals(null, nearFinishHint(2699, 3000))
+        assertEquals(null, nearFinishHint(3000, 3000))
+        assertEquals(null, nearFinishHint(2900, null))
+    }
+
+    // ---------- 标签归属 ----------
+
+    /** 改前的盘点：右上菜单、AI 条、工具四组、底栏的每一项（见 docs 里的盘点）。 */
+    private val inventory = listOf(
+        // 右上菜单
+        "细纲卡", "章节状态", "解锁修改", "这章写完了", "AI 写整章草稿", "三道审稿", "整理本章进设定包", "本章资料", "故事账本",
+        "从范本找写法", "问题", "自动排版", "历史版本", "预览本章", "听本章", "改章名", "上一章", "下一章", "写下一章",
+        // AI 条、标点条、书灵
+        "AI 写…", "润色", "更生动", "扩写", "缩写", "挑错", "按要求改…", "读者点评", "去 AI 腔", "快捷标点", "书灵",
+        // 工具四组里另有的
+        "设定包", "整理入账", "范本写法",
+    )
+
+    /** 盘点里的每一项都在新位置上找得到：底栏四个标签（最后一章、没定稿时最全）、右上“⋯”、顶栏箭头。 */
+    @Test fun everyOldEntryHasANewHome() {
+        val homes = EditorToolGroup.entries.flatMap { editorTabEntries(it, locked = false, lastChapter = true) } + EDITOR_OVERFLOW + EDITOR_TOP_BAR
+        inventory.forEach { old ->
+            assertTrue("“$old”没有去处", homes.any { old in it.legacy })
+        }
+        // 每一样都至少有一个位置，四个标签里不重复。
+        EditorEntry.entries.forEach { assertTrue("${it.label} 没放进任何地方", it in homes) }
+        val inTabs = EditorToolGroup.entries.flatMap { editorTabEntries(it, locked = false, lastChapter = true) }
+        assertEquals(inTabs.size, inTabs.distinct().size)
+        // 一排三到五个：360dp 的屏上排得下一行。
+        EditorToolGroup.entries.forEach { g -> assertTrue(g.label, editorTabEntries(g, locked = false, lastChapter = true).size in 3..5) }
+    }
+
+    @Test fun lockedAndLastChapterChangeOnlyWhatTheyShould() {
+        assertFalse(EditorEntry.FINISH in editorTabEntries(EditorToolGroup.ORGANIZE, locked = true, lastChapter = false))
+        assertEquals("解锁修改", entryLabel(EditorEntry.STATUS, locked = true))
+        assertEquals("章节状态", entryLabel(EditorEntry.STATUS, locked = false))
+        assertFalse(EditorEntry.NEW_CHAPTER in editorTabEntries(EditorToolGroup.MORE, locked = false, lastChapter = false))
+        assertTrue(EditorEntry.NEW_CHAPTER in editorTabEntries(EditorToolGroup.MORE, locked = false, lastChapter = true))
+        // 读屏：只有一个字的“写”念“AI 写作”，底栏“更多”和右上“⋯”（更多）分开。
+        assertEquals("AI 写作", EditorToolGroup.WRITE.description)
+        assertEquals("更多工具", EditorToolGroup.MORE.description)
     }
 }
