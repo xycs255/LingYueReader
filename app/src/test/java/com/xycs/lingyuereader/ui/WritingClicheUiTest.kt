@@ -143,6 +143,7 @@ class WritingClicheUiTest {
         openEditor()
         waitForText("2 处问题")
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         // 有命中才出现入口；写作建议没开也能用。
         compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()
         waitForText("林月笑了一下，")
@@ -179,6 +180,7 @@ class WritingClicheUiTest {
         openEditor()
         waitForText("2 处问题")
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()
         waitForText("林月笑了一下，")
         compose.onAllNodesWithText("改").onFirst().performClick()

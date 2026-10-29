@@ -111,8 +111,8 @@ class WritingUiTest {
         compose.onNodeWithContentDescription("正文").performTextInput("他推开门，风雪灌进来。")
         // 停笔后自动保存。
         waitForText("11 字 · 已保存")
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
-        compose.onNodeWithText("快捷标点").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("标点").performClick()
         compose.onNodeWithContentDescription("插入「」").performClick()
         waitForText("13 字")
 
@@ -146,8 +146,8 @@ class WritingUiTest {
         scrollToChapter("第二章 天亮")
         chapterRow("第二章 天亮").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("预览本章").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
+        compose.onNodeWithText("预览本章").performClick()
         // 阅读页打开到第二章（编辑器里也有这句，等编辑框没了再找）。
         val indexFile = File(context.filesDir, "books/index.json")
         // 编辑框的光标一直在闪，界面不会“空闲”，测试框架就不替主线程处理消息：这里手动处理，预览的协程才能往下走。
@@ -170,8 +170,8 @@ class WritingUiTest {
         compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
         compose.waitUntil(10_000) { ShadowLooper.idleMainLooper(); compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("正文").performTextInput("鸡叫了三遍。")
-        compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("预览本章").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
+        compose.onNodeWithText("预览本章").performClick()
         compose.waitUntil(20_000) {
             ShadowLooper.idleMainLooper()
             compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isEmpty() &&
@@ -189,26 +189,16 @@ class WritingUiTest {
         // 正文使用 TextFieldState；等待编辑框就绪，不依赖文本是否合并进读屏树。
         compose.waitUntil(10_000) { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
 
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("关闭写作工具").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("查").performClick()
         waitForText("三道审稿")
         compose.onNodeWithText("整理").performClick()
-        waitForText("整理入账")
+        waitForText("历史版本")
         compose.onNodeWithText("更多").performClick()
-        waitForText("全部工具")
-        compose.onNodeWithText("全部工具").performClick()
-        // 旧菜单较长；小屏里目标项可能尚未进入弹层的可见语义树。
-        waitForText("AI 写整章草稿")
-        val referenceItem = hasText("从范本找写法")
-        runCatching {
-            compose.onNode(hasScrollToIndexAction()).performScrollToNode(referenceItem)
-        }
-        for (attempt in 0..8) {
-            if (compose.onAllNodesWithText("从范本找写法").fetchSemanticsNodes().isNotEmpty()) break
-            compose.onAllNodes(hasScrollAction()).onLast().performTouchInput { swipeUp() }
-        }
-        compose.onNodeWithText("从范本找写法").performScrollTo().performClick()
+        waitForText("预览本章")
+        // 不常用的在右上“⋯”里。
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("从范本找写法")
+        compose.onNodeWithText("从范本找写法").performClick()
         waitForText("写作范本")
     }
 

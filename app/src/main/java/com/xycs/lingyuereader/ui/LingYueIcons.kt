@@ -700,4 +700,36 @@ object LingYueIcons {
             }
         }
     }
+
+    /** 灵感：一只灯泡，底下两道灯座。 */
+    val Bulb by lazy {
+        glyph("Bulb") {
+            trace {
+                moveTo(9.2f, 15.5f)
+                quadTo(9.2f, 13.6f, 7.9f, 12.4f)
+                quadTo(6f, 10.6f, 6f, 9.2f)
+                quadTo(6f, 3.5f, 12f, 3.5f)
+                quadTo(18f, 3.5f, 18f, 9.2f)
+                quadTo(18f, 10.6f, 16.1f, 12.4f)
+                quadTo(14.8f, 13.6f, 14.8f, 15.5f)
+                close()
+                moveTo(9.5f, 18.2f); lineTo(14.5f, 18.2f)
+                moveTo(10.5f, 20.8f); lineTo(13.5f, 20.8f)
+            }
+        }
+    }
+
+    /** 改名：一行字的底线，上面一道竖着的光标。 */
+    val Rename by lazy {
+        glyph("Rename", autoMirror = true) {
+            trace {
+                moveTo(4.5f, 8f); lineTo(11.5f, 8f)
+                moveTo(8f, 8f); lineTo(8f, 16f)
+                moveTo(16.5f, 5f); lineTo(16.5f, 19f)
+                moveTo(14.5f, 5f); lineTo(18.5f, 5f)
+                moveTo(14.5f, 19f); lineTo(18.5f, 19f)
+                moveTo(4.5f, 19.5f); lineTo(12f, 19.5f)
+            }
+        }
+    }
 }

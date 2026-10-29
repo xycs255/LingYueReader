@@ -88,16 +88,16 @@ class PaperUiSnapshotTest {
         compose.waitUntil(10_000) { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
-    /** 写作工具没有标题栏了：等分段控件那一行右端的关闭钮。 */
+    /** 底栏“写”展开的那排大图标：等“灵感”那一格。 */
     private fun waitForToolsPanel() {
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithContentDescription("关闭写作工具").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("灵感").fetchSemanticsNodes().isNotEmpty()
         }
     }
 
     private fun waitForEditorTools() {
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithContentDescription("打开四组工具").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithContentDescription("AI 写作").fetchSemanticsNodes().isNotEmpty()
         }
     }
 
@@ -140,7 +140,7 @@ class PaperUiSnapshotTest {
         chapterRows[chapterRows.fetchSemanticsNodes().lastIndex].performClick()
         waitFor("他推开门")
         capture("paper-editor")
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
         waitForToolsPanel()
         capture("paper-editor-tools")
         compose.onNodeWithContentDescription("返回").performClick()
@@ -196,7 +196,7 @@ class PaperUiSnapshotTest {
         compose.onNode(chapterRow).performScrollTo().performClick()
         waitFor("天终于亮了")
         capture("ink-editor")
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
         waitForToolsPanel()
         capture("ink-editor-tools")
     }
@@ -212,12 +212,12 @@ class PaperUiSnapshotTest {
         waitFor("继续写")
         compose.onNodeWithText("继续写").performClick()
         waitForEditorTools()
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
+        compose.onNodeWithContentDescription("AI 写作").performClick()
         waitForToolsPanel()
         compose.waitForIdle()
         // 360 × 640 上展开写作工具后，正文上方仍留着好几行可见的地方，不被面板挤没。
         val bodyTop = compose.onNodeWithContentDescription("正文").getUnclippedBoundsInRoot().top
-        val panelTop = compose.onNodeWithContentDescription("关闭写作工具").getUnclippedBoundsInRoot().top
+        val panelTop = compose.onNodeWithText("灵感").getUnclippedBoundsInRoot().top
         assertTrue("写作工具面板不能把正文挤掉：正文顶 $bodyTop、面板顶 $panelTop", panelTop - bodyTop >= 200.dp)
         capture("paper-editor-compact-tools")
     }

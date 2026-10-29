@@ -224,8 +224,10 @@ class WritingDraftUiTest {
 
         compose.runOnUiThread { vm.open(Screen.Editor(workId, c2)) }
         waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("AI 写整章草稿").performClick()
+        // “写好了 2 章的摘要”的提示盖在底栏上：等它收起再点“写”。
+        waitFor { compose.onAllNodesWithText("写好了", substring = true).fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("整章草稿").performClick()
         waitForText("这一章想怎么写")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("多写对白")
         waitForText("本章写作任务")

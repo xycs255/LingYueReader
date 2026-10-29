@@ -80,7 +80,7 @@ class WritingPlanUiTest {
         waitForText("草稿 · 5 字")
 
         // 定稿：正文锁定。
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
         compose.onNodeWithText("章节状态").performClick()
         waitForText("的状态")
         statusTab("定稿").performClick()
@@ -96,6 +96,7 @@ class WritingPlanUiTest {
         assertEquals("他推开门。", store.text(workId, chapterId))
         // AI 改稿也不行。
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("先解锁并登记原因")
 

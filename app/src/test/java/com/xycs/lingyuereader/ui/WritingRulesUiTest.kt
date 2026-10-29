@@ -121,7 +121,7 @@ class WritingRulesUiTest {
         waitFor { selection() == TextRange(8, 12) }
 
         // 定稿前提醒还有几条不合规则（不拦着）。
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithContentDescription("更多工具").performClick()
         compose.onNodeWithText("章节状态").performClick()
         compose.onNode(hasText("定稿") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)).performClick()
         waitForText("这一章还有 2 条不合")

@@ -299,17 +299,16 @@ class WritingDetailSnapshotTest {
         }
         compose.onNode(row).performClick()
         waitForText("半块玉佩攥在手心")
-        waitForDescription("打开四组工具")
+        waitForDescription("AI 写作")
     }
 
+    /** 点底栏“写”：上面展开一排大图标。 */
     private fun openTools() {
-        compose.onNodeWithContentDescription("打开四组工具").performClick()
-        // 写作工具不再有标题栏：分段控件那一行右端的关闭钮出现，就是面板展开了。
-        waitForDescription("关闭写作工具")
-        waitForDescription("关闭四组工具")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        waitForDescription("灵感")
     }
 
-    /** 点写作工具里的一个分类，等这个分类的第一个入口出现。 */
+    /** 点底栏的一个标签，等这个标签的第一个入口出现。 */
     private fun pickGroup(label: String, firstShortcut: String) {
         compose.onNodeWithText(label).performClick()
         waitForDescription(firstShortcut)
@@ -323,32 +322,32 @@ class WritingDetailSnapshotTest {
         capture("detail-editor-bottom")
 
         openTools()
-        waitForDescription("AI 写整章草稿")
-        waitForDescription("快捷标点")
+        waitForDescription("整章草稿")
+        waitForDescription("标点")
         capture("detail-editor-tools-write")
         pickGroup("查", "三道审稿")
         waitForDescription("问题")
         capture("detail-editor-tools-check")
-        pickGroup("整理", "整理入账")
+        pickGroup("整理", "细纲卡")
         waitForDescription("历史版本")
         capture("detail-editor-tools-tidy")
-        pickGroup("更多", "全部工具")
-        waitForDescription("范本写法")
+        pickGroup("更多", "章节状态")
+        waitForDescription("预览本章")
         capture("detail-editor-tools-more")
 
-        // 细纲卡：从“查”里点进去。
-        pickGroup("查", "细纲卡")
+        // 细纲卡：从“整理”里点进去。
+        pickGroup("整理", "细纲卡")
         compose.onNodeWithContentDescription("细纲卡").performClick()
         waitForText("沈默的来意不点破")
         waitForText("上一章「第2章 渡口」留下的")
         capture("detail-chapter-card")
         compose.onNodeWithContentDescription("返回").performClick()
-        waitForDescription("打开四组工具")
+        waitForDescription("AI 写作")
 
-        // 设定包：同样从“查”里点进去。
-        openTools()
-        pickGroup("查", "设定包")
-        compose.onNodeWithContentDescription("设定包").performClick()
+        // 设定包：不常用，在右上“⋯”里。
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("设定包")
+        compose.onNodeWithText("设定包").performClick()
         waitForText("渡口地图说明")
         waitForText("人物档案")
         capture("detail-pack")
@@ -364,7 +363,7 @@ class WritingDetailSnapshotTest {
 
         // AI 写整章草稿：没有候选稿。
         openTools()
-        compose.onNodeWithContentDescription("AI 写整章草稿").performClick()
+        compose.onNodeWithContentDescription("整章草稿").performClick()
         waitForText("开始创作")
         waitForGone("正在读取已保存的候选稿")
         waitForGone("正在核对本章任务与资料")
@@ -372,7 +371,7 @@ class WritingDetailSnapshotTest {
         waitForGone("正在按本章资料估算")
         capture("detail-draft")
         compose.onNodeWithContentDescription("返回").performClick()
-        waitForDescription("打开四组工具")
+        waitForDescription("AI 写作")
 
         // 三道审稿：还没开始审。
         openTools()
@@ -525,15 +524,16 @@ class WritingDetailSnapshotTest {
         capture("$prefix-ai-write-panel-bottom")
         compose.onNodeWithText("取消").performClick()
         waitForGone("从光标处往下写")
-        compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("AI 写整章草稿")
+        compose.onNodeWithText("整理").performClick()
+        waitForText("细纲卡")
         capture("$prefix-editor-more-menu")
-        // 菜单点“细纲卡”收起，再返回编辑器。
+        // “整理”里点“细纲卡”，再返回编辑器。
         compose.onNodeWithText("细纲卡").performClick()
         waitForText("沈默的来意不点破")
         compose.onNodeWithContentDescription("返回").performClick()
-        waitForDescription("打开四组工具")
-        compose.onNodeWithContentDescription("书灵").performClick()
+        waitForDescription("AI 写作")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         waitForText("没选范本")
         capture("$prefix-companion")
@@ -575,7 +575,7 @@ class WritingDetailSnapshotTest {
     private fun finishChapter(prefix: String) {
         WorkStore(File(context.filesDir, "writing")).addPackDoc(workId, PackKind.RULES, "检查规则", "禁用：没抬头\n")
         openChapterThree()
-        compose.onNodeWithContentDescription("更多").performClick()
+        compose.onNodeWithText("整理").performClick()
         compose.onNodeWithText("这章写完了").performClick()
         waitForText("收尾要做的")
         waitForText("条不合规则")
@@ -646,6 +646,7 @@ class WritingDetailSnapshotTest {
         compose.onNodeWithContentDescription("收起").performClick()
         waitForGone("上次审稿")
         compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("读者点评").performScrollTo()
         check(count("矛盾检查") == 0)
         capture("$prefix-problems-ai-bar")

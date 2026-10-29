@@ -172,8 +172,8 @@ class LedgerUiTest {
         seedLedger()
         // 从编辑器的菜单进来，直接翻到这一章（第 12 章）。
         open(Screen.Editor(workId, ch12))
-        waitFor { compose.onAllNodesWithContentDescription("更多").fetchSemanticsNodes().isNotEmpty() }
-        compose.onAllNodesWithContentDescription("更多").onFirst().performClick()
+        waitFor { compose.onAllNodesWithText("查").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("查").performClick()
         waitForText("故事账本")
         compose.onNodeWithText("故事账本").performClick()
         waitForText("第 12 章")
