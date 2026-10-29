@@ -41,6 +41,8 @@ import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteDirection
 import com.xycs.lingyuereader.data.AiPack
+import com.xycs.lingyuereader.data.PackBudget
+import com.xycs.lingyuereader.data.PackBudgets
 import com.xycs.lingyuereader.data.PackKnowledge
 import com.xycs.lingyuereader.data.ProseBudget
 import com.xycs.lingyuereader.data.ProseLengths
@@ -1439,6 +1441,61 @@ class WritingAi(
     )
 
     /**
+     * 写正文时随系统提示带上的设定资料：作者的说明（[author]）、写作规范与检查规则（[normPieces] 连起来是 [norms]）、
+     * 按章挑的本章资料（[brief]，拼成 [material]）。[proseKit] 和设定包页的“AI 每次带多少”（[packBudget]）都从这里取，数字和真正发出去的对得上。
+     */
+    internal class ProseMaterial(
+        val author: String,
+        val normPieces: List<Pair<String, String>>,
+        val brief: ChapterBrief?,
+        val briefLimit: Int,
+    ) {
+        val norms: String = ProsePack.tidy(ProseLengths.strip(normPieces.joinToString("\n\n") { it.second }))
+        val material: String = brief?.render(prose = true, waitingMax = ChapterBrief.WAITING).orEmpty()
+    }
+
+    /** 读盘、挑资料，在调用方的线程上做（[proseKit] 已在 IO 线程）。 */
+    private fun proseMaterial(workId: String, chapterId: String, text: String, assist: WorkAssist, project: Boolean, phase: WritingPhase): ProseMaterial {
+        val limit = if (localModel) LOCAL_BRIEF_LIMIT else (assist.briefLimit / 2).coerceIn(PROSE_BRIEF_MIN, PROSE_BRIEF_MAX)
+        val brief = store.brief(workId, chapterId, text, limit, confirmedOnly = project, prose = true)
+        // 作者的写作规范、称谓与语气、检查规则：只放这一份，去掉整章字数（篇幅只在任务卡里说）。
+        return ProseMaterial(ProsePack.instructions(store.packSources(workId).raw, phase), writingRulePieces(workId, chapterId, text), brief, limit)
+    }
+
+    /** 上一次算的“AI 每次带多少”和它的输入：设定包版本、章、上限都没变就直接用（设定包几十万字时挑一次资料要几百毫秒）。 */
+    @Volatile private var budgetMemo: Pair<List<Any?>, PackBudget>? = null
+
+    /**
+     * 设定包页顶上“AI 每次带多少”：按作者最近写的那一章（作品页“继续写”的那章）算写正文时带上的资料，
+     * 用和 [proseKit] 同一份 [proseMaterial]；知识库用审稿、整理时的同一份 [aiPack] 和上限。在后台线程算，
+     * 结果按设定包版本、章和正文的修改时间、两个上限、服务商记住，设定包一改就重算。
+     */
+    suspend fun packBudget(workId: String): PackBudget {
+        val assist = assistOf(workId)
+        val knowledgeLimit = knowledgeBudget(workId)
+        return withContext(Dispatchers.Default) {
+            val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
+            val chapter = work.chapters.maxByOrNull { it.updatedAt }
+            val sources = store.packSources(workId)
+            val key = listOf(workId, sources.version, chapter?.id, chapter?.updatedAt, chapter?.words, assist.briefLimit, knowledgeLimit, localModel)
+            budgetMemo?.takeIf { it.first == key }?.let { return@withContext it.second }
+            val m = chapter?.let { proseMaterial(workId, it.id, store.text(workId, it.id), assist, sources.project, WritingPhase.CREATE) }
+            val docs = sources.raw.map { it.first }
+            val pieces = m?.normPieces.orEmpty().map { (id, text) ->
+                if (id == "style") PackBudgets.splitStyle(text, docs) else listOf(PackKind.RULES to text)
+            }
+            val author = m?.author ?: ProsePack.instructions(sources.raw, WritingPhase.CREATE)
+            val budget = PackBudgets.build(
+                chapter?.title, author, m?.norms.orEmpty(), pieces, m?.brief, m?.material.orEmpty(),
+                m?.briefLimit ?: if (localModel) LOCAL_BRIEF_LIMIT else (assist.briefLimit / 2).coerceIn(PROSE_BRIEF_MIN, PROSE_BRIEF_MAX),
+                assist.briefLimit, store.aiPack(workId, knowledgeLimit), sources.raw,
+            )
+            budgetMemo = key to budget
+            budget
+        }
+    }
+
+    /**
      * 算 [ProseKit]：[text] 是这一章现在的正文（挑本章资料、出场人物用），[task] 是 [writingTask] 的结果（项目包作品的
      * 上一章只认定稿），[length] 是全章篇幅，[reference] 为真时这次照范本写；[phase] 是创作还是修订（带哪一阶段的作者提示词）。
      * 本章资料不带后文（[brief] 的 `prose`），上限是作品设的本章资料上限的一半：其余的让模型需要时自己查。
@@ -1457,16 +1514,12 @@ class WritingAi(
             val previous = WritePrompts.ending(if (project) task!!.previous.ifBlank { task.previousDraft } else prior?.let { store.text(workId, it.id) }.orEmpty())
             val previousHook = prior?.let { store.plannedCard(workId, it.id).card.hook }.orEmpty()
             val card = store.plannedCard(workId, chapterId).card
-            val limit = if (localModel) LOCAL_BRIEF_LIMIT else (assist.briefLimit / 2).coerceIn(PROSE_BRIEF_MIN, PROSE_BRIEF_MAX)
-            val brief = store.brief(workId, chapterId, text, limit, confirmedOnly = project, prose = true)
-            val material = brief?.render(prose = true, waitingMax = ChapterBrief.WAITING).orEmpty()
-            // 作者的写作规范、称谓与语气、检查规则：只放这一份，去掉整章字数（篇幅只在任务卡里说）。
-            val norms = ProsePack.tidy(ProseLengths.strip(writingRules(workId, chapterId, text)))
-            val author = ProsePack.instructions(store.packSources(workId).raw, phase)
-            val stable = WritePrompts.proseSystem(work.title, assist, author, norms, "")
-            val system = WritePrompts.proseSystem(work.title, assist, author, norms, material) +
+            val m = proseMaterial(workId, chapterId, text, assist, project, phase)
+            val brief = m.brief
+            val stable = WritePrompts.proseSystem(work.title, assist, m.author, m.norms, "")
+            val system = WritePrompts.proseSystem(work.title, assist, m.author, m.norms, m.material) +
                 (if (reference) "\n\n" + ReferenceWriting.SYSTEM_RULE else "")
-            ProseKit(system, stable, previous, previousHook, WritePrompts.proseTail(assist, samples, norms + "\n" + author),
+            ProseKit(system, stable, previous, previousHook, WritePrompts.proseTail(assist, samples, m.norms + "\n" + m.author),
                 task?.chapter ?: store.chapterNo(work, chapterId), card, length, project, brief?.seeds().orEmpty(), brief, tentative)
         }
     }
@@ -2049,11 +2102,15 @@ class WritingAi(
     }
 
     /** 写正文时照着写的：写作规范、称谓与语气（节选），加上检查规则原文。 */
-    private fun writingRules(workId: String, chapterId: String, text: String): String {
+    private fun writingRules(workId: String, chapterId: String, text: String): String =
+        writingRulePieces(workId, chapterId, text).joinToString("\n\n") { it.second }
+
+    /** [writingRules] 的各段：（"style" 是写作规范与称谓语气的节选，其余是检查规则的文档 id，这一段的文字），空的不算。 */
+    private fun writingRulePieces(workId: String, chapterId: String, text: String): List<Pair<String, String>> {
         val rules = store.pack(workId).filter { it.kind == PackKind.RULES }
-            .map { "【${it.title}】\n" + store.packText(workId, it.id).trim() }
-            .filter { it.substringAfter('\n').isNotBlank() }
-        return (listOf(styleRules(workId, chapterId, text)) + rules).filter { it.isNotBlank() }.joinToString("\n\n")
+            .map { it.id to "【${it.title}】\n" + store.packText(workId, it.id).trim() }
+            .filter { it.second.substringAfter('\n').isNotBlank() }
+        return (listOf("style" to styleRules(workId, chapterId, text)) + rules).filter { it.second.isNotBlank() }
     }
 
     /** 篇幅要求：检查规则里写了字数就照它，没写按 3000 到 5000 字。 */

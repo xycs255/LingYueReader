@@ -48,6 +48,11 @@ data class ChapterSummary(val number: Int, val title: String, val summary: Strin
 /** 本章资料里的一项：哪一类、标题、内容、为什么带上它。 */
 data class BriefItem(val group: String, val title: String, val text: String, val reason: String)
 
+/** [ChapterBrief.renderParts] 的一段：哪一种、文字、是哪一项（[Key.ITEM] 时）。 */
+data class BriefPart(val key: Key, val text: String, val item: BriefItem? = null) {
+    enum class Key { HEAD, ITEM, LEDGER, FORESHADOW, NOT_YET, HIDDEN }
+}
+
 /**
  * 写某一章时要带给 AI 的资料：常用文档、出场人物的人物卡、故事账本到这一章为止的快照、到这一章为止知道的事、
  * 到这一章还不该知道的事、没回收的伏笔、提到这一章的细纲和设定。
@@ -95,45 +100,65 @@ data class ChapterBrief(
      * 拼成给 AI 的文字。[prose] 为真时是写正文用的（见 [ChapterBriefs.build] 的 `ahead`）：开头一句只说这是什么，
      * 不讲优先级——写正文的模型拿到“以前面的为准”这类话，只会多一层核对的心思。
      */
-    fun render(prose: Boolean = false, waitingMax: Int = Int.MAX_VALUE): String? {
-        if (isEmpty) return null
-        val out = StringBuilder(
-            if (prose) "写第 $chapter 章用得上的资料（出场人物、设定、到这一章为止的进展）：\n"
-            else "下面是写第 $chapter 章（第 $volume 卷）要用到的设定资料，按优先级排列；资料之间有冲突时，以前面的为准。\n",
-        )
-        if (present.isNotEmpty()) out.append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
+    fun render(prose: Boolean = false, waitingMax: Int = Int.MAX_VALUE): String? =
+        if (isEmpty) null else renderParts(prose, waitingMax).joinToString("") { it.text }.trim()
+
+    /**
+     * [render] 拆成一段段（开头、每一项、账本、伏笔、察觉、只有作者知道的），连起来去掉首尾空白就是 [render] 的结果。
+     * 设定包页“AI 每次带多少”按这个分各类各占多少字，和真正发出去的是同一份文字。
+     */
+    fun renderParts(prose: Boolean = false, waitingMax: Int = Int.MAX_VALUE): List<BriefPart> {
+        if (isEmpty) return emptyList()
+        val parts = mutableListOf<BriefPart>()
+        fun part(key: BriefPart.Key, item: BriefItem? = null, build: StringBuilder.() -> Unit) {
+            val text = StringBuilder().apply(build).toString()
+            if (text.isNotEmpty()) parts += BriefPart(key, text, item)
+        }
+        part(BriefPart.Key.HEAD) {
+            append(
+                if (prose) "写第 $chapter 章用得上的资料（出场人物、设定、到这一章为止的进展）：\n"
+                else "下面是写第 $chapter 章（第 $volume 卷）要用到的设定资料，按优先级排列；资料之间有冲突时，以前面的为准。\n",
+            )
+            if (present.isNotEmpty()) append("这一章出场或提到的人物：").append(present.joinToString("、")).append("。\n")
+        }
         // 账本是最新进展：放在前情之后、察觉和伏笔之前。
         val ledgerText = ledgerText(prose)
         items.forEachIndexed { i, it ->
-            if (i == ledgerAt && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
-            out.append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n')
+            if (i == ledgerAt && ledgerText != null) part(BriefPart.Key.LEDGER) { append('\n').append(ledgerText).append('\n') }
+            part(BriefPart.Key.ITEM, it) { append("\n【").append(it.group).append("·").append(it.title).append("】\n").append(it.text).append('\n') }
         }
-        if (ledgerAt >= items.size && ledgerText != null) out.append('\n').append(ledgerText).append('\n')
-        if (due.isNotEmpty()) {
-            out.append("\n【计划在这一章回收的伏笔】\n")
-            due.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
+        if (ledgerAt >= items.size && ledgerText != null) part(BriefPart.Key.LEDGER) { append('\n').append(ledgerText).append('\n') }
+        part(BriefPart.Key.FORESHADOW) {
+            if (due.isNotEmpty()) {
+                append("\n【计划在这一章回收的伏笔】\n")
+                due.forEach { append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
+            }
+            val waitingAll = open - due.toSet()
+            val waiting = waiting(waitingAll, waitingMax)
+            if (waiting.isNotEmpty() && prose) {
+                // 写正文：不说计划哪章收（那是后文），只说这一章能做到哪一步。
+                append("\n【已经埋下、还没回收的伏笔（后面才收：这一章可以轻轻提一笔，别收、别揭开）】\n")
+                waiting.forEach { append("- ").append(it.what).append(it.planted?.let { p -> "（第${p}章埋下）" }.orEmpty()).append('\n') }
+            } else if (waiting.isNotEmpty()) {
+                append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n")
+                waiting.forEach { append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
+            }
+            if (waitingAll.size > waiting.size) append("- 另有 ").append(waitingAll.size - waiting.size)
+                .append(" 条埋下还没收的伏笔没列出（不涉及出场人物、离这一章远），要核对时查伏笔表。\n")
         }
-        val waitingAll = open - due.toSet()
-        val waiting = waiting(waitingAll, waitingMax)
-        if (waiting.isNotEmpty() && prose) {
-            // 写正文：不说计划哪章收（那是后文），只说这一章能做到哪一步。
-            out.append("\n【已经埋下、还没回收的伏笔（后面才收：这一章可以轻轻提一笔，别收、别揭开）】\n")
-            waiting.forEach { out.append("- ").append(it.what).append(it.planted?.let { p -> "（第${p}章埋下）" }.orEmpty()).append('\n') }
-        } else if (waiting.isNotEmpty()) {
-            out.append("\n【已经埋下、还没回收的伏笔（别忘了，也别提前揭开）】\n")
-            waiting.forEach { out.append("- ").append(it.what).append(foreshadowWhen(it)).append('\n') }
+        part(BriefPart.Key.NOT_YET) {
+            if (notYet.isNotEmpty()) {
+                append(if (prose) "\n【人物现在还不知道的（后面才会知道：这一章别让他们知道或说破，可以留个引子）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
+                notYet.forEach { append("- ").append(it).append('\n') }
+            }
         }
-        if (waitingAll.size > waiting.size) out.append("- 另有 ").append(waitingAll.size - waiting.size)
-            .append(" 条埋下还没收的伏笔没列出（不涉及出场人物、离这一章远），要核对时查伏笔表。\n")
-        if (notYet.isNotEmpty()) {
-            out.append(if (prose) "\n【人物现在还不知道的（后面才会知道：这一章别让他们知道或说破，可以留个引子）】\n" else "\n【到这一章为止还没发生、人物还不知道的事（不要让人物提前知道或说破）】\n")
-            notYet.forEach { out.append("- ").append(it).append('\n') }
+        part(BriefPart.Key.HIDDEN) {
+            if (hidden.isNotEmpty()) {
+                append("\n【只有作者知道的（人物的结局和后文走向、对手的底牌）：只用来把握方向，不能写进正文，不能让视角人物知道，旁白也不能说破】\n")
+                hidden.forEach { append("- ").append(it).append('\n') }
+            }
         }
-        if (hidden.isNotEmpty()) {
-            out.append("\n【只有作者知道的（人物的结局和后文走向、对手的底牌）：只用来把握方向，不能写进正文，不能让视角人物知道，旁白也不能说破】\n")
-            hidden.forEach { out.append("- ").append(it).append('\n') }
-        }
-        return out.toString().trim()
+        return parts
     }
 
     /**
