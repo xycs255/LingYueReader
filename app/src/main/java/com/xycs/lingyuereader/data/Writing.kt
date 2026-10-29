@@ -2630,7 +2630,7 @@ object WorkExport {
 
     /**
      * EPUB 3（带 EPUB 2 的 NCX 目录，老阅读器也认）。[placeholders] 为真时空章也放一段说明——
-     * 当书预览时用，这样预览里的章和作品里的章一一对应。
+     * 当书预览时用，这样预览里的章和作品里的章一一对应；预览还在 OPF 里记下各章的 id（见 [previewChapterIds]）。
      */
     fun epub(work: Work, text: (WorkChapter) -> String, out: OutputStream, placeholders: Boolean = false, modified: Long = System.currentTimeMillis()) {
         val volumes = work.showVolumes()
@@ -2735,6 +2735,10 @@ $ncx</navMap></ncx>
                 if (work.author.isNotBlank()) append("<dc:creator>${esc(work.author)}</dc:creator>\n")
                 if (work.synopsis.isNotBlank()) append("<dc:description>${esc(work.synopsis)}</dc:description>\n")
                 append("<meta property=\"dcterms:modified\">$stamp</meta>\n")
+                val ids = work.chapters.map { it.id }
+                if (placeholders && ids.none { id -> id.isEmpty() || id.any { it.isWhitespace() } }) {
+                    append("<meta name=\"$PREVIEW_CHAPTERS\" content=\"${esc(ids.joinToString(" "))}\"/>\n")
+                }
             }
             put(
                 "OEBPS/content.opf",
@@ -2756,6 +2760,21 @@ $spine
             )
         }
     }
+
+    private const val PREVIEW_CHAPTERS = "lingyue:chapters"
+
+    /**
+     * 当书预览的 EPUB 里记的各章 id，按书里的顺序；不是预览、旧版生成的预览或读不出时为空。
+     * 挪章后再预览，靠它把书架上那本书的阅读进度换到同一章（见 [previewChapterMoves]）。
+     */
+    fun previewChapterIds(file: File): List<String>? = runCatching {
+        java.util.zip.ZipFile(file).use { zip ->
+            val opf = zip.getEntry("OEBPS/content.opf")?.let { e -> zip.getInputStream(e).use { it.readBytes().decodeToString() } } ?: return null
+            val tag = Regex("""<meta\b[^>]*\bname="${Regex.escape(PREVIEW_CHAPTERS)}"[^>]*>""").find(opf)?.value ?: return null
+            val content = Regex("""\bcontent="([^"]*)"""").find(tag)?.groupValues?.get(1) ?: return null
+            content.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&").split(' ').filter { it.isNotEmpty() }
+        }
+    }.getOrNull()
 
     private fun esc(s: String): String = buildString {
         s.forEach { ch ->

@@ -75,3 +75,23 @@ data class ChapterTreeMarks(
         }
     }
 }
+
+/**
+ * 当书预览放进书架的那本书，阅读进度、书签、批注按章节下标记（另记章名，章名对不上时按章名找）。
+ * 挪过章再生成预览，同一章换了下标；分卷各有“第一章”这类重名的章，按章名会找到别的章上。
+ * 预览里记着每章的 id（[WorkExport.previewChapterIds]），拿上次放进书架那份的顺序 [before] 和这次的 [after]
+ * 换算：旧下标 → 新下标。这次没有了的章（删掉了）不在里面，照旧按章名找。
+ */
+fun previewChapterMoves(before: List<String>, after: List<String>): Map<Int, Int> {
+    val next = after.withIndex().associate { it.value to it.index }
+    return before.withIndex().mapNotNull { (i, id) -> next[id]?.let { i to it } }.toMap()
+}
+
+/** 按 [moves] 换到新下标，章名换成新书里那一章的（[titles]），之后按下标、章名都能对上。 */
+fun ReadingProgress.movedBy(moves: Map<Int, Int>, titles: List<String>): ReadingProgress =
+    moves[chapterIndex]?.let { copy(chapterIndex = it, chapterTitle = titles.getOrElse(it) { chapterTitle }) } ?: this
+
+fun Marks.movedBy(moves: Map<Int, Int>, titles: List<String>): Marks = copy(
+    bookmarks = bookmarks.map { b -> moves[b.chapterIndex]?.let { b.copy(chapterIndex = it, chapterTitle = titles.getOrElse(it) { b.chapterTitle }) } ?: b },
+    notes = notes.map { n -> moves[n.chapterIndex]?.let { n.copy(chapterIndex = it, chapterTitle = titles.getOrElse(it) { n.chapterTitle }) } ?: n },
+)

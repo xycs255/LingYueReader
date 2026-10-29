@@ -247,4 +247,34 @@ class ChapterMoveTest {
         val held = s.withProcessLock { Thread.holdsLock(s) }
         assertTrue(held)
     }
+
+    /** 当书预览的 EPUB 记着各章 id；导出的 EPUB 不记。挪章后按 id 换算预览书里的进度、书签、批注。 */
+    @Test
+    fun previewRemembersChapterIdsAndMovesPositionsByThem() {
+        val s = store()
+        val (w, ids) = twoVolumes(s)
+        val preview = tmp.newFile("preview.epub").apply { outputStream().use { WorkExport.epub(w, { "" }, it, placeholders = true) } }
+        assertEquals(ids, WorkExport.previewChapterIds(preview))
+        val export = tmp.newFile("export.epub").apply { outputStream().use { WorkExport.epub(w, { "" }, it) } }
+        assertNull(WorkExport.previewChapterIds(export))
+        assertNull(WorkExport.previewChapterIds(tmp.newFile("broken.epub").apply { writeText("不是压缩包") }))
+
+        // 客栈（第 4 个）挪到最前，旧账删了。
+        val after = listOf(ids[3], ids[0], ids[1], ids[2])
+        val moves = previewChapterMoves(ids, after)
+        assertEquals(mapOf(0 to 1, 1 to 2, 2 to 3, 3 to 0), moves)
+        val titles = listOf("客栈", "雪夜", "渡口", "夜渡")
+        val progress = ReadingProgress(3, "客栈", 2, 0).movedBy(moves, titles)
+        assertEquals(0, progress.chapterIndex)
+        assertEquals("客栈", progress.chapterTitle)
+        // 删掉的那章不在换算里，照旧按章名找。
+        val gone = ReadingProgress(4, "旧账", 1, 0)
+        assertEquals(gone, gone.movedBy(moves, titles))
+        val marks = Marks(
+            bookmarks = listOf(Bookmark("b", 2, "夜渡", 1, 0, "", 0)),
+            notes = listOf(Note("n", 3, "客栈", 0, 0, 1, "林", "", MarkColor.YELLOW, 0)),
+        ).movedBy(moves, titles)
+        assertEquals(3 to "夜渡", marks.bookmarks.single().let { it.chapterIndex to it.chapterTitle })
+        assertEquals(0 to "客栈", marks.notes.single().let { it.chapterIndex to it.chapterTitle })
+    }
 }

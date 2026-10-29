@@ -34,6 +34,9 @@ import com.xycs.lingyuereader.data.Vocabulary
 import com.xycs.lingyuereader.data.Prefs
 import com.xycs.lingyuereader.data.ReaderSettings
 import com.xycs.lingyuereader.data.ReadingProgress
+import com.xycs.lingyuereader.data.WorkExport
+import com.xycs.lingyuereader.data.movedBy
+import com.xycs.lingyuereader.data.previewChapterMoves
 import com.xycs.lingyuereader.data.TextAnchors
 import com.xycs.lingyuereader.data.SearchHit
 import com.xycs.lingyuereader.data.ShelfPrefs
@@ -2976,9 +2979,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 writing.flush()
                 val (work, file) = writing.writePreview(workId)
                 val uri = Uri.fromFile(file).toString()
-                val entry = withContext(Dispatchers.IO) {
+                val (entry, before) = withContext(Dispatchers.IO) {
                     val list = library.list()
                     val existing = list.firstOrNull { it.id == work.previewBookId } ?: list.firstOrNull { e -> e.sources.any { it.uri == uri } }
+                    // 书架上那本是上次生成的预览：先记下它各章的 id，刷新后按 id 把进度、书签换到同一章。
+                    val before = existing?.let { previewChapterIds(it) }
                     val entry = if (existing != null) {
                         library.refresh(existing)
                         if (existing.title != work.title) library.rename(existing.id, work.title)
@@ -2989,8 +2994,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     if (entry.id != work.previewBookId) writing.setPreviewBook(workId, entry.id)
-                    entry
+                    entry to before
                 }
+                if (before != null) followPreviewMoves(entry, before, work.chapters.map { it.id })
                 loadShelf()
                 bookContentChanged(entry.id)
                 val index = chapterId?.let { id -> work.chapters.indexOfFirst { it.id == id } }?.takeIf { it >= 0 }
@@ -3005,6 +3011,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _messages.value = "预览失败：${error.message ?: "生成出错"}"
             } finally {
                 endBusy()
+            }
+        }
+    }
+
+    /** 书架上那本预览书里记的各章 id（见 [WorkExport.previewChapterIds]），和书里读出的章数对不上时不用。 */
+    private fun previewChapterIds(entry: BookEntry): List<String>? {
+        val file = entry.sources.singleOrNull()?.let { library.bookFile(entry.id, it.file) } ?: return null
+        val ids = WorkExport.previewChapterIds(file) ?: return null
+        return ids.takeIf { runCatching { library.content(entry).chapters.size }.getOrNull() == it.size }
+    }
+
+    /**
+     * 挪过章再预览：把预览书的阅读进度、书签、批注从上次那份的章顺序 [before] 换到这次的 [after]（见 [previewChapterMoves]）。
+     * 在写盘队列上做，排在阅读页还没写完的进度、书签后面，读到的是最新的，也不会被它们盖回旧下标。
+     */
+    private suspend fun followPreviewMoves(entry: BookEntry, before: List<String>, after: List<String>) {
+        if (before == after) return
+        withContext(disk) {
+            val titles = runCatching { library.content(entry).chapters.map { it.title } }.getOrNull() ?: return@withContext
+            if (titles.size != after.size) return@withContext
+            val moves = previewChapterMoves(before, after).filter { (from, to) -> from != to }
+            if (moves.isEmpty()) return@withContext
+            synchronized(library) {
+                library.list().firstOrNull { it.id == entry.id }?.progress?.let { library.saveProgress(entry.id, it.movedBy(moves, titles)) }
+            }
+            // 书签文件读坏了不动它（打开书时会提示），进度照样换。
+            runCatching { library.marks(entry.id) }.getOrNull()?.let { marks ->
+                val moved = marks.movedBy(moves, titles)
+                if (moved != marks) library.saveMarks(entry.id, moved)
             }
         }
     }
