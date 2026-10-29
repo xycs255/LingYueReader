@@ -12,6 +12,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -106,6 +108,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -1943,5 +1946,242 @@ internal fun EntryCard(
         Spacer(Modifier.height(8.dp))
         Text(title, color = if (enabled) c.label else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (value != null) Text(value, color = c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// ---------- 分类色、彩色小卡片 ----------
+
+/**
+ * 分类色：设定包十几类文档、细纲卡几项各挂一个颜色时用。都从语义色来——强调色、提醒色、成功色、次要色，
+ * 加上写作建议里口吻的紫、AI 腔的青（[suggestPalette]），再加一种蓝；蓝和别的撞了就转色相（[distinctFrom]）。
+ * 删除色不在里面：红留给“放不下、出错”。颜色只是帮着认，卡片上同时有图标和文字，墨水屏、色弱下靠它们分。
+ */
+internal enum class CategoryTone { TINT, BLUE, WARNING, PURPLE, CYAN, SUCCESS, NEUTRAL }
+
+/** 蓝的基准色（总纲、卷纲这类“纲”）：离强调色的朱砂、提醒色的橙都远。 */
+private val BlueLight = Color(0xFF2F64A8)
+private val BlueDark = Color(0xFF86B3EE)
+
+internal fun categoryColor(tone: CategoryTone, c: GroupedColors): Color =
+    (synchronized(categoryPalettes) { categoryPalettes[c] } ?: computeCategoryPalette(c).also { fresh ->
+        synchronized(categoryPalettes) { categoryPalettes[c] = fresh }
+    }).getValue(tone)
+
+/** 最近用过的几套配色（同 [suggestPalette]：每张卡片都要取一次，转色相要试几十次）。 */
+private val categoryPalettes = object : LinkedHashMap<GroupedColors, Map<CategoryTone, Color>>(8, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<GroupedColors, Map<CategoryTone, Color>>?) = size > 8
+}
+
+private fun computeCategoryPalette(c: GroupedColors): Map<CategoryTone, Color> {
+    val cards = listOf(c.cell, c.background)
+    val suggest = suggestPalette(c)
+    val purple = suggest.getValue(SuggestKind.VOICE)
+    val cyan = suggest.getValue(SuggestKind.CLICHE)
+    val blue = (if (c.dark) BlueDark else BlueLight).distinctFrom(listOf(c.tint, c.destructive, c.warning, purple, cyan, c.success), cards)
+    return CategoryTone.entries.associateWith { t ->
+        when (t) {
+            CategoryTone.TINT -> c.tint
+            CategoryTone.BLUE -> blue
+            CategoryTone.WARNING -> c.warning
+            CategoryTone.PURPLE -> purple
+            CategoryTone.CYAN -> cyan
+            CategoryTone.SUCCESS -> c.success
+            CategoryTone.NEUTRAL -> c.secondary
+        }.readableOn(cards)
+    }
+}
+
+/** 分类色的淡底：浅色 8%、深色 16%，叠在卡片底上。 */
+internal fun categoryFill(color: Color, c: GroupedColors): Color = lerp(c.cell, color, if (c.dark) 0.16f else 0.08f)
+
+/**
+ * 按宽度排的格子：每格不窄于 [minTileWidth]，至少 [minColumns] 列、至多 [maxColumns] 列（手机竖屏三列，宽屏多几列），
+ * 格子等宽铺满，同一行一样高；最后一行不满时左对齐、右边留空。[tile] 画第几格。
+ */
+@Composable
+internal fun AdaptiveTileGrid(
+    count: Int,
+    modifier: Modifier = Modifier,
+    minColumns: Int = 3,
+    maxColumns: Int = 6,
+    minTileWidth: Dp = 112.dp,
+    spacing: Dp = 8.dp,
+    tile: @Composable (index: Int, modifier: Modifier) -> Unit,
+) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val columns = ((maxWidth + spacing) / (minTileWidth + spacing)).toInt().coerceIn(minColumns, maxColumns)
+        Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
+            (0 until count).chunked(columns).forEach { line ->
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                    line.forEach { i -> tile(i, Modifier.weight(1f).fillMaxHeight()) }
+                    repeat(columns - line.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 彩色统计小卡片（设定包的分类格）：左上分类色淡底的图标，右上一个小标记（[badge]，“常用”“按需”），
+ * 下面名字（13sp 半粗）和一两行数字（次要色 12sp）。底是分类色的淡色、12dp 圆角、至少 84dp 高；
+ * 选中时描一道 1.5dp 的分类色边、名字变分类色。[dimmed] 为真（这类还空着）时底和图标都用灰，字用第三级灰。
+ * 整张能点，读屏念 [description]，选中的念“已选中”。
+ */
+@Composable
+internal fun StatTile(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    lines: List<String>,
+    description: String,
+    modifier: Modifier = Modifier,
+    badge: String? = null,
+    selected: Boolean = false,
+    dimmed: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val shape = RoundedCornerShape(12.dp)
+    val tone = if (dimmed) c.tertiary else color
+    Column(
+        modifier
+            .heightIn(min = 84.dp)
+            .clip(shape)
+            .background(if (dimmed) c.cell else categoryFill(color, c))
+            .background(pressHighlight(pressed))
+            .then(if (selected) Modifier.border(1.5.dp, color, shape) else Modifier)
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = description
+                this.selected = selected
+                role = Role.Button
+            }
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            if (badge != null) {
+                Text(badge, color = if (dimmed) c.tertiary else c.secondary, fontSize = 11.sp, maxLines = 1, modifier = Modifier.padding(start = 4.dp))
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            title,
+            color = when {
+                dimmed -> c.tertiary
+                selected -> color
+                else -> c.label
+            },
+            fontSize = 13.sp,
+            lineHeight = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        lines.forEach { line ->
+            Text(line, color = if (dimmed) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/**
+ * 分段条：一根 [height] 高、两头圆的条，按 [segments]（字数，颜色）一段段排开，段间留 2dp 缝（颜色之外还靠缝分段）；
+ * [scale] 大于各段之和时，余下的部分是 [GroupedColors.fill] 的底（上限还没用完）。不做填充动画，一次画好。读屏念 [description]。
+ */
+@Composable
+internal fun SegmentBar(segments: List<Pair<Int, Color>>, description: String, modifier: Modifier = Modifier, scale: Int = 0, height: Dp = 10.dp) {
+    val c = LocalGroupedColors.current
+    val total = maxOf(segments.sumOf { it.first }, scale).coerceAtLeast(1)
+    Canvas(modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(height / 2)).semantics { contentDescription = description }) {
+        drawRect(c.fill)
+        val gap = 2.dp.toPx()
+        var x = 0f
+        segments.filter { it.first > 0 }.forEach { (n, color) ->
+            val w = size.width * n / total
+            drawRect(color, topLeft = Offset(x, 0f), size = Size(if (w - gap > 1f) w - gap else maxOf(w, 1f), size.height))
+            x += w
+        }
+    }
+}
+
+/**
+ * 能就地展开编辑的彩色小卡片（细纲卡的几项）：顶上一行分类色淡底图标、项名（次要色 12sp）和朝下的小箭头，下面内容摘要（15sp，收着时最多三行），
+ * 空的写第三级灰的“未填”、图标也变灰；摘要下面可挂一个小标签（[tag]，“AI 拟的·待确认”）。点卡片头展开，
+ * 下面露出 [content]（文本框），再点收起；高度标准缓动，减少动效时直接换。读屏把项名、内容、标签连起来念，再念“已展开 / 已收起”。
+ */
+@Composable
+internal fun FieldCard(
+    title: String,
+    icon: ImageVector,
+    color: Color,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    emptyText: String = "未填",
+    /** 摘要下面的小标签（文字、颜色）。 */
+    tag: Pair<String, Color>? = null,
+    /** 收着、展开都显示的一块（节拍卡的各拍和勾），在卡片头下面。 */
+    always: (@Composable ColumnScope.() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val empty = summary.isBlank()
+    val tone = if (empty) c.tertiary else color
+    val turn by animateFloatAsState(if (expanded) 180f else 0f, if (Effects.noMotion) snap() else Motion.standard(Motion.SHORT), label = "fieldArrow")
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (empty) c.cell else categoryFill(color, c))
+            .animateHeightChanges(),
+    ) {
+        // 图标和小箭头一行，项名、内容、标签各占整宽往下排：两张一排的窄卡片（360dp 宽约 160dp）里标签、项名也放得下。
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .background(pressHighlight(pressed))
+                .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onToggle)
+                // 项名、内容、标签连成一句念（合并子节点的文字，测试和读屏都按文字找得到）。
+                .semantics(mergeDescendants = true) {
+                    stateDescription = if (expanded) "已展开" else "已收起"
+                    role = Role.Button
+                }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
+                }
+                Text(title, color = if (empty) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Icon(
+                    LingYueIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = c.tertiary,
+                    modifier = Modifier.padding(start = 4.dp).size(16.dp).graphicsLayer { rotationZ = turn },
+                )
+            }
+            Text(
+                summary.ifBlank { emptyText },
+                color = if (empty) c.tertiary else c.label,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+                maxLines = if (expanded) 1 else 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            if (tag != null) Tag(tag.first, tag.second, Modifier.padding(top = 6.dp))
+        }
+        if (always != null) Column(Modifier.fillMaxWidth().padding(bottom = 6.dp), content = always)
+        if (expanded) Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp), content = content)
     }
 }

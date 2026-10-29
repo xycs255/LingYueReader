@@ -497,7 +497,8 @@ class WritingAiUiTest {
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("对文风的要求").performScrollTo()
         // 同一个事件里输入并返回，不给 600ms 防抖机会；退出补存必须读到字段的最新值。
-        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
+        // 首屏“这部书的口味”排在“文风”前面：文风是第二个文本框。
+        compose.onAllNodes(hasSetTextAction())[1].performSemanticsAction(SemanticsActions.SetText) { set ->
             set(AnnotatedString(requested))
             vm.back()
         }
@@ -514,7 +515,7 @@ class WritingAiUiTest {
         compose.onNodeWithText("这部书的口味").performScrollTo()
         compose.onNodeWithText(FLAVOR_EXAMPLE).assertExists()
         val flavor = "合成样本：轻松带吐槽，主角爱算计，叙述者偶尔玩梗。"
-        compose.onAllNodes(hasSetTextAction())[1].performSemanticsAction(SemanticsActions.SetText) { set ->
+        compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
             set(AnnotatedString(flavor))
             vm.back()
         }
@@ -576,13 +577,14 @@ class WritingAiUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
         waitForText("设定包还是空的")
-        compose.onNodeWithText("导入设定包").performClick()
+        // “导入设定包”在分类格下面：先滚过去。
+        compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件").performClick()
         val files = org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, files.action)
         waitFor { compose.onAllNodesWithText("导入文件夹").fetchSemanticsNodes().isEmpty() }
-        compose.onNodeWithText("导入设定包").performClick()
+        compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件夹").performClick()
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT_TREE, org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity.action)

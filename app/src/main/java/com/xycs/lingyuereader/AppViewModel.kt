@@ -168,9 +168,9 @@ sealed interface Screen {
     /** 一章的历史版本。 */
     /** 一章（或设定包里一份文档，[docId] 不为空时）的历史版本。 */
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
-    /** 一部作品的 AI 设置：写作建议、文风、学到的改法。 */
+    /** 一部作品的 AI 设置：首屏只放最常用的几项（服务商、温度、口味、黑名单、文风……）。 */
     data class WorkAi(val workId: String) : Screen
-    /** 作品 AI 设置的“高级设置”：上限、写作建议的频率、文风范例怎么挑、学你的改法、最近一次发给 AI 的内容。 */
+    /** 作品 AI 设置的“高级设置”：设定包、写作范本、上限、文风范例、查 AI 腔、写作建议、学你的改法、AI 记录与用量、最近一次发给 AI 的内容。 */
     data class WorkAiAdvanced(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen

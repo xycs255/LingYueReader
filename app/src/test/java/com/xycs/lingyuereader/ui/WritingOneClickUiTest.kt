@@ -172,6 +172,8 @@ class WritingOneClickUiTest {
         // 去细纲卡：同样挂着标签；改一项事实，AI 拟的就没了；节拍点确认。
         compose.onNodeWithText("改细纲 / 节拍").performScrollTo().performClick()
         waitForText("确认这份细纲")
+        // 细纲卡的几项是小卡片：先点开“本章事实与结果”那张，下面才有文本框。
+        compose.onNodeWithText("本章事实与结果").performScrollTo().performClick()
         compose.onNode(hasSetTextAction() and hasText("林月在渡口等到沈默")).performTextReplacement("林月在渡口等到沈默，老周没来")
         waitFor { !store.card(workId, chapterId).aiOutline }
         assertEquals("林月在渡口等到沈默，老周没来", store.card(workId, chapterId).facts)

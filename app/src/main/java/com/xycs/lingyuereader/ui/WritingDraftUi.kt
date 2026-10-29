@@ -433,8 +433,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                     row {
-                        ToggleRow("缺细纲、节拍时 AI 先补上", checked = prepOn,
-                            subtitle = "细纲卡没有“本章事实与结果”先拟一份，没有节拍先拆，存进细纲卡等你确认；你写了的不动。关了就有什么写什么。") { on ->
+                        ToggleRow("缺细纲、节拍时 AI 先补上", checked = prepOn, subtitle = DRAFT_PREP_NOTE) { on ->
                             vm.writingAi.updateAssist(workId) { it.copy(draftPrep = on) }
                         }
                     }

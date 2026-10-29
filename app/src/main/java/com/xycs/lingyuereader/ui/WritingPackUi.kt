@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -60,6 +61,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.ai.BibleProposal
+import com.xycs.lingyuereader.data.PackBudget
+import com.xycs.lingyuereader.data.PackBudgets
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PackImportItem
@@ -118,6 +121,25 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
     var extracting by remember { mutableStateOf(false) }
     var proposals by remember { mutableStateOf<List<BibleProposal>?>(null) }
     var notice by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // 分类格：点一类只看这一类（null 是全部）；点空的一类新建这一类（[newKind]）。
+    var filter by rememberSaveable(workId) { mutableStateOf<PackKind?>(null) }
+    var newKind by remember { mutableStateOf<PackKind?>(null) }
+    val stats = remember(docs) { PackBudgets.stats(docs.orEmpty()) }
+    // AI 每次带多少：在后台算（几十万字的设定包挑一次资料要几百毫秒），设定包一变就重算；算的时候先留着上一次的。
+    var budget by remember(workId) { mutableStateOf<PackBudget?>(null) }
+    var budgetError by remember(workId) { mutableStateOf<String?>(null) }
+    var budgetOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(workId, docs) {
+        if (docs.isNullOrEmpty()) return@LaunchedEffect
+        try {
+            budget = vm.writingAi.packBudget(workId)
+            budgetError = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            budgetError = e.message ?: "读不出设定包"
+        }
+    }
 
     fun load(read: suspend () -> List<PackImportItem>) {
         scope.launch {
@@ -200,7 +222,40 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                         }
                         return@item
                     }
+                    if (docs == null) LoadingRow("正在读设定包……")
+                    if (docs != null && docs.isEmpty()) {
+                        EmptyState(
+                            LingYueIcons.Notes,
+                            "设定包还是空的",
+                            "把总纲、细纲、人物档案、写作规范放进来，分好类、定好优先级。也可以把电脑上整理好的一整个文件夹的 .md 导进来，按文件名自动归类。",
+                            action = "新建文档" to { creating = true },
+                        )
+                    }
+                    if (!docs.isNullOrEmpty()) {
+                        // AI 每次带多少：写正文实际带上的资料，按类分段；放不下的标红。点开看明细。
+                        GroupedSection(
+                            header = "AI 每次带多少",
+                            footer = "按你最近写的那一章算，和写正文时真正发出去的是同一份。设定包改了会重算。",
+                        ) {
+                            row { PackBudgetRow(budget, budgetError) { budgetOpen = true } }
+                        }
+                    }
+                    if (docs != null) {
+                        GroupedListHeader("文档分类")
+                        PackKindGrid(stats, filter) { s ->
+                            when {
+                                s.empty -> newKind = s.kind
+                                filter == s.kind -> filter = null
+                                else -> filter = s.kind
+                            }
+                        }
+                        GroupedListFooter(
+                            if (filter == null) "点一类只看这一类；灰的还空着，点了新建这一类的文档。" else "再点一次“${filter!!.label}”看全部。",
+                            Modifier.padding(top = 8.dp),
+                        )
+                    }
                     GroupedSection(
+                        header = "整理与导入",
                         footer = "数字小的优先：资料之间有冲突时，AI 以优先级高的为准，你在“写作 AI → 文风”里写的要求最优先。" +
                             "“常用”的文档每次请 AI 都会带上（太长会截断），“按需”的先不带。",
                     ) {
@@ -233,27 +288,23 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7), enabled = !busy) { importing = true }
                         }
                     }
-                    if (docs == null) LoadingRow("正在读设定包……")
-                    if (docs != null && docs.isEmpty()) {
-                        EmptyState(
-                            LingYueIcons.Notes,
-                            "设定包还是空的",
-                            "把总纲、细纲、人物档案、写作规范放进来，分好类、定好优先级。也可以把电脑上整理好的一整个文件夹的 .md 导进来，按文件名自动归类。",
-                            action = "新建文档" to { creating = true },
-                        )
-                    }
-                    PackKind.entries.forEach { kind ->
+                    val tags = missTags(budget)
+                    val shownKinds = filter?.let { listOf(it) } ?: PackKind.entries
+                    shownKinds.forEach { kind ->
                         val list = docs.orEmpty().filter { it.kind == kind }
                         if (list.isEmpty()) return@forEach
-                        GroupedSection(header = kind.label) {
+                        GroupedSection(header = if (filter != null) "${kind.label} · ${list.size} 份" else kind.label, footer = if (filter != null) kind.hint else null) {
                             list.forEach { d ->
                                 row {
+                                    val tag = tags[d.title]
                                     NavRow(
                                         d.title,
                                         subtitle = "优先级 ${d.priority} · ${if (d.always) "常用" else "按需"} · ${size(d.words)} · ${whenLabel(d.updatedAt)}更新",
+                                        trailing = tag?.let { t -> { Tag(t, LocalGroupedColors.current.destructive) } },
                                     ) { vm.open(Screen.PackDoc(workId, d.id)) }
                                 }
                             }
+                            if (filter != null) row { ActionRow("新建一份${kind.label}") { newKind = kind } }
                         }
                     }
                 }
@@ -273,10 +324,18 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                 TextButton(text = "取消", onClick = { importing = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         }
-        if (creating) {
-            NewDocDialog(onDismiss = { creating = false }) { kind, title ->
+        if (creating || newKind != null) {
+            NewDocDialog(initial = newKind ?: PackKind.CHARACTER, onDismiss = { creating = false; newKind = null }) { kind, title ->
                 creating = false
+                newKind = null
                 vm.writing.addDoc(workId, kind, title) { vm.open(Screen.PackDoc(workId, it.id)) }
+            }
+        }
+        val shownBudget = budget
+        if (budgetOpen && shownBudget != null) {
+            PackBudgetDialog(shownBudget, onDismiss = { budgetOpen = false }) {
+                budgetOpen = false
+                vm.open(Screen.WorkAiAdvanced(workId))
             }
         }
         val items = preview
@@ -456,8 +515,8 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
 
 /** 新建文档：起个标题、选类型（人物档案、写作规范等会带一份模板）。 */
 @Composable
-private fun NewDocDialog(onDismiss: () -> Unit, onCreate: (PackKind, String) -> Unit) {
-    var kind by remember { mutableStateOf(PackKind.CHARACTER) }
+private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -> Unit, onCreate: (PackKind, String) -> Unit) {
+    var kind by remember { mutableStateOf(initial) }
     var title by remember { mutableStateOf("") }
     GlassDialog(show = true, title = "新建文档", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current

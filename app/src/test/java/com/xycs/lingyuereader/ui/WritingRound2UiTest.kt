@@ -204,10 +204,8 @@ class WritingRound2UiTest {
         compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo().performClick()
         waitForText("系统提示（")
         compose.onNodeWithText("好").performClick()
-        compose.runOnUiThread { vm.back() }
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
 
+        // “AI 记录”也在高级设置的“记录”里。
         compose.onNodeWithText("AI 记录").performScrollTo().performClick()
         waitForText("让门外有脚步声")
         compose.onAllNodesWithText("让门外有脚步声", substring = true)[0].performClick()
@@ -225,6 +223,8 @@ class WritingRound2UiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
         waitForText("自动提取")
         waitForText("《第一卷细纲》 第 1 章「渡口」")
+        // 细纲卡的几项是小卡片：点开“章末钩子”那张，下面才有文本框。
+        compose.onNodeWithText("章末钩子").performScrollTo().performClick()
         assertEquals(1, compose.onAllNodes(hasSetTextAction() and hasText("船没来。")).fetchSemanticsNodes().size)
         assertEquals(0, compose.onAllNodesWithText("用细纲里的替换").fetchSemanticsNodes().size)
 

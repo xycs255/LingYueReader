@@ -208,12 +208,14 @@ class WritingClicheUiTest {
     @Test
     fun settingsSwitchAndBlacklistPage() {
         val store = WorkStore(writingDir)
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        // “查 AI 腔”挪进了“高级设置”，“我的黑名单”还在首屏。
+        compose.runOnUiThread { vm.open(Screen.WorkAiAdvanced(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("查 AI 腔").performScrollTo()
         waitForText("本机按内置清单标出套话，不花钱")
         compose.onNodeWithText("查 AI 腔").performClick()
         waitFor { !store.assist(workId).aiCliche }
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         compose.onNodeWithText("我的黑名单").performScrollTo().performClick()
         waitForText("不想再看到的说法")
         compose.onAllNodes(hasSetTextAction())[0].performTextInput("说来话长")

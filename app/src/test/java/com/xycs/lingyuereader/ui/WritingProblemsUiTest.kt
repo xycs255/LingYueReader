@@ -274,7 +274,8 @@ class WritingProblemsUiTest {
         compose.onNodeWithText("读者点评").performScrollTo()
         assertEquals(0, count("矛盾检查"))
 
-        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        // 写作建议挪进了“高级设置”。
+        compose.runOnUiThread { vm.open(Screen.WorkAiAdvanced(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("查口吻").performScrollTo()
         assertEquals(0, compose.onAllNodesWithText("查设定").fetchSemanticsNodes().size)

@@ -3,6 +3,13 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -243,6 +250,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var splitting by remember { mutableStateOf(false) }
     var askOverwriteBeats by remember { mutableStateOf(false) }
     var beatsProposal by remember { mutableStateOf<String?>(null) }
+    // 就地展开改的那一张小卡片（项名；节拍卡是 [BEATS]），同时只开一张。
+    var expandedField by remember(chapterId) { mutableStateOf<String?>(null) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // AI 拆节拍：按这一页上现在的细纲卡（可能还没存）拆；拆好的先给作者看、改，用了才进卡片。
@@ -378,7 +387,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                             // 一键写本章时 AI 拟的：挂个小标签，看过没问题点一下确认；直接改哪一项也算确认。
                             if (now.aiOutline) {
-                                row { AiDraftedNote("AI 拟的", "写本章时 AI 按本章及以前的资料拟的，还没确认。改哪一项都算确认。") }
+                                row { AiDraftedNote("AI 拟的", "写本章时 AI 按本章及以前的资料拟的，下面挂着“待确认”的几张就是。改哪一项都算确认。") }
                                 row { ActionRow("确认这份细纲") { card = (card ?: now).copy(aiOutline = false) } }
                             }
                             if (failedAttempt != null && now != saved) row { ActionRow("细纲卡未保存 · 重试") { failedAttempt = null } }
@@ -401,54 +410,53 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 }
                             }
                             if (outline != null) row { ActionRow("用细纲里的替换") { replacing = true } }
-                            CARD_FIELDS.forEach { (label, hint, get) ->
-                                row {
-                                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                        TextField(
-                                            value = get(now),
-                                            onValueChange = { v -> card = now.with(label, v) },
-                                            label = if (hint.isNotEmpty()) "$label · $hint" else label,
-                                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
-                                        )
+                        }
+                        // 六项和细纲章号：一项一张彩色小卡片，两张一排；点哪张就地展开改，展开的那张独占一排。
+                        CardFieldGrid(
+                            now,
+                            expanded = expandedField,
+                            aiDrafted = now.aiOutline,
+                            onToggle = { label -> expandedField = if (expandedField == label) null else label },
+                        ) { label, v -> card = now.with(label, v) }
+                        // 节拍单独一张卡：各拍一直列着，已写的打勾；点卡片头改节拍原文。
+                        val done = now.beatsDone.toSet()
+                        val list = beats(now)
+                        Box(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp)) {
+                            FieldCard(
+                                "节拍",
+                                LingYueIcons.Write,
+                                categoryColor(CategoryTone.TINT, c),
+                                summary = if (list.isEmpty()) "" else "${list.size} 拍 · 已写 ${list.count { it.index in done }}",
+                                expanded = expandedField == BEATS,
+                                onToggle = { expandedField = if (expandedField == BEATS) null else BEATS },
+                                tag = if (now.aiBeats) AI_PENDING_BEATS to c.warning else null,
+                                always = {
+                                    list.forEach { b ->
+                                        CheckboxRow(
+                                            "${b.index}. ${b.text}",
+                                            checked = b.index in done,
+                                            subtitle = listOfNotNull(if (b.index in done) "已写进正文" else null, b.length?.let { "约 $it 字" }).joinToString(" · ").ifEmpty { null },
+                                            titleMaxLines = 2,
+                                        ) { on -> card = (card ?: now).withBeatDone(b.index, on) }
                                     }
-                                }
+                                    if (now.aiBeats) ActionRow("确认这些节拍") { card = (card ?: now).copy(aiBeats = false) }
+                                    BusyActionRow(splitting, busyText = "AI 正在拆节拍……", title = "AI 拆节拍", enabled = aiConfig.ready) {
+                                        if (now.beats.isNotBlank()) askOverwriteBeats = true else splitBeats()
+                                    }
+                                },
+                            ) {
+                                TextField(
+                                    value = now.beats,
+                                    onValueChange = { v -> card = now.withBeats(v) },
+                                    label = "节拍 · 比如：沈默赶到渡口，发现船不见了（800字）",
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 260.dp),
+                                )
                             }
                         }
-                        GroupedSection(
-                            header = "节拍",
-                            footer = "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写整章草稿会一拍一拍写；编辑器里“AI 写…”面板可以从光标处只写其中一拍，采纳后在下面勾成已写。",
-                        ) {
-                            row {
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                    TextField(
-                                        value = now.beats,
-                                        onValueChange = { v -> card = now.withBeats(v) },
-                                        label = "节拍 · 比如：沈默赶到渡口，发现船不见了（800字）",
-                                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 260.dp),
-                                    )
-                                }
-                            }
-                            if (now.aiBeats) {
-                                row { AiDraftedNote("AI 拆的", "写本章时 AI 拆的，还没确认。改过节拍也算确认。") }
-                                row { ActionRow("确认这些节拍") { card = (card ?: now).copy(aiBeats = false) } }
-                            }
-                            row {
-                                BusyActionRow(splitting, busyText = "AI 正在拆节拍……", title = "AI 拆节拍", enabled = aiConfig.ready) {
-                                    if (now.beats.isNotBlank()) askOverwriteBeats = true else splitBeats()
-                                }
-                            }
-                            val done = now.beatsDone.toSet()
-                            beats(now).forEach { b ->
-                                row {
-                                    CheckboxRow(
-                                        "${b.index}. ${b.text}",
-                                        checked = b.index in done,
-                                        subtitle = listOfNotNull(if (b.index in done) "已写进正文" else null, b.length?.let { "约 $it 字" }).joinToString(" · ").ifEmpty { null },
-                                        titleMaxLines = 2,
-                                    ) { on -> card = (card ?: now).withBeatDone(b.index, on) }
-                                }
-                            }
-                        }
+                        GroupedListFooter(
+                            "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写整章草稿会一拍一拍写；编辑器里“AI 写…”面板可以从光标处只写其中一拍，采纳后在这里勾成已写。",
+                            Modifier.padding(top = 8.dp),
+                        )
                         GroupedSection(
                             header = "写完以后",
                             footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章），AI 就知道前面写了什么。" +
@@ -572,6 +580,83 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 StatusDialog(chapter, onDismiss = { statusDialog = false }) { s, reason, canon ->
                     statusDialog = false
                     vm.writing.setStatus(workId, chapterId, s, reason, canon)
+                }
+            }
+        }
+    }
+}
+
+/** 细纲卡各项小卡片的图标和分类色：一项一个图标，颜色帮着认，墨水屏下靠图标和项名分。 */
+private val CARD_LOOK: Map<String, Pair<ImageVector, CategoryTone>> = mapOf(
+    "本章事实与结果" to (LingYueIcons.Notes to CategoryTone.TINT),
+    "后文承接边界" to (LingYueIcons.Lock to CategoryTone.WARNING),
+    "视角人物" to (LingYueIcons.ContactsCircle to CategoryTone.PURPLE),
+    "倒计时" to (LingYueIcons.Timer to CategoryTone.CYAN),
+    "章末钩子" to (LingYueIcons.Hook to CategoryTone.BLUE),
+    "推进的线" to (LingYueIcons.Threads to CategoryTone.SUCCESS),
+    "细纲章号" to (LingYueIcons.ListView to CategoryTone.NEUTRAL),
+)
+
+/** 节拍卡在“展开的是哪张”里的名字。 */
+private const val BEATS = "节拍"
+
+/** 一键写本章时 AI 补的、作者还没确认的几张卡上挂的标签。 */
+internal const val AI_PENDING = "AI 拟的·待确认"
+internal const val AI_PENDING_BEATS = "AI 拆的·待确认"
+
+/**
+ * 细纲卡的几项排成彩色小卡片（[FieldCard]）：手机上两张一排、宽屏三张，同一排一样高；展开的那张独占一排，下面是文本框。
+ * [aiDrafted] 为真时前六项里填了的挂“AI 拟的·待确认”（细纲章号不是 AI 拟的，不挂）。
+ */
+@Composable
+private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boolean, onToggle: (String) -> Unit, onChange: (String, String) -> Unit) {
+    val c = LocalGroupedColors.current
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        val columns = if (maxWidth >= 600.dp) 3 else 2
+        // 一排一排地排：展开的那张单独一排，其余凑够一排换行。
+        val rows = mutableListOf<List<Int>>()
+        var line = mutableListOf<Int>()
+        CARD_FIELDS.indices.forEach { i ->
+            if (CARD_FIELDS[i].first == expanded) {
+                if (line.isNotEmpty()) rows += line
+                rows += listOf(i)
+                line = mutableListOf()
+            } else {
+                line += i
+                if (line.size == columns) { rows += line; line = mutableListOf() }
+            }
+        }
+        if (line.isNotEmpty()) rows += line
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            rows.forEach { r ->
+                val single = r.size == 1 && CARD_FIELDS[r[0]].first == expanded
+                Row(
+                    Modifier.fillMaxWidth().then(if (single) Modifier else Modifier.height(IntrinsicSize.Min)),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    r.forEach { i ->
+                        val (label, hint, get) = CARD_FIELDS[i]
+                        val (icon, tone) = CARD_LOOK.getValue(label)
+                        val value = get(card)
+                        FieldCard(
+                            label,
+                            icon,
+                            categoryColor(tone, c),
+                            summary = value,
+                            expanded = label == expanded,
+                            onToggle = { onToggle(label) },
+                            modifier = if (single) Modifier else Modifier.weight(1f).fillMaxHeight(),
+                            tag = if (aiDrafted && value.isNotBlank() && label != "细纲章号") AI_PENDING to c.warning else null,
+                        ) {
+                            TextField(
+                                value = value,
+                                onValueChange = { v -> onChange(label, v) },
+                                label = if (hint.isNotEmpty()) "$label · $hint" else label,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
+                            )
+                        }
+                    }
+                    if (!single) repeat(columns - r.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }

@@ -49,7 +49,7 @@ private fun rememberStylePick(vm: AppViewModel, workId: String, assist: WorkAssi
     return pick
 }
 
-/** 作品的 AI 设置里“文风范例”一节：只有开关；带多少字、没有定稿章时退回、看看挑了哪几段在“高级设置”里（[StyleSamplesMoreSection]）。 */
+/** “高级设置”里“文风范例”一节的开关；带多少字、没有定稿章时退回、看看挑了哪几段紧跟在下面（[StyleSamplesMoreSection]）。 */
 @Composable
 internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
     GroupedSection(
@@ -57,7 +57,7 @@ internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkA
         footer = "从你标了“定稿”的章里挑几段——一段叙述描写、一段对白多的、一段动作场面，每段 200–500 字——放进发给 AI 的内容里当范例。" +
             "AI 写、AI 写整章草稿、润色、更生动、扩写、缩写、按要求改时照着学句式、节奏、用词和对白方式，不照抄内容；挑错、写作建议、审稿不带。" +
             "写第 N 章时只从它前面的章里挑，不会剧透。本机模型只带三分之一。在本机挑，同样的定稿章挑出同样的几段（开头不变，服务商能缓存）。" +
-            "最多带多少字、挑了哪几段在“高级设置”里。",
+            "最多带多少字、挑了哪几段在下面。",
     ) {
         row {
             ToggleRow("用定稿章当文风范例", assist.sampleLimit > 0) { on ->
@@ -67,14 +67,14 @@ internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkA
     }
 }
 
-/** “高级设置”里的文风范例：最多带、没有定稿章时退回、看看挑了哪几段；开关关着时只说一句。 */
+/** “高级设置”里的文风范例：最多带、没有定稿章时退回、看看挑了哪几段；开关关着时只说一句。紧跟在开关下面时不再写组名（[header] 传空）。 */
 @Composable
-internal fun StyleSamplesMoreSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
+internal fun StyleSamplesMoreSection(vm: AppViewModel, workId: String, assist: WorkAssist, header: String? = "文风范例") {
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     val pick = rememberStylePick(vm, workId, assist, assists[workId] != null && assist.sampleLimit > 0)
     GroupedSection(
-        header = "文风范例",
-        footer = if (assist.sampleLimit > 0) "从定稿章里挑几段当范例，最多带这么多字。" else "在“写作 AI”设置里打开“用定稿章当文风范例”才用得上。",
+        header = header,
+        footer = if (assist.sampleLimit > 0) "从定稿章里挑几段当范例，最多带这么多字。" else "打开上面的“用定稿章当文风范例”才用得上。",
     ) {
         if (assist.sampleLimit <= 0) {
             row { EmptyRow("文风范例关着") }
@@ -123,7 +123,7 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
             item(key = "body") {
                 when {
                     pick == null -> LoadingState("正在挑……")
-                    assist.sampleLimit <= 0 -> EmptyState(LingYueIcons.Notes, "文风范例关着", "在“写作 AI”设置里打开“用定稿章当文风范例”，AI 写的时候会照着你定稿的几段学写法。")
+                    assist.sampleLimit <= 0 -> EmptyState(LingYueIcons.Notes, "文风范例关着", "在“写作 AI → 高级设置”里打开“用定稿章当文风范例”，AI 写的时候会照着你定稿的几段学写法。")
                     pick.samples.isEmpty() -> EmptyState(
                         LingYueIcons.Notes,
                         "还没有可用的段落",
