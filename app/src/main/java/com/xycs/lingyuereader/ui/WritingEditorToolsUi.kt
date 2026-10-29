@@ -13,6 +13,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,6 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -409,25 +413,64 @@ internal fun EditorBottomBar(
                     TextTab(rowLabel(merged), selected = true, onClick = { onRow(null) }, description = "收起${rowTitle(merged)}")
                     Box(Modifier.weight(1f).padding(start = 2.dp, end = 4.dp)) { content(merged) }
                 } else {
-                    EditorToolGroup.entries.forEach { g ->
-                        val tab = EditorRow.Tab(g)
-                        val count = problems.takeIf { g == EditorToolGroup.CHECK && it > 0 }
-                        TextTab(
-                            g.label,
-                            selected = row == tab,
-                            onClick = { onRow(if (row == tab) null else tab) },
-                            description = if (count != null) "查，$count 处问题" else g.description,
-                            badge = count?.let { if (it > 99) "99+" else "$it" },
-                        )
-                    }
                     val first = spark.first()
+                    val more = ready && first.enabled && spark.size > 1
+                    // 系统字号调大时四个标签跟着变宽：最多占到给 ✦（和“+N”）留下 [SPARK_MIN_WIDTH] 以后的宽，
+                    // 再宽就在这一段里左右滑，✦ 不被挤得只剩一个字。平常字号下标签放得下，和原来一样。
+                    val reserve = SPARK_MIN_WIDTH + 4.dp + if (more) 44.dp else 0.dp
+                    Row(
+                        Modifier
+                            .layout { measurable, constraints ->
+                                val max = (constraints.maxWidth - reserve.roundToPx()).coerceIn(0, constraints.maxWidth)
+                                val placeable = measurable.measure(constraints.copy(minWidth = 0, maxWidth = max))
+                                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                            }
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        EditorToolGroup.entries.forEach { g ->
+                            val tab = EditorRow.Tab(g)
+                            val count = problems.takeIf { g == EditorToolGroup.CHECK && it > 0 }
+                            TextTab(
+                                g.label,
+                                selected = row == tab,
+                                onClick = { onRow(if (row == tab) null else tab) },
+                                description = if (count != null) "查，$count 处问题" else g.description,
+                                badge = count?.let { if (it > 99) "99+" else "$it" },
+                            )
+                        }
+                    }
                     SparkChip(first, enabled = ready && first.enabled, loading = !ready, modifier = Modifier.weight(1f).padding(start = 4.dp)) { onSpark(first) }
-                    if (ready && first.enabled && spark.size > 1) {
+                    if (more) {
                         val open = row == EditorRow.Spark
                         MoreSparkButton(spark.size - 1, open) { onRow(if (open) null else EditorRow.Spark) }
                     }
                 }
             }
+        }
+    }
+}
+
+/** ✦ 至少留这么宽（字号放大时标签先让）。 */
+private val SPARK_MIN_WIDTH = 88.dp
+
+/**
+ * 底栏展开的那一排大图标。平常是 [ToolTileGrid]（放不下一行就每行四格）；矮屏时和标签挤在一行里，
+ * 不能折成两行（一折底栏就高出一截，矮屏多留的几行正文又没了）：放得下就等宽排满，字号放大放不下时每格保底宽、左右滑。
+ */
+@Composable
+internal fun EditorTiles(tiles: List<ToolTile>, compact: Boolean) {
+    if (!compact) {
+        ToolTileGrid(tiles, minCell = 52.dp)
+        return
+    }
+    val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val gap = 6.dp
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val need = 52.dp * scale * tiles.size + gap * (tiles.size - 1).coerceAtLeast(0)
+        if (need <= maxWidth) ToolTileGrid(tiles, columns = tiles.size, minCell = 52.dp, gap = gap)
+        else Row(Modifier.horizontalScroll(rememberScrollState())) {
+            ToolTileGrid(tiles, Modifier.width(need), columns = tiles.size, minCell = 52.dp, gap = gap)
         }
     }
 }
