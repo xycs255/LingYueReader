@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -117,6 +119,8 @@ class WritingVariantsUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(t: String) = waitFor { compose.onAllNodesWithText(t, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun openEditor(vm: AppViewModel) {
@@ -208,6 +212,7 @@ class WritingVariantsUiTest {
         waitFor { vm.writingAi.inline.value?.selected == 1 }
         waitFor { vm.writingAi.inline.value?.text == "\n" + written.getValue(WriteDirection.RESTRAIN) }
         assertEquals(listOf(1), store.card(workId, chapterId).beatsDone)
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text + "\n" + written.getValue(WriteDirection.RESTRAIN) }
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }

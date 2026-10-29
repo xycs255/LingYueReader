@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -113,6 +115,8 @@ class WritingClicheUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun openEditor() {
@@ -200,6 +204,7 @@ class WritingClicheUiTest {
         compose.onNodeWithText("开始写").performClick()
         waitForText("这段有 1 处 AI 腔")
         // 不拦采纳。
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.text(workId, chapterId).endsWith("杜娘嘴角勾起，没再说话。") }
