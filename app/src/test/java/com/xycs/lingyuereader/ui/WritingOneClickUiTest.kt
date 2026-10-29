@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -108,6 +109,9 @@ class WritingOneClickUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -128,7 +132,7 @@ class WritingOneClickUiTest {
         waitForText("写本章时，AI 先拟细纲、拆节拍")
         waitForText("另加约 2 次小请求")
         waitForText("缺细纲、节拍时 AI 先补上")
-        waitFor { shown("写本章", substring = false) }
+        waitForEnabled("写本章")
         compose.onNodeWithText("写本章").performScrollTo().performClick()
 
         // 进度依次出现：拟细纲 → 拆节拍 → 写第 1 / 3 拍。

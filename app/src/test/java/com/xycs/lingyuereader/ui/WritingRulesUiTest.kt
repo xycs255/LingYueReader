@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -95,6 +96,9 @@ class WritingRulesUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(name).around(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -139,6 +143,7 @@ class WritingRulesUiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.WorkRules(workId)) }
         waitForText("还没有规则")
+        waitForEnabled("用 AI 从写作规范整理")
         compose.onNodeWithText("用 AI 从写作规范整理").performClick()
         waitForText("读懂 2 条，1 行没看懂")
         assertTrue("每章至多一次点了点头" in prompts.single())

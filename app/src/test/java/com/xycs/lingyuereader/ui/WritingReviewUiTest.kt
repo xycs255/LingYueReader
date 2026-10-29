@@ -119,9 +119,20 @@ class WritingReviewUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
-    private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
-        ShadowLooper.idleMainLooper()
-        condition()
+    /**
+     * 等不到时先把各线程在做什么打出来再抛出：CI 上偶尔等满 15 秒（本机加压、单核、全量顺序都复现不出来），
+     * 下次再遇到能看出卡在写盘队列、锁上还是界面没重组。
+     */
+    private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = try {
+        compose.waitUntil(timeout) {
+            ShadowLooper.idleMainLooper()
+            condition()
+        }
+    } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+        Thread.getAllStackTraces().filter { (t, _) -> t.isAlive }.forEach { (t, st) ->
+            System.err.println("线程 ${t.name}（${t.state}）\n" + st.take(20).joinToString("\n") { "    at $it" })
+        }
+        throw e
     }
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
@@ -281,7 +292,8 @@ class WritingReviewUiTest {
     fun jumpingToASentenceThatChangedOnlyTellsTheAuthor() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
-        waitForText("这一章计划回收的伏笔")
+        // 跳转只要正文读进编辑框；伏笔提醒另要读设定包、挑本章资料，跟这里无关（提醒本身在第一条测试里查）。
+        waitFor { runCatching { compose.onNodeWithContentDescription("正文").fetchSemanticsNode().config[SemanticsProperties.EditableText].text == chapterText }.getOrDefault(false) }
         // 开头十几个字一样、后面不一样：不按开头猜，不选中，也不让 AI 改。
         compose.runOnUiThread { vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, "林月早就知道玉佩的来历。她却一直没说", "改成她只觉得眼熟") }
         waitForText("正文里没找到这一句")

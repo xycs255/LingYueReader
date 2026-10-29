@@ -99,6 +99,9 @@ class WritingBeatsUiTest {
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
 
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
         condition()
@@ -119,6 +122,7 @@ class WritingBeatsUiTest {
         waitForText("AI 拆节拍")
         // 一句说明：一行一拍，行尾可写篇幅。
         waitForText("一行一拍，可以在行尾写篇幅")
+        waitForEnabled("AI 拆节拍")
         compose.onNodeWithText("AI 拆节拍").performScrollTo().performClick()
         // 拆好的先给作者看、改，没用之前不进卡片。
         waitForText("AI 拆的节拍")
@@ -134,6 +138,7 @@ class WritingBeatsUiTest {
         waitForText("已写进正文")
 
         // 已经有节拍：先问一句，不用就不动。
+        waitForEnabled("AI 拆节拍")
         compose.onNodeWithText("AI 拆节拍").performScrollTo().performClick()
         waitForText("覆盖现有节拍？")
         compose.onNodeWithText("重新拆").performClick()

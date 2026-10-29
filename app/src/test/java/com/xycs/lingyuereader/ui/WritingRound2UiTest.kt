@@ -8,6 +8,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -110,6 +111,9 @@ class WritingRound2UiTest {
 
     @get:Rule
     val rules: RuleChain = RuleChain.outerRule(seed).around(compose)
+
+    /** 按钮可能先显示、等数据读好才可点（慢机器上更明显）：等它可点再点，点早了会被忽略。 */
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
 
     private fun waitFor(timeout: Long = 15_000, condition: () -> Boolean) = compose.waitUntil(timeout) {
         ShadowLooper.idleMainLooper()
@@ -240,6 +244,7 @@ class WritingRound2UiTest {
         store.addPackDoc(workId, PackKind.VOLUME, "第一卷细纲", "- **第五章 对岸**：沈默过河。\n")
         compose.runOnUiThread { vm.open(Screen.ChapterCard(workId, chapterId)) }
         waitForText("没找到这一章")
+        waitForEnabled("AI 拟这一章的细纲")
         compose.onNodeWithText("AI 拟这一章的细纲").performClick()
         waitForText("AI 拟的细纲")
         waitForText("对岸亮起一盏灯。")
