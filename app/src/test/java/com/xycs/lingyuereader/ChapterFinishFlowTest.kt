@@ -143,7 +143,7 @@ class ChapterFinishFlowTest {
     @Test
     fun syncAndSummaryGoOutAsOneRequest() {
         val vm = model()
-        val run = runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        val run = runToConfirm(vm, FinishOptions(handoff = false, sync = true, summary = true))
         assertEquals("只发一次请求", 1, asked.size)
         assertTrue(isSync(asked.single()))
         assertTrue("9. summary（本章摘要）" in asked.single())
@@ -154,7 +154,7 @@ class ChapterFinishFlowTest {
         assertEquals(combined, run.draft)
         assertEquals(listOf("老周昨夜死了"), run.session!!.items.map { it.title })
         // 勾选项按作品记住了。
-        waitUntil("勾选项没存") { store.assist(workId).finish == FinishOptions(sync = true, summary = true) }
+        waitUntil("勾选项没存") { store.assist(workId).finish == FinishOptions(handoff = false, sync = true, summary = true) }
     }
 
     @Test
@@ -164,7 +164,7 @@ class ChapterFinishFlowTest {
         val parts = WritePrompts.syncParts(long).size
         assertTrue(parts > 1)
         val vm = model()
-        val run = runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        val run = runToConfirm(vm, FinishOptions(handoff = false, sync = true, summary = true))
         val syncs = asked.filter(::isSync)
         val summaries = asked.filter(::isSummary)
         assertEquals(parts, syncs.size)
@@ -179,7 +179,7 @@ class ChapterFinishFlowTest {
     @Test
     fun onlyTheSummarySendsOnlyTheSummaryRequest() {
         val vm = model()
-        val run = runToConfirm(vm, FinishOptions(sync = false, summary = true))
+        val run = runToConfirm(vm, FinishOptions(handoff = false, sync = false, summary = true))
         assertEquals(1, asked.size)
         assertTrue(isSummary(asked.single()))
         assertEquals("章节摘要", vm.writingAi.lastRequest.value?.label)
@@ -191,7 +191,7 @@ class ChapterFinishFlowTest {
     @Test
     fun onlyFinalizingGoesStraightToConfirmAndFinalizes() {
         val vm = model()
-        val run = runToConfirm(vm, FinishOptions(sync = false, summary = false, review = false))
+        val run = runToConfirm(vm, FinishOptions(handoff = false, sync = false, summary = false, review = false))
         assertTrue(asked.isEmpty())
         assertEquals(listOf(StepState.SKIPPED, StepState.SKIPPED, StepState.SKIPPED), listOf(run.review, run.sync, run.summary))
         var said = ""
@@ -207,7 +207,7 @@ class ChapterFinishFlowTest {
     fun anExistingSummaryIsKeptUnlessTheAuthorPicksTheNewOne() {
         store.saveCard(workId, chapterId, ChapterCard(facts = "林月到渡口", summary = "作者写的摘要"))
         val vm = model()
-        val run = runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        val run = runToConfirm(vm, FinishOptions(handoff = false, sync = true, summary = true))
         assertEquals("作者写的摘要", run.oldSummary)
         assertTrue("默认留旧的", run.keepOld)
         vm.writingAi.applyFinish(finalize = { w, c -> vm.writing.setStatusNow(w, c, ChapterStatus.FINAL) })
@@ -224,7 +224,7 @@ class ChapterFinishFlowTest {
     @Test
     fun anErrorWhileWritingGoesBackToConfirmAndRetriesTheRest() {
         val vm = model()
-        runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        runToConfirm(vm, FinishOptions(handoff = false, sync = true, summary = true))
         vm.writingAi.applyFinish(finalize = { _, _ -> throw OutOfMemoryError("测试：定稿时内存不够") })
         waitUntil("没退回确认，卡在了正在写入") { vm.writingAi.finish.value?.stage == FinishStage.CONFIRM }
         val failed = vm.writingAi.finish.value!!
@@ -249,7 +249,7 @@ class ChapterFinishFlowTest {
         store.saveText(workId, other, "第二天，雾散了。", count = false)
         val vm = model()
         val ai = vm.writingAi
-        runToConfirm(vm, FinishOptions(sync = true, summary = true))
+        runToConfirm(vm, FinishOptions(handoff = false, sync = true, summary = true))
         // A 等着确认：打开 B 不换掉 A。
         ai.openFinish(workId, other)
         Shadows.shadowOf(Looper.getMainLooper()).idle()

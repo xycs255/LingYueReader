@@ -262,6 +262,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
         }
     }
     val snackbar = rememberWritingMessages(vm)
+    // 上一章的交接卡（“上一章交接：…”那一行，点了能改）。
+    val handoff = rememberHandoff(vm, workId, chapterId)
     LaunchedEffect(workId, chapterId) {
         val snapshot = vm.writing.cardSnapshot(workId, chapterId)
         card = snapshot.planned.card
@@ -346,10 +348,15 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     }
                     previous?.let { (pc, prev) ->
-                        if (prev.hook.isNotBlank() || prev.boundary.isNotBlank()) {
+                        val handed = handoff.view
+                        if (prev.hook.isNotBlank() || prev.boundary.isNotBlank() || handed != null) {
                             GroupedSection(header = "上一章「${pc.title}」留下的") {
                                 if (prev.hook.isNotBlank()) row { ValueRow("钩子", prev.hook) }
                                 if (prev.boundary.isNotBlank()) row { ValueRow("承接边界", prev.boundary) }
+                                if (handed != null) row {
+                                    NavRow("上一章交接", value = handoffState(handed), subtitle = "上一章交接：" + handoffLine(handed.card),
+                                        subtitleMaxLines = 3, enabled = !handoff.busy) { handoff.editing = true }
+                                }
                             }
                         }
                     }
@@ -560,6 +567,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     )
                 }
             }
+            HandoffEditDialog(vm, handoff, scope)
             if (statusDialog && chapter != null) {
                 StatusDialog(chapter, onDismiss = { statusDialog = false }) { s, reason, canon ->
                     statusDialog = false

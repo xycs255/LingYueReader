@@ -62,6 +62,10 @@ import com.xycs.lingyuereader.data.SamplePick
 import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.StyleSamples
 import com.xycs.lingyuereader.data.FinishOptions
+import com.xycs.lingyuereader.data.ChapterHandoff
+import com.xycs.lingyuereader.data.HandoffOrigin
+import com.xycs.lingyuereader.data.Handoffs
+import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.EditLearning
 import com.xycs.lingyuereader.data.FixReason
 import com.xycs.lingyuereader.data.LearnCandidate
@@ -834,6 +838,8 @@ class WritingAi(
         val prose: ProseSampling,
         /** 本机收住的字数（见 [ProseCutoff]）；为空不收。 */
         val cap: Int? = null,
+        /** 在章首写时上一章交接卡那一节（[WritePrompts.handoffSection]）；不在章首为空。 */
+        val handoff: String = "",
     )
 
     /**
@@ -900,6 +906,8 @@ class WritingAi(
             referenceChapterLength = reference.excerpt.chapterLength) }
         val length = chapterLengthOf(workId, taskSnapshot)
         val kit = proseKit(workId, chapterId, text, taskSnapshot, length, reference != null)
+        // 在章首写：带上一章的交接卡。编辑器里不为它另发请求：用存着的（作者改过的、没过期的），没有就本机从结尾抽。
+        val handoff = if (text.substring(0, d.at).isBlank()) handoffView(workId, chapterId)?.card else null
         // 写某一拍：按现在细纲卡里的节拍算这一拍、前后两拍和篇幅；节拍改过、这一拍没了就不写。
         val beatTask = d.beat?.let { n ->
             val list = beats(kit.card)
@@ -913,7 +921,8 @@ class WritingAi(
             val head = text.substring(0, d.at)
             // 光标前不够长：前面接上一章的结尾（截好的最后一段）。
             val withPrevious = head.length < WritePrompts.ENDING_MAX && kit.previous.isNotBlank()
-            val before = (if (withPrevious) "（上一章结尾）\n" + kit.previous + "\n（本章）\n" else "") + head.takeLast(INLINE_BEFORE)
+            val previousLabel = if (kit.previousTentative) "（上一章结尾，未定稿，只接场面和语气）\n" else "（上一章结尾）\n"
+            val before = (if (withPrevious) previousLabel + kit.previous + "\n（本章）\n" else "") + head.takeLast(INLINE_BEFORE)
             val after = text.substring(d.at).take(800)
             val scope = when (d.mode) {
                 InlineMode.SCENE -> ProseScope.SCENE
@@ -946,7 +955,8 @@ class WritingAi(
                 InlineMode.SCENE -> WritePrompts.SCENE_BUDGET.cutoff
                 InlineMode.CUSTOM -> null
             }
-            InlinePrep(kit.system, kit.stable, before, after, task, kit.tail, beatTask, reference, kit.project, prose, cap)
+            InlinePrep(kit.system, kit.stable, before, after, task, kit.tail, beatTask, reference, kit.project, prose, cap,
+                if (head.isBlank()) WritePrompts.handoffSection(handoff, kit.previousHook) else "")
         }
     }
 
@@ -960,7 +970,7 @@ class WritingAi(
         fun update(transform: (InlineVariant) -> InlineVariant) = updateInline(run, slot, token, transform)
         try {
             val prompt = withContext(Dispatchers.Default) {
-                WritePrompts.continueAt(prep.before, prep.after, prep.task.copy(direction = direction), prep.voice, referenceText(reference))
+                WritePrompts.continueAt(prep.before, prep.after, prep.task.copy(direction = direction), prep.voice, referenceText(reference), prep.handoff)
             }
             if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, d.workId, d.chapterId, reference) }
             // 长章节里每显示一次都要整章重排：流式的字最多每 [STREAM_REFRESH_MS] 毫秒更新一次显示。
@@ -1270,7 +1280,7 @@ class WritingAi(
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
-        "整理本章", "从改稿学" -> AiFeature.SYNC
+        "整理本章", "从改稿学", "整理交接" -> AiFeature.SYNC
         "重写这段" -> AiFeature.DRAFT
         "拟细纲", "章节摘要", "拆节拍" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
@@ -1424,6 +1434,8 @@ class WritingAi(
         val seeds: List<String> = emptyList(),
         /** 本章用得上的资料（写正文的说法已经在 [system] 里）；审读用同一份，换成核对的说法。 */
         val brief: ChapterBrief? = null,
+        /** [previous] 是项目包里还没定稿的上一章结尾：请求里写明只接场面和语气。 */
+        val previousTentative: Boolean = false,
     )
 
     /**
@@ -1440,7 +1452,9 @@ class WritingAi(
             val i = work.chapters.indexOfFirst { it.id == chapterId }
             val prior = work.chapters.getOrNull(i - 1)
             val project = task?.project == true
-            val previous = WritePrompts.ending(if (project) task!!.previous else prior?.let { store.text(workId, it.id) }.orEmpty())
+            // 项目包：上一章定稿了带定稿正文；没定稿带它现在的结尾（本章任务里已经截好），标明未定稿。
+            val tentative = project && task!!.previous.isBlank() && task.previousDraft.isNotBlank()
+            val previous = WritePrompts.ending(if (project) task!!.previous.ifBlank { task.previousDraft } else prior?.let { store.text(workId, it.id) }.orEmpty())
             val previousHook = prior?.let { store.plannedCard(workId, it.id).card.hook }.orEmpty()
             val card = store.plannedCard(workId, chapterId).card
             val limit = if (localModel) LOCAL_BRIEF_LIMIT else (assist.briefLimit / 2).coerceIn(PROSE_BRIEF_MIN, PROSE_BRIEF_MAX)
@@ -1453,7 +1467,7 @@ class WritingAi(
             val system = WritePrompts.proseSystem(work.title, assist, author, norms, material) +
                 (if (reference) "\n\n" + ReferenceWriting.SYSTEM_RULE else "")
             ProseKit(system, stable, previous, previousHook, WritePrompts.proseTail(assist, samples, norms + "\n" + author),
-                task?.chapter ?: store.chapterNo(work, chapterId), card, length, project, brief?.seeds().orEmpty(), brief)
+                task?.chapter ?: store.chapterNo(work, chapterId), card, length, project, brief?.seeds().orEmpty(), brief, tentative)
         }
     }
 
@@ -2282,11 +2296,14 @@ class WritingAi(
                 val body = withContext(Dispatchers.IO) { store.text(workId, chapterId) }
                 val length = taskSnapshot?.targetLength ?: targetLength.ifBlank { withContext(Dispatchers.IO) { lengthOf(workId) } }
                 val kit = proseKit(workId, chapterId, body, taskSnapshot, length, reference != null)
+                // 从本章开头写：先备好上一章的交接卡（没有或过期了先整理一次）。
+                val handoff = if (prefix.isEmpty()) handoffForDraft(key, run, workId, chapterId, kit.previousHook) else ""
                 val assist = assistOf(workId)
                 val refText = referenceText(reference)
                 // 接着写要扫一遍已写的（估写到第几拍、数字数）：不放在主线程上算。
                 val prompt = withContext(Dispatchers.Default) {
-                    if (prefix.isEmpty()) WritePrompts.draft(kit.previous, chapterTask(kit, chapter.title, "", instruction), kit.tail, refText)
+                    if (prefix.isEmpty()) WritePrompts.draft(kit.previous, chapterTask(kit, chapter.title, "", instruction), kit.tail, refText,
+                        handoff, kit.previousTentative)
                     else WritePrompts.draftMore(prefix, chapterTask(kit, chapter.title, prefix, instruction), kit.tail, refText)
                 }
                 val system = kit.system
@@ -2298,7 +2315,8 @@ class WritingAi(
                     val text = writeBeats(
                         key, run, plan, beatFrom, start = if (beatFrom > 1) previousCandidate else "", length = length,
                         workflow = false, reference = reference, referenceAnalysisId = referenceAnalysisId,
-                        first = { beat -> WritePrompts.draft(kit.previous, beatTask(kit, chapter.title, beat, instruction), kit.tail, refText) },
+                        first = { beat -> WritePrompts.draft(kit.previous, beatTask(kit, chapter.title, beat, instruction), kit.tail, refText,
+                            handoff, kit.previousTentative) },
                         more = { beat, sofar -> WritePrompts.draftMore(sofar, beatTask(kit, chapter.title, beat, instruction), kit.tail, refText) },
                         request = { first, prompt, onReset, onText ->
                             askWithPack(
@@ -2541,7 +2559,9 @@ class WritingAi(
         val plan = beats(kit.card)
         val prose = if (plan.isEmpty()) chapterTask(kit, chapter.title, "", instruction)
             else beatTask(kit, chapter.title, Beats.task(plan, 1, kit.length), instruction)
-        val fullPrompt = WritePrompts.draft(kit.previous, prose, kit.tail, referenceText(reference))
+        // 交接卡按现在存着的（或本机抽的）估：写的时候过期了会先整理一次，多一次小请求。
+        val handoff = WritePrompts.handoffSection(handoffView(workId, chapterId)?.card, kit.previousHook)
+        val fullPrompt = WritePrompts.draft(kit.previous, prose, kit.tail, referenceText(reference), handoff, kit.previousTentative)
         val system = kit.system + "\n\n" + WritePrompts.proseToolGuide(proseCatalog(workId))
         // 一键写本章（开着 draftPrep）：缺细纲先拟、缺节拍先拆，各多一次小请求；拆出来几拍就逐拍写几次。
         val planning = assist.draftPrep && kit.card.facts.isBlank()
@@ -2803,6 +2823,8 @@ class WritingAi(
                 }
                 check(!reviewOnly || saved.isNotBlank()) { "还没有可审读的草稿" }
                 val prefix = if (more && saved.isNotBlank()) saved.trimEnd() + "\n" else ""
+                // 从本章开头写（不是只审读）：先备好上一章的交接卡。
+                val handoff = if (!reviewOnly && prefix.isBlank()) handoffForDraft(key, run, workId, chapterId, kit.previousHook) else ""
                 // 边收边清理（只看没写完的那一行），界面最多每 [STREAM_REFRESH_MS] 毫秒刷新一次。
                 val written = WritePrompts.DraftStream()
                 val tick = StreamTick()
@@ -2817,7 +2839,8 @@ class WritingAi(
                             return@create writeBeats(
                                 key, run, plan, beatFrom, start = if (beatFrom > 1) saved else "", length = task.targetLength,
                                 workflow = true, reference = reference, referenceAnalysisId = referenceAnalysisId,
-                                first = { beat -> WritePrompts.draft(kit.previous, beatTask(kit, task.title, beat, task.instruction), voice, refText) },
+                                first = { beat -> WritePrompts.draft(kit.previous, beatTask(kit, task.title, beat, task.instruction), voice, refText,
+                                    handoff, kit.previousTentative) },
                                 more = { beat, text -> WritePrompts.draftMore(text, beatTask(kit, task.title, beat, task.instruction), voice, refText) },
                                 request = { _, prompt, onReset, onText ->
                                     askWithPack(
@@ -2834,7 +2857,8 @@ class WritingAi(
                             ).also { beatsInProgress = false }
                         }
                         val prompt = withContext(Dispatchers.Default) {
-                            if (prefix.isBlank()) WritePrompts.draft(kit.previous, chapterTask(kit, task.title, "", task.instruction), voice, refText)
+                            if (prefix.isBlank()) WritePrompts.draft(kit.previous, chapterTask(kit, task.title, "", task.instruction), voice, refText,
+                                handoff, kit.previousTentative)
                             else WritePrompts.draftMore(prefix, chapterTask(kit, task.title, prefix, task.instruction), voice, refText)
                         }
                         if (reference != null) withContext(Dispatchers.IO) { ReferenceWriting.ensureCurrent(store, workId, chapterId, reference) }
@@ -3605,6 +3629,112 @@ class WritingAi(
         return summary + if (staleCount > 0) "；$staleCount 章正文已变化，未记为已整理" else ""
     }
 
+    // ---------- 交接卡 ----------
+
+    /**
+     * 写 [chapterId] 时用的上一章交接卡（“上一章”永远按目录里的前一章算）：存着的、作者改过的或正文没改过的，直接用；
+     * 没有、或者上一章正文在整理之后改过，就本机从结尾抽一份（不存）。上一章不存在或是空章为空。
+     * 读盘、比指纹都在后台：章的修改时间没变就不读正文。
+     */
+    suspend fun handoffView(workId: String, chapterId: String): HandoffView? = withContext(Dispatchers.IO) {
+        val work = store.get(workId) ?: return@withContext null
+        val i = work.chapters.indexOfFirst { it.id == chapterId }
+        val prior = work.chapters.getOrNull(i - 1)?.takeIf { i > 0 } ?: return@withContext null
+        val stored = store.handoff(workId, prior.id)
+        var body: String? = null
+        fun text() = body ?: store.text(workId, prior.id).also { body = it }
+        val fresh = stored != null && Handoffs.fresh(stored, prior.updatedAt, ::text)
+        if (!fresh && text().isBlank()) return@withContext null
+        val hook = store.plannedCard(workId, prior.id).card.hook
+        val card = if (stored != null && (fresh || stored.edited)) stored
+            else Handoffs.local(text(), store.syncNames(workId), handoffPlaces(workId), hook)
+        HandoffView(prior.id, prior.title, Handoffs.withCardHook(card, hook), stale = stored != null && !fresh && !stored.edited,
+            outdated = stored != null && !fresh && stored.edited)
+    }
+
+    /** 账本里记过的地点（人物状态里“位置”那一方面、短的）：本机抽交接卡的“场景”用。 */
+    private fun handoffPlaces(workId: String): List<String> =
+        store.ledger(workId).filter { it.kind == LedgerKind.STATE && it.aspect == "位置" && it.text.trim().length in 2..12 }.map { it.text.trim().trimEnd('。') }
+
+    /**
+     * 请 AI 整理 [priorId] 这一章的交接卡并存下：只给最后约 [Handoffs.AI_CHARS] 字和细纲卡的钩子，不带温度、能关思考的关掉思考，
+     * 只要 JSON，读不出照实报错（[Handoffs.ParseError]）。用量记在“整理”类。[force] 为假时作者改过的不盖掉（整理途中作者改了也不盖）。
+     */
+    private suspend fun generateHandoff(workId: String, priorId: String, force: Boolean): ChapterHandoff {
+        val (work, prior, text) = withContext(Dispatchers.IO) {
+            val w = store.get(workId) ?: error("作品不在了")
+            val c = w.chapter(priorId) ?: error("章节不在了")
+            Triple(w, c, store.text(workId, priorId))
+        }
+        check(text.isNotBlank()) { "上一章是空的，没有可交接的" }
+        val (hook, names) = withContext(Dispatchers.IO) { store.plannedCard(workId, priorId).card.hook to store.syncNames(workId).toList() }
+        val assist = assistOf(workId)
+        val present = names.filter { it in text.takeLast(Handoffs.AI_CHARS) }
+        val answer = ask("整理交接", workId, WritePrompts.system(work.title, assist), WritePrompts.handoff(prior.title, text, hook, present),
+            whole = true, noThinking = true)
+        val card = Handoffs.withCardHook(Handoffs.parse(answer), hook)
+            .copy(origin = HandoffOrigin.AI, hash = Handoffs.hash(text), textAt = prior.updatedAt, at = System.currentTimeMillis())
+        return withContext(draftDisk) {
+            val now = store.handoff(workId, priorId)
+            if (!force && now?.edited == true) now else card.also { store.saveHandoff(workId, priorId, it) }
+        }
+    }
+
+    /**
+     * 一键写本章、从本章开头写之前：上一章还没有交接卡，或者整理之后正文改过（作者改过的不算），有 AI 时先整理一次，
+     * 进度条上显示“正在整理上一章的交接…”，能停。没成就照实说一句，照常写，只是不带交接卡。返回请求里的那一节，可空。
+     */
+    private suspend fun handoffForDraft(key: Pair<String, String>, run: Int, workId: String, chapterId: String, previousHook: String): String {
+        val view = try {
+            handoffView(workId, chapterId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            CrashLog.caught(e)
+            null
+        } ?: return ""
+        val card = if (view.card.origin != HandoffOrigin.LOCAL || !ready || localModel) view.card else try {
+            updateDraft(key, run) { it.copy(prep = DraftPrep.HANDOFF) }
+            generateHandoff(workId, view.chapterId, force = false)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            message("上一章的交接没整理成：${finishError(e, "请求失败")}；这次照常写，不带交接卡")
+            null
+        } finally {
+            updateDraft(key, run) { if (it.prep == DraftPrep.HANDOFF) it.copy(prep = null) else it }
+        }
+        return WritePrompts.handoffSection(card, previousHook)
+    }
+
+    /**
+     * 作者改交接卡（[priorId] 是被交接的那一章）：存成“你改过的”，记下现在的正文指纹。之后不被自动重新整理盖掉，
+     * 除非作者点“重新整理”（[refreshHandoff]）。
+     */
+    suspend fun saveHandoff(workId: String, priorId: String, card: ChapterHandoff): ChapterHandoff = withContext(draftDisk) {
+        val prior = store.get(workId)?.chapter(priorId) ?: error("章节不在了")
+        val text = store.text(workId, priorId)
+        val next = card.copy(people = card.people.filter { it.name.isNotBlank() }, open = card.open.map { it.trim() }.filter { it.isNotEmpty() }.take(Handoffs.MAX_OPEN),
+            origin = HandoffOrigin.AUTHOR, hash = Handoffs.hash(text), textAt = prior.updatedAt, at = System.currentTimeMillis())
+        store.saveHandoff(workId, priorId, next)
+        next
+    }
+
+    /**
+     * “重新整理”：不管作者改过没有，按上一章现在的正文重来。有 AI 时请 AI 整理并存下；没有就清掉存着的，回到本机抽的。
+     * 返回整理好的卡（本机抽的那份见 [handoffView]）。
+     */
+    suspend fun refreshHandoff(workId: String, chapterId: String): ChapterHandoff? {
+        val priorId = withContext(Dispatchers.IO) {
+            val chapters = store.get(workId)?.chapters.orEmpty()
+            val i = chapters.indexOfFirst { it.id == chapterId }
+            chapters.getOrNull(i - 1)?.takeIf { i > 0 }?.id
+        } ?: return null
+        if (ready && !localModel) return generateHandoff(workId, priorId, force = true)
+        withContext(draftDisk) { store.saveHandoff(workId, priorId, null) }
+        return handoffView(workId, chapterId)?.card
+    }
+
     // ---------- 这章写完了 ----------
 
     private val _finish = MutableStateFlow<FinishRun?>(null)
@@ -3622,6 +3752,7 @@ class WritingAi(
         summary = options.summary && ready,
         review = options.review && ready,
         learn = options.learn && learnable,
+        handoff = options.handoff && ready && !localModel,
     )
 
     /** 这章有没有采纳进正文的 AI 原稿（读盘，在后台读）。 */
@@ -3671,7 +3802,7 @@ class WritingAi(
         val o = usable(run.options, run.learnable)
         fun state(on: Boolean) = if (on) StepState.WAITING else StepState.SKIPPED
         val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary),
-            learnable = run.learnable, learn = state(o.learn))
+            learnable = run.learnable, learn = state(o.learn), handoff = state(o.handoff))
         _finish.value = next
         finishJob = scope.launch {
             if (o.review && !finishReview(next.workId, next.chapterId)) return@launch
@@ -3780,6 +3911,8 @@ class WritingAi(
         }
         // 从改稿里学：本机比对加（有 AI 时）AI 归纳。没做全也不拦收尾，原因写在确认页上。
         if (o.learn && run.learn != StepState.DONE) finishLearn(workId, chapterId)
+        // 整理交接卡：给下一章接着写。没成不拦收尾，原因写在确认页上。
+        if (o.handoff && run.handoff != StepState.DONE) finishHandoff(workId, chapterId)
         val now = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
         if (now.sync == StepState.FAILED || now.summary == StepState.FAILED) {
             updateFinish(workId, chapterId) { it.copy(stage = FinishStage.AI_FAILED) }
@@ -3827,6 +3960,27 @@ class WritingAi(
         } catch (e: Throwable) {
             // 学不成不拦收尾：停在“出错”，确认页上照实说。
             updateFinish(workId, chapterId) { it.copy(learn = StepState.FAILED, learnError = finishError(e, "比对出错")) }
+        }
+    }
+
+    /**
+     * 收尾里的“整理交接卡”：这一章就是下一章的“上一章”。作者改过的交接卡不盖掉（要重来在草稿页、细纲卡页点“重新整理”）。
+     * 整理好就存下（和正文指纹一起）；没成只记原因。
+     */
+    private suspend fun finishHandoff(workId: String, chapterId: String) {
+        updateFinish(workId, chapterId) { it.copy(handoff = StepState.RUNNING, handoffError = null, handoffNote = null) }
+        try {
+            val stored = withContext(Dispatchers.IO) { store.handoff(workId, chapterId) }
+            if (stored?.edited == true) {
+                updateFinish(workId, chapterId) { it.copy(handoff = StepState.DONE, handoffNote = "交接卡你改过，留着你改的") }
+                return
+            }
+            generateHandoff(workId, chapterId, force = false)
+            updateFinish(workId, chapterId) { it.copy(handoff = StepState.DONE, handoffNote = "交接卡整理好了，写下一章时开头接住它") }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            updateFinish(workId, chapterId) { it.copy(handoff = StepState.FAILED, handoffError = "交接卡没整理成：${finishError(e, "请求失败")}") }
         }
     }
 
@@ -4085,8 +4239,15 @@ data class DraftState(
     val referenceIssue: DraftReferenceIssue? = null,
 )
 
-/** 一键写本章写之前多出来的两步（进度里显示）。 */
-enum class DraftPrep(val label: String) { PLAN("正在拟细纲……"), BEATS("正在拆节拍……") }
+/**
+ * 写 [chapterId] 那一章时看到的上一章交接卡：[chapterId] 是上一章（被交接的那一章）的 id，[card] 是现在会用的那份
+ * （钩子已按细纲卡换好）。[stale] 为真：存着的是 AI 整理的、上一章正文后来改过，现在给的是本机抽的，写本章时会重新整理；
+ * [outdated] 为真：作者改过的那份照用，但上一章正文后来又改过。
+ */
+data class HandoffView(val chapterId: String, val chapterTitle: String, val card: ChapterHandoff, val stale: Boolean = false, val outdated: Boolean = false)
+
+/** 一键写本章写之前多出来的几步（进度里显示）。 */
+enum class DraftPrep(val label: String) { PLAN("正在拟细纲……"), BEATS("正在拆节拍……"), HANDOFF("正在整理上一章的交接…") }
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
 data class SentRequest(

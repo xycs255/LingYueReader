@@ -101,8 +101,11 @@ class WritingFinishUiTest {
                     val body = JSONObject(ex.requestBody.readBytes().decodeToString())
                     val messages = body.getJSONArray("messages")
                     val user = (0 until messages.length()).map { messages.getJSONObject(it) }.last { it.optString("role") == "user" }.optString("content")
-                    asked += user
+                    // 收尾里的“整理交接卡”另算（见 WritingHandoffUiTest）：这里只数整理、摘要、审稿的请求。
+                    val handoff = "交给下一章接着写" in user
+                    if (!handoff) asked += user
                     val answer = when {
+                        handoff -> """{"scene":"渡口","people":[],"mood":"","open":[],"hook":""}"""
                         isSync(user) -> syncAnswer("\"summary\"" in user)
                         isSummary(user) -> summary
                         isReview(user) -> reviewAnswer

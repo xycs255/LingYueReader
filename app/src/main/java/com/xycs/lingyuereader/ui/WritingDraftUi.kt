@@ -217,6 +217,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     }
     // 写完、停下、出错：细纲卡可能刚被写前准备改过（停在拆节拍时也留着拟好的细纲），重读一次。
     val running = draft?.loading == true
+    // 上一章的交接卡：写完、停下以后再读一次（一键写本章可能刚整理过）。
+    val handoff = rememberHandoff(vm, workId, chapterId, refresh = running)
     LaunchedEffect(running) {
         if (running || card == null) return@LaunchedEffect
         try { card = vm.writing.cards(workId, chapterId).first.card }
@@ -376,12 +378,17 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     else -> 0
                 })
                 // 写过（或正在写）一版：上方列出这一版按的细纲和节拍，AI 拟的挂小标签，作者先看依据再看正文。
+                // “接上一章”：有上一章就显示（写之前也能先看、先改），交接卡在这一栏里展开。
                 val basis = card
-                if ((text.isNotBlank() || loading) && basis != null && (basis.facts.isNotBlank() || beatList.isNotEmpty())) {
-                    DraftBasisSection(basis, beatList, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
+                val showBasis = (text.isNotBlank() || loading) && basis != null && (basis.facts.isNotBlank() || beatList.isNotEmpty())
+                if (showBasis || handoff.view != null) {
+                    DraftBasisSection(basis, beatList, showBasis, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
                         canRewrite = canWrite && !loading,
                         onEdit = { vm.open(Screen.ChapterCard(workId, chapterId)) },
-                        onRewrite = { startDraft() })
+                        onRewrite = { startDraft() }) {
+                        handoffRows(handoff, aiReady = aiConfig.ready && !aiConfig.onDevice, onEdit = { handoff.editing = true },
+                            onRefresh = { handoff.refresh(vm, scope) })
+                    }
                 }
                 GroupedSection(
                     header = "你的构思",
@@ -787,6 +794,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 }, confirmText = "重写这段", confirmEnabled = rejectReasons.isNotEmpty())
             }
         }
+        HandoffEditDialog(vm, handoff, scope)
         if (editingDraft) {
             GlassDialog(show = true, title = "修改候选稿", summary = "只修改这份候选稿。保存后旧审读结果失效，需要针对新稿重新审读。", onDismissRequest = { editingDraft = false }) {
                 TextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
@@ -901,13 +909,15 @@ private fun beatsOf(card: ChapterCard?): List<Beat> = card?.let(::beats).orEmpty
  * 作者在细纲卡里改过或确认过就没了。两个按钮：去细纲卡改，回来按改过的重写一版。
  */
 @Composable
-private fun DraftBasisSection(card: ChapterCard, beatList: List<Beat>, expanded: Boolean, onToggle: () -> Unit,
-                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit) {
+private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasis: Boolean, expanded: Boolean, onToggle: () -> Unit,
+                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit,
+                              /** 卡片最后加的几行（“接上一章”）。 */
+                              extra: GroupedSectionScope.() -> Unit = {}) {
     val c = LocalGroupedColors.current
-    val pending = card.aiOutline || card.aiBeats
-    GroupedSection(footer = if (expanded && pending) "“AI 拟的”“AI 拆的”是写本章时 AI 补的，还没经你确认；在细纲卡里改过或点了确认，标签就没了。" else null) {
-        row { ExpandRow("这一章是按下面的细纲和节拍写的", expanded, value = if (pending) "待确认" else null, onToggle = onToggle) }
-        if (expanded) {
+    val pending = card != null && (card.aiOutline || card.aiBeats)
+    GroupedSection(footer = if (showBasis && expanded && pending) "“AI 拟的”“AI 拆的”是写本章时 AI 补的，还没经你确认；在细纲卡里改过或点了确认，标签就没了。" else null) {
+        if (showBasis && card != null) row { ExpandRow("这一章是按下面的细纲和节拍写的", expanded, value = if (pending) "待确认" else null, onToggle = onToggle) }
+        if (showBasis && card != null && expanded) {
             if (card.facts.isNotBlank()) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -931,6 +941,7 @@ private fun DraftBasisSection(card: ChapterCard, beatList: List<Beat>, expanded:
             row { NavRow("改细纲 / 节拍") { onEdit() } }
             row { ActionRow("按改过的重写", enabled = canRewrite) { onRewrite() } }
         }
+        extra()
     }
 }
 

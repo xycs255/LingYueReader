@@ -53,6 +53,11 @@ data class FinishRun(
     val learnPicked: Set<String> = emptySet(),
     /** 作者明确不要的（取消过勾选、点了“不要”）：完成收尾时只有这些和没勾的本机候选记进“不再提”。 */
     val learnDeclined: Set<String> = emptySet(),
+    /** 整理交接卡（给下一章接着写）：整理好就存下，没成不拦收尾，原因照实给作者看。 */
+    val handoff: StepState = StepState.WAITING,
+    val handoffError: String? = null,
+    /** 交接卡这一步的说明（比如保留了作者改过的那一份）。 */
+    val handoffNote: String? = null,
 ) {
     /**
      * 这一章的收尾手上有东西：在跑、在写入、审出问题等着选、没成等着重试、等着确认。这时换一章收尾会把它丢掉

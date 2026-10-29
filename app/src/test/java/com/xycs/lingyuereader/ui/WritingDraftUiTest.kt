@@ -93,6 +93,7 @@ class WritingDraftUiTest {
                         WorkStore(writingDir).let { it.saveCard(workId, c2, it.card(workId, c2).copy(summary = "作者自己写的摘要")) }
                     }
                     val answer = when {
+                        "交给下一章接着写" in user -> """{"scene":"渡口","people":[],"mood":"","open":[],"hook":""}"""
                         "只返回一个 JSON 对象" in user -> """{"nodes":[{"kind":"信息","label":"声响引题","quote":"夜里有人叩门"},{"kind":"动作","label":"靠近灯盏","quote":"移近灯盏"}],"dialogue":null}"""
                         validWorkflowReview && "【当前阶段：审读】" in user -> """{"summary":["对白语气需作者最终确认"],"missing":[],"issues":[]}"""
                         "写到哪里停：写完整章" in user -> "第二章 来客\n\n　　杜娘把门打开，雪灌了进来。\n“谁？”她问。\n（本章完）"

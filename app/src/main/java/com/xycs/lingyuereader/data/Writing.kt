@@ -144,8 +144,10 @@ data class DraftIntent(val instruction: String = "", val targetLength: String = 
  * “这章写完了”收尾页上的勾选项（按作品记住）：整理入账（账本和设定包）、写本章摘要、顺带三道审稿。
  * 定稿是收尾本身，总要做，不在这里。前两项默认勾，审稿要花时间和钱，默认不勾。
  * [learn] 是“从这章的改稿里学”（这章有 AI 原稿时才显示）：本机比对不花钱，默认勾。
+ * [handoff] 是“整理交接卡”（要 AI）：记下这一章结尾的场面、人物、情绪和悬念，写下一章时开头接住；默认勾。
  */
-data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false, val learn: Boolean = true)
+data class FinishOptions(val sync: Boolean = true, val summary: Boolean = true, val review: Boolean = false, val learn: Boolean = true,
+                         val handoff: Boolean = true)
 
 /**
  * 一部作品的 AI 设置和资料：写作建议开没开（默认关，开了才会自动把刚写的段落发给服务商）、
@@ -710,6 +712,8 @@ class WorkStore(
         runCatching { WritingReferences.forgetTarget(File(dir(workId), WritingReferences.DIRECTORY), chapterId) }
         // 这章的 AI 原稿和改法计数也清掉；清不掉也不挡删章（备份时按现有的章过滤）。
         runCatching { if (File(dir(workId), LEARN).isFile) updateLearning(workId) { EditLearning.forgetChapter(it, chapterId) } }
+        // 这章的交接卡也清掉；清不掉也不挡删章（备份时按现有的章过滤）。
+        runCatching { if (File(dir(workId), HANDOFFS).isFile) saveHandoff(workId, chapterId, null) }
         return work
     }
 
@@ -1341,6 +1345,39 @@ class WorkStore(
         updateLearning(workId) { EditLearning.record(it, chapterId, text, clock(), replace) }
     }
 
+    // ---------- 交接卡 ----------
+
+    /** 这部作品各章的交接卡（章 id → 卡）：没有为空；读不出时坏文件另存一份，当作空的。 */
+    @Synchronized
+    fun handoffs(workId: String): Map<String, ChapterHandoff> {
+        val file = File(dir(workId), HANDOFFS)
+        if (!file.isFile) return emptyMap()
+        return try {
+            Handoffs.fromJsonAll(JSONObject(file.readText()))
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            emptyMap()
+        }
+    }
+
+    /** 一章的交接卡；没有为空。 */
+    fun handoff(workId: String, chapterId: String): ChapterHandoff? = handoffs(workId)[chapterId]
+
+    /**
+     * 存一章的交接卡（[card] 为空是删掉）：整份读、改、写临时文件再改名。章不在了不存。
+     * 不改作品的修改时间：交接卡是从正文整理出来的附属物，不算作者改了作品。
+     */
+    @Synchronized
+    fun saveHandoff(workId: String, chapterId: String, card: ChapterHandoff?) {
+        val d = dir(workId)
+        require(File(d, WORK).isFile) { "作品不在了" }
+        if (card != null) require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
+        val old = handoffs(workId)
+        val next = if (card == null) old - chapterId else old + (chapterId to card)
+        if (next == old) return
+        check(DurableFiles.write(File(d, HANDOFFS), Handoffs.toJson(next).toString().toByteArray())) { "无法保存交接卡" }
+    }
+
     // ---------- 文风范例的挑选缓存 ----------
 
     /** 挑好的文风范例（[StyleSamples.encodeCache] 的格式）；没有或读不出为空。不进备份：丢了就重挑。 */
@@ -1800,6 +1837,10 @@ class WorkStore(
             val learnSource = File(dir(w.id), LEARN)
             if (learnSource.isFile) component(learnSource, "改稿学习的记录读不出，没有放进备份") { EditLearning.fromJson(JSONObject(it)) }
                 ?.let { entry.put("learn", EditLearning.toJson(it.keep(w.chapters.map { c -> c.id }.toSet()))) }
+            // 交接卡：只带还在的章。读不出就不放这个键，恢复时保留那台手机上原来的。
+            val handoffSource = File(dir(w.id), HANDOFFS)
+            if (handoffSource.isFile) component(handoffSource, "交接卡读不出，没有放进备份") { Handoffs.fromJsonAll(JSONObject(it)) }
+                ?.let { all -> entry.put("handoffs", Handoffs.toJson(all.filterKeys { id -> w.chapter(id) != null })) }
             array.put(entry)
         }
         val backup = JSONObject().put("format", 1).put("works", array)
@@ -1859,6 +1900,8 @@ class WorkStore(
         val references: ReferenceArchive?,
         /** 改稿学习的数据；旧备份没有这一项（空），恢复时保留本机的。 */
         val learn: LearnData? = null,
+        /** 各章的交接卡；旧备份没有这一项（空），恢复时保留本机的。 */
+        val handoffs: Map<String, ChapterHandoff>? = null,
     )
 
     /**
@@ -1963,6 +2006,7 @@ class WorkStore(
         } else null
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
         val learn = if (o.has("learn")) EditLearning.fromJson(o.getJSONObject("learn")).keep(chapterIds.toSet()) else null
+        val handoffs = if (o.has("handoffs")) Handoffs.fromJsonAll(o.getJSONObject("handoffs")).filterKeys { it in chapterIds } else null
         val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) { title, reason ->
             skipped += WritingSkip(incoming.title, "${WritingReferences.DIRECTORY}/$title", reason)
         } else null
@@ -2096,7 +2140,7 @@ class WorkStore(
         }
         return RestoreWork(incoming, local, texts, drafts?.filterKeys { it !in omittedDrafts },
             draftSources?.filterKeys { it !in omittedDrafts }, draftRevisions?.filterKeys { it !in omittedDrafts }, cards, changes, ledger,
-            pack, localPack, assist, references, learn)
+            pack, localPack, assist, references, learn, handoffs)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -2210,6 +2254,12 @@ class WorkStore(
             }.getOrNull()
         }
         learn?.let { check(DurableFiles.write(learnTarget, EditLearning.toJson(it).toString().toByteArray())) { "无法暂存改稿学习的记录" } }
+        // 交接卡：备份里有就用备份的；没有（旧备份）就留本机的，只去掉恢复后不在了的章。正文被换掉的章，卡按指纹自然算过期。
+        val handoffTarget = File(destination, HANDOFFS)
+        val handoffs = plan.handoffs ?: handoffTarget.takeIf { it.isFile }?.let { f ->
+            runCatching { Handoffs.fromJsonAll(JSONObject(f.readText())).filterKeys { it in chapterIds } }.getOrNull()
+        }
+        handoffs?.let { check(DurableFiles.write(handoffTarget, Handoffs.toJson(it).toString().toByteArray())) { "无法暂存交接卡" } }
         // 中断修复的标记只留在换下来的旧目录里：提交后恢复的作品不再带着它；回滚时旧目录连同标记一起换回来。
         val guard = File(destination, RECOVERED_SAVE)
         check(!guard.exists() || guard.delete()) { "无法清理中断修复标记" }
@@ -2318,6 +2368,8 @@ class WorkStore(
         private const val SAMPLES = "style-samples.json"
         private const val LEDGER = "ledger.json"
         private const val LEARN = "learn.json"
+        /** 各章的交接卡（章 id → 卡），见 [ChapterHandoff]。 */
+        private const val HANDOFFS = "handoffs.json"
         private const val LEDGER_HISTORY = "ledger-history"
         /** 账本留几个历史版本。 */
         private const val LEDGER_KEEP = 30
@@ -2402,7 +2454,8 @@ class WorkStore(
             .apply { temperature?.let { put("temperature", it.toString().toDouble()) } }
             .put("thinking", thinking)
             .put("beatVariants", beatVariants)
-            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review).put("learn", finish.learn))
+            .put("finish", JSONObject().put("sync", finish.sync).put("summary", finish.summary).put("review", finish.review).put("learn", finish.learn)
+                .put("handoff", finish.handoff))
             .put("draftPrep", draftPrep)
             .put("learned", JSONArray(learned))
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
@@ -2491,7 +2544,8 @@ class WorkStore(
                 // 旧数据没有收尾的勾选：按默认（整理、摘要勾上，审稿不勾）。
                 finish = optJSONObject("finish")?.let { f ->
                     val d = FinishOptions()
-                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review), f.optBoolean("learn", d.learn))
+                    FinishOptions(f.optBoolean("sync", d.sync), f.optBoolean("summary", d.summary), f.optBoolean("review", d.review), f.optBoolean("learn", d.learn),
+                        f.optBoolean("handoff", d.handoff))
                 } ?: FinishOptions(),
                 // 旧数据没有这一项：一键写本章先补细纲、节拍（默认开）。
                 draftPrep = optBoolean("draftPrep", true),

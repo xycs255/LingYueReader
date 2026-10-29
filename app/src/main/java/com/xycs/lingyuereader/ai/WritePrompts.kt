@@ -3,6 +3,8 @@ package com.xycs.lingyuereader.ai
 import com.xycs.lingyuereader.data.BeatTask
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterHandoff
+import com.xycs.lingyuereader.data.Handoffs
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterTitles
@@ -115,7 +117,7 @@ enum class ProseScope {
  * 写一次正文的任务，[WritePrompts.taskCard] 照它出任务卡。[beat]：[ProseScope.BEAT] 时是这次写第几拍，
  * [ProseScope.TO_END] 时是从第几拍写起（前面的算已写，空是看细纲卡里勾的）。[length] 是这一次唯一的篇幅（算好的，
  * 比如“约 800 字”），空的不写。[opening] 为真时从本章开头写，[previous] 为真时前面给了上一章结尾，
- * [after] 为真时光标后面还有已写的；[previousHook] 是上一章的章末钩子。
+ * [after] 为真时光标后面还有已写的；[previousHook] 是上一章的章末钩子；[handoff] 为真时前面给了上一章的交接卡。
  */
 data class ProseTask(
     val chapter: Int?,
@@ -133,6 +135,7 @@ data class ProseTask(
     val direction: WriteDirection? = null,
     /** 这一章可以埋的伏笔（[com.xycs.lingyuereader.data.ChapterBrief.seeds]）：只点到为止。 */
     val seeds: List<String> = emptyList(),
+    val handoff: Boolean = false,
 )
 
 /** 设定集里 AI 从正文整理出的一条：[existing] 为真时是更新已有的条目。 */
@@ -160,6 +163,11 @@ object WritePrompts {
             val craftSources = evidence.sources.filter { it.supportsCraft && !it.supportsFact }
             if (craftSources.isNotEmpty()) append(craftSources.joinToString("；", prefix = "写法与规则来源编号：", postfix = "。") { "${it.label} ${it.ref}" })
             append("若找不到可定位原文，把问题放进 missing 等作者核对，不把猜测列为必改。来源定位只能证明引文存在，仍须判断其含义。\n")
+        }
+        if (task.previous.isBlank() && task.previousDraft.isNotBlank()) {
+            // 未定稿的上一章结尾只给写的人接场面：审读不能拿它当已定前文。
+            append("本章任务里“").append(ChapterWritingTask.PREVIOUS_DRAFT.substringBefore('（')).append("（未定稿）”那一节不是已定前文：")
+            append("只用来看开头接得顺不顺，不能作 FACT 依据，也不能据它判定本章事实错误。\n")
         }
         append("单独连读对白，检查关系、欲望和情绪是否成立，是否人人准确概括、借角色讲课；检查旁白是否重复对白与结果、是否写成论文。")
         append("不因生活闲话、直接心理或背景没有推进主线就删，不强制短句、逐句动作、统一场次、微伏笔或快慢配额。")
@@ -304,6 +312,12 @@ object WritePrompts {
     const val ENDING_MAX = 1_500
     const val ENDING_MIN = 800
 
+    /** 写本章开头的请求里，上一章交接卡那一节的标题（接在上一章结尾后面）。 */
+    const val HANDOFF_HEADER = "上一章交接："
+
+    /** 任务卡里接上一章的那一句：从本章开头写、前面给了上一章结尾或交接卡时才有。 */
+    const val CONTINUITY = "开头先接住上一章的场面和情绪，再往下走；悬念可以先放着，但不能当没发生过。"
+
     /** 接着写草稿时带已写的最后多少字（逐拍写的接口处要的是语气和场面，少带些）。 */
     const val MORE_CHARS = 4_000
     const val MORE_BEAT_CHARS = 3_000
@@ -419,6 +433,7 @@ object WritePrompts {
                 else -> "紧接上文最后一句（上文见前面）"
             },
         ).append('\n')
+        if (t.opening && (t.previous || t.handoff) && t.scope != ProseScope.REVISE) append(CONTINUITY).append('\n')
         val atHook = if (hook.isNotEmpty()) "，停在章末钩子上" else ""
         append("写到哪里停：").append(
             when (t.scope) {
@@ -475,11 +490,44 @@ object WritePrompts {
 
     /**
      * 从本章开头写（整章、或逐拍写的第一拍）：[previous] 是上一章结尾（[ending] 截好的），[voice] 是 [proseTail]，
-     * [reference] 是范本的要求（可空）。
+     * [reference] 是范本的要求（可空）。[tentative] 为真时上一章还没定稿，标题写明只接场面和语气；
+     * [handoff] 是上一章交接卡那一节（[handoffSection]，可空），接在上一章结尾后面。
      */
-    fun draft(previous: String, task: ProseTask, voice: String = "", reference: String = ""): String =
-        prose(if (previous.isBlank()) "" else "上一章结尾：\n" + previous.trim(), reference, voice,
-            taskCard(task.copy(opening = true, previous = previous.isNotBlank())))
+    fun draft(previous: String, task: ProseTask, voice: String = "", reference: String = "", handoff: String = "", tentative: Boolean = false): String =
+        prose(listOf(previousHead(previous, tentative), handoff.trim()).filter { it.isNotEmpty() }.joinToString("\n\n"), reference, voice,
+            taskCard(task.copy(opening = true, previous = previous.isNotBlank(), handoff = handoff.isNotBlank())))
+
+    /** 上一章结尾那一节：定稿的（或普通作品的）叫“上一章结尾”，项目包里未定稿的写明只接场面和语气。 */
+    private fun previousHead(previous: String, tentative: Boolean): String =
+        if (previous.isBlank()) "" else (if (tentative) ChapterWritingTask.PREVIOUS_DRAFT + "：\n" else "上一章结尾：\n") + previous.trim()
+
+    /**
+     * 上一章交接卡写成请求里的一节：[previousHook] 是任务卡里已经写了的上一章钩子，交接卡的钩子和它一样时不再重复。
+     * 卡是空的为空。
+     */
+    fun handoffSection(card: ChapterHandoff?, previousHook: String = ""): String {
+        val lines = card?.lines(withHook = card.hook.isNotBlank() && card.hook.trim() != previousHook.trim()).orEmpty()
+        return if (lines.isEmpty()) "" else HANDOFF_HEADER + "\n" + lines.joinToString("\n") { "- $it" }
+    }
+
+    /**
+     * 请 AI 整理上一章的交接卡：只给最后约 [Handoffs.AI_CHARS] 字（[ending] 截的）和细纲卡的章末钩子 [hook]，[names] 是认得的人名
+     * （帮模型别把称呼认错，可空）。只要 JSON，按 [Handoffs.parse] 读。求稳：不带温度、能关思考的模型关掉思考。
+     */
+    fun handoff(title: String, text: String, hook: String, names: List<String> = emptyList()): String = buildString {
+        if (title.isNotBlank()) append("章节：").append(title.trim()).append('\n')
+        append("这一章的最后一部分：\n").append(ending(text, Handoffs.AI_CHARS, Handoffs.AI_CHARS / 2)).append("\n\n")
+        if (hook.isNotBlank()) append("细纲卡里本章的章末钩子：").append(line(hook)).append('\n')
+        if (names.isNotEmpty()) append("书里的人名：").append(names.take(40).joinToString("、")).append('\n')
+        append("请整理这一章结尾时的状态，交给下一章接着写：\n")
+        append("- scene：结尾时在哪、什么时间\n")
+        append("- people：结尾时在场的人，各自在做什么（doing）、什么状态（state，比如受伤、情绪）\n")
+        append("- mood：结尾的情绪基调，一句话\n")
+        append("- open：没说完的话、没解决的悬念或冲突，最多 ${Handoffs.MAX_OPEN} 条，每条一句\n")
+        append("- hook：章末停在哪个钩子上（细纲卡写了就照细纲卡）\n")
+        append("只写正文里看得出来的；看不出来的留空字符串或空数组，不要编。\n")
+        append("只输出 JSON：{\"scene\":\"\",\"people\":[{\"name\":\"\",\"doing\":\"\",\"state\":\"\"}],\"mood\":\"\",\"open\":[],\"hook\":\"\"}")
+    }
 
     /** 接着已写的往下写（草稿没写完、逐拍写的后面几拍）：[written] 是这一章已经写了的，只带最后一部分。 */
     fun draftMore(written: String, task: ProseTask, voice: String = "", reference: String = ""): String {
@@ -489,13 +537,18 @@ object WritePrompts {
         return prose(head, reference, voice, taskCard(task.copy(opening = false)))
     }
 
-    /** 编辑器里从光标处接着写：[before] 是光标前的正文（不够长时前面接上一章结尾），[after] 是光标后面已经写了的。 */
-    fun continueAt(before: String, after: String, task: ProseTask, voice: String = "", reference: String = ""): String {
+    /**
+     * 编辑器里从光标处接着写：[before] 是光标前的正文（不够长时前面接上一章结尾），[after] 是光标后面已经写了的。
+     * [handoff] 是上一章交接卡那一节（[handoffSection]）：只在从本章开头写（[ProseTask.opening]）时带。
+     */
+    fun continueAt(before: String, after: String, task: ProseTask, voice: String = "", reference: String = "", handoff: String = ""): String {
+        val withHandoff = task.opening && handoff.isNotBlank()
         val head = buildString {
             append("这一章写到光标处的正文：\n").append(before).append("\n【光标在这里】")
+            if (withHandoff) append("\n\n").append(handoff.trim())
             if (after.isNotBlank()) append("\n\n光标后面已经写了（只作语境，不要重复它）：\n").append(after)
         }
-        return prose(head, reference, voice, taskCard(task.copy(after = after.isNotBlank())))
+        return prose(head, reference, voice, taskCard(task.copy(after = after.isNotBlank(), handoff = withHandoff)))
     }
 
     /**

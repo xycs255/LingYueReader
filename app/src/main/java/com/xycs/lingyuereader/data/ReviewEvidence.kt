@@ -57,6 +57,14 @@ class ReviewEvidence(val sources: List<ReviewSource>) {
                 craftPassages = listOf(task.instruction.trim()).filter { it.isNotBlank() })
         }
 
+        /**
+         * 未定稿的上一章结尾（[ChapterWritingTask.previousDraft]）：审读时能看到、能拿来看衔接，但不是已定前文——
+         * 既不能当 FACT 依据，也不能当写法依据。没带时为空。
+         */
+        fun tentative(task: ChapterWritingTask): ReviewSource? = task.previousDraft.trim().takeIf { it.isNotEmpty() }?.let { text ->
+            ReviewSource(ref("D", task.fingerprint, text), "未定稿的上一章结尾（只看衔接，不作事实依据）", text, supportsFact = false)
+        }
+
         fun pack(doc: PackDoc, text: String): ReviewSource =
             ReviewSource(ref("P", doc.id, text), "《${doc.title}》", text,
                 supportsFact = doc.kind in FACT_PACK_KINDS,
@@ -76,7 +84,7 @@ fun WorkStore.reviewEvidence(workId: String, chapterId: String, task: ChapterWri
     val chapters = if (before >= 0) work!!.chapters.take(before).filter { it.status == ChapterStatus.FINAL } else emptyList()
     val docs = packSources(workId).forPhase(WritingPhase.REVIEW)
         .filter { (doc, text) -> text.isNotBlank() && doc.kind !in setOf(PackKind.REFERENCE, PackKind.TECHNIQUE) }
-    return ReviewEvidence(listOf(ReviewEvidence.task(task)) +
+    return ReviewEvidence(listOf(ReviewEvidence.task(task)) + listOfNotNull(ReviewEvidence.tentative(task)) +
         docs.map { (doc, text) -> ReviewEvidence.pack(doc, text) } +
         chapters.map { ReviewEvidence.chapter(it, text(workId, it.id)) })
 }
