@@ -31,6 +31,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.URL
@@ -64,6 +65,10 @@ class EditLearningFlowTest {
     @Volatile
     private var learnAnswer = """{"rules":[]}"""
 
+    /** “这段不行”重写请求的回答。 */
+    @Volatile
+    private var fixAnswer = rewritten
+
     /** 写正文请求的回答。 */
     @Volatile
     private var prose = draftText
@@ -85,7 +90,7 @@ class EditLearningFlowTest {
                 asked += Asked(user, body)
                 val answer = when {
                     isLearn(user) -> learnAnswer
-                    isFix(user) -> rewritten
+                    isFix(user) -> fixAnswer
                     "细纲卡" in user && "JSON" in user -> """{"facts":"沈默到渡口"}"""
                     "{\"issues\":" in user -> """{"issues":[]}"""
                     else -> { hold?.await(10, java.util.concurrent.TimeUnit.SECONDS); prose }
@@ -225,7 +230,9 @@ class EditLearningFlowTest {
         assertTrue(local.key in run.learnPicked)
         assertFalse(fromAi.key in run.learnPicked)
 
-        // 作者只勾了黑名单词：它进黑名单，AI 那条记进“不再提”。
+        // 作者只勾了黑名单词、AI 那条点了“不要”：黑名单词进黑名单，AI 那条记进“不再提”。
+        writing.declineFinishLearn(fromAi.key, true)
+        assertFalse(fromAi.key in writing.finish.value!!.learnPicked)
         writing.applyFinish(finalize = { w, c -> store.setStatus(w, c, ChapterStatus.FINAL) })
         waitFor("收完") { writing.finish.value?.stage == FinishStage.DONE }
         assertTrue(ban in store.assist(workId).banned)
@@ -267,7 +274,8 @@ class EditLearningFlowTest {
         assertTrue("作者的意见：她该生气" in request.user)
         assertTrue(WritePrompts.PROSE_HEADER in request.user && WritePrompts.LEARNED_HEADER in request.user)
         assertEquals(0.9, request.body.getDouble("temperature"), 1e-9)
-        assertEquals(1, store.learning(workId).reasons[FixReason.FLAT.name])
+        // 还没采纳：不计数。
+        assertEquals(null, store.learning(workId).reasons[FixReason.FLAT.name])
 
         // 采纳：草稿只换了这一段，存了盘，原来那版能换回。
         writing.acceptParagraphFix()
@@ -277,16 +285,24 @@ class EditLearningFlowTest {
         assertEquals(listOf("顾长风推门进来，带进一身雨气。", rewritten, "杜娘把茶碗放下，转身去关窗。"), lines)
         assertEquals(draftText, after.initialText)
         waitFor("草稿存盘") { store.draft(workId, chapterId) == after.text }
-        // 例子在草稿存盘之后补记。
+        // 例子和次数在草稿存盘之后补记：采纳了才算一次。
         waitFor("记下例子") { store.learning(workId).reasonExamples[FixReason.FLAT.name]?.second == rewritten }
+        assertEquals(1, store.learning(workId).reasons[FixReason.FLAT.name])
 
-        // 同一个原因再点两次（够 3 次），收尾学习时提出来。
+        // 点了又放弃的不算。
         repeat(2) {
             writing.fixParagraph(workId, chapterId, 0, setOf(FixReason.FLAT))
             waitFor("又重写") { writing.paragraphFix.value?.loading == false }
             writing.dropParagraphFix()
         }
-        assertEquals(3, store.learning(workId).reasons[FixReason.FLAT.name])
+        assertEquals(1, store.learning(workId).reasons[FixReason.FLAT.name])
+        // 同一个原因再采纳两次（够 3 次），收尾学习时提出来。
+        for (n in 2..3) {
+            writing.fixParagraph(workId, chapterId, 0, setOf(FixReason.FLAT))
+            waitFor("又重写") { writing.paragraphFix.value?.let { !it.loading && it.error == null } == true }
+            writing.acceptParagraphFix()
+            waitFor("采纳第 $n 次") { store.learning(workId).reasons[FixReason.FLAT.name] == n }
+        }
         store.recordAiText(workId, chapterId, store.text(workId, chapterId))
         val run = finish()
         val c = run.candidates.single { it.key == "reason:${FixReason.FLAT.name}" }
@@ -295,6 +311,76 @@ class EditLearningFlowTest {
         writing.applyFinish(finalize = { w, ch -> store.setStatus(w, ch, ChapterStatus.FINAL) })
         waitFor("收完") { writing.finish.value?.stage == FinishStage.DONE }
         assertTrue(c.text in store.assist(workId).learned)
+    }
+
+    @Test
+    fun failedRewritesAreNotCountedAsReasons() {
+        writeDraft()
+        // 模型没写出来：连点三次“太死板”，都失败了。
+        fixAnswer = ""
+        repeat(3) {
+            writing.fixParagraph(workId, chapterId, 1, setOf(FixReason.STIFF))
+            waitFor("重写失败") { writing.paragraphFix.value?.let { !it.loading && it.error != null } == true }
+            writing.dropParagraphFix()
+        }
+        assertEquals(3, asked.count { isFix(it.user) })
+        val data = store.learning(workId)
+        assertEquals(null, data.reasons[FixReason.STIFF.name])
+        assertEquals(null, data.reasonExamples[FixReason.STIFF.name])
+        assertTrue(EditLearning.candidates(data, store.assist(workId)).none { it.key == "reason:${FixReason.STIFF.name}" })
+    }
+
+    @Test
+    fun aRewriteSavedButNotFullyRecordedShowsWhatIsOnDisk() {
+        writeDraft()
+        val key = workId to chapterId
+        writing.fixParagraph(workId, chapterId, 1, setOf(FixReason.FLAT))
+        waitFor("重写这段") { writing.paragraphFix.value?.let { !it.loading && it.error == null } == true }
+        // 草稿写进去以后，清“项目包流程”标记那一步写不成（作品 AI 设置的临时文件位置被占了）。
+        store.setDraftWorkflow(workId, chapterId, true)
+        val blocked = File(tmp.root, "writing/works/$workId/assist.json.tmp")
+        assertTrue(blocked.mkdirs())
+        try {
+            writing.acceptParagraphFix()
+            val replaced = listOf("顾长风推门进来，带进一身雨气。", rewritten, "杜娘把茶碗放下，转身去关窗。").joinToString("\n")
+            waitFor("草稿存盘") { store.draft(workId, chapterId) == replaced }
+            waitFor("对账") { writing.drafts.value[key]?.let { !it.loading && it.error != null } == true }
+            // 界面按磁盘上实际的内容显示（新稿），不退回旧稿装作“没换”。
+            assertEquals(replaced, writing.drafts.value[key]!!.text)
+            // 没存全不算采纳：不计数。
+            assertEquals(null, store.learning(workId).reasons[FixReason.FLAT.name])
+        } finally {
+            blocked.delete()
+        }
+    }
+
+    @Test
+    fun aiCandidatesTheAuthorDidNotLookAtAreNotDismissed() {
+        val prior = store.addChapter(workId, store.get(workId)!!.volumes.single().id)!!.second.id
+        cutChapter(2).let { (a, f) -> seedChapter(prior, a, f) }
+        val (a, f) = cutChapter(1)
+        seedChapter(chapterId, a, f)
+        val saved = chapterId
+        chapterId = prior
+        finish()
+        writing.applyFinish(finalize = { w, c -> store.setStatus(w, c, ChapterStatus.FINAL) })
+        waitFor("前一章收完") { writing.finish.value?.stage == FinishStage.DONE }
+        chapterId = saved
+
+        learnAnswer = """{"rules":[{"kind":"ban","text":"$ban","p":1},{"kind":"rule","text":"动作写在对白前面，别补解释","p":1}]}"""
+        val run = finish()
+        val local = run.candidates.single { it.key == "ban:$ban" }
+        // 同一个词 AI 也提了：本机的在前，AI 的被并掉；AI 的规则单列，默认不勾。
+        val fromAi = run.candidates.single { it.source == EditLearning.FROM_AI }
+        assertTrue(fromAi.key.startsWith("ai:"))
+        // 本机那条作者取消了勾；AI 那条没动，直接完成。
+        writing.toggleFinishLearn(local.key, false)
+        writing.applyFinish(finalize = { w, c -> store.setStatus(w, c, ChapterStatus.FINAL) })
+        waitFor("收完") { writing.finish.value?.stage == FinishStage.DONE }
+        val dismissed = store.learning(workId).dismissed
+        assertTrue(local.key in dismissed)
+        assertFalse(fromAi.key in dismissed)
+        assertTrue(store.assist(workId).learned.isEmpty())
     }
 
     @Test

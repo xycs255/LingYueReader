@@ -818,10 +818,16 @@ fun Work.volumeNumber(chapterId: String): Int {
 }
 
 /** 这一章按设定算是第几章：细纲卡里写了细纲章号就按它，否则按章名、目录顺序。 */
-fun WorkStore.chapterNo(work: Work, chapterId: String): Int? {
-    val plan = card(work.id, chapterId).plan.trim()
-    if (plan.isNotEmpty()) (CheckRules.cn(plan) ?: ChapterRefs.number(plan) ?: ChapterRefs.number("第${plan}章"))?.let { return it }
-    return work.chapterNumber(chapterId)
+fun WorkStore.chapterNo(work: Work, chapterId: String): Int? = work.chapterNo(chapterId, card(work.id, chapterId))
+
+/** 同 [WorkStore.chapterNo]，细纲卡已经读好了（规划树一次算全书时不用每章再读一遍）。 */
+fun Work.chapterNo(chapterId: String, card: ChapterCard): Int? = card.planNumber() ?: chapterNumber(chapterId)
+
+/** 细纲卡上的细纲章号是第几章；没写、读不出数字（“楔子”“番外一”这类）为空，这时章号按章名、目录顺序算。 */
+fun ChapterCard.planNumber(): Int? {
+    val plan = plan.trim()
+    if (plan.isEmpty()) return null
+    return CheckRules.cn(plan) ?: ChapterRefs.number(plan) ?: ChapterRefs.number("第${plan}章")
 }
 
 /**

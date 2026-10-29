@@ -175,6 +175,10 @@ class WritingLearnUiTest {
         waitFor { seen(ruleTitle) }
         compose.onNode(hasText(ruleTitle) and isToggleable()).assertIsOff()
         assertTrue(asked.any { "请归纳作者反复的改法" in it })
+        // AI 归纳的没勾不等于不要：点了“不要”才以后不再提。
+        press("不要")
+        waitFor { seen("已不要，以后不再提") }
+        compose.onNode(hasText(ruleTitle) and isToggleable()).assertIsOff()
 
         press("完成收尾")
         waitFor { vm.writingAi.finish.value?.stage == FinishStage.DONE }
@@ -223,6 +227,9 @@ class WritingLearnUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, chapterId)) }
         waitFor { seen("林月抬头看他，没说话。") }
         waitFor { compose.onAllNodesWithText("这段不行").fetchSemanticsNodes().size == 3 }
+        // 读屏分得清是哪一段：第几段、段首几个字。
+        assertEquals(1, compose.onAllNodesWithContentDescription("这段不行：第 2 段「林月抬头看他，没…」").fetchSemanticsNodes().size)
+        assertEquals(1, compose.onAllNodesWithContentDescription("这段不行：第 1 段", substring = true).fetchSemanticsNodes().size)
         compose.onAllNodesWithText("这段不行")[1].performScrollTo().performClick()
         waitFor { has("哪里不行") }
         compose.onNode(hasText("没情绪") and isToggleable()).performClick()
@@ -234,9 +241,11 @@ class WritingLearnUiTest {
         val request = asked.single { "要重写的这一段" in it }
         assertTrue("顾长风推门进来" in request && "杜娘把茶碗放下" in request)
         assertTrue(FixReason.FLAT.fix in request && "作者的意见：她该生气" in request)
-        assertEquals(1, store.learning(workId).reasons[FixReason.FLAT.name])
+        // 采纳了才计数。
+        assertEquals(null, store.learning(workId).reasons[FixReason.FLAT.name])
         press("采纳这段")
         waitFor { store.draft(workId, chapterId).split('\n') == listOf("顾长风推门进来，带进一身雨气。", rewritten, "杜娘把茶碗放下，转身去关窗。") }
+        waitFor { store.learning(workId).reasons[FixReason.FLAT.name] == 1 }
         waitFor { !has("新段") }
         // 换下来的那版还能换回去。
         assertTrue(seen("换回修订前那一版"))

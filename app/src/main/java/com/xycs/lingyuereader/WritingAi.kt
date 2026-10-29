@@ -545,6 +545,23 @@ class WritingAi(
         _state.value = null
     }
 
+    private val learnDisk = Dispatchers.IO.limitedParallelism(1)
+
+    /**
+     * 编辑器里采纳了 AI 改的字（AI 面板的改稿、接着写、插到光标处，写作建议、去 AI 腔的“改”）：[before] 换成了 [after]。
+     * 学习数据里记成 AI 原稿（[EditLearning.aiEdited]），收尾比对时不把 AI 的改法当成作者的。记不上不影响正文。
+     */
+    fun recordAiEdit(workId: String, chapterId: String, before: String, after: String) {
+        if (after.isBlank() && before.isBlank()) return
+        val at = System.currentTimeMillis()
+        // 排成一队按采纳的先后记：连着采纳两处时，后一处要在前一处换好的原稿上换。
+        scope.launch(learnDisk) {
+            runCatching {
+                if (store.get(workId)?.chapter(chapterId) != null) store.updateLearning(workId) { EditLearning.aiEdited(it, chapterId, before, after, at) }
+            }
+        }
+    }
+
     /** 采纳了改稿：记下这次改法，以后润色时照这个分寸。 */
     fun accepted(workId: String, action: WriteAction, before: String, after: String) {
         job?.cancel()
@@ -3158,7 +3175,7 @@ class WritingAi(
      * 草稿页“这段不行”：AI 只重写第 [index] 行那一段，按作者选的原因 [reasons]（“其他”时是 [note]）换成具体的改法要求，
      * 前后各带一段作语境。走写正文的路径（写正文的系统提示、写法要求、温度和思考开关）。草稿正在写、正在审读时不做。
      * 照范本写的稿子：请求前确认范本没变，写回来把换好的整稿再核一遍有没有照抄范本（照逐拍写），没过就照实报错。
-     * 点了就给各原因记一次数（按作品存），同一个原因点够几次，收尾学习时提成写法规则。
+     * 各原因的次数等作者采纳了重写才记（见 [acceptParagraphFix]）：没写出来、停下、放弃的不算。
      */
     fun fixParagraph(workId: String, chapterId: String, index: Int, reasons: Set<FixReason>, note: String = "") {
         if (!ready) {
@@ -3181,8 +3198,6 @@ class WritingAi(
         fun update(transform: (ParagraphFix) -> ParagraphFix) = _paragraphFix.update { f -> if (f === fix) transform(f) else f }
         paragraphJob = scope.launch {
             try {
-                // 记不上不挡重写。
-                withContext(Dispatchers.IO) { runCatching { store.updateLearning(workId) { EditLearning.countReasons(it, reasons, target) } } }
                 val work = withContext(Dispatchers.IO) { store.get(workId) } ?: throw IllegalStateException("作品不在了")
                 val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
                 if (chapter.locked) throw IllegalStateException("这一章已定稿：要改先解锁并登记原因")
@@ -3251,8 +3266,23 @@ class WritingAi(
                 updateDraft(key, run) { it.copy(text = text, loading = false, error = null, assessment = null, stage = DraftStage.IDLE,
                     referenceValidated = reference != null, initialText = before.text, alternateText = null, revisionWarning = null,
                     referenceIssue = null, notice = "按“${fix.reasons.sortedBy { r -> r.ordinal }.joinToString("、") { r -> r.label }}”换了一段，可以换回原来那一版") }
-                persistDraft(key, run, text, before.workflow)
-                withContext(Dispatchers.IO) { runCatching { store.updateLearning(fix.workId) { EditLearning.reasonExample(it, fix.reasons, fix.original, fix.text) } } }
+                try {
+                    persistDraft(key, run, text, before.workflow)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 草稿可能已经写进去了、后面的一步才没成：按磁盘上实际的内容刷新，不退回旧稿（和改草稿、换版本一样）。
+                    reconcileDraftAfterSaveFailure(key, run, before, "换下的这段没存好", e)
+                    return@launch
+                }
+                // 存好了才算作者采纳了这次重写：原因计一次、记下例子。记不上不影响草稿。
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        store.updateLearning(fix.workId) {
+                            EditLearning.reasonExample(EditLearning.countReasons(it, fix.reasons, fix.original), fix.reasons, fix.original, fix.text)
+                        }
+                    }
+                }
             } catch (e: CancellationException) {
                 if (draftRuns[key] == run) updateDraft(key, run) { before.copy(loading = false) }
                 throw e
@@ -3790,7 +3820,7 @@ class WritingAi(
             val list = EditLearning.candidates(updated, assist, ai)
             updateFinish(workId, chapterId) {
                 it.copy(learn = StepState.DONE, candidates = list, learnError = notes.joinToString("；").ifEmpty { null },
-                    learnPicked = list.filter { c -> c.source != EditLearning.FROM_AI }.map { c -> c.key }.toSet())
+                    learnPicked = list.filter { c -> c.source != EditLearning.FROM_AI }.map { c -> c.key }.toSet(), learnDeclined = emptySet())
             }
         } catch (e: CancellationException) {
             throw e
@@ -3808,17 +3838,27 @@ class WritingAi(
         return EditLearning.parseAi(answer, pairs)
     }
 
-    /** 确认页上勾、不勾一条学到的；写进去以后不能再改。 */
+    /** 确认页上勾、不勾一条学到的；写进去以后不能再改。取消勾选算作者明确不要（[FinishRun.learnDeclined]）。 */
     fun toggleFinishLearn(key: String, on: Boolean) = _finish.update { r ->
         if (r != null && r.stage == FinishStage.CONFIRM && FinishWrite.LEARN !in r.wrote)
-            r.copy(learnPicked = if (on) r.learnPicked + key else r.learnPicked - key) else r
+            r.copy(learnPicked = if (on) r.learnPicked + key else r.learnPicked - key,
+                learnDeclined = if (on) r.learnDeclined - key else r.learnDeclined + key) else r
     }
 
-    /** 把勾了的记进黑名单、学到的规则，没勾的记进“不再提”。返回一句说明（什么都没提时为空）。 */
+    /** 确认页上 AI 归纳的一条点“不要”（再点一次收回）：点过的完成收尾时记进“不再提”，没点的下次还能再提。 */
+    fun declineFinishLearn(key: String, declined: Boolean) = _finish.update { r ->
+        if (r != null && r.stage == FinishStage.CONFIRM && FinishWrite.LEARN !in r.wrote)
+            r.copy(learnPicked = r.learnPicked - key, learnDeclined = if (declined) r.learnDeclined + key else r.learnDeclined - key) else r
+    }
+
+    /**
+     * 把勾了的记进黑名单、学到的规则；作者明确不要的记进“不再提”：本机比对、“这段不行”来的默认勾上，没勾就是作者取消了；
+     * AI 归纳的默认不勾，作者没看就完成收尾的不记，取消过勾选或点了“不要”的才记。返回一句说明（什么都没提时为空）。
+     */
     private suspend fun commitLearn(workId: String, run: FinishRun): String? {
         if (run.candidates.isEmpty()) return null
         val picked = run.candidates.filter { it.key in run.learnPicked }
-        val rest = run.candidates.filter { it.key !in run.learnPicked }.map { it.key }
+        val rest = run.candidates.filter { it.key !in run.learnPicked && (it.source != EditLearning.FROM_AI || it.key in run.learnDeclined) }.map { it.key }
         val saved = withContext(Dispatchers.IO) {
             val a = if (picked.isEmpty()) store.assist(workId) else store.updateAssist(workId) { assist ->
                 picked.fold(assist) { acc, c -> if (c.kind == LearnKind.BAN) acc.ban(c.text) else acc.learn(c.text) }
@@ -3827,7 +3867,7 @@ class WritingAi(
             a
         }
         _assists.update { it + (workId to saved) }
-        return if (picked.isEmpty()) "学到的这次都没要，以后不再提" else "从改稿里学到 ${picked.size} 条"
+        return if (picked.isNotEmpty()) "从改稿里学到 ${picked.size} 条" else if (rest.isNotEmpty()) "学到的这次都没要，以后不再提" else "学到的这次都没要"
     }
 
     /** 收尾里一步没成的原因：平常的出错照原话；程序的毛病、内存不够这类记进闪退记录，只说出了意外。 */

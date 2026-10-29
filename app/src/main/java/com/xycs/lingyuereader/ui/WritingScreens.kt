@@ -100,6 +100,8 @@ import com.xycs.lingyuereader.ai.InlineMode
 import com.xycs.lingyuereader.ai.WriteAction
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.ChapterMove
+import com.xycs.lingyuereader.data.ChapterRefs
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.beats
@@ -181,6 +183,8 @@ import com.xycs.lingyuereader.WriteAiState
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.data.RuleHit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -203,6 +207,40 @@ internal fun whenLabel(at: Long, now: Long = System.currentTimeMillis()): String
         then.year == today.year -> "${then.monthValue}月${then.dayOfMonth}日"
         else -> "${then.year}年${then.monthValue}月${then.dayOfMonth}日"
     }
+}
+
+/**
+ * 带“撤销”的提示，同一时间只留最新的一条：新的出来前先关掉旧的（连拖两次时，点到的“撤销”总是撤最近这一次；
+ * 旧提示排在前面时点它撤的是上一次，目录已经变了会被拒绝）。旧的关掉就算没点撤销。
+ */
+internal class UndoTips(private val host: SnackbarHostState) {
+    private var job: Job? = null
+    private var shown: String? = null
+
+    fun show(scope: CoroutineScope, message: String, onUndo: () -> Unit) {
+        val old = job
+        val oldMessage = shown
+        shown = message
+        job = scope.launch {
+            if (old != null && old.isActive) {
+                // 旧的已经显示出来了：关掉；还在排队：停下它，不再显示。
+                listOf(host.newestSnackbarData(), host.oldestSnackbarData()).firstOrNull { it?.visuals?.message == oldMessage }?.dismiss()
+                old.cancelAndJoin()
+            }
+            if (host.showSnackbar(message, actionLabel = "撤销") == SnackbarResult.ActionPerformed) onUndo()
+        }
+    }
+}
+
+/**
+ * 移动后的提示：说移到了目录第几个。固定了细纲章号时章号不跟着目录变（账本、设定包仍按原来的章号），
+ * 说“目录第 N 个”，并说这一章按设定仍是第几章，免得作者以为章号变了。
+ */
+internal fun moveTip(move: ChapterMove): String {
+    if (move.pinned.isEmpty()) return "已把《${move.title}》移到第 ${move.position} 章"
+    val kept = move.pinned[move.chapterId]?.let { ChapterRefs.number(it) ?: it.toIntOrNull() }
+    val self = if (kept != null) "，章号仍按第 $kept 章" else ""
+    return "已把《${move.title}》移到目录第 ${move.position} 个$self（${move.pinned.size} 章固定了细纲章号）"
 }
 
 /** 页面上方显示 [AppViewModel.messages] 的提示条。 */
@@ -466,6 +504,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     if (work == null) return
     drag.resolve = { ch, y -> treeDropAt(work, ch.id, collapsedVolumeIds, drag.slots(), y) }
 
+    val moveTips = remember(snackbar) { UndoTips(snackbar) }
     val treeActions = WritingTreeActions(
         onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
         onToggleVolume = { id ->
@@ -490,12 +529,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
         onDropChapter = { ch, volumeId, index ->
             vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
-                scope.launch {
-                    // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。
-                    val pinned = if (move.pinned.isEmpty()) "" else "（${move.pinned.size} 章固定了细纲章号）"
-                    val result = snackbar.showSnackbar("已把《${move.title}》移到第 ${move.position} 章$pinned", actionLabel = "撤销")
-                    if (result == SnackbarResult.ActionPerformed) vm.writing.undoChapterMove(workId, move) { vm.showMessage("已撤销移动") }
-                }
+                // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。只留最新一次的提示。
+                moveTips.show(scope, moveTip(move)) { vm.writing.undoChapterMove(workId, move) { vm.showMessage("已撤销移动") } }
             }
         },
     )
@@ -1176,10 +1211,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             !ChapterSyncs.isSynced(assist?.synced?.get(chapterId), text)
     }
 
-    /** 采纳一条建议：换掉正文里那几个字；去 AI 腔的还记进采纳过的修改，以后当例子学。 */
+    /**
+     * 采纳一条建议：换掉正文里那几个字；去 AI 腔的还记进采纳过的修改，以后当例子学。
+     * 这是 AI 提的改法：学习数据里那段原稿跟着换（收尾比对时不算作者改的）。
+     */
     fun fixIssue(st: TextFieldState, issue: WriteIssue) {
         if (!applyIssue(st, issue)) vm.showMessage("那段已经改动了")
-        else if (issue.kind == SuggestKind.CLICHE.name) vm.writingAi.acceptCliche(workId, issue)
+        else {
+            vm.writingAi.recordAiEdit(workId, chapterId, issue.paragraph, issue.paragraph.replaceFirst(issue.wrong, issue.right))
+            if (issue.kind == SuggestKind.CLICHE.name) vm.writingAi.acceptCliche(workId, issue)
+        }
         vm.writingAi.dismissIssue(issue)
     }
 
@@ -1773,6 +1814,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 val before = st.text.toString()
                                 when (applyEdit(st, task, result)) {
                                     EditApply.DONE -> {
+                                        // AI 改的、接着写的字记成 AI 原稿：收尾学习时不当成作者自己的改法。
+                                        vm.writingAi.recordAiEdit(workId, chapterId, if (task.action == WriteAction.CONTINUE) "" else task.original, result)
                                         vm.writingAi.accepted(workId, task.action, task.original, result)
                                         val after = st.text.toString()
                                         task.reviewFix?.takeIf { before != after }?.let { fix ->
@@ -1798,7 +1841,9 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 if (locked) {
                                     vm.showMessage("这一章已定稿：要改先解锁并登记原因")
                                 } else {
+                                    val replaced = st.selection.let { sel -> st.text.substring(sel.min, sel.max) }
                                     st.edit { replace(selection.min, selection.max, result) }
+                                    vm.writingAi.recordAiEdit(workId, chapterId, replaced, result)
                                     vm.writingAi.close()
                                 }
                             },

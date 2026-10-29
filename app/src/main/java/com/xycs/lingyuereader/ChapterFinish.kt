@@ -51,6 +51,8 @@ data class FinishRun(
     /** 提给作者的候选和勾了的（[LearnCandidate.key]）。 */
     val candidates: List<LearnCandidate> = emptyList(),
     val learnPicked: Set<String> = emptySet(),
+    /** 作者明确不要的（取消过勾选、点了“不要”）：完成收尾时只有这些和没勾的本机候选记进“不再提”。 */
+    val learnDeclined: Set<String> = emptySet(),
 ) {
     /**
      * 这一章的收尾手上有东西：在跑、在写入、审出问题等着选、没成等着重试、等着确认。这时换一章收尾会把它丢掉

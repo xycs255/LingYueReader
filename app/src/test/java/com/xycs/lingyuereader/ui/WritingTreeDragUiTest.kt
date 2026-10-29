@@ -220,7 +220,8 @@ class WritingTreeDragUiTest {
         // 拖着时：原位变淡，一张浮起的卡片跟手，落点处有指示线。
         waitForText("松手移到这里")
         chapterRow("雪夜").performTouchInput { up() }
-        waitForText("已把《雪夜》移到第 3 章")
+        // 章号固定了：提示说目录位置，并说这一章按设定仍是第 1 章。
+        waitForText("已把《雪夜》移到目录第 3 个，章号仍按第 1 章")
         waitFor { titles() == listOf("渡口", "夜渡", "雪夜", "客栈", "旧账") }
         // 账本里按章号记的伏笔（第 1 章埋、第 3 章收）仍指向原来那两章：章号固定进了细纲卡。
         val store = WorkStore(writingDir)

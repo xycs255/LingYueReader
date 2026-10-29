@@ -37,6 +37,7 @@ import com.xycs.lingyuereader.MainActivity
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.ReferenceAnalysis
+import com.xycs.lingyuereader.data.EditLearning
 import com.xycs.lingyuereader.data.WorkStore
 import com.xycs.lingyuereader.data.importReference
 import com.xycs.lingyuereader.data.saveReferenceAnalysis
@@ -172,6 +173,25 @@ class WritingAiUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun acceptingAPolishReplacesTheAiOriginalSoItIsNotLearnedAsTheAuthors() {
+        // 这章是 AI 写的（记了原稿）；作者在编辑器里让 AI 润色一段并采纳。
+        WorkStore(writingDir).recordAiText(workId, chapterId, draft)
+        openEditor()
+        compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(8))
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("润色").performClick()
+        waitForText("风刮得很大猛。")
+        compose.onNodeWithText("采纳").performClick()
+        val store = WorkStore(writingDir)
+        val after = "他推门进来。\n风刮得很猛。\n他再门口等着，天色以晚。"
+        waitFor { store.text(workId, chapterId) == after }
+        // 原稿跟着换成 AI 改后的：收尾比对时这段算原样留着，不算作者改的。
+        waitFor { store.learning(workId).originals[chapterId]?.map { it.text } == listOf(after) }
+        val edits = EditLearning.compare(store.learning(workId).originals.getValue(chapterId), store.text(workId, chapterId))!!
+        assertTrue(edits.pairs.isEmpty() && edits.deleted.isEmpty())
     }
 
     @Test

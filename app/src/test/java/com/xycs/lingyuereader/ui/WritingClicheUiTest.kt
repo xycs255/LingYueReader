@@ -173,6 +173,22 @@ class WritingClicheUiTest {
     }
 
     @Test
+    fun aFixAcceptedFromTheSuggestionsReplacesTheAiOriginal() {
+        // 这章是 AI 写的（记了原稿）；去 AI 腔的改法是 AI 提的，采纳以后原稿跟着换，收尾时不算作者改的。
+        WorkStore(writingDir).recordAiText(workId, chapterId, text)
+        openEditor()
+        waitForText("2 处问题")
+        compose.onNodeWithContentDescription("AI 写作").performClick()
+        compose.onNodeWithText("去 AI 腔").performScrollTo().performClick()
+        waitForText("林月笑了一下，")
+        compose.onAllNodesWithText("改").onFirst().performClick()
+        val store = WorkStore(writingDir)
+        waitFor { store.text(workId, chapterId).startsWith("林月笑了一下，看着窗外的雨。") }
+        waitFor { store.learning(workId).originals[chapterId]?.singleOrNull()?.text?.startsWith("林月笑了一下，看着窗外的雨。\n") == true }
+        assertFalse("嘴角勾起" in store.learning(workId).originals.getValue(chapterId).single().text)
+    }
+
+    @Test
     fun inlineWriteWarnsAboutClichesButStillAccepts() {
         openEditor()
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(text.length))

@@ -62,6 +62,7 @@ import com.xycs.lingyuereader.data.unsynced
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -187,11 +188,18 @@ class WritingModel(
     fun undoChapterMove(workId: String, move: ChapterMove, then: () -> Unit = {}) =
         change("没有撤销", { store.undoChapterMove(workId, move) }) { then() }
 
-    /** 规划树上每章的小标记（细纲卡、节拍、AI 拟的、账本里的伏笔），按章 id。 */
+    /**
+     * 规划树上每章的小标记（细纲卡、节拍、AI 拟的、账本里的伏笔），按章 id。每章的细纲卡只读一次（章号也从这张卡算）；
+     * 作品又变了、上一轮还没算完时，上一轮在章与章之间停下，不在写盘队列里白占着。
+     */
     suspend fun treeMarks(workId: String): Map<String, ChapterTreeMarks> = withContext(disk) {
         val work = store.get(workId) ?: return@withContext emptyMap()
         val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
-        work.chapters.associate { c -> c.id to ChapterTreeMarks.of(store.card(workId, c.id), store.chapterNo(work, c.id), ledger) }
+        work.chapters.associate { c ->
+            ensureActive()
+            val card = store.card(workId, c.id)
+            c.id to ChapterTreeMarks.of(card, work.chapterNo(c.id, card), ledger)
+        }
     }
 
     // ---------- 正文 ----------

@@ -210,6 +210,128 @@ class EditLearningTest {
         assertFalse(file.exists())
     }
 
+    /** 一章：[kept] 段 AI 写的原样留着；另一块 AI 写的 [undone] 段采纳后撤销了，作者自己另写了几段。 */
+    private fun undoneChapter(undone: Int = 4): Pair<List<AiOriginal>, String> {
+        val kept = List(6) { i -> "老周在船头收第${i + 1}道缆绳，杜娘隔着雾喊他回来吃饭。" }
+        val gone = List(undone) { i -> "林月站在渡口看了很久的江水，心里想着第${i + 1}件旧事，久久没有回神。" }
+        val mine = List(4) { i -> "沈默把第${i + 1}只木箱搬上船，回头冲顾长风摆手。" }
+        return listOf(AiOriginal(1, kept.joinToString("\n")), AiOriginal(2, gone.joinToString("\n"))) to (kept + mine).joinToString("\n")
+    }
+
+    @Test
+    fun anUndoneAiBlockIsNotLearnedAsDroppingParagraphs() {
+        // 两章都是“采纳了一块、撤销了，自己另写”：不能学成“作者习惯整段删”。
+        var data = LearnData()
+        for (c in listOf("c1", "c2")) {
+            val (originals, final) = undoneChapter()
+            val edits = EditLearning.compare(originals, final)!!
+            assertTrue(edits.deleted.isEmpty())
+            assertEquals(6, edits.ai.size)
+            data = EditLearning.tally(data, c, EditLearning.observe(edits, final), 10)
+        }
+        assertTrue(data.tallies.none { it.key == "rule:drop-paragraph" })
+        assertTrue(EditLearning.candidates(data, WorkAssist()).none { it.key == "rule:drop-paragraph" })
+
+        // 同一处先后采纳过两版：旧的撤销了、新的留着。旧的那块整块不算，新的照常比对。
+        val old = List(4) { i -> "林月推开第${i + 1}扇窗，冷风灌进来，吹得灯笼直晃。" }
+        val new = List(4) { i -> "林月推开第${i + 1}扇窗。风灌进来，灯笼晃了晃。" }
+        val variant = EditLearning.compare(listOf(AiOriginal(1, old.joinToString("\n")), AiOriginal(2, new.joinToString("\n"))), new.joinToString("\n"))!!
+        assertEquals(new, variant.ai)
+        assertEquals(new, variant.kept)
+        assertTrue(variant.deleted.isEmpty() && variant.pairs.isEmpty())
+
+        // 只有撤销了的：没东西可比，不算对不齐，也不学。
+        val none = EditLearning.compare(listOf(AiOriginal(2, old.joinToString("\n"))), "沈默把木箱搬上船，回头冲顾长风摆手。")!!
+        assertTrue(none.ai.isEmpty() && none.deleted.isEmpty())
+        assertTrue(EditLearning.observe(none, "沈默把木箱搬上船。").isEmpty())
+
+        // 采纳后留了一部分、删了几段的照常算整段删掉。
+        val kept = List(6) { i -> "老周在船头收第${i + 1}道缆绳，杜娘隔着雾喊他回来吃饭。" }
+        val cut = List(4) { i -> "林月站在渡口看了很久的江水，心里想着第${i + 1}件旧事，久久没有回神。" }
+        val partial = EditLearning.compare(listOf(AiOriginal(1, (kept + cut).joinToString("\n"))), kept.joinToString("\n"))!!
+        assertEquals(cut, partial.deleted)
+        assertTrue(EditLearning.observe(partial, kept.joinToString("\n")).single { it.key == "rule:drop-paragraph" }.holds)
+    }
+
+    @Test
+    fun aiEditsAcceptedInTheEditorAreNotLearnedAsTheAuthors() {
+        // AI 写了一章；作者在编辑器里让 AI 缩写了三段并采纳（原稿跟着换），别的没动。
+        val long = List(3) { i -> "林月${ban}，把第${i + 1}只茶碗推到沈默面前，絮絮叨叨地说今晚渡口不太平，让他早些回去歇着。" }
+        val rest = List(3) { i -> "老周在船头收第${i + 1}道缆绳，杜娘隔着雾喊他回来吃饭。" }
+        val short = List(3) { i -> "林月推过第${i + 1}只茶碗。" }
+        var data = LearnData()
+        for (c in listOf("c1", "c2")) {
+            data = EditLearning.record(data, c, (long + rest).joinToString("\n"), 1)
+            long.indices.forEach { i -> data = EditLearning.aiEdited(data, c, long[i], short[i], 2L + i) }
+            assertEquals(listOf((short + rest).joinToString("\n")), data.originals.getValue(c).map { it.text })
+            val final = (short + rest).joinToString("\n")
+            val edits = EditLearning.compare(data.originals.getValue(c), final)!!
+            assertTrue(edits.pairs.isEmpty() && edits.deleted.isEmpty())
+            data = EditLearning.tally(data, c, EditLearning.observe(edits, final), 10)
+        }
+        // 没有“段落写紧”，也没有黑名单词：那是 AI 的改法。
+        assertTrue(EditLearning.candidates(data, WorkAssist()).isEmpty())
+
+        // 接着写（原文是空的）：记成一块新的原稿。
+        val more = EditLearning.aiEdited(data, "c1", "", "杜娘把门闩插上。", 9)
+        assertEquals("杜娘把门闩插上。", more.originals.getValue("c1").last().text)
+        // 原文跨了两块：原稿里那几段去掉，改后的另记一块。
+        val two = EditLearning.record(EditLearning.record(LearnData(), "c3", "顾长风推门进来。", 1), "c3", "林月抬头看他。", 2)
+        val merged = EditLearning.aiEdited(two, "c3", "顾长风推门进来。\n林月抬头看他。", "顾长风进门，林月抬头。", 3)
+        assertEquals(listOf("顾长风进门，林月抬头。"), merged.originals.getValue("c3").map { it.text })
+        // 改没了（AI 删掉了整段）：那块原稿也没了。
+        val emptied = EditLearning.aiEdited(EditLearning.record(LearnData(), "c4", "沈默走了。", 1), "c4", "沈默走了。", "", 2)
+        assertNull(emptied.originals["c4"])
+    }
+
+    @Test
+    fun dismissingAnAiBanDoesNotSilenceTheSameLocalBan() {
+        val pairs = listOf("林月${ban}，把茶碗推过去。" to "林月把茶碗推过去。")
+        val fromAi = EditLearning.parseAi("""{"rules":[{"kind":"ban","text":"$ban","p":1}]}""", pairs).single()
+        assertEquals(EditLearning.AI_BAN + ban, fromAi.key)
+        // 作者不要 AI 提的这个词；以后本机比对跨章站得住了，照样提。
+        val (a1, f1) = chapter(cuts = 2)
+        val (a2, f2) = chapter(cuts = 2)
+        val data = EditLearning.dismiss(learn(learn(LearnData(), "c1", a1, f1), "c2", a2, f2), listOf(fromAi.key))
+        assertEquals("ban:$ban", EditLearning.candidates(data, WorkAssist()).single { it.kind == LearnKind.BAN }.key)
+    }
+
+    @Test
+    fun restoringAnOldBackupForgetsOriginalsOfChaptersWhoseTextItReplaced() {
+        val dir = tmp.newFolder("restore")
+        val s = WorkStore(dir)
+        val w = s.create("渡口")
+        val c1 = w.chapters.single().id
+        val c2 = s.addChapter(w.id, w.volumes.single().id)!!.second.id
+        s.saveText(w.id, c1, "林月推开门。", count = false)
+        s.saveText(w.id, c2, "沈默站在雨里。", count = false)
+        // PR 之前的旧备份：没有 learn 这一项。
+        val old = JSONObject(String(s.backup()!!)).apply {
+            getJSONArray("works").getJSONObject(0).apply { remove("learn"); put("updatedAt", getLong("updatedAt") + 60_000) }
+        }
+        // 备份之后：第一章采纳了一段 AI 写的，第二章没动；累积过次数、点过“这段不行”、拒绝过一条。
+        val ai = "顾长风推门进来，带进一身雨气，林月抬头看他。"
+        s.recordAiText(w.id, c1, ai)
+        s.saveText(w.id, c1, "林月推开门。\n$ai", count = false)
+        s.recordAiText(w.id, c2, "沈默站在雨里。")
+        s.updateLearning(w.id) {
+            val t = LearnTally("rule:split-long", LearnKind.RULE, "长句拆短。", mapOf(c1 to 2, c2 to 3), "", "", 1)
+            EditLearning.dismiss(EditLearning.countReasons(it.copy(tallies = listOf(t)), listOf(FixReason.THIN)), listOf("ban:仿佛"))
+        }
+
+        assertEquals(1, s.restoreBackup(old.toString()))
+        assertEquals("林月推开门。", s.text(w.id, c1))
+        val d = s.learning(w.id)
+        // 正文换回旧版的那章：原稿、累积数都清掉，收尾时不会把那段 AI 字算成作者删的。
+        assertNull(d.originals[c1])
+        assertEquals(mapOf(c2 to 3), d.tallies.single().chapters)
+        // 正文没变的章、“不再提”、“这段不行”的次数照留。
+        assertEquals(listOf("沈默站在雨里。"), d.originals.getValue(c2).map { it.text })
+        assertEquals(listOf("ban:仿佛"), d.dismissed)
+        assertEquals(1, d.reasons[FixReason.THIN.name])
+        assertEquals(EditLearning.compare(d.originals[c1].orEmpty(), s.text(w.id, c1)), null)
+    }
+
     @Test
     fun oldOrPartialDataStillReads() {
         val dir = tmp.newFolder("old")

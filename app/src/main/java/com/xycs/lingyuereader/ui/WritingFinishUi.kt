@@ -344,7 +344,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.LEARN in run.wrote
         GroupedSection(
             header = "从改稿里学到的",
-            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提。都能在作品 AI 设置里看、删。",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提，" +
+                "AI 归纳的点了“不要”才不再提。都能在作品 AI 设置里看、删。",
         ) {
             run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
             if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }
@@ -368,6 +369,17 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                             color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
                             modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
                         )
+                        // AI 归纳的默认不勾：没勾不等于不要，作者点了“不要”才记进“不再提”。
+                        if (cand.source == EditLearning.FROM_AI && cand.key !in run.learnPicked) {
+                            val declined = cand.key in run.learnDeclined
+                            PillButton(
+                                if (declined) "已不要，以后不再提" else "不要",
+                                onClick = { vm.writingAi.declineFinishLearn(cand.key, !declined) },
+                                modifier = Modifier.padding(start = 40.dp, bottom = 4.dp),
+                                style = if (declined) PillStyle.Tinted else PillStyle.Plain,
+                                enabled = !busy && !written,
+                            )
+                        }
                     }
                 }
             }

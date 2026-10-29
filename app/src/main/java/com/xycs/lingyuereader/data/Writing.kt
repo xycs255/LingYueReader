@@ -338,7 +338,11 @@ class WorkStore(
     /** 设定包解析的结果，只记当前作品的一份。 */
     internal val packCache = PackSourceCache()
 
-    /** Keep a read/validate/write sequence atomic with other stores rooted at the same directory. */
+    /**
+     * Keep a read/validate/write sequence atomic with other stores rooted at the same directory.
+     * 加锁顺序全店统一：先本对象（[Synchronized]），再 [processLock]。这里自己先拿本对象，所以从外面直接调它的（比如整理写入
+     * [applySync]）和先进 @Synchronized 方法再调它的（移动、撤销移动），顺序都一样，不会互相等着对方的锁。
+     */
     @Synchronized
     internal fun <T> withProcessLock(block: () -> T): T = synchronized(processLock) { block() }
 
@@ -1103,36 +1107,58 @@ class WorkStore(
         val chapter = work.chapter(chapterId) ?: return@withProcessLock null
         val next = work.withChapterAt(chapterId, volumeId, index) ?: return@withProcessLock null
         if (next.order() == work.order()) return@withProcessLock null
-        val pins = if (numberedRecords(workId)) numberPins(work, next) else emptyMap()
-        pins.forEach { (id, plan) ->
-            val old = card(workId, id)
-            val pinned = old.copy(plan = plan, updatedAt = maxOf(clock(), old.updatedAt + 1))
-            check(DurableFiles.write(cardFile(workId, id), pinned.toJson().toString().toByteArray())) { "无法保存细纲卡" }
-        }
+        // 只读目录位置会变的那几章的卡（持着锁，不多读）。
+        val newIndex = next.chapters.withIndex().associate { it.value.id to it.index }
+        val cards = if (numberedRecords(workId)) work.chapters.withIndex().filter { newIndex[it.value.id] != it.index }
+            .associate { it.value.id to card(workId, it.value.id) } else emptyMap()
+        val pins = if (cards.isEmpty()) emptyMap() else numberPins(work, next, cards)
+        pins.forEach { (id, plan) -> writeCardPlan(workId, id, plan) }
         val saved = requireNotNull(update(workId) { w -> w.withChapterAt(chapterId, volumeId, index) ?: w }) { "作品不在了" }
-        ChapterMove(chapterId, chapter.title, work.order(), saved.order(), pins, saved.chapters.indexOfFirst { it.id == chapterId } + 1)
+        val replaced = pins.keys.mapNotNull { id -> cards[id]?.plan?.takeIf { it.isNotBlank() }?.let { id to it } }.toMap()
+        ChapterMove(chapterId, chapter.title, work.order(), saved.order(), pins, saved.chapters.indexOfFirst { it.id == chapterId } + 1, replaced)
     }
+
+    /** 只改一张细纲卡的细纲章号（整张写临时文件再改名），写不成抛出。 */
+    private fun writeCardPlan(workId: String, chapterId: String, plan: String) {
+        val old = card(workId, chapterId)
+        val next = old.copy(plan = plan, updatedAt = maxOf(clock(), old.updatedAt + 1))
+        check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+    }
+
+    /** 按 [order]（每卷的章 id 顺序）重排目录；章名、字数、状态用现在的。 */
+    private fun reorder(workId: String, order: List<Pair<String, List<String>>>): Work = requireNotNull(update(workId) { w ->
+        val byId = w.chapters.associateBy { it.id }
+        val titles = w.volumes.associate { it.id to it.title }
+        w.copy(volumes = order.map { (vid, ids) -> Volume(vid, titles.getValue(vid), ids.map { byId.getValue(it) }) })
+    }) { "作品不在了" }
 
     /**
      * 撤销一次移动：目录还是移动后的样子（[ChapterMove.after]）才换回原来的顺序，否则抛 [ChapterMoveConflict]，不覆盖后来的修改。
-     * 这次写进去的细纲章号，卡上还是那个值的清掉；作者之后自己改过的留着。章名、字数、状态都用现在的。
+     * 这次写进去的细纲章号，卡上还是那个值的清掉（原来写着“楔子”这类的写回原来的）；作者之后自己改过的留着。章名、字数、状态都用现在的。
+     *
+     * 顺序和 [moveChapterTo] 反过来：先换回目录顺序，再清细纲章号。固定的章号就是这些章在原来顺序里的章号，
+     * 所以换回顺序以后、清到一半时，清了的和没清的章号都对。清的时候有一张写不成：已清的写回去、目录换回移动后的样子，
+     * 再报错（“没有撤销”）；写回也不成时就停在“已换回顺序”，这时卡上留着的章号和顺序仍对得上。哪一步断电都不会让章号错位。
      */
     @Synchronized
     fun undoChapterMove(workId: String, move: ChapterMove): Work = withProcessLock {
         val work = requireNotNull(get(workId)) { "作品不在了" }
         if (work.order() != move.after) throw ChapterMoveConflict()
-        move.pinned.forEach { (id, plan) ->
-            val old = card(workId, id)
-            if (old.plan == plan) {
-                val cleared = old.copy(plan = "", updatedAt = maxOf(clock(), old.updatedAt + 1))
-                check(DurableFiles.write(cardFile(workId, id), cleared.toJson().toString().toByteArray())) { "无法保存细纲卡" }
+        val restored = reorder(workId, move.before)
+        val cleared = ArrayList<Pair<String, String>>()
+        try {
+            move.pinned.forEach { (id, plan) ->
+                if (card(workId, id).plan == plan) {
+                    writeCardPlan(workId, id, move.replaced[id].orEmpty())
+                    cleared += id to plan
+                }
             }
+        } catch (e: Exception) {
+            val back = runCatching { cleared.forEach { (id, plan) -> writeCardPlan(workId, id, plan) } }.isSuccess
+            if (back) runCatching { reorder(workId, move.after) }
+            throw e
         }
-        requireNotNull(update(workId) { w ->
-            val byId = w.chapters.associateBy { it.id }
-            val titles = w.volumes.associate { it.id to it.title }
-            w.copy(volumes = move.before.map { (vid, ids) -> Volume(vid, titles.getValue(vid), ids.map { byId.getValue(it) }) })
-        }) { "作品不在了" }
+        get(workId) ?: restored
     }
 
     /** 作品里有没有按章号引用章的记录：账本里写了章号的条目，或者设定包里有文档（细纲、伏笔表、察觉表常按“第几章”写）。读不出时按有算。 */
@@ -1142,16 +1168,19 @@ class WorkStore(
         }.getOrDefault(true)
 
     /**
-     * 从 [before] 换成 [after] 时章号会变的章（细纲章号空着、章名里没写第几章、目录位置变了），
-     * 返回章 id → 原来的章号，写进细纲卡就能保持不变。
+     * 从 [before] 换成 [after] 时章号会变的章（细纲章号读不出数字、章名里没写第几章、目录位置变了），
+     * 返回章 id → 要写进细纲卡的细纲章号，写进去章号就保持不变。[cards] 是各章的细纲卡。
+     * 细纲章号空着的写原来的章号；写着“楔子”“番外一”这类读不出数字的（章号照样按目录走）写成“第N章（楔子）”，作者写的字还在。
      */
-    private fun numberPins(before: Work, after: Work): Map<String, String> {
+    private fun numberPins(before: Work, after: Work, cards: Map<String, ChapterCard>): Map<String, String> {
         val old = before.chapters.withIndex().associate { it.value.id to it.index }
         val new = after.chapters.withIndex().associate { it.value.id to it.index }
-        return before.chapters.filter { old[it.id] != new[it.id] && card(before.id, it.id).plan.isBlank() }
+        return before.chapters.filter { old[it.id] != new[it.id] && cards[it.id]?.planNumber() == null }
             .mapNotNull { c ->
                 val was = before.chapterNumber(c.id) ?: return@mapNotNull null
-                if (after.chapterNumber(c.id) == was) null else c.id to was.toString()
+                if (after.chapterNumber(c.id) == was) return@mapNotNull null
+                val plan = cards[c.id]?.plan?.trim().orEmpty()
+                c.id to if (plan.isEmpty()) was.toString() else "第${was}章（$plan）"
             }.toMap()
     }
 
@@ -2116,6 +2145,8 @@ class WorkStore(
                 old.id + ".draft.reference.json", old.id + ".draft.revision.json")
                 .forEach { name -> check(!File(destination, name).exists() || File(destination, name).delete()) { "无法暂存章节删除" } }
         }
+        // 正文被备份换掉的章（改稿学习用：本机记的 AI 原稿对的是换掉之前的正文）。
+        val replacedTexts = plan.texts.filter { (id, body) -> File(destination, id + ".txt").let { !it.isFile || it.readText() != body } }.keys
         plan.texts.forEach { (id, body) ->
             check(DurableFiles.write(File(destination, id + ".txt"), body.toByteArray())) { "无法暂存章节正文" }
         }
@@ -2169,10 +2200,14 @@ class WorkStore(
             check(DurableFiles.write(File(destination, ASSIST), it.toJson().toString().toByteArray())) { "无法暂存设定" }
         }
         // 改稿学习：备份里有就用备份的；没有（旧备份）就留本机的，只去掉恢复后不在了的章。本机的读不出就原样留着。
+        // 留本机的时候，正文被备份换成旧版的章，原稿和累积的次数也清掉（“不再提”、“这段不行”的次数照留）：
+        // 备份之后才采纳的 AI 原稿在恢复后的正文里没有，留着下次收尾会被当成作者整段删掉。
         val learnTarget = File(destination, LEARN)
         val chapterIds = incoming.chapters.map { it.id }.toSet()
         val learn = plan.learn ?: learnTarget.takeIf { it.isFile }?.let { f ->
-            runCatching { EditLearning.fromJson(JSONObject(f.readText())).keep(chapterIds) }.getOrNull()
+            runCatching {
+                replacedTexts.fold(EditLearning.fromJson(JSONObject(f.readText())).keep(chapterIds)) { d, id -> EditLearning.forgetChapter(d, id) }
+            }.getOrNull()
         }
         learn?.let { check(DurableFiles.write(learnTarget, EditLearning.toJson(it).toString().toByteArray())) { "无法暂存改稿学习的记录" } }
         // 中断修复的标记只留在换下来的旧目录里：提交后恢复的作品不再带着它；回滚时旧目录连同标记一起换回来。

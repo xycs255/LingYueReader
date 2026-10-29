@@ -15,7 +15,8 @@ package com.xycs.lingyuereader.data
  * 作品里还没有账本、也没有设定包时没有东西按章号引用，不写，章号照目录顺序走。
  *
  * [before]、[after] 是移动前后每卷的章 id 顺序；[pinned] 是这次写进细纲卡的细纲章号（章 id → 写进去的值）；
- * [position] 是移到了全书目录的第几个（从 1 数），提示里说“移到第 N 章”。
+ * [replaced] 是被换掉的原来的细纲章号（作者写的“楔子”这类读不出数字的，章 id → 原来的值），撤销时写回去；
+ * [position] 是移到了全书目录的第几个（从 1 数）。
  */
 data class ChapterMove(
     val chapterId: String,
@@ -24,6 +25,7 @@ data class ChapterMove(
     val after: List<Pair<String, List<String>>>,
     val pinned: Map<String, String> = emptyMap(),
     val position: Int,
+    val replaced: Map<String, String> = emptyMap(),
 )
 
 /** 撤销移动时目录已经又改过了（又移动、加删了章或卷）：不拿旧顺序覆盖后来的修改。 */

@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 /** 规划树拖动调顺序的数据接口：移到某卷某位置、撤销，以及按“第几章”引用的记录在移动后仍指向同一章。 */
 class ChapterMoveTest {
@@ -181,5 +182,69 @@ class ChapterMoveTest {
         assertEquals(listOf("雪夜", "夜渡", "渡口"), moved.volumes[0].chapters.map { it.title })
         assertEquals(3, s.chapterNo(moved, ids[2]))
         assertEquals(2, s.chapterNo(moved, ids[1]))
+    }
+
+    @Test
+    fun aFailedUndoNeverLeavesChapterNumbersOutOfPlace() {
+        val root = tmp.newFolder()
+        val s = WorkStore(root)
+        val (w, ids) = twoVolumes(s)
+        s.addPackDoc(w.id, PackKind.FORESHADOW, "伏笔表", "| 伏笔 | 埋 | 收 |\n| 半块玉佩 | 2 | 4 |")
+        val numbers = ids.map { s.chapterNo(s.get(w.id)!!, it) }
+        // 雪夜（第 1 章）拖到全书末尾：后面四章都固定了章号。
+        val move = s.moveChapterTo(w.id, ids[0], w.volumes[1].id, 2)!!
+        assertEquals(ids, move.pinned.keys.toList())
+        val after = s.get(w.id)!!.order()
+
+        // 撤销时最后一张卡写不进去（临时文件的位置被占了）：撤销没成，但每章的章号都还对，没有两章同号。
+        val blocked = File(root, "works/${w.id}/${move.pinned.keys.last()}.card.json.tmp")
+        assertTrue(blocked.mkdirs())
+        assertTrue(runCatching { s.undoChapterMove(w.id, move) }.isFailure)
+        val failed = s.get(w.id)!!
+        assertEquals(numbers, ids.map { s.chapterNo(failed, it) })
+        assertEquals(after, failed.order())
+        assertEquals(move.pinned.values.toList(), ids.map { s.card(w.id, it).plan })
+
+        // 能写了再撤销：顺序回来，固定的章号清掉，章号照旧。
+        assertTrue(blocked.delete())
+        s.undoChapterMove(w.id, move)
+        val undone = s.get(w.id)!!
+        assertEquals(listOf("雪夜", "渡口", "夜渡", "客栈", "旧账"), undone.chapters.map { it.title })
+        assertTrue(ids.all { s.card(w.id, it).plan.isEmpty() })
+        assertEquals(numbers, ids.map { s.chapterNo(undone, it) })
+    }
+
+    @Test
+    fun aPlanThatIsNotANumberIsPinnedTooAndComesBackOnUndo() {
+        val s = store()
+        val (w, ids) = twoVolumes(s)
+        s.addPackDoc(w.id, PackKind.FORESHADOW, "伏笔表", "| 伏笔 | 埋 | 收 |\n| 半块玉佩 | 2 | 4 |")
+        // 渡口的细纲章号写的是“楔子”：读不出数字，章号照目录走（第 2 章）。
+        s.saveCard(w.id, ids[1], s.card(w.id, ids[1]).copy(plan = "楔子"))
+        assertEquals(2, s.chapterNo(s.get(w.id)!!, ids[1]))
+
+        // 雪夜拖到渡口后面：渡口的章号不能变成 1。
+        val move = s.moveChapterTo(w.id, ids[0], w.volumes[0].id, 1)!!
+        val moved = s.get(w.id)!!
+        assertEquals(listOf("渡口", "雪夜", "夜渡"), moved.volumes[0].chapters.map { it.title })
+        assertEquals(2, s.chapterNo(moved, ids[1]))
+        assertEquals(1, s.chapterNo(moved, ids[0]))
+        // 作者写的“楔子”还在卡上。
+        assertEquals("第2章（楔子）", s.card(w.id, ids[1]).plan)
+        assertEquals(mapOf(ids[1] to "楔子"), move.replaced)
+
+        // 撤销：写回“楔子”。
+        s.undoChapterMove(w.id, move)
+        assertEquals("楔子", s.card(w.id, ids[1]).plan)
+        assertEquals("", s.card(w.id, ids[0]).plan)
+        assertEquals(listOf(1, 2, 3), ids.take(3).map { s.chapterNo(s.get(w.id)!!, it) })
+    }
+
+    @Test
+    fun theProcessLockIsAlwaysTakenAfterTheStoreMonitor() {
+        // 加锁顺序统一（先本对象、再进程锁）：整理写入这类直接调 withProcessLock 的，进去时也已经拿着本对象。
+        val s = store()
+        val held = s.withProcessLock { Thread.holdsLock(s) }
+        assertTrue(held)
     }
 }

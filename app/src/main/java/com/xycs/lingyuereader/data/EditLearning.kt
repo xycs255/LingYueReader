@@ -146,9 +146,38 @@ object EditLearning {
         if (clean.isEmpty()) return data
         val old = if (replace) emptyList() else data.originals[chapterId].orEmpty()
         if (old.lastOrNull()?.text == clean) return data
-        var pieces = old + AiOriginal(at, clean)
+        return withPieces(data, chapterId, old + AiOriginal(at, clean))
+    }
+
+    /** 换上这章的原稿：超过每章的上限丢最早的，全作品超了也丢最早的；一段都没有了就整章去掉。 */
+    private fun withPieces(data: LearnData, chapterId: String, list: List<AiOriginal>): LearnData {
+        var pieces = list
         while (pieces.size > CHAPTER_PIECES || pieces.size > 1 && pieces.sumOf { it.text.length } > CHAPTER_CHARS) pieces = pieces.drop(1)
+        if (pieces.isEmpty()) return data.copy(originals = data.originals - chapterId)
         return capWork(data.copy(originals = data.originals + (chapterId to pieces)))
+    }
+
+    /**
+     * 编辑器里采纳了 AI 的改稿（润色、缩写、扩写、去 AI 腔、审稿修复、写作建议）或 AI 面板写的字：这次的改动是 AI 做的，不是作者的改法。
+     * - 原文 [before] 在某块原稿里：原稿里那几个字换成 AI 改后的 [after]，收尾比对时这里就算“AI 原稿原样留着”；
+     * - 原文跨了几块、或者本来就是作者写的：原稿里和原文一样的段去掉（那是 AI 改掉的，不算作者删的），改后的字另记一块；
+     * - [before] 是空的（接着写、插到光标处）：只把 [after] 记成一块原稿。
+     */
+    fun aiEdited(data: LearnData, chapterId: String, before: String, after: String, at: Long): LearnData {
+        val old = before.trim()
+        val new = after.trim()
+        if (old.isEmpty()) return record(data, chapterId, new, at)
+        val pieces = data.originals[chapterId].orEmpty()
+        val i = pieces.indexOfLast { old in it.text }
+        if (i >= 0) {
+            val text = pieces[i].text.replaceFirst(old, new).trim()
+            val list = pieces.toMutableList().apply { if (text.isEmpty()) removeAt(i) else set(i, pieces[i].copy(text = text)) }
+            return withPieces(data, chapterId, list)
+        }
+        val gone = paragraphs(old).toSet()
+        val left = pieces.map { p -> p.copy(text = paragraphs(p.text).filterNot { it in gone }.joinToString("\n")) }.filter { it.text.isNotEmpty() }
+        val trimmed = if (left == pieces) data else withPieces(data, chapterId, left)
+        return record(trimmed, chapterId, new, at)
     }
 
     /** 只留开头 [max] 字，尽量断在段尾。 */
@@ -176,7 +205,10 @@ object EditLearning {
         data.copy(originals = data.originals - chapterId,
             tallies = data.tallies.mapNotNull { t -> t.copy(chapters = t.chapters - chapterId).takeIf { it.chapters.isNotEmpty() } })
 
-    /** “这段不行”点了一次：选的各原因加一；还没有例子的原因先拿 [paragraph] 当例子（采纳了重写再补上改后的）。 */
+    /**
+     * “这段不行”的重写被采纳了一次：选的各原因加一；还没有例子的原因先拿 [paragraph] 当例子（随后 [reasonExample] 补上改后的）。
+     * 只在采纳以后计：请求失败、停下、没采纳的都不算，免得连点几次重试就提成规则。
+     */
     fun countReasons(data: LearnData, reasons: Collection<FixReason>, paragraph: String = ""): LearnData =
         data.copy(reasons = data.reasons + reasons.associate { it.name to (data.reasons[it.name] ?: 0) + 1 },
             reasonExamples = data.reasonExamples + reasons.filter { it.name !in data.reasonExamples && paragraph.isNotBlank() }
@@ -186,7 +218,7 @@ object EditLearning {
     fun reasonExample(data: LearnData, reasons: Collection<FixReason>, before: String, after: String): LearnData =
         data.copy(reasonExamples = data.reasonExamples + reasons.associate { it.name to (before.take(120) to after.take(120)) })
 
-    /** 作者没勾的：记进“不再提”。 */
+    /** 作者明确不要的：记进“不再提”（AI 归纳的默认不勾，作者没看过的不记，见 [com.xycs.lingyuereader.WritingAi]）。 */
     fun dismiss(data: LearnData, keys: Collection<String>): LearnData =
         data.copy(dismissed = (data.dismissed.filterNot { it in keys } + keys).distinct().takeLast(KEEP_DISMISSED))
 
@@ -210,9 +242,11 @@ object EditLearning {
      * 没有原稿、定稿是空的、改动太多对不齐时返回空。
      */
     fun compare(originals: List<AiOriginal>, final: String): ChapterEdits? {
-        val ai = originals.flatMap { paragraphs(it.text) }
         val fin = paragraphs(final)
-        if (ai.isEmpty() || fin.isEmpty()) return null
+        if (originals.none { it.text.isNotBlank() } || fin.isEmpty()) return null
+        val ai = alive(originals, fin).flatMap { paragraphs(it.text) }
+        // 记过的原稿在定稿里一块都找不到：都是采纳后撤销、放弃了的，没有可比的。
+        if (ai.isEmpty()) return ChapterEdits(emptyList(), emptyList(), emptyList(), emptyList())
         val pieces = DraftParagraphDiff.diff(ai.joinToString("\n"), fin.joinToString("\n"), maxEdits = 4_000) ?: return null
         val kept = ArrayList<String>()
         val pairs = ArrayList<Pair<String, String>>()
@@ -248,6 +282,39 @@ object EditLearning {
         }
         flush()
         return ChapterEdits(ai, kept, pairs, deleted)
+    }
+
+    /**
+     * 原稿里还在定稿里的那几块：一块原稿只要有一段在定稿里找得到（原样，或者改过但还像，相似度够 [PAIR_SIMILARITY]），这块就参与比对；
+     * 一段都找不到的整块不算。采纳以后点了撤销、全选删掉重写、换了一版重写的，原来那一块就整块不见了：
+     * 那是作者不要这次 AI 写的，不是“作者习惯把段落整段删掉”，算进去会学错（还会默认勾上写进以后的提示词）。
+     * 采纳以后留了一部分、删了几段的照常比对，删的几段算整段删掉。
+     * 新记的先认领定稿里的段：同一处先后采纳过两版（撤销了旧的、留了新的），定稿里的段归新的那块，旧的那块就找不到了。
+     * 原样的段先按整段对上（快）；一段原样的都没有的块才逐段算相似度，找到一段就停。
+     */
+    private fun alive(originals: List<AiOriginal>, fin: List<String>): List<AiOriginal> {
+        val left = HashMap<String, Int>()
+        fin.forEach { left[it] = (left[it] ?: 0) + 1 }
+        val claimed = BooleanArray(fin.size)
+        val keep = BooleanArray(originals.size)
+        for (k in originals.indices.reversed()) {
+            val ps = paragraphs(originals[k].text)
+            for (p in ps) {
+                val n = left[p] ?: 0
+                if (n > 0) { left[p] = n - 1; keep[k] = true }
+            }
+            if (keep[k]) continue
+            search@ for (p in ps) for (j in fin.indices) {
+                if (claimed[j] || (left[fin[j]] ?: 0) == 0) continue
+                if (similarity(p, fin[j]) >= PAIR_SIMILARITY) {
+                    claimed[j] = true
+                    left[fin[j]] = (left[fin[j]] ?: 0) - 1
+                    keep[k] = true
+                    break@search
+                }
+            }
+        }
+        return originals.filterIndexed { k, _ -> keep[k] }
     }
 
     /** 两段像不像：字的二元组重合度（Dice 系数），0 到 1。 */
@@ -433,6 +500,9 @@ object EditLearning {
     /** AI 归纳的候选的来源说明（收尾页默认不勾这一类）。 */
     const val FROM_AI = "AI 归纳"
 
+    /** AI 归纳的黑名单词的 key 前缀。 */
+    const val AI_BAN = "ai-ban:"
+
     /** AI 归纳回来的不是约定的 JSON。 */
     class ParseError(message: String) : IllegalStateException(message)
 
@@ -458,7 +528,8 @@ object EditLearning {
             }
             val before = if (kind == LearnKind.BAN) sentenceWith(pair.first, text) else short(pair.first, 120)
             val after = if (pair.second == DELETED) DELETED else if (kind == LearnKind.BAN) closestSentence(pair.second, before) else short(pair.second, 120)
-            LearnCandidate((if (kind == LearnKind.BAN) "ban:" else "ai:") + text, kind, text, before, after, FROM_AI)
+            // 和本机比对的 key 分开（本机的黑名单词是 "ban:"）：作者不要 AI 提的这一条，不连带挡掉本机以后统计出来的同一个词。
+            LearnCandidate((if (kind == LearnKind.BAN) AI_BAN else "ai:") + text, kind, text, before, after, FROM_AI)
         }.distinctBy { it.text }.take(5)
     }
 
