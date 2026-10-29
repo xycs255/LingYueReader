@@ -1,6 +1,8 @@
 package com.xycs.lingyuereader.ui
 
 import android.content.Context
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
@@ -115,6 +117,8 @@ class WritingInlineUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(t: String) = waitFor { compose.onAllNodesWithText(t, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     @Test
@@ -164,6 +168,7 @@ class WritingInlineUiTest {
         compose.onNodeWithText("写下一场").performClick()
         compose.onNodeWithText("开始写").performClick()
         waitForText("AI 写了")
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val expected = "$text\n雪还在下。\n沈默在门口站了一会儿。"
         waitFor { store.text(workId, chapterId) == expected }
@@ -206,6 +211,7 @@ class WritingInlineUiTest {
         compose.onNodeWithContentDescription("正文").performTextInputSelection(TextRange(at))
         waitForText("杜娘说话爱绕弯，不会这么直白")
         waitForText("依据：《人物档案》杜娘")
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text.replace("昨夜就死了", "昨夜病倒了") }
 

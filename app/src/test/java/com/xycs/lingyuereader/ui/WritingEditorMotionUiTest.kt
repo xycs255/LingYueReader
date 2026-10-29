@@ -3,6 +3,8 @@ package com.xycs.lingyuereader.ui
 import android.content.Context
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -133,6 +135,8 @@ class WritingEditorMotionUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(t: String) = waitFor { compose.onAllNodesWithText(t, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun shown(t: String) = compose.onAllNodesWithText(t, substring = true).fetchSemanticsNodes().isNotEmpty()
@@ -215,6 +219,7 @@ class WritingEditorMotionUiTest {
         advance(400)
         assertTrue("停稳了，建议条出来", shown("杜娘说话爱绕弯，不会这么直白"))
         // 采纳：那条马上收起，正文换好。
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         advance(600)
         assertTrue(!shown("杜娘说话爱绕弯，不会这么直白"))
@@ -232,6 +237,7 @@ class WritingEditorMotionUiTest {
         val written = vm.writingAi.inline.value!!.text
         val expected = text + written
         fun body() = compose.onNodeWithContentDescription("正文").fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+        waitForEnabled("采纳")
         compose.mainClock.autoAdvance = false
         compose.onNodeWithText("采纳").performClick()
         // 采纳的那几帧里（浅色正在变成正文色）正文也只有一份，AI 写的字不叠两遍。

@@ -167,6 +167,8 @@ class WritingAiUiTest {
         condition()
     }
 
+    private fun waitForEnabled(text: String) = waitFor { compose.onAllNodes(hasText(text) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
     private fun openEditor() {
@@ -185,6 +187,7 @@ class WritingAiUiTest {
         compose.onNodeWithText("改稿").performClick()
         compose.onNodeWithText("润色").performClick()
         waitForText("风刮得很大猛。")
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val store = WorkStore(writingDir)
         val after = "他推门进来。\n风刮得很猛。\n他再门口等着，天色以晚。"
@@ -211,6 +214,7 @@ class WritingAiUiTest {
         assertTrue("要改的文字：\n风很大。" in prompt)
         assertTrue("前文（只作语境，不要改）：\n他推门进来。" in prompt)
 
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val store = WorkStore(writingDir)
         waitFor { store.text(workId, chapterId) == "他推门进来。\n风刮得很猛。\n他再门口等着，天色以晚。" }
@@ -484,6 +488,7 @@ class WritingAiUiTest {
         assertTrue(prompts.single().contains("门外有人叩门"))
         assertEquals("作者采纳前，候选正文不写入章节", candidate.base, store.text(workId, chapterId))
 
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         val accepted = candidate.base.substring(0, candidate.at) + candidate.text + candidate.base.substring(candidate.at)
         waitFor { store.text(workId, chapterId) == accepted }
@@ -578,12 +583,14 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.open(Screen.WorkPack(workId)) }
         waitForText("设定包还是空的")
         // “导入设定包”在分类格下面：先滚过去。
+        waitForEnabled("导入设定包")
         compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件").performClick()
         val files = org.robolectric.Shadows.shadowOf(compose.activity).nextStartedActivity
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, files.action)
         waitFor { compose.onAllNodesWithText("导入文件夹").fetchSemanticsNodes().isEmpty() }
+        waitForEnabled("导入设定包")
         compose.onNodeWithText("导入设定包").performScrollTo().performClick()
         waitForText("导入文件夹")
         compose.onNodeWithText("导入文件夹").performClick()

@@ -121,4 +121,71 @@ class PreviewMoveTest {
         assertEquals("书签也跟着那一章走", 3, mark.chapterIndex)
         assertFalse(mark.lost)
     }
+
+    /** 先读到下卷“第一章”、加书签，再把下卷“第二章”拖到上卷最前面：读到的那章从第 3 个变成第 4 个。 */
+    private fun readLowerFirstThenMove(vm: AppViewModel, bookId: String) {
+        vm.saveProgress(2, 2, 0, 0)
+        vm.toggleBookmark(2, 1, 0)
+        waitUntil("进度没有存下") {
+            Library(app).list().single { it.id == bookId }.progress?.chapterIndex == 2 &&
+                Library(app).marks(bookId).bookmarks.size == 1
+        }
+    }
+
+    private fun moveLowerSecondToTheFront(vm: AppViewModel) {
+        var moved = false
+        vm.writing.moveChapterTo(workId, ids.getValue("下二"), upper, 0) { moved = true }
+        waitUntil("没有挪成") { moved }
+    }
+
+    /** 等后台的写盘都落下（听书存进度在它自己的线程上），再看盘上的进度。 */
+    private fun settle() {
+        repeat(30) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+    }
+
+    /** 连点两下“当书预览”：进度、书签只换算一次，仍停在原来读的那章。 */
+    @Test
+    fun previewingTwiceInARowMovesOnlyOnce() {
+        val vm = AppViewModel(app).also { models += it }
+        waitUntil("书架没有加载") { vm.shelfLoaded.value }
+        val start = vm.stack.value.size
+        val bookId = preview(vm, start)
+        readLowerFirstThenMove(vm, bookId)
+        vm.back()
+        moveLowerSecondToTheFront(vm)
+
+        vm.previewWork(workId, null)
+        preview(vm, start)
+        settle()
+        assertEquals("应停在原来读的下卷第一章", 3, Library(app).list().single { it.id == bookId }.progress?.chapterIndex)
+        assertEquals(3, Library(app).marks(bookId).bookmarks.single().chapterIndex)
+    }
+
+    /** 正听着这本预览书（暂停着）回去挪章再预览：听书停下时存的旧位置不能把换好的进度盖回去。 */
+    @Test
+    fun listeningWhilePreviewingDoesNotPutTheOldPositionBack() {
+        com.xycs.lingyuereader.tts.ReadAloud.resetForTest()
+        try {
+            val vm = AppViewModel(app).also { models += it }
+            waitUntil("书架没有加载") { vm.shelfLoaded.value }
+            val start = vm.stack.value.size
+            val bookId = preview(vm, start)
+            readLowerFirstThenMove(vm, bookId)
+            vm.startReadAloud(2, 0, 0, startPaused = true)
+            assertEquals(bookId, com.xycs.lingyuereader.tts.ReadAloud.state.value?.bookId)
+            vm.back()
+            moveLowerSecondToTheFront(vm)
+
+            preview(vm, start)
+            settle()
+            assertEquals("听书存的旧下标盖回了进度", 3, Library(app).list().single { it.id == bookId }.progress?.chapterIndex)
+            assertEquals(3, vm.openBook.value?.entry?.progress?.chapterIndex)
+        } finally {
+            com.xycs.lingyuereader.tts.ReadAloud.stop()
+            com.xycs.lingyuereader.tts.ReadAloud.resetForTest()
+        }
+    }
 }

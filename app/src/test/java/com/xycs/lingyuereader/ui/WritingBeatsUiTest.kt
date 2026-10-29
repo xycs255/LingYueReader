@@ -171,6 +171,7 @@ class WritingBeatsUiTest {
         assertTrue(ask.contains("别开始第 3 拍"))
         // 采纳以后才记成已写。
         assertEquals(listOf(1), store.card(workId, chapterId).beatsDone)
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.text(workId, chapterId) == text + "\n" + beatText.getValue(2) }
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
@@ -190,11 +191,13 @@ class WritingBeatsUiTest {
         // 没有弹“AI 写”面板，直接写了第 2 拍。
         assertTrue(compose.onAllNodesWithText("写多少").fetchSemanticsNodes().isEmpty())
         assertTrue(prompts.single().contains("只写第 2 拍"))
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2) }
         waitFor { compose.onAllNodesWithContentDescription("智能推荐：写第 3 拍", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("智能推荐：写第 3 拍", substring = true).performClick()
         waitForText("AI 写了")
+        waitForEnabled("采纳")
         compose.onNodeWithText("采纳").performClick()
         waitFor { store.card(workId, chapterId).beatsDone == listOf(1, 2, 3) }
         waitFor { compose.onAllNodesWithContentDescription("智能推荐：这章写完了，细纲卡的 3 拍都写完了", substring = true).fetchSemanticsNodes().isNotEmpty() }

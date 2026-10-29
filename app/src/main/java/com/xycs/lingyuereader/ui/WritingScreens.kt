@@ -20,7 +20,6 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.text.contextmenu.builder.item
 import androidx.compose.foundation.text.contextmenu.modifier.appendTextContextMenuComponents
 import androidx.compose.foundation.layout.Column
@@ -61,6 +60,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Dp
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -940,8 +942,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     var row by remember(workId, chapterId) { mutableStateOf<EditorRow?>(null) }
     var writeSub by remember(workId, chapterId) { mutableStateOf(WriteSub.TILES) }
     // 菜单挪到了底部：第一次打开新编辑器时提示一次，整个应用只提示这一次（不分作品）。
-    var tabsTip by remember { mutableStateOf(vm.editorTabsTipPending()) }
-    LaunchedEffect(Unit) { if (tabsTip) vm.editorTabsTipShown() }
+    // 真显示出来了才记成提示过（见下面提示那里）；旋转屏幕重建时记着还没看过的，接着提示。
+    var tabsTip by rememberSaveable { mutableStateOf(vm.editorTabsTipPending()) }
     var asking by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
     var companionOpen by rememberSaveable(workId, chapterId) { mutableStateOf(false) }
     var companionChoosing by remember(workId, chapterId) { mutableStateOf(false) }
@@ -1097,9 +1099,25 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
         formatOpen = false
     }
 
+    val currentAi = aiState?.takeIf { it.workId == workId && it.chapterId == chapterId }
+
+    /**
+     * AI 的结果还在写、或写好了等采纳：不再发起新的，提示先处理。新的一发起，上一个结果就被悄悄换掉了。
+     * 出错的那份没什么可采纳的，可以直接换一样再试。选中菜单、底栏、✦ 都走这里，说法和 ✦ 上的“在上方采纳或放弃”对得上。
+     * 现读 AI 的状态，不用组合时记下的：选中菜单的回调可能是早先那次组合留下的。
+     */
+    fun blockedByPendingAi(): Boolean {
+        val edit = vm.writingAi.state.value?.takeIf { it.workId == workId && it.chapterId == chapterId && it.error == null }
+        val writing = vm.writingAi.inline.value?.takeIf { it.workId == workId && it.chapterId == chapterId }
+        if (edit == null && writing == null) return false
+        vm.showMessage(PENDING_AI_MESSAGE)
+        return true
+    }
+
     /** 跑一个 AI 任务：用编辑框里现在的全文（可能还没存盘）。 */
     fun runAi(task: WriteAiTask) {
         val st = current ?: return
+        if (blockedByPendingAi()) return
         problemsOpen = false
         vm.writingAi.run(workId, chapterId, st.text.toString(), task)
     }
@@ -1123,6 +1141,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             vm.showMessage("这一章已定稿：要改先解锁并登记原因")
             return
         }
+        if (blockedByPendingAi()) return
         val text = st.text.toString()
         val at = st.selection.max
         vm.writingAi.writeInline(workId, chapterId, text, at, mode, instruction, referenceAnalysisId, beat, variants)
@@ -1136,7 +1155,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 
     /** 打开“AI 写”面板。 */
     fun openAiWrite() {
-        if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else aiWriteOpen = true
+        if (locked) vm.showMessage("这一章已定稿：要改先解锁并登记原因") else if (!blockedByPendingAi()) aiWriteOpen = true
     }
 
     /**
@@ -1245,6 +1264,11 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             // 整章按内置清单、黑名单查一遍（八十来个说法各跑一遍正则）：几万字的章要几十毫秒，不放在主线程上。
             val ranges = withContext(Dispatchers.Default) { CheckRules.check(text, rules).hits.filter(AiCliche::isVoice).flatMap { it.ranges } }
                 .filter { r -> within == null || (r.first < within.max && r.last >= within.min) }
+            // 菜单、✦ 按停笔时的检查结果给的“去 AI 腔”，刚改过字可能对不上：这一章别处也许还有，只说选中的这段。
+            if (within != null && ranges.isEmpty()) {
+                vm.showMessage("选中的文字里没有标出的 AI 腔")
+                return@launch
+            }
             // 去 AI 腔的改法和写作建议一样，在问题面板的“建议”里一条条改或忽略。
             if (ranges.isNotEmpty() && vm.writingAi.ready) {
                 problemsOpen = true
@@ -1272,8 +1296,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 
     val chapters = work?.chapters.orEmpty()
     val index = chapters.indexOfFirst { it.id == chapterId }
-    val currentAi = aiState?.takeIf { it.workId == workId && it.chapterId == chapterId }
-    val pendingAi = inline != null || currentAi != null
     // 推荐“这章写完了”：节拍都写过了，或字数到了检查规则里写的下限（按汉字算的按汉字数）。
     val lengthRule = ruleSet?.rules?.filterIsInstance<CheckRule.Length>()?.firstOrNull { it.min != null }
     // 字数接近目标（九成以上）也算：✦ 只在章末给“这章写完了”。
@@ -1384,6 +1406,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     /** 选中文字后菜单里加的几样：和 AI 条、✦ 走同一条改稿流程（先看对比再采纳）。 */
     fun onSelectionAction(action: SelectionAction) {
         val st = current ?: return
+        // 菜单照样弹出（系统的复制、粘贴还要用），点了改稿的几样先看有没有等采纳的结果。
+        if (blockedByPendingAi()) return
         when (action) {
             SelectionAction.POLISH -> runEdit(WriteAction.POLISH)
             SelectionAction.EXPAND -> runEdit(WriteAction.EXPAND)
@@ -1479,9 +1503,18 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             contentWindowInsets = WindowInsets(0),
         ) { padding ->
           // 矮屏（键盘弹出后剩下的地方不多）：底栏展开的那一排和标签合成一行，正文多留几行。
-          BoxWithConstraints(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
-            val compact = maxHeight < COMPACT_EDITOR_HEIGHT
+          // 键盘升起、收起时每一帧高度都在变：只量出高度、越过门槛才翻这个开关，整块编辑器不跟着每帧重组
+          // （BoxWithConstraints 每次量都要把里面整块重组一遍）。
+          var compact by remember { mutableStateOf(false) }
+          val density = LocalDensity.current
+          Box(
+              Modifier.fillMaxSize().imePadding().navigationBarsPadding().onSizeChanged { size ->
+                  val next = compactEditor(with(density) { size.height.toDp() }, compact)
+                  if (next != compact) compact = next
+              },
+          ) {
             Column(Modifier.fillMaxSize()) {
+                SideEffect { EditorTrace.bodyCompositions++ }
                 val focus = remember { FocusRequester() }
                 // 从审稿页点回来：选中那一句。找不到整句（可能改过了）只提示，不按开头几个字猜，免得选中、改到别处。
                 if (current != null) {
@@ -1682,14 +1715,6 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     }
                     if (companionPosition != null) {
                         WritingCaretCompanion(companionPosition, textScroll, aiConfig, scheme.primary)
-                    }
-                    androidx.compose.animation.AnimatedVisibility(
-                        tabsTip && current != null,
-                        Modifier.align(Alignment.BottomCenter),
-                        enter = barEnter(),
-                        exit = barExit(),
-                    ) {
-                        EditorTip("菜单挪到底部了：写 / 查 / 整理 / 更多") { tabsTip = false }
                     }
                 }
                 // 键盘上方的几样（定稿锁定条、AI 的面板、写作建议、伏笔提醒）出现、收起都平滑：高矮慢慢变，正文框跟着慢慢变高变矮，
@@ -1954,6 +1979,20 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 AnimatedVisibility(due.isNotEmpty() && aiPanel == null && !problemsOpen && !companionOpen, enter = barEnter(), exit = barExit()) {
                     EditorNote("这一章计划回收的伏笔：" + due.joinToString("、")) { vm.open(Screen.ChapterBrief(workId, chapterId)) }
                 }
+                // 一次性提示放在底栏上面、和面板一样占地方：不浮在正文上，盖不住正在写的最后两行。
+                if (current != null && tabsTip) {
+                    // 一打字就收起（作者已经在写了，不用再看提示）。
+                    LaunchedEffect(current) {
+                        val start = current.text.toString()
+                        snapshotFlow { current.text.toString() }.first { it != start }
+                        tabsTip = false
+                    }
+                }
+                AnimatedVisibility(tabsTip && current != null, enter = barEnter(), exit = barExit()) {
+                    // 进了界面才算提示过：正文还没读出来就离开、旋转，下次照样提示。
+                    SideEffect { if (vm.editorTabsTipPending()) vm.editorTabsTipShown() }
+                    EditorTip("菜单挪到底部了：写 / 查 / 整理 / 更多") { tabsTip = false }
+                }
                 // 底栏：左边“写 / 查 / 整理 / 更多”四个标签，右边 ✦ 推荐。点标签在上面展开一排大图标，再点一次收起。
                 EditorBottomBar(
                     row = row,
@@ -1998,13 +2037,13 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     }
                                 }
                             }
-                        r is EditorRow.Tab -> ToolTileGrid(
+                        r is EditorRow.Tab -> EditorTiles(
                             editorTabEntries(r.group, locked, lastChapter).map { e -> ToolTile(entryLabel(e, locked), entryIcon(e)) { onEntry(e) } },
-                            minCell = 52.dp,
+                            compact = compact,
                         )
-                        else -> ToolTileGrid(
+                        else -> EditorTiles(
                             spark.map { rec -> ToolTile(rec.label, sparkIcon(rec.kind)) { row = null; runSpark(rec, effects) } },
-                            minCell = 52.dp,
+                            compact = compact,
                         )
                     }
                 }
@@ -2095,11 +2134,26 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
 private fun mergeBeatsDone(disk: ChapterCard, local: ChapterCard?): ChapterCard =
     if (local != null && disk.beats == local.beats) disk.copy(beatsDone = (disk.beatsDone + local.beatsDone).distinct().sorted()) else disk
 
+/** 测试看编辑器正文那一大块重组了几次（键盘动画的每一帧不该都重组）。只在主线程上加。 */
+internal object EditorTrace {
+    var bodyCompositions = 0
+}
+
+/** AI 的结果还在等采纳时又要发起新的：选中菜单、底栏、✦ 说同一句。 */
+private const val PENDING_AI_MESSAGE = "先采纳或放弃上一个结果"
+
 /** 光标在一处划线上停稳多久才显示那条建议（光标掠过时不一闪一闪）。 */
 private const val CARET_SETTLE = 150L
 
-/** 编辑器（去掉键盘以后）矮于这个高度时算矮屏：底栏展开的那一排和标签合成一行。 */
-private val COMPACT_EDITOR_HEIGHT = 480.dp
+/**
+ * 编辑器（去掉键盘以后）矮于 [COMPACT_ENTER] 时进矮屏（底栏展开的那一排和标签合成一行），高过 [COMPACT_EXIT] 才退出。
+ * 中间留一段回差：输入法的候选栏展开收起、切表情面板，剩下的高常在 480dp 上下晃，没有回差就在两种布局之间来回跳。
+ */
+internal fun compactEditor(height: Dp, wasCompact: Boolean): Boolean =
+    if (wasCompact) height <= COMPACT_EXIT else height < COMPACT_ENTER
+
+private val COMPACT_ENTER = 460.dp
+private val COMPACT_EXIT = 500.dp
 
 /** 键盘上方那块放什么：一次放一样，换了种类才升起、落下，同一种只换里面的字。 */
 private sealed interface EditorPanel {
