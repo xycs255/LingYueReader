@@ -230,6 +230,11 @@ object ReadAloud {
         }
     }
 
+    /** 等已经排上的存进度都写完（[stop]、暂停时存的那一次也在内）：调用方接着要读、要改这本书的进度。 */
+    suspend fun flushSaves() {
+        saver.launch { }.join()
+    }
+
     /** 停下正在读的（系统语音或 AI 语音）。 */
     private fun haltEngine() {
         tts?.stop()
