@@ -1162,11 +1162,45 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             null
         }
     }
-    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview, repeats) {
+    // AI 腔审读：作者在问题面板点了“AI 查 AI 腔”才查（默认不跑），结果只在这次打开的编辑器里，换章、离开就没了。
+    var tones by remember(workId, chapterId) { mutableStateOf<List<com.xycs.lingyuereader.data.ToneIssue>>(emptyList()) }
+    var tone by remember(workId, chapterId) { mutableStateOf(ToneState()) }
+    val toneScope = rememberCoroutineScope()
+    fun startTone() {
+        if (tone.running) return
+        tone = ToneState(running = true)
+        val text = problemText
+        toneScope.launch {
+            tone = try {
+                val found = vm.writingAi.toneReview(workId, chapterId, text)
+                tones = found
+                ToneState(note = if (found.isEmpty()) "AI 没查出明显的 AI 腔。" else "AI 查出 ${found.size} 处，列在“建议”里；只是建议，看着改。")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ToneState(error = e.message ?: "请求失败")
+            }
+        }
+    }
+    // 数值与持有对账（本机算）：账本里有这一类时，打开问题面板、换章时算一次。
+    var holds by remember(workId, chapterId) { mutableStateOf<List<com.xycs.lingyuereader.data.HoldIssue>>(emptyList()) }
+    LaunchedEffect(workId, chapterId, problemsOpen) {
+        holds = try {
+            vm.writing.holdIssues(workId, chapterId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList()
+        }
+    }
+    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview, repeats, tones, holds) {
         if (problemsFor[0] != null && problemsFor[0] != problemText) delay(PROBLEMS_DEBOUNCE_MS)
         val issues = shownRealtime.issues
         val found = repeats
-        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview, found) }
+        val toneFound = tones
+        val holdFound = holds
+        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview, found, toneFound, holdFound) }
         problemsFor[0] = problemText
     }
 
@@ -2048,6 +2082,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                     vm.writing.dismissRepeat(workId, key) { repeatTick++ }
                                     vm.showMessage("以后不再提")
                                 },
+                                jumpQuote = { q -> vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, q) },
+                                // 接到“这段不行”：选中原句所在的那一段，按这一条的原因和意见让 AI 只重写这一段，照常先看对比再采纳。
+                                rewriteTone = { t: com.xycs.lingyuereader.data.ToneIssue ->
+                                    val paragraph = textNow.split('\n').firstOrNull { t.quote in it }?.trim()
+                                    if (paragraph.isNullOrEmpty()) vm.showMessage("正文里没找到这一句，可能已经改过了")
+                                    else vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, paragraph, t.instruction())
+                                }.takeIf { !locked },
+                                dropTone = { t -> tones = tones - t },
+                                openLedger = { saveNow(); vm.open(Screen.WorkLedger(workId, chapterId)) },
                             ),
                             onClose = {
                                 problemsOpen = false
@@ -2056,6 +2099,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             onCliche = { startCliche() }.takeIf { !locked && report?.hits?.any(AiCliche::isVoice) == true },
                             onOpenRules = { vm.open(Screen.WorkRules(workId)) },
                             onOpenReview = { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) },
+                            onTone = { startTone() }.takeIf { aiConfig.ready && !aiConfig.onDevice && !locked && textNow.isNotBlank() },
+                            tone = tone,
                         )
                         EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }

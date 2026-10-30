@@ -40,6 +40,7 @@ import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
@@ -58,6 +59,7 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -260,6 +262,12 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var replacing by remember { mutableStateOf(false) }
     var planning by remember { mutableStateOf(false) }
     var proposal by remember { mutableStateOf<ChapterCard?>(null) }
+    // 先给 3 个走向（作品开着这一项时）：在想、想好了等作者挑。
+    var optioning by remember { mutableStateOf(false) }
+    var options by remember { mutableStateOf<List<com.xycs.lingyuereader.ai.WritePrompts.PlanOption>?>(null) }
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val optionsOn = assists[workId]?.planOptions == true
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
     var splitting by remember { mutableStateOf(false) }
@@ -271,6 +279,21 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var movesDraft by remember(chapterId) { mutableStateOf<String?>(null) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    // AI 拟细纲：[direction] 是作者挑的走向（先给 3 个走向时），空着照原来拟。拟好的先给作者看，用了才进卡片。
+    fun plan(direction: String = "") {
+        planning = true
+        scope.launch {
+            try {
+                proposal = vm.writingAi.planCard(workId, chapterId, direction)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                vm.showMessage(e.message ?: "拟细纲失败")
+            } finally {
+                planning = false
+            }
+        }
+    }
     // AI 拆节拍：按这一页上现在的细纲卡（可能还没存）拆；拆好的先给作者看、改，用了才进卡片。
     fun splitBeats() {
         val now = card ?: return
@@ -411,17 +434,21 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
                             row {
                                 // 在拟的时候换成转圈的一行，拟完淡回按钮。
-                                BusyActionRow(planning, busyText = "AI 正在拟细纲……", title = "AI 拟这一章的细纲", enabled = aiConfig.ready) {
-                                    planning = true
+                                BusyActionRow(planning, busyText = "AI 正在拟细纲……", title = "AI 拟这一章的细纲", enabled = aiConfig.ready && !optioning) { plan() }
+                            }
+                            // 先给 3 个走向：一次小请求，挑一个再按它拟细纲。
+                            if (optionsOn) row {
+                                BusyActionRow(optioning, busyText = "AI 正在想 3 个走向……", title = "先给 3 个走向", enabled = aiConfig.ready && !planning) {
+                                    optioning = true
                                     scope.launch {
                                         try {
-                                            proposal = vm.writingAi.planCard(workId, chapterId)
+                                            options = vm.writingAi.planOptions(workId, chapterId)
                                         } catch (e: CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
-                                            vm.showMessage(e.message ?: "拟细纲失败")
+                                            vm.showMessage(e.message ?: "没想出走向")
                                         } finally {
-                                            planning = false
+                                            optioning = false
                                         }
                                     }
                                 }
@@ -479,6 +506,9 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写整章草稿会一拍一拍写；编辑器里“AI 写…”面板可以从光标处只写其中一拍，采纳后在这里勾成已写。",
                             Modifier.padding(top = 8.dp),
                         )
+                        if (now.summaryStale && now.summary.isNotBlank()) {
+                            GroupedListFooter("这一章定稿以后又改过，下面的摘要可能过期了：下次收尾时重新写，也可以点“AI 概括正文”再概括一次。", Modifier.padding(top = 8.dp))
+                        }
                         GroupedSection(
                             header = "写完以后",
                             footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章；往卷有卷摘要时用卷摘要），AI 就知道前面写了什么。收尾时还会顺带汇总卷摘要和“故事至今”。" +
@@ -513,6 +543,17 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             }
                         }
                     }
+                }
+            }
+            options?.let { list ->
+                GlassDialog(show = true, title = "挑一个走向", summary = "挑好了按它拟细纲卡，拟好的照样先给你看", onDismissRequest = { options = null }) {
+                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                        DirectionOptions(list) { picked ->
+                            options = null
+                            plan(picked.text())
+                        }
+                    }
+                    TextButton(text = "都不要", onClick = { options = null }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
             }
             proposal?.let { p ->
@@ -752,7 +793,8 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                     else -> {
                         val pending = list.filter { it.pending }
                         if (pending.isNotEmpty()) {
-                            GroupedSection(header = "待同步设定", footer = "这些改动涉及设定：把设定包里的不变量、细纲、人物档案、察觉表改好后，点开标为已同步。") {
+                            GroupedSection(header = "待同步设定", footer = "这些改动涉及设定：把设定包里的不变量、细纲、人物档案、察觉表改好后，点开标为已同步。" +
+                                "“改定稿后核对”是定稿章改过以后本机查出来的：后面几章可能要跟着改的账本条目，看过、改好也标为已同步。") {
                                 pending.forEach { e -> row { ChangeRow(e) { open = e } } }
                             }
                         }
@@ -775,9 +817,11 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
             ) {
                 if (e.reason.isNotBlank()) Text(e.reason, color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
                 if (e.canon) {
+                    // 改定稿后核对挂上来的：要看的是账本里的条目，不是设定包。
+                    val cascade = e.kind == ChangeKind.CASCADE
                     DialogButtons(
-                        onDismiss = { open = null; vm.open(Screen.WorkPack(workId)) },
-                        dismissText = "去改设定包",
+                        onDismiss = { open = null; vm.open(if (cascade) Screen.WorkLedger(workId) else Screen.WorkPack(workId)) },
+                        dismissText = if (cascade) "去看账本" else "去改设定包",
                         onConfirm = { open = null; vm.writing.markSynced(workId, e.id, !e.synced) },
                         confirmText = if (e.synced) "标为未同步" else "标为已同步",
                     )
@@ -805,5 +849,21 @@ private fun ChangeRow(e: ChangeEntry, onClick: () -> Unit) {
         subtitleMaxLines = 2,
         trailing = if (e.pending) ({ Tag("待同步", c.warning) }) else null,
         onClick = onClick,
+    )
+}
+
+/**
+ * 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）一个一行：发生什么，下面灰色的看点、本章改变、章末停在哪，点了就选。
+ * 细纲卡页的对话框、草稿页一键写本章停下来等挑的时候共用。
+ */
+@Composable
+internal fun DirectionOptions(options: List<com.xycs.lingyuereader.ai.WritePrompts.PlanOption>, onPick: (com.xycs.lingyuereader.ai.WritePrompts.PlanOption) -> Unit) {
+    DialogOptionList(
+        options.mapIndexed { i, o -> o to "${i + 1}. ${o.what}" },
+        onPick = onPick,
+        description = { o ->
+            listOfNotNull(o.hook.takeIf { it.isNotBlank() }?.let { "看点：$it" }, o.change.takeIf { it.isNotBlank() }?.let { "本章改变：$it" },
+                o.end.takeIf { it.isNotBlank() }?.let { "章末停在：$it" }).joinToString("\n").ifEmpty { null }
+        },
     )
 }

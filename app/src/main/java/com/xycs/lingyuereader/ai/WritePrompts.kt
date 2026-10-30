@@ -24,6 +24,8 @@ import com.xycs.lingyuereader.data.StyleExample
 import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.SyncPlace
+import com.xycs.lingyuereader.data.ToneIssue
+import com.xycs.lingyuereader.data.ToneKind
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.beats
@@ -971,7 +973,8 @@ object WritePrompts {
      * 拟这一章的细纲卡：按系统提示里的本章资料（总纲、前后几章的细纲或摘要、人物、察觉、伏笔），接上一章结尾，
      * 不越过下一章已经定下的细纲。[written] 是这一章已经写了的正文（可空）。
      */
-    fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String, request: String = ""): String = buildString {
+    fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String, request: String = "",
+             stale: List<String> = emptyList(), direction: String = ""): String = buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
         if (next != null && !next.outlineEmpty) {
             append("下一章「").append(nextTitle.orEmpty()).append("」已经定下的细纲（这一章不能写到它的事，要能接上它）：\n")
@@ -984,8 +987,87 @@ object WritePrompts {
         append("- 本章改变了什么：一两句话，写这一章过后人物关系、处境、知道的事有什么变化，要能在正文里看出来，比如“林月知道了……”“两人从互相提防变成暂时合作”。\n")
         append("- 伏笔动作：一行一条，行首写“埋”“推进”“回收”或“暂缓”加冒号，再写一句是哪条伏笔、做到哪一步；只写资料里有的伏笔和本章新埋的，没有就写“无”。\n")
         if (request.isNotBlank()) append("- 作者这次的要求：").append(line(request)).append("（在不越过资料的前提下照办）\n")
+        if (direction.isNotBlank()) append("- 作者选定的走向：").append(line(direction)).append("（细纲照这个走向展开，不换成别的走向）\n")
+        staleSection(stale)
         append("按下面的格式输出，每项一行（伏笔动作可以写几行；没有的项写“无”），不要别的话：\n")
         PLAN_FIELDS.forEach { append(it).append("：\n") }
+    }
+
+    /** 拟细纲、给走向时带上的“可以推进或回收的旧伏笔”（[com.xycs.lingyuereader.data.Foreshadows.stale]）：不强制。 */
+    private fun StringBuilder.staleSection(stale: List<String>) {
+        if (stale.isEmpty()) return
+        append("- 可以推进或回收的旧伏笔（不强制：合适的挑一两条写进伏笔动作，不合适就不用，别为了收而收）：\n")
+        stale.forEach { append("  - ").append(line(it)).append('\n') }
+    }
+
+    /** 3 个走向各多少字以内。 */
+    const val OPTION_CHARS = 150
+
+    /**
+     * 拟细纲之前先给 3 个走向：材料和拟细纲一样（系统提示里的本章资料，防剧透照旧），一次小请求。每个走向不超过 [OPTION_CHARS] 字，
+     * 写发生什么、本章改变了什么、章末停在哪，再加一句“看点”。三个要明显不同。只要 JSON，按 [parsePlanOptions] 读。
+     */
+    fun planOptions(title: String, previous: String, written: String, request: String = "", stale: List<String> = emptyList()): String = buildString {
+        if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
+        if (written.isNotBlank()) append("这一章已经写了的开头：\n").append(written.take(3_000)).append("\n\n")
+        append("这一章「").append(title).append("」还没定细纲。请先给作者 3 个可选的走向，作者挑一个再展开成细纲卡：\n")
+        append("- 每个走向不超过 ").append(OPTION_CHARS).append(" 字：发生什么、本章改变了什么、章末停在哪；再写一句“看点”：读者为什么想看这一章。\n")
+        append("- 三个走向要明显不同（冲突从哪来、谁占上风、章末停在哪至少有一样不一样），都要接得上上一章结尾和前情，不越过资料里后面才发生的事。\n")
+        if (request.isNotBlank()) append("- 作者这次的要求：").append(line(request)).append("（三个走向都照办）\n")
+        staleSection(stale)
+        append("只输出 JSON：{\"options\":[{\"what\":\"发生什么\",\"change\":\"本章改变了什么\",\"end\":\"章末停在哪\",\"hook\":\"看点\"}]}")
+    }
+
+    /** 一个走向：发生什么、本章改变了什么、章末停在哪、看点。 */
+    data class PlanOption(val what: String, val change: String = "", val end: String = "", val hook: String = "") {
+        /** 选中以后交给拟细纲的那一句（“作者选定的走向”）。 */
+        fun text(): String = listOfNotNull(what.trim().ifEmpty { null }, change.trim().ifEmpty { null }?.let { "本章改变：$it" },
+            end.trim().ifEmpty { null }?.let { "章末停在：$it" }).joinToString("；")
+    }
+
+    /** 读 3 个走向：容忍多余的话和 ``` 包裹；没写“发生什么”的丢掉，最多 3 个，每项截到 [OPTION_CHARS] 字。一个都没有时报错。 */
+    fun parsePlanOptions(answer: String): List<PlanOption> {
+        val a = runCatching { json(answer).optJSONArray("options") }.getOrNull() ?: throw AiException("模型没有按格式回答")
+        val out = (0 until a.length()).mapNotNull { i ->
+            val o = a.optJSONObject(i) ?: return@mapNotNull null
+            fun f(k: String) = o.optString(k).trim().takeIf { it != "null" }.orEmpty().take(OPTION_CHARS)
+            PlanOption(f("what"), f("change"), f("end"), f("hook")).takeIf { it.what.isNotEmpty() }
+        }.distinctBy { it.what }.take(3)
+        if (out.isEmpty()) throw AiException("模型没有按格式回答")
+        return out
+    }
+
+    /** AI 腔审读最多几条：全是审美建议，多了作者看不过来。 */
+    const val TONE_MAX = 8
+
+    /**
+     * AI 腔审读（问题面板“建议”里点“AI 查 AI 腔”才发）：用一组固定的问题（[ToneKind]）查语义层面的 AI 腔，
+     * 都算建议，不算必改。[norms] 是作者的写作规范：规范里明确允许的写法（直写心理、吐槽、旁白点评）不算问题。
+     * 求稳：不带温度、能关思考的模型关掉思考，只要 JSON，按 [parseTone] 读。
+     */
+    fun toneReview(text: String, title: String, norms: String = ""): String = buildString {
+        if (norms.isNotBlank()) append("作者的写作规范（规范里明确要的、允许的写法不算问题，规范优先）：\n\n").append(norms.trim()).append("\n\n")
+        append("下面是这一章「").append(title).append("」的正文：\n\n").append(text.take(CHAPTER_CHARS)).append("\n\n")
+        append("请逐段读，只按下面这几问找“像 AI 写的”地方：\n")
+        ToneKind.entries.forEachIndexed { i, k -> append(i + 1).append(". ").append(k.label).append("：").append(k.ask).append("。\n") }
+        append("只挑最明显的，至多 ").append(TONE_MAX).append(" 条，没有就给空列表；不提错字、事实和情节安排，不要求换掉作者的风格。")
+        append("kind 写上面的类别名；quote 摘正文里的原句，一字不差，不超过 40 字；problem 写哪里像 AI 写的；fix 写怎么改，一句话。\n")
+        append("只输出 JSON：{\"issues\":[{\"kind\":\"").append(ToneKind.LABEL.label).append("\",\"quote\":\"\",\"problem\":\"\",\"fix\":\"\"}]}")
+    }
+
+    /**
+     * AI 腔审读的回答：原句在正文 [text] 里找不到的丢掉（防编造），没写问题的丢掉，最多 [TONE_MAX] 条。
+     * 回答里找不到 {"issues":[…]} 时返回 null（不能当成“没有 AI 腔”）。
+     */
+    fun parseTone(answer: String, text: String): List<ToneIssue>? {
+        val issues = runCatching { json(answer).optJSONArray("issues") }.getOrNull() ?: return null
+        return (0 until issues.length()).mapNotNull { i ->
+            val o = issues.optJSONObject(i) ?: return@mapNotNull null
+            val problem = o.optString("problem").trim()
+            val quote = o.optString("quote").trim().trim('“', '”', '「', '」', '"')
+            if (problem.isEmpty() || quote.length < 2 || quote !in text) null
+            else ToneIssue(quote, ToneKind.of(o.optString("kind")), problem, o.optString("fix").trim())
+        }.distinctBy { it.key }.take(TONE_MAX)
     }
 
     /** 把拟好的细纲拆回细纲卡；“无”当空。 */
@@ -1155,7 +1237,8 @@ object WritePrompts {
      * 只要正文里明写了的：新出现的设定、和设定包对不上的写进设定包；人物状态的变化、发生的事、谁知道了什么、
      * 新埋和收掉的伏笔、故事里的时间记进账本。每条带正文原句，解析时核对。
      */
-    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = "", summary: Boolean = false): String = buildString {
+    fun sync(title: String, number: Int, text: String, part: Int = 1, parts: Int = 1, before: String = "", ledger: String = "", summary: Boolean = false,
+             holdings: Boolean = false): String = buildString {
         if (parts > 1) {
             // 太长的章分几段整理：每段一次请求，带上前一段的末尾接上文。
             append("这一章「").append(title).append("」（按设定算第 ").append(number).append(" 章）太长，分 ").append(parts).append(" 段整理")
@@ -1178,12 +1261,20 @@ object WritePrompts {
         append("4. events（发生的事）：已经发生、会影响后文的事，或世界的变化（谁死了、哪座城破了、东西到了谁手里）。what 写一句话。日常琐事不提。\n")
         append("5. awareness（察觉）：这一章里谁知道了什么、从第几章起、消息从哪来；谁对谁隐瞒、误会了什么（type 写 隐瞒 或 误会，what 写清楚瞒着谁、误会成什么）。")
         append("察觉表里已有的不要再提；和察觉表对不上的（比如表上写第 30 章才知道，这一章就说破了）放进 conflicts。\n")
-        append("6. threads_opened（新伏笔）：这一章新埋下的伏笔、悬念、约定。what 写埋了什么；正文里写明了何时兑现、能确定是第几章的，payoff 写章号，否则空着。\n")
+        append("6. threads_opened（新伏笔）：这一章新埋下的伏笔、悬念、约定。what 写埋了什么；正文里写明了何时兑现、能确定是第几章的，payoff 写章号，否则空着。")
+        append("账本“开着的伏笔”里已有的不要在这里另开一条：这一章推进了写进 threads_advanced，收了写进 threads_closed。\n")
         append("7. threads_closed（收伏笔）：这一章收掉的伏笔。id 只能写上面账本“开着的伏笔”里列出的编号（比如 P1）；")
         append("没列出的不要提，账本里没有列出伏笔时给空列表。\n")
+        append("7b. threads_advanced（推进伏笔）：上面账本“开着的伏笔”里列出的伏笔，这一章有了实质推进的——出现了新证据、风险变大变小了、人物之间的关系因它变了、离揭开近了一步。")
+        append("id 只能写上面列出的编号；how 写推进了什么（一句话）；quote 摘推进的那一句。只是又提了一句、人物想起来一下、换个说法重复一遍的，不算推进，不要列。\n")
         append("8. time（时间）：这一章在故事里是什么时候，或者离上一章过了多久。when 写一句话；正文没写就空着。\n")
         // “这章写完了”：整理和写摘要合成一次请求，省一次把整章正文再发一遍。
         if (summary) append("9. summary（本章摘要）：给写后面的章当前情用。").append(SUMMARY_RULE).append("写成一段话，不分条。\n")
+        if (holdings) {
+            append("10. holdings（数值与持有）：这一章里人物的境界、等级、修为、钱财数目、关键物品在谁手里有了变化的。who 写谁；item 写哪一项（境界、灵石、某件法宝的名字）；")
+            append("kind 写“数值”或“物品”；before 写这一章开始时的值（账本里列了的照抄），change 写怎么变的，after 写这一章结束时的值。")
+            append("物品的 before、after 写“持有”或“没有了”；交给了别人的，给出去的人和拿到的人各写一条。没变的不提。\n")
+        }
         append("规矩：\n")
         append("- 只提正文里明确写到的，不推测、不补全、不替作者发明设定；拿不准就不提。\n")
         append("- 设定包里已经有的不要重复提。")
@@ -1203,6 +1294,8 @@ object WritePrompts {
         append("\"awareness\":[{\"who\":\"\",\"what\":\"\",\"type\":\"知道\",\"since\":\"第").append(number).append("章\",\"source\":\"\",\"quote\":\"\"}],")
         append("\"threads_opened\":[{\"what\":\"\",\"payoff\":null,\"quote\":\"\"}],")
         append("\"threads_closed\":[{\"id\":\"P1\",\"quote\":\"\"}],")
+        append("\"threads_advanced\":[{\"id\":\"P1\",\"how\":\"\",\"quote\":\"\"}],")
+        if (holdings) append("\"holdings\":[{\"who\":\"\",\"item\":\"\",\"kind\":\"数值\",\"before\":\"\",\"change\":\"\",\"after\":\"\",\"quote\":\"\"}],")
         append("\"time\":{\"when\":\"\",\"quote\":\"\"}")
         append(if (summary) ",\"summary\":\"\"}" else "}")
     }
@@ -1278,7 +1371,8 @@ object WritePrompts {
      * 依据（quote）在正文 [text] 里找不到、太短或只是人名（[names]）的丢掉（[findQuote]），防止模型编造。收伏笔的编号按 [codes]（[com.xycs.lingyuereader.data.SyncLedger.codes]）
      * 认回账本里那一条，认不出的丢掉。
      */
-    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap(), names: Collection<String> = emptyList()): SyncParse {
+    fun parseSync(answer: String, text: String, chapterId: String, chapter: Int, codes: Map<String, LedgerEntry> = emptyMap(), names: Collection<String> = emptyList(),
+                  holdings: Boolean = false): SyncParse {
         val o = json(answer)
         fun arr(vararg keys: String): JSONArray? = keys.firstNotNullOfOrNull { o.optJSONArray(it) }
         val news = arr("new", "news", "新设定")
@@ -1288,9 +1382,12 @@ object WritePrompts {
         val events = arr("events", "event", "发生的事")
         val opened = arr("threads_opened", "opened", "新伏笔")
         val closed = arr("threads_closed", "closed", "收伏笔")
+        val advanced = arr("threads_advanced", "advanced", "推进伏笔")
+        // 数值与持有：作品没开这一类时不认（模型多回了也不要）。
+        val holds = if (holdings) arr("holdings", "holds", "数值与持有") else null
         // 时间：一个对象，也认只有一个对象的列表。
         val time = listOf("time", "时间").firstNotNullOfOrNull { k -> o.optJSONObject(k) ?: o.optJSONArray(k)?.optJSONObject(0) }
-        val any = listOf(news, conflicts, aware, states, events, opened, closed).any { it != null } || time != null || o.has("time")
+        val any = listOf(news, conflicts, aware, states, events, opened, closed, advanced, holds).any { it != null } || time != null || o.has("time")
         if (!any) throw AiException("模型没有按格式回答")
         fun objects(a: JSONArray?) = (0 until (a?.length() ?: 0)).mapNotNull { a!!.optJSONObject(it) }
         fun JSONObject.s(vararg keys: String) = keys.firstNotNullOfOrNull { k -> optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
@@ -1397,6 +1494,34 @@ object WritePrompts {
                 SyncItem(
                     SyncGroup.PROMISE, "收起：${promise.text}", q, PackKind.FORESHADOW, text = promise.text,
                     chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER, closes = promise,
+                )
+            }
+        }
+        objects(advanced).forEach { a ->
+            // 推进必须引用账本里已有伏笔的编号：认不出的（编的、没列出的）丢掉，不另开新条目。
+            val code = a.s("id", "编号").uppercase().let { if (it.firstOrNull()?.isDigit() == true) "P$it" else it }
+            val promise = codes[code] ?: return@forEach
+            add(a) { q ->
+                val how = a.s("how", "推进了什么", "what", "text")
+                SyncItem(
+                    SyncGroup.PROMISE, "推进：${promise.text}", q, PackKind.FORESHADOW, text = how.ifEmpty { promise.text },
+                    chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER, advances = promise,
+                )
+            }
+        }
+        objects(holds).forEach { h ->
+            add(h) { q ->
+                val who = h.s("who", "人物", "谁")
+                val item = h.s("item", "项目", "什么")
+                val after = h.s("after", "期末", "now")
+                if (who.isEmpty() || item.isEmpty() || after.isEmpty()) return@add null
+                val thing = h.s("kind", "类型").contains("物")
+                val before = h.s("before", "期初")
+                val change = h.s("change", "变化")
+                val title = "$who·$item：" + listOf(before, change, after).filter { it.isNotEmpty() }.joinToString(" → ")
+                SyncItem(
+                    SyncGroup.HOLD, title, q, PackKind.CANON, name = who, text = after, chapterId = chapterId, chapter = chapter, place = SyncPlace.LEDGER,
+                    entry = ledgerEntry(LedgerKind.HOLD, after, q, chapterId, chapter).copy(subject = who, aspect = item, before = before, delta = change, item = thing),
                 )
             }
         }

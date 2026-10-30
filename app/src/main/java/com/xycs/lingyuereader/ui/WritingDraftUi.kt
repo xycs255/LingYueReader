@@ -284,6 +284,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         (referenceId == null || !sourceLoading && sourceExcerpt != null && sourceError == null)
     // 写本章前要补的几步：缺事实与结果拟一份、缺节拍拆一次，各一次小请求（算在“拟细纲”类）。
     val prepNames = if (!prepOn || card == null) emptyList() else listOfNotNull(
+        // 开着“先给 3 个走向”：拟细纲之前多一次小请求，并且会停下来等你挑。
+        "给走向".takeIf { card?.facts.isNullOrBlank() && assists[workId]?.planOptions == true },
         "拟细纲".takeIf { card?.facts.isNullOrBlank() }, "拆节拍".takeIf { beatsOf(card).isEmpty() })
     // 预估按 [task] 编好时的要求、篇幅算，直接用编好的任务：改要求时等 [task] 重编完再估一次，不另外编。
     LaunchedEffect(workId, chapterId, taskInput, workflow, referenceId, text,
@@ -644,6 +646,16 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     if (stage == DraftStage.READY && !loading && !reviewCurrent) STALE_REVIEW else stage.label
                                 }), over = overBy?.takeIf { !loading })
                                 if (!loading) UsageNote(draft?.usage, draft?.cost, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
+                            }
+                        }
+                        // 一键写本章停在“挑走向”：挑一个接着往下拟细纲、拆节拍、写；不想要就点上面的“停止”。
+                        draft?.directions?.takeIf { loading && draft.prep == com.xycs.lingyuereader.DraftPrep.CHOOSE }?.let { list ->
+                            row {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp)) {
+                                    Text("先挑一个走向：挑好了按它拟细纲，接着往下写。都不想要就点上面的“停止”。", color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                                    DirectionOptions(list) { o -> vm.writingAi.pickDirection(workId, chapterId, list.indexOf(o)) }
+                                }
                             }
                         }
                         draft?.referenceAnalysisId?.let { usedId ->

@@ -16,6 +16,11 @@ enum class LedgerKind(val label: String, val hint: String) {
     KNOW("知情", "谁从第几章起知道了什么、消息从哪来；谁瞒着谁、误会了什么"),
     PROMISE("伏笔", "埋下的伏笔、悬而未决的问题、约好的事：第几章埋、计划第几章收、收了没有"),
     TIME("时间线", "这一章在故事里是什么时候、离上一章过了多久"),
+    /**
+     * 数值与持有：境界、等级、灵石、某件法宝在谁手里。按作品开关（[WorkAssist.holdings]，默认关），只对有修炼、金手指、货币、
+     * 关键物品体系的书有用。一条记“期初 → 变化 → 期末”，见 [Holdings]。
+     */
+    HOLD("数值与持有", "人物的境界、等级、钱财和关键物品在谁手里：期初 → 变化 → 期末，同一项上一章的期末就是这一章的期初"),
 }
 
 /** 一条是怎么来的：从设定包导入、写完一章整理出来的、作者自己加的。 */
@@ -55,6 +60,20 @@ data class LedgerEntry(
     val chapterId: String = "",
     val origin: LedgerOrigin = LedgerOrigin.MANUAL,
     val updatedAt: Long = 0,
+    /**
+     * 伏笔：最近一次实质推进在第几章。只提一句不算，只认细纲卡伏笔动作里的“推进”、整理时 AI 标了“推进”并附了原句的（见 [Foreshadows]）。
+     * 空着是埋下以后还没推进过。
+     */
+    val lastAdvanced: Int? = null,
+    /** 伏笔：作者手动设的状态（只存“暂缓”这类推断不出来的）；空着按 [Foreshadows.state] 推断。 */
+    val state: PromiseState? = null,
+    /** 改定稿以后核对过，原句在正文里找不到了：待复核（见 [FinalCascade]）。作者改过、核过这一条就清掉。 */
+    val recheck: Boolean = false,
+    /** 数值与持有：期初、变化（期末是 [text]）。 */
+    val before: String = "",
+    val delta: String = "",
+    /** 数值与持有：这一项是一件物品（[subject] 是持有人，[text] 写“持有”或“没有了”），同一时间只能在一个人手里。 */
+    val item: Boolean = false,
 ) {
     /** 到第 [chapter] 章（第 [volume] 卷）为止成立了没有。 */
     fun reached(chapter: Int, volume: Int? = null): Boolean =
@@ -77,7 +96,7 @@ data class LedgerEntry(
      */
     val key: String
         get() = kind.name + "|" + subject.trim() + "|" + aspect.trim() + "|" + ChapterSyncs.normalize(text) +
-            (if (kind == LedgerKind.STATE || kind == LedgerKind.TIME) "|" + (from ?: -1) else "") + if (secret) "|secret" else ""
+            (if (kind == LedgerKind.STATE || kind == LedgerKind.TIME || kind == LedgerKind.HOLD) "|" + (from ?: -1) else "") + if (secret) "|secret" else ""
 
     /** “第 12 章起”“第 3 章埋，计划第 9 章收”这类说明。 */
     val whenLabel: String
@@ -111,12 +130,20 @@ data class LedgerEntry(
         if (quote.isNotEmpty()) put("quote", quote)
         if (chapterId.isNotEmpty()) put("chapterId", chapterId)
         put("origin", origin.name).put("updatedAt", updatedAt)
+        lastAdvanced?.let { put("lastAdvanced", it) }
+        state?.let { put("state", it.name) }
+        if (recheck) put("recheck", true)
+        if (before.isNotEmpty()) put("before", before)
+        if (delta.isNotEmpty()) put("delta", delta)
+        if (item) put("item", true)
     }
 
     companion object {
         private val fields = setOf(
             "id", "kind", "text", "subject", "aspect", "from", "volume", "until", "payoff", "done", "closed",
             "via", "secret", "quote", "chapterId", "origin", "updatedAt",
+            // 第二批加的：旧账本没有这几项，读成空的。
+            "lastAdvanced", "state", "recheck", "before", "delta", "item",
         )
 
         private fun JSONObject.checkFields() {
@@ -194,6 +221,13 @@ data class LedgerEntry(
                 chapterId = o.string("chapterId"),
                 origin = origin,
                 updatedAt = o.long("updatedAt") ?: 0,
+                lastAdvanced = o.int("lastAdvanced"),
+                state = if (!o.has("state") || o.isNull("state")) null else
+                    runCatching { PromiseState.valueOf(o.string("state")) }.getOrElse { throw IllegalArgumentException("故事账本 state 无效", it) },
+                recheck = o.boolean("recheck"),
+                before = o.string("before").trim(),
+                delta = o.string("delta").trim(),
+                item = o.boolean("item"),
             )
         }
     }
@@ -212,6 +246,11 @@ sealed interface LedgerOp {
     data class Close(val id: String, val chapter: Int?, val quote: String = "", val chapterId: String = "") : LedgerOp
     /** 删掉一条；[expected] 同 [Update]。 */
     data class Remove(val id: String, val expected: LedgerEntry? = null) : LedgerOp
+    /**
+     * 伏笔在第 [chapter] 章有了实质推进：记下最近推进的章（只往后挪，不往前倒），作者设的“暂缓”换成推进中。
+     * 已经收了的不动。[quote] 是推进的原句，空着不换原来的依据。
+     */
+    data class Advance(val id: String, val chapter: Int, val quote: String = "") : LedgerOp
 }
 
 /** 要改、要删的那一条已经被改过（或删了）：这一批都不写，界面刷新后再改。 */
@@ -280,6 +319,14 @@ object StoryLedger {
                     if (op.expected != null && out.getOrNull(i) != op.expected) throw LedgerConflict(op.id)
                     if (i >= 0) keys -= out.removeAt(i).key
                 }
+                is LedgerOp.Advance -> {
+                    val i = out.indexOfFirst { it.id == op.id && it.kind == LedgerKind.PROMISE }
+                    val e = out.getOrNull(i)
+                    if (e != null && !e.done && (e.lastAdvanced ?: Int.MIN_VALUE) < op.chapter) out[i] = e.copy(
+                        lastAdvanced = op.chapter, state = if (e.state == PromiseState.PAUSED) null else e.state,
+                        quote = e.quote.ifEmpty { op.quote }, updatedAt = now,
+                    )
+                }
             }
         }
         return out to added
@@ -308,7 +355,10 @@ object StoryLedger {
         val time = times.filter { it.from == chapter }.ifEmpty { listOfNotNull(times.maxByOrNull { it.from ?: -1 }) }
         // 只有作者知道的到了“第几章止”（人物在那一章得知了）就不再是秘密。
         val secrets = entries.filter { it.secret && it.validAt(chapter, volume) && concerns(it) }
-        return LedgerSnapshot(chapter, states, events, known, notYet, open, due, overdue, time, secrets)
+        // 数值与持有：同一人同一项取最新的一条（同人物状态）；物品只列还在手里的。只给出场人物的（没给出场人物时全给）。
+        val holds = Holdings.current(entries.filter { !it.secret && it.validAt(chapter, volume) })
+            .filter { names.isEmpty() || it.subject in names }
+        return LedgerSnapshot(chapter, states, events, known, notYet, open, due, overdue, time, secrets, holds)
     }
 }
 
@@ -324,8 +374,10 @@ data class LedgerSnapshot(
     val overdue: List<LedgerEntry>,
     val time: List<LedgerEntry>,
     val secrets: List<LedgerEntry>,
+    /** 数值与持有的当前值（[Holdings.current]）。 */
+    val holds: List<LedgerEntry> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = states.isEmpty() && events.isEmpty() && known.isEmpty() && notYet.isEmpty() && open.isEmpty() && time.isEmpty() && secrets.isEmpty()
+    val isEmpty: Boolean get() = states.isEmpty() && events.isEmpty() && known.isEmpty() && notYet.isEmpty() && open.isEmpty() && time.isEmpty() && secrets.isEmpty() && holds.isEmpty()
 
     /**
      * 拼成给 AI 的文字，最多 [limit] 字：时间、人物状态、计划这一章收的伏笔放前面（最要紧），
@@ -356,6 +408,7 @@ data class LedgerSnapshot(
         section("人物此刻的状态：", states.map { e ->
             (if (e.subject.isNotBlank()) e.subject + (if (e.aspect.isNotBlank()) "·" + e.aspect else "") + "：" else "") + e.text + at(e)
         })
+        section("人物现在的数值与持有物（以这里为准，别写出前后对不上的境界、数目，物品不能凭空回到手里）：", holds.map { Holdings.line(it) })
         section("计划在这一章收的伏笔：", due.map { it.text + at(it) })
         section("该收没收的伏笔（计划的章已经过了）：", overdue.map { it.text + at(it) })
         section("已经发生、会影响后文的事：", events.map { it.text + at(it) })

@@ -35,6 +35,9 @@ import com.xycs.lingyuereader.data.StoryDigest
 import com.xycs.lingyuereader.data.StoryDigests
 import com.xycs.lingyuereader.data.VolumeDigest
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.Foreshadows
+import com.xycs.lingyuereader.data.ToneIssue
+import com.xycs.lingyuereader.data.volumeNumber
 import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.withBeatDone
@@ -75,6 +78,7 @@ import com.xycs.lingyuereader.data.EditLearning
 import com.xycs.lingyuereader.data.FixReason
 import com.xycs.lingyuereader.data.LearnCandidate
 import com.xycs.lingyuereader.data.LearnKind
+import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WordCount
 import com.xycs.lingyuereader.data.WorkStore
@@ -106,6 +110,7 @@ import com.xycs.lingyuereader.data.DraftRevisionSnapshot
 import com.xycs.lingyuereader.data.WritingPhase
 import com.xycs.lingyuereader.data.writingTask
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -1284,10 +1289,10 @@ class WritingAi(
         "去 AI 腔" -> AiFeature.CLICHE
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
-        "事实关", "写法关" -> AiFeature.REVIEW
+        "事实关", "写法关", "AI 腔审读" -> AiFeature.REVIEW
         "整理本章", "从改稿学", "整理交接", "整理前情" -> AiFeature.SYNC
         "重写这段" -> AiFeature.DRAFT
-        "拟细纲", "章节摘要", "拆节拍" -> AiFeature.PLAN
+        "拟细纲", "章节摘要", "拆节拍", "给走向" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
         else -> AiFeature.OTHER
     }
@@ -1840,19 +1845,11 @@ class WritingAi(
      * 防剧透：只用本章和以前的。不带下一章的细纲、后面章节的细纲和全书结局（[chapterHints] 的 `noAhead`），
      * 不放整份设定包、不给查阅工具（整份设定包、read_doc 都能读到后面章节的细纲）。求稳：不带写正文的温度和思考开关。
      */
-    suspend fun planCard(workId: String, chapterId: String): ChapterCard {
+    suspend fun planCard(workId: String, chapterId: String, direction: String = ""): ChapterCard {
         if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val (system, prompt) = withContext(Dispatchers.IO) {
-            val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
-            val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
-            val i = work.chapters.indexOfFirst { it.id == chapterId }
-            val previous = work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty()
-            val text = store.text(workId, chapterId)
-            val pack = if (canUsePack) store.chapterHints(workId, chapterId, text, upTo = true, noAhead = true)
-                else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, prose = true)?.render()
-            // 作者在草稿页写的“作者这次的要求”（体检表里带进来的“推进某条线”也在这里）拟细纲时一并照办。
-            val request = store.draftIntent(workId, chapterId)?.instruction.orEmpty()
-            WritePrompts.system(work.title, assistOf(workId), pack) to WritePrompts.plan(chapter.title, previous, null, null, text, request)
+            val m = planMaterial(workId, chapterId)
+            m.system to WritePrompts.plan(m.title, m.previous, null, null, m.text, m.request, m.stale, direction)
         }
         val meter = AiMeter(AiFeature.PLAN, workId)
         val answer = askWithPack("拟细纲", workId, system, prompt, whole = true, useTools = false, toolsUpTo = chapterId, lean = true, meter = meter)
@@ -1860,6 +1857,77 @@ class WritingAi(
         if (card.outlineEmpty) throw IllegalStateException("AI 没按格式回，换个模型或再试一次")
         log(workId, chapterId, "拟细纲", "", answer.trim(), meter)
         return card
+    }
+
+    /** 拟细纲、给走向共用的材料：系统提示（本章资料，防剧透）、上一章结尾、已写的开头、作者这次的要求、可以推进或回收的旧伏笔。 */
+    private class PlanMaterial(val system: String, val title: String, val previous: String, val text: String, val request: String, val stale: List<String>)
+
+    /** 在后台线程里调（读盘）。 */
+    private suspend fun planMaterial(workId: String, chapterId: String): PlanMaterial {
+        val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
+        val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
+        val i = work.chapters.indexOfFirst { it.id == chapterId }
+        val previous = work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty()
+        val text = store.text(workId, chapterId)
+        val pack = if (canUsePack) store.chapterHints(workId, chapterId, text, upTo = true, noAhead = true)
+            else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, prose = true)?.render()
+        // 作者在草稿页写的“作者这次的要求”（体检表里带进来的“推进某条线”也在这里）拟细纲时一并照办。
+        val request = store.draftIntent(workId, chapterId)?.instruction.orEmpty()
+        return PlanMaterial(WritePrompts.system(work.title, assistOf(workId), pack), chapter.title, previous, text, request, staleForeshadows(work, chapterId))
+    }
+
+    /**
+     * 写 [chapterId] 时可以推进或回收的旧伏笔（[Foreshadows.stale]，最多 3 条，写成一行一条）。防剧透：只看本章之前埋下的，
+     * 细纲卡的伏笔动作只认本章之前、已经写了正文的章。账本里没有开着的伏笔时不读细纲卡。
+     */
+    private fun staleForeshadows(work: Work, chapterId: String): List<String> = runCatching {
+        val ledger = store.ledger(work.id)
+        if (ledger.none { it.kind == LedgerKind.PROMISE && !it.done }) return@runCatching emptyList()
+        val number = store.chapterNo(work, chapterId) ?: return@runCatching emptyList()
+        val cards = work.chapters.filter { it.words > 0 && it.id != chapterId }.mapNotNull { c ->
+            val card = store.card(work.id, c.id)
+            work.chapterNo(c.id, card)?.let { it to card.moves }
+        }
+        Foreshadows.stale(ledger, number, Foreshadows.cardAdvances(cards, before = number), work.volumeNumber(chapterId)).map(Foreshadows::planLine)
+    }.getOrDefault(emptyList())
+
+    /**
+     * 拟细纲之前先给 3 个走向（作品开着 [WorkAssist.planOptions] 时，细纲卡页、一键写本章用）：材料同拟细纲（防剧透照旧），
+     * 一次小请求，不带温度、能关思考的关掉思考，用量记在“拟细纲”类。作者挑一个，再按 [planCard] 展开。
+     */
+    suspend fun planOptions(workId: String, chapterId: String): List<WritePrompts.PlanOption> {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
+        val (system, prompt) = withContext(Dispatchers.IO) {
+            val m = planMaterial(workId, chapterId)
+            m.system to WritePrompts.planOptions(m.title, m.previous, m.text, m.request, m.stale)
+        }
+        val meter = AiMeter(AiFeature.PLAN, workId)
+        val answer = askWithPack("给走向", workId, system, prompt, whole = true, useTools = false, toolsUpTo = chapterId, lean = true, meter = meter, noThinking = true)
+        val options = try {
+            WritePrompts.parsePlanOptions(answer)
+        } catch (e: AiException) {
+            throw IllegalStateException("AI 没按格式回，换个模型或再试一次")
+        }
+        log(workId, chapterId, "给走向", "", answer.trim(), meter)
+        return options
+    }
+
+    /**
+     * AI 查 AI 腔（问题面板“建议”里点了才发，默认不跑）：按固定问题（[com.xycs.lingyuereader.data.ToneKind]）查这一章 [text] 的语义层 AI 腔，
+     * 带上作者的写作规范（规范优先）。不带温度，能关思考的官方 V4 关掉思考，只要 JSON，用量记在“审稿”类。结果只是建议。
+     */
+    suspend fun toneReview(workId: String, chapterId: String, text: String): List<ToneIssue> {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
+        if (text.isBlank()) throw IllegalStateException("这一章还没有正文")
+        val (work, norms) = withContext(Dispatchers.IO) { store.get(workId) to styleRules(workId, chapterId, text) }
+        if (work == null) throw IllegalStateException("作品不在了")
+        val title = work.chapter(chapterId)?.title.orEmpty()
+        val meter = AiMeter(AiFeature.REVIEW, workId)
+        val answer = ask("AI 腔审读", workId, WritePrompts.system(work.title, assistOf(workId)), WritePrompts.toneReview(text, title, norms),
+            whole = true, noThinking = true, meter = meter)
+        val issues = WritePrompts.parseTone(answer, text) ?: throw IllegalStateException("AI 的回答不是要求的格式，没读懂。可以再查一次，或换个模型。")
+        log(workId, chapterId, "AI 腔审读", "", answer.trim(), meter)
+        return issues
     }
 
     /**
@@ -2248,9 +2316,11 @@ class WritingAi(
         var changed = false
         try {
             if (task.card.facts.isBlank()) {
+                // 开着“先给 3 个走向”：先出走向，停下来等作者挑一个（停止照常能停），挑好了按它拟细纲。
+                val direction = if (assistOf(workId).planOptions) chooseDirection(key, run) else ""
                 updateDraft(key, run) { it.copy(prep = DraftPrep.PLAN) }
                 val planned = task.card
-                val proposal = prepStep("拟细纲") { planCard(workId, chapterId) }
+                val proposal = prepStep("拟细纲") { planCard(workId, chapterId, direction) }
                 withContext(draftDisk) {
                     store.updateCard(workId, chapterId) { stored -> if (stored.facts.isNotBlank()) stored else stored.withAiOutline(planned, proposal) }
                 }
@@ -2271,6 +2341,34 @@ class WritingAi(
             updateDraft(key, run) { it.copy(prep = null, prepared = if (changed) task else it.prepared) }
         }
         return task
+    }
+
+    /** 一键写本章停在“挑走向”上等作者：按草稿（作品、章）记着，挑了（[pickDirection]）就往下走。 */
+    private val directionWaits = HashMap<Pair<String, String>, CompletableDeferred<Int>>()
+
+    /**
+     * 一键写本章里“先给 3 个走向”这一步：请 AI 出走向（[planOptions]），草稿页上列出来，停在这里等作者挑。
+     * 停止（取消）时一起停，挑的走向写成一句交给拟细纲。
+     */
+    private suspend fun chooseDirection(key: Pair<String, String>, run: Int): String {
+        val (workId, chapterId) = key
+        updateDraft(key, run) { it.copy(prep = DraftPrep.OPTIONS) }
+        val options = prepStep("给走向") { planOptions(workId, chapterId) }
+        val wait = CompletableDeferred<Int>()
+        synchronized(directionWaits) { directionWaits[key]?.cancel(); directionWaits[key] = wait }
+        updateDraft(key, run) { it.copy(prep = DraftPrep.CHOOSE, directions = options) }
+        val picked = try {
+            wait.await()
+        } finally {
+            synchronized(directionWaits) { if (directionWaits[key] === wait) directionWaits.remove(key) }
+            updateDraft(key, run) { it.copy(directions = null) }
+        }
+        return options.getOrNull(picked)?.text().orEmpty()
+    }
+
+    /** 草稿页上挑了第 [index] 个走向：一键写本章接着往下拟细纲、拆节拍、写。没在等时什么都不做。 */
+    fun pickDirection(workId: String, chapterId: String, index: Int) {
+        synchronized(directionWaits) { directionWaits[workId to chapterId] }?.complete(index)
     }
 
     /** 写前准备的一步出错：说清楚是哪一步没成（停下、程序的毛病照原样往外抛）。 */
@@ -2633,7 +2731,7 @@ class WritingAi(
         return withContext(Dispatchers.Default) {
             AiRequestBudget.preview(ai.currentConfig, system, fullPrompt, PackTools.TOOLS, draftTokens, workflow,
                 cachePrefix = stableLength(system, kit.stable), prose = proseOf(assist),
-                beats = plan.size, splitBeats = split, prepRequests = listOf(planning, split).count { it })
+                beats = plan.size, splitBeats = split, prepRequests = listOf(planning, split, planning && assist.planOptions).count { it })
         }
     }
 
@@ -3165,7 +3263,8 @@ class WritingAi(
                 notice = d.beats?.let { beatNotice("已停止", it) } ?: "已停止")
             else d.copy(loading = false, stage = if (d.workflow) DraftStage.STOPPED else d.stage, assessment = null,
                 notice = REVISION_SAVED.takeIf { revisionSaved })
-        _drafts.update { it + (key to kept) }
+        // 写前准备的那一步（停在挑走向上也是）跟着停：换了编号，准备那边收尾时清不掉，这里清。
+        _drafts.update { it + (key to kept.copy(prep = null, directions = null)) }
         if (kept.text.isNotBlank()) scope.launch {
             try {
                 withContext(NonCancellable) {
@@ -3474,6 +3573,8 @@ class WritingAi(
         val system = WritePrompts.system(work.title, assistOf(workId), hints)
         // 到上一章为止的账本：开着的伏笔带编号，收伏笔时 AI 用编号指认。人名：核对原句不能只是人名。
         val (ledger, names) = withContext(Dispatchers.IO) { store.syncLedger(workId, chapterId, number, text) to store.syncNames(workId) }
+        // 数值与持有：作品打开了这一类才让 AI 提、才认。
+        val holdings = assistOf(workId).holdings
         // 这一章在第几卷：账本里只写了“第几卷起”的知情按卷号判断到没到。
         val volume = work.volumeNumber(chapterId)
         val parts = WritePrompts.syncParts(text)
@@ -3492,12 +3593,12 @@ class WritingAi(
                 // 不要求工具：设定包的常用部分整份在系统提示里，本章资料也带着，模型不支持工具时去掉工具照样能整理；
                 // 只是没法按需查，结果页提示“没能查设定包”，由作者勾选前核对。
                 val answer = askWithPack(
-                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text, summary = withSummary),
+                    "整理本章", workId, system, WritePrompts.sync(chapter.title, number, part, i + 1, parts.size, before, ledger.text, summary = withSummary, holdings = holdings),
                     whole = true, maxTokens = if (withSummary) SYNC_TOKENS + SUMMARY_TOKENS else SYNC_TOKENS, maxRounds = SYNC_ROUNDS, toolsUpTo = chapterId,
                     meter = meter, onToolsDropped = { noTools = true }, noThinking = true,
                 )
                 // 原句在整章里核对（可能落在和前一段接上的那几百字里）。
-                val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names)
+                val parsed = WritePrompts.parseSync(answer, text, chapterId, number, ledger.codes, names, holdings)
                 found += parsed.items.map { it.copy(volume = volume) }
                 dropped += parsed.dropped
                 if (withSummary) summaryText = parsed.summary
@@ -3989,8 +4090,10 @@ class WritingAi(
             return
         }
         // 确认前读一次细纲卡：已经有摘要的，确认页上给“用新的 / 留旧的”，默认留旧的，不盖掉作者写的。
-        val old = if (o.summary) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId).summary }.getOrDefault("") } else ""
-        updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, oldSummary = old, keepOld = old.isNotBlank()) }
+        // 旧摘要标了过期（定稿后又改过，见 [com.xycs.lingyuereader.data.FinalCascade]）：默认用新的，作者还能选留旧的。
+        val card = if (o.summary) withContext(Dispatchers.IO) { runCatching { store.card(workId, chapterId) }.getOrNull() } else null
+        val old = card?.summary.orEmpty()
+        updateFinish(workId, chapterId) { it.copy(stage = FinishStage.CONFIRM, oldSummary = old, keepOld = old.isNotBlank() && card?.summaryStale != true) }
     }
 
     /**
@@ -4075,12 +4178,14 @@ class WritingAi(
             }
             val answer = ask("整理前情", workId, WritePrompts.system(work.title, assistOf(workId)), WritePrompts.digest(job), whole = true, noThinking = true)
             val (story, volume) = StoryDigests.parse(answer, job.story, job.volumeId != null)
-            val number = withContext(Dispatchers.IO) { store.chapterNo(work, chapterId) } ?: 0
+            // 故事至今写到哪一章：一般是收尾的这一章；过期重整时可能是原来写到的更后面那一章。
+            val throughId = job.throughId.ifEmpty { chapterId }
+            val number = withContext(Dispatchers.IO) { store.chapterNo(work, throughId) } ?: 0
             val now = System.currentTimeMillis()
             withContext(draftDisk) {
                 store.updateDigests(workId) { d ->
                     var next = d
-                    if (story != null && d.story?.edited != true) next = next.copy(story = StoryDigest(story, chapterId, number, at = now))
+                    if (story != null && d.story?.edited != true) next = next.copy(story = StoryDigest(story, throughId, number, at = now))
                     val vid = job.volumeId
                     if (volume != null && vid != null && d.volumes[vid]?.edited != true) next = next.copy(volumes = next.volumes + (vid to VolumeDigest(volume, job.volumeChapterIds, at = now)))
                     next
@@ -4343,6 +4448,8 @@ data class DraftState(
     val beatsText: String? = null,
     /** 一键写本章正在做的写前准备（拟细纲、拆节拍）；只在写的时候有意义，见 [DraftPrep]。 */
     val prep: DraftPrep? = null,
+    /** 一键写本章停在“挑走向”上（[DraftPrep.CHOOSE]）时的 3 个走向；挑了、停了就清掉。 */
+    val directions: List<WritePrompts.PlanOption>? = null,
     /**
      * 一键写本章刚补过细纲卡（拟了细纲或拆了节拍）以后的本章任务：草稿页拿它刷新细纲卡和任务，不再自己另编一次；
      * 用过就清掉（[WritingAi.preparedSeen]）。
@@ -4363,7 +4470,9 @@ data class DraftState(
 data class HandoffView(val chapterId: String, val chapterTitle: String, val card: ChapterHandoff, val stale: Boolean = false, val outdated: Boolean = false)
 
 /** 一键写本章写之前多出来的几步（进度里显示）。 */
-enum class DraftPrep(val label: String) { PLAN("正在拟细纲……"), BEATS("正在拆节拍……"), HANDOFF("正在整理上一章的交接…") }
+enum class DraftPrep(val label: String) {
+    OPTIONS("正在想 3 个走向……"), CHOOSE("挑一个走向，再往下写"), PLAN("正在拟细纲……"), BEATS("正在拆节拍……"), HANDOFF("正在整理上一章的交接…"),
+}
 
 /** 发给 AI 的一次请求：做什么、系统提示、请求正文。 */
 data class SentRequest(
