@@ -105,6 +105,8 @@ class WritingEditorTabsUiTest {
             store.saveText(w.id, ids[0], text)
             store.saveText(w.id, ids[1], "天终于亮了。")
             store.saveCard(w.id, ids[0], ChapterCard(facts = "林月在药铺等人", beats = "林月看雨\n杜娘开门\n林月识破沈默", beatsDone = listOf(1)))
+            // 状态行那条测试要有问题数：检查规则禁掉正文里的一句。
+            if ("statusLine" in method) store.addPackDoc(w.id, com.xycs.lingyuereader.data.PackKind.RULES, "检查规则", "禁用：抖了抖\n")
         }
 
         override fun after() {
@@ -206,9 +208,31 @@ class WritingEditorTabsUiTest {
         openEditor()
         compose.onNodeWithContentDescription("更多").performClick()
         EDITOR_OVERFLOW.forEach { waitForText(it.label) }
-        listOf("细纲卡", "预览本章", "历史版本", "改章名").forEach { assertFalse(it, has(it)) }
+        listOf("细纲卡", "预览本章", "历史版本", "改章名", "三道审稿").forEach { assertFalse(it, has(it)) }
         compose.onNodeWithText("设定包").performClick()
         waitFor { top() is Screen.WorkPack }
+        // “写作 AI 设置”进的是这部书的设置（不是全局的 AI 服务），不用先退回作品页。
+        back()
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("写作 AI 设置")
+        compose.onNodeWithText("写作 AI 设置").performClick()
+        waitFor { top() == Screen.WorkAi(workId) }
+    }
+
+    /** 360dp 宽：状态行放不下时先省字数、再省“已保存”，“N 处问题”（问题面板的入口）一直露着；读屏照旧念整行。 */
+    @Test
+    @Config(qualifiers = "w360dp-h740dp")
+    fun statusLineKeepsTheProblemCountOnASmallPhone() {
+        openEditor()
+        val line = androidx.compose.ui.test.SemanticsMatcher.keyIsDefined(EditorStatusShown)
+        waitFor { compose.onAllNodes(line).fetchSemanticsNodes().singleOrNull()?.config?.get(EditorStatusShown)?.contains(EditorStatusPart.ISSUES) == true }
+        val node = compose.onNode(line).fetchSemanticsNode()
+        val shown = node.config[EditorStatusShown]
+        assertFalse("小屏先省字数：$shown", EditorStatusPart.WORDS in shown)
+        val spoken = node.config[SemanticsProperties.Text].joinToString { it.text }
+        assertTrue(spoken, "处问题" in spoken && "字" in spoken)
+        compose.onNode(line).performClick()
+        waitFor { hasDescription("收起") }
     }
 
     /** 章名两边的箭头换章；第一章没有上一章、最后一章没有下一章，那一边变灰（最后一章“更多”里有“写下一章”）。 */

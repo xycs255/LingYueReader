@@ -171,17 +171,20 @@ class WritingVariantsUiTest {
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         // 首屏只留最常用的几项（Issue #17）；其余一项不少地挪进了高级设置。
-        listOf("服务商", "写正文的温度", "写正文时先思考", "这部书的口味", "我的黑名单", "从改稿学到的", "对文风的要求", "缺细纲、节拍时 AI 先补上")
+        // AI 记录挪到了首屏最底下（常回来看）。
+        listOf("服务商", "写正文的温度", "写正文时先思考", "这部书的口味", "我的黑名单", "从改稿学到的", "对文风的要求", "缺细纲、节拍时 AI 先补上", "AI 记录")
             .forEach { compose.onNodeWithText(it).performScrollTo() }
-        listOf("设定包", "写作范本", "用定稿章当文风范例", "查 AI 腔", "写作时给建议", "AI 记录", "用量",
+        // 设定包、写作范本是内容，不在设置页（作品页、编辑器里进）。
+        listOf("设定包", "写作范本", "用定稿章当文风范例", "查 AI 腔", "写作时给建议", "AI 用量",
             "知识库上限", "本章资料上限", "两次至少隔", "一天最多", "最多带", "看看挑了哪几段", "记住的采纳", "最近一次发给 AI 的内容")
             .forEach { assertTrue("$it 收进了高级设置", compose.onAllNodesWithText(it).fetchSemanticsNodes().isEmpty()) }
 
         compose.onNodeWithText("高级设置").performScrollTo().performClick()
         waitForText("知识库上限")
-        listOf("设定包", "写作范本", "知识库上限", "本章资料上限", "用定稿章当文风范例", "最多带", "没有定稿章时用字数最多的章", "看看挑了哪几段",
+        listOf("知识库上限", "本章资料上限", "用定稿章当文风范例", "最多带", "没有定稿章时用字数最多的章", "看看挑了哪几段",
             "查 AI 腔", "写作时给建议", "两次至少隔", "一天最多",
-            "记住的采纳", "记住的没采纳", "没用上的建议", "AI 记录", "用量", "最近一次发给 AI 的内容").forEach { compose.onNodeWithText(it).performScrollTo() }
+            "记住的采纳", "记住的没采纳", "没用上的建议", "AI 用量", "最近一次发给 AI 的内容").forEach { compose.onNodeWithText(it).performScrollTo() }
+        listOf("设定包", "写作范本", "AI 记录").forEach { assertTrue("$it 不在高级设置里", compose.onAllNodesWithText(it).fetchSemanticsNodes().isEmpty()) }
         // 开了写作建议才带出三类子开关；查设定交给审稿的事实关，这里没有。
         compose.onNodeWithText("写作时给建议").performScrollTo().performClick()
         waitFor { WorkStore(writingDir).assist(workId).realtime }

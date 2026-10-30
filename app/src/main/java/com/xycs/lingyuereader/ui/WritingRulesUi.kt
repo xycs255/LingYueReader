@@ -168,7 +168,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     }
                     if (!aiConfig.ready || !hasStyle) {
                         Text(
-                            if (!aiConfig.ready) "用 AI 整理要先在“我的 → AI 助手”里设置服务商。" else "用 AI 整理要先在设定包里放写作规范或称谓与语气文档。",
+                            if (!aiConfig.ready) "用 AI 整理要先在“我的 → AI 服务”里设置服务商。" else "用 AI 整理要先在设定包里放写作规范或称谓与语气文档。",
                             color = c.secondary,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp),

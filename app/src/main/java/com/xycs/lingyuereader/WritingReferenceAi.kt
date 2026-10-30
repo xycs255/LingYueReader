@@ -106,7 +106,7 @@ class WritingReferenceAi(
         _lastRequest.value = null
         _state.value = ReferenceAnalysisState(workId, chapterId, referenceId, referenceChapterId, part, start, end, loading = true)
         if (!ready) {
-            val error = "先在“我的 → AI 助手”里开启并填好服务商和密钥"
+            val error = "先在“我的 → AI 服务”里开启并填好服务商和密钥"
             _state.update { it?.copy(loading = false, error = error) }
             message(error)
             return

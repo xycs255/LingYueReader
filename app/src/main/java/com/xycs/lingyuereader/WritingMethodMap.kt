@@ -98,7 +98,7 @@ class WritingMethodMap(
         job?.cancel()
         _state.value = WritingMethodMapState(workId, chapterId, analysisId, loading = true)
         if (!ready) {
-            val error = "先在“我的 → AI 助手”里设置服务商与密钥"
+            val error = "先在“我的 → AI 服务”里设置服务商与密钥"
             _state.update { it?.copy(loading = false, error = error) }
             message(error)
             return

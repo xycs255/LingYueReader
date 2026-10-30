@@ -80,14 +80,16 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
                         if (entry.openedAt > 0) row { ValueRow("最近阅读", dateLabel(entry.openedAt)) }
                         row { ValueRow("来源文件", entry.sources.joinToString("\n") { it.name }) }
                     }
+                    // 跳页的用带“›”的行（净化与分章），就地做事、弹对话框的用动作行（刷新、分组、重命名）。
                     GroupedSection {
-                        if (entry.sources.any { it.uri != null }) {
-                            row { NavRow("从原文件刷新") { vm.refresh(entry) } }
-                        }
                         if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
-                            row { NavRow("净化与分章规则") { vm.open(Screen.BookRules(entry.id)) } }
+                            row { NavRow("净化与分章") { vm.open(Screen.BookRules(entry.id)) } }
                         }
-                        row { NavRow("重命名") { dialogs.renaming = true } }
+                        if (entry.sources.any { it.uri != null }) {
+                            row { ActionRow("从原文件刷新") { vm.refresh(entry) } }
+                        }
+                        row { ActionRow("分组…") { dialogs.grouping = true } }
+                        row { ActionRow("重命名") { dialogs.renaming = true } }
                     }
                     GroupedSection(footer = "删除本机副本与阅读进度、书签批注；原文件不受影响。") {
                         row { ActionRow("移除", destructive = true) { dialogs.removing = true } }

@@ -94,8 +94,8 @@ class ChineseConvertUiTest {
 
     private fun chooseConversion(option: String, expectedBody: String) {
         showReaderMenu()
-        compose.onNodeWithText("设置").performClick()
-        waitForText("阅读设置")
+        compose.onNodeWithText("更多").performClick()
+        waitForText("更多设置")
         // 繁简在“繁简与注音”二级页里。
         compose.onNodeWithText("繁简与注音").performScrollTo().performClick()
         compose.onNodeWithText(option).performScrollTo().performClick()
@@ -104,7 +104,7 @@ class ChineseConvertUiTest {
         compose.activity.onBackPressedDispatcher.onBackPressed()
         compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("阅读设置").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("更多设置").fetchSemanticsNodes().isEmpty() }
     }
 
     private fun jumpViaBookmark(excerpt: String, expectedBody: String, expectedChapter: String) {
@@ -123,7 +123,7 @@ class ChineseConvertUiTest {
         compose.onAllNodesWithText("测试书")[0].performClick()
         waitForText("她的头发很长")
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
+        compose.onNodeWithText("更多").performClick()
         compose.onNodeWithText("繁简与注音").performScrollTo().performClick()
         waitForText("简转繁")
         compose.onNodeWithText("简转繁").performScrollTo().performClick()

@@ -46,6 +46,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.LedgerChapter
+import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.ChapterBriefs
+import com.xycs.lingyuereader.data.Foreshadow
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
@@ -107,16 +112,26 @@ private data class LedgerView(val chapter: LedgerChapter?, val person: String?)
 
 /**
  * 故事账本：随章推进、会变的东西——人物状态、发生的事、知情、伏笔、时间线。
+ * 伏笔标签合并了原来的“伏笔”页：该回收了 / 还没回收 / 已回收、设定包伏笔表里还没导入的、来源文档（[promises] 为真时直接翻到这一标签）。
  * 默认按类别列出全部条目（人物状态再按人物归在一起）；“看到第几章”选了某一章，就只看到这一章为止的状态（[StoryLedger.snapshot]），
  * 写前对照、改旧章时用。点一条改，右上角加一条；菜单里从设定包导入、导出到设定包、历史版本。
  */
 @Composable
-fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null) {
+fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null, promises: Boolean = false) {
     val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val work = works.firstOrNull { it.id == workId }
-    LaunchedEffect(workId) { vm.writing.loadLedger(workId) }
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    val pack = packs[workId]
+    LaunchedEffect(workId) {
+        vm.writing.loadLedger(workId)
+        vm.writing.loadPack(workId)
+    }
     val entries = ledgers[workId]
+    // 伏笔标签：设定包伏笔表里的条目（还没导入的也列）和写到了第几章（算哪些该回收了）；设定包、账本变了重读。
+    var foreshadowSource by remember { mutableStateOf<Pair<List<Foreshadow>, Int>?>(null) }
+    LaunchedEffect(workId, pack, entries) { foreshadowSource = vm.writing.foreshadows(workId) }
+    var closing by remember { mutableStateOf<WritingForeshadow?>(null) }
     // 能翻到的章（章号要读细纲卡，在后台算）；章节改了重算。
     var chapters by remember { mutableStateOf<List<LedgerChapter>?>(null) }
     LaunchedEffect(workId, work) { chapters = vm.writing.ledgerChapters(workId) }
@@ -129,7 +144,15 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     var editing by remember { mutableStateOf<LedgerEntry?>(null) }
     var adding by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LedgerEntry?>(null) }
-    var visualTab by rememberSaveable { mutableStateOf(if (chapterId == null) LedgerVisualTab.PEOPLE else LedgerVisualTab.RECORDS) }
+    var visualTab by rememberSaveable {
+        mutableStateOf(
+            when {
+                promises -> LedgerVisualTab.PROMISES
+                chapterId == null -> LedgerVisualTab.PEOPLE
+                else -> LedgerVisualTab.RECORDS
+            },
+        )
+    }
     var quickState by remember { mutableStateOf<LedgerQuickState?>(null) }
     var quickKnowledge by remember { mutableStateOf<LedgerQuickKnowledge?>(null) }
     var graphUndo by remember { mutableStateOf<LedgerGraphUndo?>(null) }
@@ -274,7 +297,8 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                     when {
                         list == null || (at != null && chapters == null) ->
                             Box(Modifier.fillMaxSize().padding(contentPadding)) { LoadingState("正在读故事账本……") }
-                        list.isEmpty() -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
+                        // 账本空、但设定包伏笔表里有条目时照常显示分段标签：伏笔标签里列着它们，能标为已回收。
+                        list.isEmpty() && foreshadowSource?.first.isNullOrEmpty() -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
                             item(key = "empty") {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     EmptyState(
@@ -323,6 +347,13 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                             list, view.chapter, chapters.orEmpty(), view.person,
                                             onPayoff = { e, payoff, failed -> saveGraph(e, e.copy(payoff = payoff), "调整伏笔计划", failed) },
                                             onOpen = open,
+                                            sources = LedgerPromiseSources(
+                                                legacy = foreshadowSource?.first.orEmpty(),
+                                                latest = foreshadowSource?.second ?: 0,
+                                                docs = pack.orEmpty().filter { it.kind == PackKind.FORESHADOW }.map { it.id to it.title },
+                                            ),
+                                            onClose = { closing = it },
+                                            onOpenDoc = { vm.open(Screen.PackDoc(workId, it)) },
                                         )
                                         LedgerVisualTab.KNOWLEDGE -> ledgerKnowledgeGraph(
                                             list, view.chapter, view.person,
@@ -378,6 +409,25 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                 } else {
                     vm.writing.editLedger(workId, listOf(LedgerOp.Update(changed, expected = e)), "手动修改")
                 }
+            }
+        }
+        closing?.let { f ->
+            GlassDialog(show = true, title = f.display.what, summary = ChapterBrief.foreshadowWhen(f.display).trim('（', '）').ifEmpty { null }, onDismissRequest = { closing = null }) {
+                DialogButtons(
+                    onDismiss = { closing = null },
+                    onConfirm = {
+                        closing = null
+                        val source = foreshadowSource
+                        val latest = source?.second?.takeIf { it > 0 }
+                        val current = mergeWritingForeshadows(source?.first.orEmpty(), vm.writing.ledgers.value[workId].orEmpty())
+                            .firstOrNull { ChapterBriefs.same(it.display.what, f.display.what) } ?: f
+                        // 先写账本（当前状态）；伏笔表里那一行跟着标上，旧表镜像失败也不会让界面与 AI 用不同的回收状态。
+                        vm.writing.editLedger(workId, listOf(current.close(latest)), "回收伏笔") {
+                            current.legacy.forEach { old -> vm.writing.markForeshadow(workId, old) }
+                        }
+                    },
+                    confirmText = "标为已回收",
+                )
             }
         }
         deleting?.let { e ->

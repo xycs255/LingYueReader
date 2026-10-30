@@ -436,7 +436,8 @@ private fun TreeOutlineRow(work: Work, hasChildren: Boolean, onClick: () -> Unit
         RowIcon(LingYueIcons.Book, c.tint)
         Column(Modifier.weight(1f)) {
             Text("总纲 · ${work.title}", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 设定包", color = c.secondary, fontSize = 12.sp)
+            // 点这一行打开总纲那份文档（设定包在作品页的“设定包”卡片里）。
+            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 总纲文档", color = c.secondary, fontSize = 12.sp)
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
@@ -683,7 +684,7 @@ private fun Modifier.chapterGestures(chapter: WorkChapter, drag: TreeDragControl
 }
 
 /**
- * 伏笔记号：账本里这一章埋下的（旗子）和计划这一章收的（勾）各几条，点了去账本、筛到这一章。
+ * 伏笔记号：账本里这一章埋下的（旗子）和计划这一章收的（勾）各几条，点了去账本的“伏笔”标签、筛到这一章。
  * 能点 48dp，读屏念全句。
  */
 @Composable

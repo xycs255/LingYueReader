@@ -152,7 +152,7 @@ fun MeScreen(vm: AppViewModel) {
                     overscrollEffect = null,
                 ) {
                     item {
-                        // 每一行都带图标，按用途分三组：阅读、备份、关于。
+                        // 每一行都带图标，按用途分四组：阅读、AI 与语音、备份、关于。
                         GroupedSection(header = "阅读") {
                             iconRow {
                                 NavRow(
@@ -178,9 +178,12 @@ fun MeScreen(vm: AppViewModel) {
                                     iconBackground = RowIconColors.Folder,
                                 ) { vm.open(Screen.Catalogs) }
                             }
+                        }
+                        // AI 服务读书、写作都用，离线语音是听书用的声音：单独一组，不挂在“阅读”下面。
+                        GroupedSection(header = "AI 与语音") {
                             iconRow {
                                 NavRow(
-                                    "AI 助手",
+                                    "AI 服务",
                                     value = when {
                                         !ai.enabled -> "未开启"
                                         !ai.complete -> "未填密钥"
@@ -236,11 +239,11 @@ fun MeScreen(vm: AppViewModel) {
                                 row { NavRow("现在备份一次", icon = LingYueIcons.Upload, iconBackground = RowIconColors.Upload, enabled = !busy, onClick = vm::backupNow) }
                             }
                         }
-                        GroupedSection(header = "关于", footer = "灵阅：开源、无广告，默认不联网（只在你使用 AI 助手、书源或下载离线语音模型时联网）。代码以 Apache-2.0 发布。") {
+                        GroupedSection(header = "关于", footer = "灵阅：开源、无广告，默认不联网（只在你使用 AI 服务、书源或下载离线语音模型时联网）。代码以 Apache-2.0 发布。") {
                             row { ValueRow("版本", version, icon = LingYueIcons.Info, iconBackground = RowIconColors.Info) }
-                            row { NavRow("项目主页", "GitHub", icon = LingYueIcons.Share, iconBackground = RowIconColors.Link) { openHome() } }
+                            row { NavRow("项目主页", "GitHub", icon = LingYueIcons.External, iconBackground = RowIconColors.Link) { openHome() } }
                             row {
-                                NavRow("闪退记录", crashCount?.let { if (it == 0) "没有" else "$it 条" }, icon = LingYueIcons.Info, iconBackground = RowIconColors.Info) {
+                                NavRow("闪退记录", crashCount?.let { if (it == 0) "没有" else "$it 条" }, icon = LingYueIcons.Warning, iconBackground = RowIconColors.Info) {
                                     vm.open(Screen.CrashLog)
                                 }
                             }

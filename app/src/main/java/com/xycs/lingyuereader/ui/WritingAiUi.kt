@@ -824,12 +824,12 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     // 首屏只放最常调的：能不能写（服务商）、怎么写（温度、先思考、口味、文风）、别写什么（黑名单、学到的）、一键写本章的准备。
                     GroupedSection(
-                        footer = "在编辑器里点键盘上方的 ✦ 换成 AI 操作：“AI 写…”从光标处写正文；选中文字（或把光标放在那段）润色、扩写、缩写、挑错；" +
-                            "也可以请 AI 以读者视角点评本章（前后矛盾在“三道审稿”的事实关里查），问主意在“书灵”里。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
+                        footer = "在编辑器底栏“写”里：“AI 写…”从光标处写正文，“改稿”润色、扩写、缩写、挑错、读者点评，问主意在“灵感”里；" +
+                            "前后矛盾在“查”里的“三道审稿”事实关查。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
-                            else NavRow("AI 助手", value = if (!ai.enabled) "未开启" else "未填密钥", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) { vm.open(Screen.Ai) }
+                            else NavRow("设置 AI 服务", value = if (!ai.enabled) "未开启" else "未填密钥", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) { vm.open(Screen.Ai) }
                         }
                     }
                     GroupedSection(
@@ -888,9 +888,13 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             }
                         }
                     }
-                    // 其余的收进二级页：值和存储都不变，只是换个地方放。挪了位置的在这里说一次。
-                    GroupedSection(footer = "设定包、写作范本、文风范例、查 AI 腔、写作建议、AI 记录和用量挪进了“高级设置”，和知识库、本章资料的上限放在一起。") {
+                    // 其余的收进二级页：值和存储都不变，只是换个地方放。
+                    GroupedSection(footer = "文风范例、查 AI 腔、写作建议、AI 用量在“高级设置”里，和知识库、本章资料的上限放在一起。") {
                         row { NavRow("高级设置") { vm.open(Screen.WorkAiAdvanced(workId)) } }
+                    }
+                    // AI 记录常回来看（标有用、没用），放在首屏最底下，不再藏进高级设置。
+                    GroupedSection(footer = "灵感、读者点评、AI 写的章都记在这里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。") {
+                        row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
                     }
                 }
             }
@@ -913,9 +917,9 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
 }
 
 /**
- * 作品 AI 设置的“高级设置”：不常调的从首屏收进来，值、存储和每一项的说明都没变——设定包、写作范本，知识库、本章资料的上限，
+ * 作品 AI 设置的“高级设置”：不常调的从首屏收进来——知识库、本章资料的上限，
  * 文风范例（开关、带多少、挑了哪几段），查 AI 腔，写作建议（开关、查哪几类、频率），学你的改法（计数、清除），
- * AI 记录、用量、最近一次发给 AI 的内容。
+ * AI 用量、最近一次发给 AI 的内容。设定包、写作范本是内容，不放在设置页（作品页、编辑器里进）；AI 记录在首屏最底下。
  */
 @Composable
 fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
@@ -923,9 +927,6 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
     val assist = assists[workId] ?: WorkAssist()
     val work = vm.writing.works.collectAsStateWithLifecycle().value.firstOrNull { it.id == workId }
-    val packs by vm.writing.packs.collectAsStateWithLifecycle()
-    LaunchedEffect(workId) { vm.writing.loadPack(workId) }
-    val docs = packs[workId]
     val sent by vm.writingAi.lastRequest.collectAsStateWithLifecycle()
     var clearing by remember { mutableStateOf(false) }
     var showSent by remember { mutableStateOf(false) }
@@ -936,18 +937,6 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
             overscrollEffect = null,
         ) {
             item {
-                GroupedSection {
-                    row {
-                        NavRow("设定包", value = docs?.let { if (it.isEmpty()) "空" else "${it.size} 份" }, icon = LingYueIcons.Notes, iconBackground = Color(0xFF007AFF)) {
-                            vm.open(Screen.WorkPack(workId))
-                        }
-                    }
-                    row {
-                        NavRow("写作范本", value = "结构、对白与本章写法", icon = LingYueIcons.Book, iconBackground = Color(0xFFAF52DE)) {
-                            vm.open(Screen.WritingReference(workId))
-                        }
-                    }
-                }
                 GroupedSection(
                     header = "带多少资料",
                     footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
@@ -1028,17 +1017,15 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
                 }
                 GroupedSection(
                     header = "记录",
-                    footer = "灵感、读者点评、AI 写的章都记在“AI 记录”里（最近 ${com.xycs.lingyuereader.data.WriteRecord.KEEP} 条），可以标有用、没用。" +
-                        "“用量”按天、按功能记这部作品花了多少（只有数字）。" +
+                    footer = "“AI 用量”按天、按功能记这部作品花了多少（只有数字）。" +
                         "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看；也写着这次用了多少 token、约多少钱。",
                 ) {
                     // 同一张卡片里的行要么都带图标、要么都不带：这几行都不带。
-                    row { NavRow("AI 记录") { vm.open(Screen.WorkAiLog(workId)) } }
                     row {
                         val usage by vm.aiUsage.collectAsStateWithLifecycle()
                         val today = com.xycs.lingyuereader.ai.UsageBook.total(usage.days[java.time.LocalDate.now()].orEmpty().filter { it.work == workId })
                         NavRow(
-                            "用量",
+                            "AI 用量",
                             value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (com.xycs.lingyuereader.ai.AiPricing.money(today.cost)?.let { "约 $it" } ?: "${today.usage.requests} 次"),
                         ) { vm.open(Screen.AiUsage(workId)) }
                     }

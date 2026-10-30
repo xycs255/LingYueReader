@@ -91,7 +91,7 @@ fun AiScreen(vm: AppViewModel) {
                 SmallTopAppBar(
                     color = Color.Transparent,
                     modifier = Modifier.glassBar(),
-                    title = "AI 助手",
+                    title = "AI 服务",
                     navigationIcon = {
                         IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
                             Icon(LingYueIcons.Back, contentDescription = "返回")
@@ -113,7 +113,7 @@ fun AiScreen(vm: AppViewModel) {
                             "只有你点这些功能时才联网，把选中的文字（前情提要和问这本书是读过部分里的相关原文）发给下面的服务商，不发送后面没读的内容。关闭时灵阅不联网。",
                     ) {
                         row {
-                            ToggleRow("启用 AI 助手", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
+                            ToggleRow("启用 AI 服务", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
                                 update(config.copy(enabled = on))
                             }
                         }

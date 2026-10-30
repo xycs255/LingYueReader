@@ -490,7 +490,7 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
         row { SegmentedRow(TalkScope.entries.map { it to it.label }, scope) { scope = it } }
         row { SegmentedRow(TalkStyle.entries.map { it to it.label }, style) { style = it } }
     }
-    val voice = if (config.enabled && config.speech.complete) "AI 语音 · ${config.speech.label}" else "系统语音（在 AI 助手设置里可以换成 AI 语音）"
+    val voice = if (config.enabled && config.speech.complete) "AI 语音 · ${config.speech.label}" else "系统语音（在“我的 → AI 服务”里可以换成 AI 语音）"
     Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when {
             state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {

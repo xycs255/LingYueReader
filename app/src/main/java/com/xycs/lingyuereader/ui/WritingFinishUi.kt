@@ -157,12 +157,12 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
     Column {
         GroupedSection(
             header = "收尾要做的",
-            footer = "整理入账和写摘要合成一次请求。写进去之前，都在这一页上给你看过、改过；点“完成收尾”才写。",
+            footer = "整理进设定包和账本、写摘要合成一次请求。写进去之前，都在这一页上给你看过、改过；点“完成收尾”才写。",
         ) {
             row { CheckboxRow("定稿", checked = true, subtitle = "固定要做：存一个历史版本，正文锁定", enabled = false, dimChecked = false) {} }
             row {
                 CheckboxRow(
-                    "整理入账",
+                    "整理进设定包和账本",
                     checked = o.sync && syncBlocked == null,
                     subtitle = syncBlocked ?: "新设定、冲突写进设定包；人物状态、发生的事、伏笔记进故事账本",
                     enabled = syncBlocked == null,
@@ -221,7 +221,7 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
                 }
             }
         }
-        PrimaryButton("开始", onClick = { vm.writingAi.startFinish() }, modifier = Modifier.padding(horizontal = 12.dp))
+        PrimaryButton("开始收尾", onClick = { vm.writingAi.startFinish() }, modifier = Modifier.padding(horizontal = 12.dp))
     }
 }
 
@@ -245,7 +245,7 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
                 StepRow("三道审稿", run.review.mark(), run.review.label,
                     run.reviewError ?: run.reviewIssues.takeIf { it > 0 }?.let { "审出 $it 条问题" })
             }
-            row { StepRow("整理入账", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
+            row { StepRow("整理进设定包和账本", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
             row { StepRow("写本章摘要", run.summary.mark(), run.summary.label, run.summaryError) }
             if (run.options.learn) row { StepRow("从改稿里学", run.learn.mark(), run.learn.label, run.learnError.takeIf { run.learn == StepState.FAILED }) }
             if (run.options.handoff) row { StepRow("整理交接卡", run.handoff.mark(), run.handoff.label, run.handoffError ?: run.handoffNote) }

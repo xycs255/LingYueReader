@@ -83,15 +83,15 @@ import top.yukonga.miuix.kmp.basic.Text
 
 /*
  * 阅读设置面板，照 Apple Books 的“主题与设置”来做（样稿见 docs/design.md）：
- * - 菜单里的“外观”打开首页：字号、亮度、书页配色、字体、排版预设，最常调的几样一屏放下；
- * - 菜单里的“设置”打开“阅读设置”：其余按用途分成几页（字体、排版、翻页、点按与按键、护眼、屏幕、繁简），
- *   从列表点进去，左上角返回。每页都是分组列表，一行一个短名字，解释写在组下面的小字里。
+ * - 菜单里的“外观”打开首页：字号、亮度、书页配色、字体、排版预设、翻页方式，最常调的几样一屏放下；
+ * - 菜单里的“更多”（和首页最后一行“更多设置”）打开“更多设置”：其余按用途分成几页（排版细调、繁简、点按与按键、护眼、屏幕），
+ *   字体、翻页方式只在首页，不在这里再列一次。从列表点进去，左上角返回。每页都是分组列表，一行一个短名字，解释写在组下面的小字里。
  */
 
 /** 面板里的各页。 */
 private enum class SettingsPage(val title: String) {
     MAIN("外观"),
-    MORE("阅读设置"),
+    MORE("更多设置"),
     FONT("字体"),
     LAYOUT("排版"),
     PAGING("翻页方式"),
@@ -113,7 +113,7 @@ internal fun SettingsSheet(
     ambient: AmbientLight? = null,
     /** 强调色。面板画在最外层，拿不到应用主题，由阅读页取好传进来。 */
     tint: Color = palette.accent,
-    /** 从“阅读设置”那页开始（菜单里的“设置”），否则从“外观”开始。 */
+    /** 从“更多设置”那页开始（菜单里的“更多”），否则从“外观”开始。 */
     startWithMore: Boolean = false,
     /** 首页右上角“完成”。 */
     onDone: () -> Unit = {},
@@ -159,7 +159,7 @@ internal fun SettingsSheet(
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 12.dp)) {
                     when (st.last()) {
                         SettingsPage.MAIN -> MainPage(settings, update, fonts, ::open)
-                        SettingsPage.MORE -> MorePage(settings, fonts, ::open)
+                        SettingsPage.MORE -> MorePage(settings, ::open)
                         SettingsPage.FONT -> FontPage(settings, fonts, update, onImportFonts, onDeleteFont)
                         SettingsPage.LAYOUT -> LayoutPage(settings, update)
                         SettingsPage.PAGING -> PagingPage(settings, update)
@@ -198,13 +198,11 @@ private fun MainPage(settings: ReaderSettings, update: ((ReaderSettings) -> Read
     }
 }
 
-/** 菜单里的“设置”：其余各项按用途分组，点进去。 */
+/** 菜单里的“更多”：外观首页以外的各项按用途分组，点进去（字体、翻页方式在首页）。 */
 @Composable
-private fun MorePage(settings: ReaderSettings, fonts: List<String>, open: (SettingsPage) -> Unit) {
+private fun MorePage(settings: ReaderSettings, open: (SettingsPage) -> Unit) {
     GroupedSection {
-        row { NavRow("字体", fontLabel(settings, fonts)) { open(SettingsPage.FONT) } }
         row { NavRow("排版", LayoutPreset.entries.firstOrNull { it.matches(settings) }?.label ?: "手动调整") { open(SettingsPage.LAYOUT) } }
-        row { NavRow("翻页方式", settings.pageMode.label) { open(SettingsPage.PAGING) } }
         row {
             NavRow("繁简与注音", listOfNotNull(settings.chineseConvert.label, "注音".takeIf { settings.pinyin }).joinToString(" · ")) {
                 open(SettingsPage.TEXT)

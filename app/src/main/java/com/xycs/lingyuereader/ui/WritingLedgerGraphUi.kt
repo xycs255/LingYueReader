@@ -31,6 +31,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.LedgerChapter
+import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
@@ -183,6 +185,23 @@ internal fun LazyListScope.ledgerPeopleGraph(
     }
 }
 
+/**
+ * 伏笔标签上从原来“伏笔”页并过来的几样：设定包伏笔表里的条目（[legacy]，还没导入账本的也列出来）、写到了第几章（[latest]，
+ * 算哪些该回收了）、伏笔表文档（[docs]，id 到标题）。
+ */
+internal data class LedgerPromiseSources(
+    val legacy: List<Foreshadow> = emptyList(),
+    val latest: Int = 0,
+    val docs: List<Pair<String, String>> = emptyList(),
+)
+
+/** 计划回收的章已经写到、还没标为已回收。 */
+private fun promiseDue(done: Boolean, payoff: Int?, latest: Int) = !done && payoff != null && payoff <= latest
+
+/**
+ * 账本的“伏笔”标签：该回收了 / 还没回收 / 已回收三组（账本里的一条一张卡片，能拖计划收章、标为已回收；
+ * 伏笔表里还没导入账本的一条一行，点了也能标为已回收），最后是来源文档（伏笔表）。回收状态以账本为准。
+ */
 internal fun LazyListScope.ledgerPromiseGraph(
     entries: List<LedgerEntry>,
     chapter: LedgerChapter?,
@@ -190,16 +209,75 @@ internal fun LazyListScope.ledgerPromiseGraph(
     personFilter: String?,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    sources: LedgerPromiseSources = LedgerPromiseSources(),
+    onClose: (WritingForeshadow) -> Unit = {},
+    onOpenDoc: (String) -> Unit = {},
 ) {
     val promises = ledgerGraphPromises(entries, chapter, personFilter)
-    if (promises.isEmpty()) {
-        item(key = "graph:promise:empty") { GroupedSection { row { EmptyRow("还没有账本伏笔。设定包伏笔表可显式导入。") } } }
-        return
+    val merged = mergeWritingForeshadows(sources.legacy, entries)
+    val byId = merged.mapNotNull { f -> f.ledger?.let { it.id to f } }.toMap()
+    // 伏笔表里还没导入的没有人物，只人物筛选时不列；翻到某一章时只列那一章以前埋下的。
+    val legacyOnly = if (personFilter != null) emptyList()
+    else merged.filter { it.ledger == null && (chapter == null || (it.display.planted ?: 0) <= chapter.no) }
+    val latest = sources.latest
+    val dueCards = promises.filter { promiseDue(it.done, it.payoff, latest) }
+    val dueRows = legacyOnly.filter { promiseDue(it.display.done, it.display.payoff, latest) }
+    val openCards = promises.filter { !it.done } - dueCards.toSet()
+    val openRows = legacyOnly.filter { !it.display.done } - dueRows.toSet()
+    val doneCards = promises.filter { it.done }
+    val doneRows = legacyOnly.filter { it.display.done }
+
+    fun cards(key: String, list: List<LedgerEntry>, due: Boolean) {
+        items(list, key = { "graph:promise:$key:" + it.id }) { e ->
+            LedgerPromiseCard(e, chapters, onPayoff, onOpen, due = due, onClose = byId[e.id]?.let { f -> { onClose(f) } })
+        }
     }
-    item(key = "graph:promise:intro") { GroupedListHeader("账本伏笔 · 拖动计划收章") }
-    items(promises, key = { "graph:promise:" + it.id }) { e -> LedgerPromiseCard(e, chapters, onPayoff, onOpen) }
-    item(key = "graph:promise:foot") {
-        GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。")
+    fun rows(key: String, list: List<WritingForeshadow>, footer: String?) {
+        if (list.isEmpty()) return
+        item(key = "graph:promise:$key:legacy") {
+            val c = LocalGroupedColors.current
+            GroupedSection(footer = footer) {
+                list.forEach { f ->
+                    val whenText = ChapterBrief.foreshadowWhen(f.display).trim('（', '）')
+                    row {
+                        if (f.display.done) TwoLine(f.display.what, whenText, trailing = { Tag("已回收", c.success) })
+                        else NavRow(f.display.what, subtitle = whenText.ifEmpty { null }, trailing = { Tag(if (promiseDue(false, f.display.payoff, latest)) "该回收" else "未导入", c.warning) }) { onClose(f) }
+                    }
+                }
+            }
+        }
+    }
+
+    if (promises.isEmpty() && legacyOnly.isEmpty()) {
+        item(key = "graph:promise:empty") { GroupedSection { row { EmptyRow("还没有伏笔。右上角“+”加一条，或从右上菜单导入设定包的伏笔表。") } } }
+    }
+    if (dueCards.isNotEmpty() || dueRows.isNotEmpty()) {
+        item(key = "graph:promise:due:head") { GroupedListHeader("该回收了") }
+        cards("due", dueCards, due = true)
+        rows("due", dueRows, null)
+        item(key = "graph:promise:due:foot") { GroupedListFooter("计划回收的章已经写到（写到第 $latest 章），还没标为已回收。") }
+    }
+    if (openCards.isNotEmpty() || openRows.isNotEmpty()) {
+        item(key = "graph:promise:intro") { GroupedListHeader("还没回收 · 拖动计划收章") }
+        cards("open", openCards, due = false)
+        rows("open", openRows, "伏笔表里还没导入账本的；点一条可以标为已回收，从右上菜单“从设定包导入”后才能拖动计划收章。")
+        item(key = "graph:promise:foot") {
+            GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。")
+        }
+    }
+    if (doneCards.isNotEmpty() || doneRows.isNotEmpty()) {
+        item(key = "graph:promise:done:head") { GroupedListHeader("已回收") }
+        cards("done", doneCards, due = false)
+        rows("done", doneRows, null)
+    }
+    if (sources.docs.isNotEmpty()) {
+        item(key = "graph:promise:docs") {
+            GroupedSection(header = "来源文档", footer = "伏笔表尚未导入的条目也会显示；与账本重复时，账本里的状态优先。") {
+                sources.docs.forEach { (id, title) ->
+                    row { NavRow(if (sources.docs.size == 1) "编辑伏笔表" else "编辑“$title”") { onOpenDoc(id) } }
+                }
+            }
+        }
     }
 }
 
@@ -216,6 +294,9 @@ private fun LedgerPromiseCard(
     chapters: List<LedgerChapter>,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    due: Boolean = false,
+    /** 没收的伏笔：“标为已回收”（先确认）。 */
+    onClose: (() -> Unit)? = null,
 ) {
     val c = LocalGroupedColors.current
     val start = (entry.from ?: 1).coerceAtLeast(1)
@@ -228,7 +309,7 @@ private fun LedgerPromiseCard(
     LedgerGraphCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Tag(if (entry.done) "已收" else "未收", if (entry.done) c.success else c.warning)
+            Tag(if (entry.done) "已收" else if (due) "该回收" else "未收", if (entry.done) c.success else c.warning)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(c.tint))
@@ -279,7 +360,10 @@ private fun LedgerPromiseCard(
                 }
             }
         }
-        PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!entry.done && onClose != null) PillButton("标为已回收", onClick = onClose, style = PillStyle.Tinted)
+            PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        }
     }
 }
 

@@ -35,7 +35,6 @@ internal data class WritingWorkOverviewActions(
     val openAi: () -> Unit,
     val preview: () -> Unit,
     val openChanges: () -> Unit,
-    val openForeshadows: () -> Unit,
     val openRules: () -> Unit,
     val organizeUnsynced: () -> Unit,
     /** 长按色块：弹出和规划树长按一样的章节菜单。 */
@@ -44,7 +43,7 @@ internal data class WritingWorkOverviewActions(
 
 /**
  * 作品页顶部：进度环（中间总字数，环是定稿章数占总章数）、每章一格的色块带、四张大入口卡片；
- * 不常用的收在“更多功能”里，一项不少。[chapterMenu] 是色块长按弹出的菜单（和规划树同一份，见 [ChapterMenuPopup]）。
+ * 不常用的收在“更多功能”里（在本页展开）。进度卡上的“N 章待整理”“N 条待同步设定”能点。[chapterMenu] 是色块长按弹出的菜单（和规划树同一份，见 [ChapterMenuPopup]）。
  */
 @Composable
 internal fun WritingWorkOverview(
@@ -54,7 +53,6 @@ internal fun WritingWorkOverview(
     aiAdviceEnabled: Boolean,
     pendingChanges: Int,
     unsyncedChapters: Int,
-    foreshadowNote: String?,
     ruleCount: Int?,
     busy: Boolean,
     actions: WritingWorkOverviewActions,
@@ -78,7 +76,10 @@ internal fun WritingWorkOverview(
 
     GroupedSection(header = "作品进度", footer = work.synopsis.ifBlank { null }) {
         row {
-            ProgressHead(work, finalized, progress, statusSummary, todayWords, dailyGoal, unsyncedChapters, pendingChanges)
+            ProgressHead(
+                work, finalized, progress, statusSummary, todayWords, dailyGoal, unsyncedChapters, pendingChanges,
+                onUnsynced = actions.organizeUnsynced, onChanges = actions.openChanges,
+            )
         }
         if (chapters.isNotEmpty()) {
             row {
@@ -132,12 +133,9 @@ internal fun WritingWorkOverview(
         }
     }
 
-    GroupedSection(header = "其他写作工具") {
-        row {
-            NavRow("更多功能", value = if (moreExpanded) "收起" else "预览 · 变更 · 伏笔 · 规则", icon = LingYueIcons.More, iconBackground = c.tint) {
-                moreExpanded = !moreExpanded
-            }
-        }
+    // 不常用的在本页展开（不跳页，用 ExpandRow）。伏笔在故事账本的“伏笔”里；整理没整理的章节点进度卡上的“N 章待整理”。
+    GroupedSection {
+        row { ExpandRow("更多功能", moreExpanded, value = if (moreExpanded) null else "预览 · 变更 · 规则") { moreExpanded = !moreExpanded } }
         if (moreExpanded) {
             row { NavRow("当书预览", value = "排版、听稿", icon = LingYueIcons.Book, iconBackground = c.tint, enabled = !busy) { actions.preview() } }
             row {
@@ -148,17 +146,9 @@ internal fun WritingWorkOverview(
                     iconBackground = c.tint,
                 ) { actions.openChanges() }
             }
-            row { NavRow("伏笔", value = foreshadowNote, icon = LingYueIcons.Star, iconBackground = c.tint) { actions.openForeshadows() } }
             row {
                 NavRow("检查规则", value = ruleCount?.let { if (it == 0) "未设" else "$it 条" }, icon = LingYueIcons.Check, iconBackground = c.tint) {
                     actions.openRules()
-                }
-            }
-            if (unsyncedChapters > 0) {
-                row {
-                    NavRow("整理没整理的章节", value = "$unsyncedChapters 章", icon = LingYueIcons.Check, iconBackground = c.tint) {
-                        actions.organizeUnsynced()
-                    }
                 }
             }
         }
@@ -189,6 +179,8 @@ private fun ProgressHead(
     dailyGoal: Int,
     unsyncedChapters: Int,
     pendingChanges: Int,
+    onUnsynced: () -> Unit,
+    onChanges: () -> Unit,
 ) {
     val c = LocalGroupedColors.current
     val total = work.chapters.size
@@ -219,8 +211,9 @@ private fun ProgressHead(
             }
             if (unsyncedChapters > 0 || pendingChanges > 0) {
                 FlowRow(Modifier.padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (unsyncedChapters > 0) Tag("$unsyncedChapters 章待整理", c.warning)
-                    if (pendingChanges > 0) Tag("$pendingChanges 条待同步设定", c.warning)
+                    // 看着像能点的就真能点：待整理直接打开整理那一步，待同步设定打开变更登记。
+                    if (unsyncedChapters > 0) PillButton("$unsyncedChapters 章待整理 ›", onUnsynced, style = PillStyle.Tinted)
+                    if (pendingChanges > 0) PillButton("$pendingChanges 条待同步设定 ›", onChanges, style = PillStyle.Tinted)
                 }
             }
         }

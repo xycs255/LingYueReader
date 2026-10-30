@@ -384,7 +384,6 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 if (showBasis || handoff.view != null) {
                     DraftBasisSection(basis, beatList, showBasis, basisExpanded, onToggle = { basisExpanded = !basisExpanded },
                         canRewrite = canWrite && !loading,
-                        onEdit = { vm.open(Screen.ChapterCard(workId, chapterId)) },
                         onRewrite = { startDraft() }) {
                         handoffRows(handoff, aiReady = aiConfig.ready && !aiConfig.onDevice, onEdit = { handoff.editing = true },
                             onRefresh = { handoff.refresh(vm, scope) })
@@ -394,7 +393,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     header = "你的构思",
                     footer = when {
                         locked -> "这一章已定稿，不能让 AI 重写。要改先解锁并登记原因。"
-                        !aiConfig.ready -> "先在“我的 → AI 助手”里设置服务商。"
+                        !aiConfig.ready -> "先在“我的 → AI 服务”里设置服务商。"
                         taskError != null -> taskError
                         draft == null -> "正在读取已保存的候选稿……"
                         task == null -> "正在核对本章任务与资料……"
@@ -447,6 +446,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             ) { showTask = true }
                         }
                     }
+                    // 本页唯一一处去细纲卡的入口（上面“你的构思”就是细纲卡里的几项；节拍也在细纲卡里改）。
                     row { NavRow(if (card?.isEmpty == true) "先写细纲卡" else "编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                 }
                 if (beatList.isNotEmpty()) {
@@ -454,7 +454,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     GroupedSection(
                         header = "节拍",
                         footer = "本章有节拍：写本章时一拍一拍地写，每拍写完存一次候选稿。中途停下或出错，“接着写”从下一拍开始；" +
-                            "各拍写完再照常审读。节拍在细纲卡里改。",
+                            "各拍写完再照常审读。节拍在细纲卡里改（上面“编辑细纲卡”）。",
                     ) {
                         beatList.forEach { b ->
                             row {
@@ -465,7 +465,6 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 )
                             }
                         }
-                        row { NavRow("去改节拍") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                     }
                 }
                 GroupedSection(
@@ -905,11 +904,11 @@ private fun beatsOf(card: ChapterCard?): List<Beat> = card?.let(::beats).orEmpty
 
 /**
  * 草稿页上方“这一章是按下面的细纲和节拍写的”：可折叠，列本章事实与结果和各拍；一键写本章时 AI 拟的、拆的挂小标签，
- * 作者在细纲卡里改过或确认过就没了。两个按钮：去细纲卡改，回来按改过的重写一版。
+ * 作者在细纲卡里改过或确认过就没了。改细纲卡走“你的构思”里那一行“编辑细纲卡”（本页只留这一处），这里只有“按改过的重写”。
  */
 @Composable
 private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasis: Boolean, expanded: Boolean, onToggle: () -> Unit,
-                              canRewrite: Boolean, onEdit: () -> Unit, onRewrite: () -> Unit,
+                              canRewrite: Boolean, onRewrite: () -> Unit,
                               /** 卡片最后加的几行（“接上一章”）。 */
                               extra: GroupedSectionScope.() -> Unit = {}) {
     val c = LocalGroupedColors.current
@@ -937,7 +936,6 @@ private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasi
                     }
                 }
             }
-            row { NavRow("改细纲 / 节拍") { onEdit() } }
             row { ActionRow("按改过的重写", enabled = canRewrite) { onRewrite() } }
         }
         extra()

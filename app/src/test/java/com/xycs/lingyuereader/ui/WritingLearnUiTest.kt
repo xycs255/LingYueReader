@@ -163,7 +163,7 @@ class WritingLearnUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterFinish(workId, chapterId)) }
         waitFor { seen("从这章的改稿里学") }
         compose.onNode(hasText("从这章的改稿里学") and isToggleable()).assertIsOn()
-        press("开始")
+        press("开始收尾")
         waitFor { seen("从改稿里学到的") }
         // 本机比对的黑名单词（默认勾上）和它的例子；AI 归纳的规则默认不勾。
         val banTitle = "黑名单词：「$ban」"

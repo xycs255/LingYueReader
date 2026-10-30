@@ -132,6 +132,7 @@ import com.xycs.lingyuereader.ai.AiSession
 import com.xycs.lingyuereader.ai.AiTask
 import com.xycs.lingyuereader.data.BookContent
 import com.xycs.lingyuereader.data.BookEntry
+import com.xycs.lingyuereader.data.BookFormat
 import com.xycs.lingyuereader.data.MarkColor
 import com.xycs.lingyuereader.data.PageMode
 import com.xycs.lingyuereader.data.ReaderSettings
@@ -290,7 +291,7 @@ internal fun pageLayoutChar(chapter: com.xycs.lingyuereader.data.Chapter, block:
 
 private sealed interface ReaderSheet {
     data object Catalog : ReaderSheet
-    /** 阅读设置；[more] 为真时从“更多设置”那页开始（菜单里的“设置”），否则从“外观”开始。 */
+    /** 阅读设置；[more] 为真时从“更多设置”那页开始（底栏的“更多”），否则从“外观”开始。 */
     data class Settings(val more: Boolean = false) : ReaderSheet
     data class Paragraph(val block: Int, val selection: IntRange? = null) : ReaderSheet
     /** 跨段落划线。 */
@@ -981,7 +982,7 @@ private fun Reader(
                 IconButton(onClick = { vm.open(Screen.Search(entry.id)) }) {
                     Icon(LingYueIcons.Search, contentDescription = "书内搜索", tint = palette.text)
                 }
-                // 不常用的收进“更多”：自动滚动 / 自动翻页、书籍详情。
+                // 不常用的收进“⋯”：自动滚动 / 自动翻页、净化与分章（乱码、分章不对时用，TXT 和 Markdown 才有）、书籍详情。
                 Box {
                     var more by remember { mutableStateOf(false) }
                     IconButton(onClick = { more = true }) {
@@ -995,6 +996,12 @@ private fun Reader(
                                     autoScroll = true
                                     autoPaused = false
                                     menuVisible = false
+                                }
+                                if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
+                                    LingYueMenuItem("净化与分章", selected = false) {
+                                        more = false
+                                        vm.open(Screen.BookRules(entry.id))
+                                    }
                                 }
                                 LingYueMenuItem("书籍详情", selected = false) {
                                     more = false
@@ -1051,7 +1058,8 @@ private fun Reader(
                         }
                     }
                     BarButton("外观", null, palette, Modifier.weight(1f), active = sheet == ReaderSheet.Settings(false)) { sheet = ReaderSheet.Settings(false) }
-                    BarButton("设置", LingYueIcons.Tune, palette, Modifier.weight(1f)) { sheet = ReaderSheet.Settings(true) }
+                    // 字体、翻页方式在“外观”里；“更多”直接进其余的设置（排版细调、繁简、点按、护眼、屏幕）。
+                    BarButton("更多", LingYueIcons.Tune, palette, Modifier.weight(1f), active = sheet == ReaderSheet.Settings(true)) { sheet = ReaderSheet.Settings(true) }
                 }
             }
         }

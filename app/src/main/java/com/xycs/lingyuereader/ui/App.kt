@@ -223,14 +223,13 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WorkAi -> WorkAiScreen(vm, screen.workId)
             is Screen.WorkAiAdvanced -> WorkAiAdvancedScreen(vm, screen.workId)
             is Screen.WorkPack -> WorkPackScreen(vm, screen.workId)
-            is Screen.WorkLedger -> WorkLedgerScreen(vm, screen.workId, screen.chapterId)
+            is Screen.WorkLedger -> WorkLedgerScreen(vm, screen.workId, screen.chapterId, screen.promises)
             is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId)
             is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
             is Screen.WorkRules -> WorkRulesScreen(vm, screen.workId)
             is Screen.ChapterBrief -> ChapterBriefScreen(vm, screen.workId, screen.chapterId)
             is Screen.ChapterReview -> ChapterReviewScreen(vm, screen.workId, screen.chapterId)
-            is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
             is Screen.ChapterDraft -> ChapterDraftScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkAiLog -> WorkAiLogScreen(vm, screen.workId)
             is Screen.WorkStyleSamples -> WorkStyleSamplesScreen(vm, screen.workId)
@@ -770,13 +769,12 @@ internal class BookDialogState {
 
 @Composable
 private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs: BookDialogState, onDismiss: () -> Unit) {
-    val actions = buildList {
-        add("详情" to { vm.open(Screen.Detail(entry.id)) })
-        if (entry.sources.any { it.uri != null }) add("从原文件刷新" to { vm.refresh(entry) })
-        add("分组…" to { dialogs.grouping = true })
-        add("重命名" to { dialogs.renaming = true })
-        add("移除" to { dialogs.removing = true })
-    }
+    // 只留三样：详情 / 分组… / 移除。从原文件刷新、重命名、净化与分章在详情页里。
+    val actions = listOf<Pair<String, () -> Unit>>(
+        "详情" to { vm.open(Screen.Detail(entry.id)) },
+        "分组…" to { dialogs.grouping = true },
+        "移除" to { dialogs.removing = true },
+    )
     OverlayListPopup(show = show, onDismissRequest = onDismiss) {
         GlassMenu {
             ListPopupColumn {

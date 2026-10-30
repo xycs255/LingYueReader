@@ -3,6 +3,7 @@ package com.xycs.lingyuereader.ui
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -46,7 +47,6 @@ class WritingWorkOverviewUiTest {
                         aiAdviceEnabled = false,
                         pendingChanges = 1,
                         unsyncedChapters = 1,
-                        foreshadowNote = "2 条没回收",
                         ruleCount = 2,
                         busy = false,
                         actions = WritingWorkOverviewActions(
@@ -57,7 +57,6 @@ class WritingWorkOverviewUiTest {
                             openAi = { called += "ai" },
                             preview = { called += "preview" },
                             openChanges = { called += "changes" },
-                            openForeshadows = { called += "foreshadows" },
                             openRules = { called += "rules" },
                             organizeUnsynced = { called += "organize" },
                         ),
@@ -73,15 +72,24 @@ class WritingWorkOverviewUiTest {
         compose.onNodeWithText("写作 AI").performClick()
         assertEquals(listOf("chapter", "pack", "ledger", "ai"), called)
 
+        // 进度卡上的“待整理”“待同步设定”能点：一个直接整理，一个打开变更登记。
+        compose.onNodeWithText("1 章待整理 ›").performClick()
+        compose.onNodeWithText("1 条待同步设定 ›").performClick()
+        assertEquals(listOf("chapter", "pack", "ledger", "ai", "organize", "changes"), called)
+
+        // “更多功能”在本页展开（读屏念已收起 / 已展开），没有组名“其他写作工具”，也没有单独的“伏笔”“整理没整理的章节”行。
+        compose.onNodeWithText("其他写作工具").assertDoesNotExist()
         compose.onNodeWithText("当书预览").assertDoesNotExist()
-        compose.onNodeWithText("更多功能").performScrollTo().performClick()
+        compose.onNodeWithText("更多功能").performScrollTo().assert(androidx.compose.ui.test.SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "已收起"))
+        compose.onNodeWithText("更多功能").performClick()
+        compose.onNodeWithText("更多功能").assert(androidx.compose.ui.test.SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "已展开"))
         compose.onNodeWithText("当书预览").assertExists().performScrollTo().performClick()
         compose.onNodeWithText("变更登记").assertExists().performScrollTo().performClick()
-        compose.onNodeWithText("伏笔").assertExists().performScrollTo().performClick()
         compose.onNodeWithText("检查规则").assertExists().performScrollTo().performClick()
-        compose.onNodeWithText("整理没整理的章节").assertExists().performScrollTo().performClick()
+        compose.onNodeWithText("伏笔").assertDoesNotExist()
+        compose.onNodeWithText("整理没整理的章节").assertDoesNotExist()
         assertEquals(
-            listOf("chapter", "pack", "ledger", "ai", "preview", "changes", "foreshadows", "rules", "organize"),
+            listOf("chapter", "pack", "ledger", "ai", "organize", "changes", "preview", "changes", "rules"),
             called,
         )
     }
@@ -110,7 +118,6 @@ class WritingWorkOverviewUiTest {
                             aiAdviceEnabled = true,
                             pendingChanges = 0,
                             unsyncedChapters = 2,
-                            foreshadowNote = null,
                             ruleCount = 0,
                             busy = false,
                             unsyncedIds = setOf("c3", "c4"),
@@ -126,7 +133,6 @@ class WritingWorkOverviewUiTest {
                                 openAi = {},
                                 preview = {},
                                 openChanges = {},
-                                openForeshadows = {},
                                 openRules = {},
                                 organizeUnsynced = {},
                                 openChapterMenu = { menu += it.id },
@@ -162,8 +168,8 @@ class WritingWorkOverviewUiTest {
                     WritingWorkOverview(
                         work = Work("w", "长夜", volumes = listOf(Volume("v", "正文", listOf(chapter)))),
                         packCount = 0, ledgerCount = 0, aiAdviceEnabled = false, pendingChanges = 0, unsyncedChapters = 0,
-                        foreshadowNote = null, ruleCount = null, busy = false,
-                        actions = WritingWorkOverviewActions({}, {}, {}, {}, {}, {}, {}, {}, {}, {}),
+                        ruleCount = null, busy = false,
+                        actions = WritingWorkOverviewActions({}, {}, {}, {}, {}, {}, {}, {}, {}),
                     )
                 }
             }
