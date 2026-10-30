@@ -2,7 +2,6 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Box
@@ -42,7 +41,6 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 常用的净化规则，点一下填进表单。 */
@@ -123,7 +121,6 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
             return@SubPageScaffold
         }
         val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
-        val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -134,12 +131,11 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                     row { CheckRow("自动识别", toc.isBlank()) { toc = "" } }
                     TextRules.TOC_PRESETS.forEach { p -> row { CheckRow(p.label, toc == p.pattern) { toc = p.pattern } } }
                     row {
-                        TextField(
+                        GroupedTextField(
                             value = toc,
                             onValueChange = { toc = it },
                             label = "分章正则",
                             singleLine = true,
-                            colors = fieldColors,
                             textStyle = mono,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -225,8 +221,8 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                             regex = t.regex
                         }
                     }
-                    row { TextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
-                    row { TextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, colors = fieldColors, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
+                    row { GroupedTextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+                    row { GroupedTextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
                     row { ToggleRow("按正则匹配", regex) { regex = it } }
                     if (draftHeld) row { ActionRow("仍然试一下") { allowed = allowed + pattern } }
                     row {

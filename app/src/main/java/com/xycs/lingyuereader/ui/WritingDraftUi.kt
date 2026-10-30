@@ -60,7 +60,6 @@ import com.xycs.lingyuereader.ai.AiPricing
 import com.xycs.lingyuereader.ai.AiRequestBudgetPreview
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -408,7 +407,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     row { DraftIdeaSummary(card) }
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            TextField(
+                            GroupedTextField(
                                 value = instruction,
                                 onValueChange = { instructionChoice = it },
                                 label = "这一章想怎么写（可空）· 比如：多写对白，节奏快一点",
@@ -418,7 +417,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            TextField(
+                            GroupedTextField(
                                 value = targetLength, onValueChange = { targetLengthChoice = it },
                                 label = "目标篇幅（可空，默认依本章细纲）",
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 100.dp),
@@ -763,7 +762,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         if (directionDialog) {
             GlassDialog(show = true, title = "修改方向", summary = "写给 AI 的新要求，按它重写一版；这一版留着，可以切回来。",
                 onDismissRequest = { directionDialog = false }) {
-                TextField(value = directionText, onValueChange = { directionText = it },
+                GroupedTextField(value = directionText, onValueChange = { directionText = it },
                     label = "比如：对白增加试探，仍遵守本章结果", modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 250.dp))
                 DialogButtons(onDismiss = { directionDialog = false }, onConfirm = {
                     instructionChoice = directionText
@@ -782,7 +781,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             rejectReasons = if (on) rejectReasons + r else rejectReasons - r
                         }
                     }
-                    if (FixReason.OTHER in rejectReasons) TextField(value = rejectNote, onValueChange = { rejectNote = it.replace("\n", "") },
+                    if (FixReason.OTHER in rejectReasons) GroupedTextField(value = rejectNote, onValueChange = { rejectNote = it.replace("\n", "") },
                         label = "说一句哪里不行（可空）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
                 DialogButtons(onDismiss = { rejecting = null }, onConfirm = {
@@ -794,7 +793,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         HandoffEditDialog(vm, handoff, scope)
         if (editingDraft) {
             GlassDialog(show = true, title = "修改候选稿", summary = "只修改这份候选稿。保存后旧审读结果失效，需要针对新稿重新审读。", onDismissRequest = { editingDraft = false }) {
-                TextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
+                GroupedTextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
                 DialogButtons(onDismiss = { editingDraft = false }, onConfirm = {
                     vm.writingAi.updateDraftText(workId, chapterId, editedDraft)
                     editingDraft = false

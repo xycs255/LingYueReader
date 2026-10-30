@@ -58,8 +58,6 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
@@ -87,7 +85,6 @@ fun AiScreen(vm: AppViewModel) {
         onBack = { vm.back() },
     ) { padding ->
         val c = LocalGroupedColors.current
-        val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
         val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
@@ -179,36 +176,33 @@ fun AiScreen(vm: AppViewModel) {
                             row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
                         }
                         row {
-                            TextField(
+                            GroupedTextField(
                                 value = config.baseUrl,
                                 onValueChange = { update(config.copy(baseUrl = it.trim())) },
                                 label = "接口地址",
                                 singleLine = true,
                                 enabled = editableUrl,
-                                colors = fieldColors,
                                 textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                         row {
-                            TextField(
+                            GroupedTextField(
                                 value = config.model,
                                 onValueChange = { update(config.copy(model = it.trim())) },
                                 label = "模型",
                                 singleLine = true,
-                                colors = fieldColors,
                                 textStyle = mono,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                         row {
-                            TextField(
+                            GroupedTextField(
                                 value = config.apiKey,
                                 onValueChange = { update(config.withKey(it.trim())) },
                                 label = if (config.lan) "API 密钥（可不填）" else "API 密钥",
                                 singleLine = true,
-                                colors = fieldColors,
                                 textStyle = mono,
                                 visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
@@ -272,18 +266,17 @@ fun AiScreen(vm: AppViewModel) {
                         "服务商可能按请求或文字量收费；新段落按书缓存，后续只补缺失的向量。需要 embeddings 接口，例如通义千问 text-embedding-v4、智谱 embedding-3、Ollama 的 nomic-embed-text。留空仅按关键词找。",
                 ) {
                     row {
-                        TextField(
+                        GroupedTextField(
                             value = config.embeddingModel,
                             onValueChange = { update(config.copy(embeddingModel = it.trim())) },
                             label = "向量模型（可不填）",
                             singleLine = true,
-                            colors = fieldColors,
                             textStyle = mono,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
-                SpeechSection(config, update, fieldColors, mono, vm)
+                SpeechSection(config, update, mono, vm)
                 AnimatedVisibility(config.enabled && !config.complete, enter = sectionEnter(), exit = sectionExit()) {
                     Text(
                         "填好接口地址、模型和密钥（局域网模型可不填密钥）后，AI 功能才会出现在阅读界面里。",
@@ -299,8 +292,8 @@ fun AiScreen(vm: AppViewModel) {
             var label by remember(i) { mutableStateOf(q?.label.orEmpty()) }
             var instruction by remember(i) { mutableStateOf(q?.instruction.orEmpty()) }
             GlassDialog(show = true, title = if (q == null) "添加快捷问题" else "修改快捷问题", onDismissRequest = { editing = null }) {
-                TextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字（如“讲人物”）", singleLine = true, modifier = Modifier.fillMaxWidth())
-                TextField(
+                GroupedTextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字（如“讲人物”）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(
                     value = instruction,
                     onValueChange = { instruction = it },
                     label = "对 AI 的要求（如“讲讲这段里的人物关系”）",
@@ -345,7 +338,6 @@ private fun sectionExit() = Effects.exit(shrinkVertically(Motion.standard(), shr
 private fun SpeechSection(
     config: AiConfig,
     update: (AiConfig) -> Unit,
-    fieldColors: top.yukonga.miuix.kmp.basic.TextFieldColors,
     mono: androidx.compose.ui.text.TextStyle,
     vm: AppViewModel,
 ) {
@@ -375,25 +367,23 @@ private fun SpeechSection(
         }
         row { PickerRow("服务商", SpeechPresets.ALL.map { it.id to it.label }, sp.preset) { id -> setSpeech(sp.withPreset(SpeechPresets.of(id))) } }
         row {
-            TextField(
+            GroupedTextField(
                 value = sp.baseUrl,
                 onValueChange = { setSpeech(sp.copy(baseUrl = it.trim())) },
                 label = "接口地址",
                 singleLine = true,
                 enabled = editableUrl,
-                colors = fieldColors,
                 textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        row { TextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+        row { GroupedTextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
         row {
-            TextField(
+            GroupedTextField(
                 value = sp.apiKey,
                 onValueChange = { setSpeech(sp.withKey(it.trim())) },
                 label = if (sp.lan) "API 密钥（可不填）" else "API 密钥",
                 singleLine = true,
-                colors = fieldColors,
                 textStyle = mono,
                 visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
@@ -413,15 +403,14 @@ private fun SpeechSection(
         if (preset.voices.isNotEmpty()) {
             row { PickerRow("声音", preset.voices, sp.voice) { setSpeech(sp.copy(voice = it)) } }
         } else {
-            row { TextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+            row { GroupedTextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
         }
         if (preset.instructions) {
             row {
-                TextField(
+                GroupedTextField(
                     value = sp.instructions,
                     onValueChange = { setSpeech(sp.copy(instructions = it)) },
                     label = "朗读风格（可不填，如“像讲故事一样，语气温和”）",
-                    colors = fieldColors,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

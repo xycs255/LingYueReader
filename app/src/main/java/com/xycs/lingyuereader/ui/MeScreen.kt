@@ -53,31 +53,34 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
- * 行首图标的语义色。由 [RowIcon] 淡化成浅底图标，同一个入口在各页使用同一色。
+ * 行首图标的颜色：从分类色（[categoryColor]）取，不写死色值——以前是一套 11 个手调的色相，另有几页直接写 iOS 的紫和蓝，和暖纸色不搭。
+ * 由 [RowIcon] 淡化成浅底图标；同一个入口在各页用同一类。Monet、自选强调色、深色下跟着配色走。
  */
 internal object RowIconColors {
     /** 词典（Translate）。 */
-    val Dictionary = Color(0xFF956B50)
+    val Dictionary: Color @Composable get() = rowIconTone(CategoryTone.BLUE)
     /** 主题设置（Tune）。 */
-    val Theme = Color(0xFF8B6759)
+    val Theme: Color @Composable get() = rowIconTone(CategoryTone.TINT)
     /** 文件夹（Folder）：书源、WebDAV、备份位置。 */
-    val Folder = Color(0xFF66806B)
-    /** AI（Sparkle）。 */
-    val Ai = Color(0xFF8B6B79)
+    val Folder: Color @Composable get() = rowIconTone(CategoryTone.SUCCESS)
+    /** AI（Sparkle）：AI 服务、写作 AI 的服务商、用 AI 整理。 */
+    val Ai: Color @Composable get() = rowIconTone(CategoryTone.PURPLE)
     /** 声音（VolumeUp）：离线语音、AI 朗读。 */
-    val Voice = Color(0xFF5C7B78)
+    val Voice: Color @Composable get() = rowIconTone(CategoryTone.CYAN)
     /** 备份、上传（Upload）。 */
-    val Upload = Color(0xFF687E63)
-    /** 恢复、下载（Download）。 */
-    val Download = Color(0xFF5B7C84)
+    val Upload: Color @Composable get() = rowIconTone(CategoryTone.SUCCESS)
+    /** 恢复、下载、导入（Download）。 */
+    val Download: Color @Composable get() = rowIconTone(CategoryTone.CYAN)
     /** 定时（Timer）：自动备份、写作时给建议。 */
-    val Timer = Color(0xFF88705D)
+    val Timer: Color @Composable get() = rowIconTone(CategoryTone.WARNING)
     /** 添加（Add）。 */
-    val Add = Color(0xFFA94B36)
+    val Add: Color @Composable get() = rowIconTone(CategoryTone.TINT)
     /** 关于、版本这类说明（Info）。 */
-    val Info = Color(0xFF7D746C)
-    /** 外部链接（Share）。 */
-    val Link = Color(0xFF696F6C)
+    val Info: Color @Composable get() = rowIconTone(CategoryTone.NEUTRAL)
+    /** 外部链接（External）。 */
+    val Link: Color @Composable get() = rowIconTone(CategoryTone.NEUTRAL)
+    /** 书目（OPDS 书源）。 */
+    val Catalog: Color @Composable get() = rowIconTone(CategoryTone.BLUE)
 }
 
 /**

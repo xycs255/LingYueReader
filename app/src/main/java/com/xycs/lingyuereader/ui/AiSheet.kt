@@ -64,8 +64,6 @@ import com.xycs.lingyuereader.ai.AiTurn
 import com.xycs.lingyuereader.ai.QuickAsk
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 
 /** 面板里要做的事，由阅读界面接到 ViewModel。 */
 internal class AiActions(
@@ -334,13 +332,12 @@ private fun AskField(hint: String, enabled: Boolean, onSend: (String) -> Unit) {
             .padding(end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextField(
+        GroupedTextField(
             value = text,
             onValueChange = { text = it },
             label = hint,
             useLabelAsPlaceholder = true,
             maxLines = 4,
-            colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
             textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { send() }),

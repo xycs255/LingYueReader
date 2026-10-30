@@ -69,8 +69,6 @@ import com.xycs.lingyuereader.data.Note
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 
 // ---------- 目录 / 书签 / 批注 ----------
 
@@ -354,11 +352,10 @@ private fun MarkColors(selected: MarkColor, onPick: (MarkColor) -> Unit) {
 @Composable
 private fun NoteField(note: String, onChange: (String) -> Unit) {
     val c = LocalGroupedColors.current
-    TextField(
+    GroupedTextField(
         value = note,
         onValueChange = onChange,
         label = "写点批注（可选）",
-        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
         textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Headline),
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
     )
@@ -403,11 +400,10 @@ internal fun ParagraphSheet(
             GroupedSection(footer = "拖动选中要划线的文字；不选则划整段。") {
                 row {
                     // 只读输入框：能选中文字，选区就是要划线的范围。
-                    TextField(
+                    GroupedTextField(
                         value = selection,
                         onValueChange = { selection = it.copy(text = text) },
                         readOnly = true,
-                        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
                         textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine),
                         modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
                     )

@@ -36,7 +36,6 @@ import com.xycs.lingyuereader.data.SyncItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 整理结果超过这么多条时，确认页先折叠成一行“新设定 N 条、账本 N 条、冲突 N 条”。 */
@@ -302,7 +301,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             }
             if (!run.keepOld) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    TextField(
+                    GroupedTextField(
                         value = run.draft,
                         onValueChange = { if (!busy && !written) vm.writingAi.editFinishSummary(it) },
                         label = "AI 写的摘要（可以改）",

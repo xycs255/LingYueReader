@@ -44,7 +44,6 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 一章的统计，一行说完。 */
@@ -232,7 +231,7 @@ private fun RulesDraftDialog(text: String, replacing: Boolean, onDismiss: () -> 
             if (replacing) "。存了会替换现在的检查规则，原来的进历史版本。" else "。",
         onDismissRequest = onDismiss,
     ) {
-        TextField(value = value, onValueChange = { value = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp))
+        GroupedTextField(value = value, onValueChange = { value = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp))
         if (parsed.unknown.isNotEmpty()) {
             Text(
                 "没看懂：" + parsed.unknown.take(3).joinToString("；") { it.text },

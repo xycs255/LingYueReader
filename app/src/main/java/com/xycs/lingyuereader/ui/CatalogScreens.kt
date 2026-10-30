@@ -88,15 +88,13 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
-private val OpdsColor = Color(0xFFFF9500)
-private val DavColor = RowIconColors.Folder
-
 private fun CatalogKind.icon() = if (this == CatalogKind.OPDS) LingYueIcons.Book else LingYueIcons.Folder
-private fun CatalogKind.color() = if (this == CatalogKind.OPDS) OpdsColor else DavColor
+
+/** 行首图标色：书目蓝、文件夹绿，都从分类色来（以前 OPDS 写死 iOS 橙）。 */
+@Composable
+private fun CatalogKind.color() = if (this == CatalogKind.OPDS) RowIconColors.Catalog else RowIconColors.Folder
 
 /**
  * 书源列表：每个书源一行，点进去浏览；右上角“+”添加。只连读者自己添加的地址。
@@ -212,7 +210,6 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
         },
     ) { padding ->
         val c = LocalGroupedColors.current
-        val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
         val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -225,15 +222,14 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
                 footer = if (draft.insecure) "这是 http:// 地址，用户名和密码会明文传输，只建议在自己家的局域网里用。" else CatalogPresets.hint(kind),
             ) {
                 row {
-                    TextField(value = name, onValueChange = { name = it }, label = "名称（可不填）", singleLine = true, colors = fieldColors, modifier = Modifier.fillMaxWidth())
+                    GroupedTextField(value = name, onValueChange = { name = it }, label = "名称（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
                 row {
-                    TextField(
+                    GroupedTextField(
                         value = url,
                         onValueChange = { url = it; result = null },
                         label = if (kind == CatalogKind.OPDS) "OPDS 地址" else "WebDAV 地址",
                         singleLine = true,
-                        colors = fieldColors,
                         textStyle = mono,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         modifier = Modifier.fillMaxWidth(),
@@ -242,15 +238,14 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
             }
             GroupedSection(header = "账号", footer = "不需要登录的书目留空。密码只存在这台手机上，不进备份。") {
                 row {
-                    TextField(value = username, onValueChange = { username = it; result = null }, label = "用户名", singleLine = true, colors = fieldColors, modifier = Modifier.fillMaxWidth())
+                    GroupedTextField(value = username, onValueChange = { username = it; result = null }, label = "用户名", singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
                 row {
-                    TextField(
+                    GroupedTextField(
                         value = password,
                         onValueChange = { password = it; result = null },
                         label = "密码",
                         singleLine = true,
-                        colors = fieldColors,
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                         trailingIcon = {
@@ -523,13 +518,12 @@ private fun SearchField(query: String, hint: String, busy: Boolean, onChange: (S
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(LingYueIcons.Search, contentDescription = null, tint = c.secondary, modifier = Modifier.size(18.dp))
-        TextField(
+        GroupedTextField(
             value = query,
             onValueChange = onChange,
             label = hint,
             useLabelAsPlaceholder = true,
             singleLine = true,
-            colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
             modifier = Modifier.weight(1f),

@@ -39,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -62,13 +61,11 @@ import com.xycs.lingyuereader.ui.glass.GlassMenu
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -657,14 +654,14 @@ private fun LedgerEntryDialog(
             Text(kind.label + "：" + kind.hint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             if (kind != LedgerKind.TIME) {
                 val needed = kind == LedgerKind.STATE || kind == LedgerKind.KNOW
-                TextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(subjects.filter { it != subject.trim() }) { subject = it }
             }
             if (kind == LedgerKind.STATE) {
-                TextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(LEDGER_ASPECTS.filter { it != aspect.trim() }) { aspect = it }
             }
-            TextField(value = text, onValueChange = { text = it }, label = "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
+            GroupedTextField(value = text, onValueChange = { text = it }, label = "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
             // 章号用步进器：－ ＋ 一章章调，点数字直接输入；空着是“不填”。计划收章、写到哪章止可以超过现有的章。
             Column {
                 val fromTitle = when (kind) {
@@ -689,7 +686,7 @@ private fun LedgerEntryDialog(
                 if (done) ChapterStepperRow("第几章收的", closed, chapters = emptyList(), start = payoff ?: from ?: 1) { closed = it }
             }
             if (kind == LedgerKind.KNOW) {
-                TextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
             if (kind != LedgerKind.TIME) {
                 Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
@@ -723,7 +720,7 @@ private fun LedgerImport(layer: LedgerLayer.Import, padding: PaddingValues, onCh
                 val toggle = { onChange(layer.copy(picked = if (on) layer.picked - e.id else layer.picked + e.id)) }
                 GroupedListCell(i == 0, i == list.lastIndex) {
                     GroupedRow(onClick = toggle) {
-                        Checkbox(state = ToggleableState(on), onClick = toggle)
+                        LingYueCheckbox(on, onClick = toggle)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(e.text, color = if (on) c.label else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
                             val sub = listOf(e.subject, e.aspect, e.whenLabel).filter { it.isNotBlank() }.joinToString(" · ")

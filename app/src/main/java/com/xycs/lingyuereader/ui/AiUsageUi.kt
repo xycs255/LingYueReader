@@ -46,7 +46,6 @@ import com.xycs.lingyuereader.ai.UsageBook
 import com.xycs.lingyuereader.ai.UsageRow
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.time.LocalDate
 
@@ -272,7 +271,7 @@ private fun RateDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (Double)
     var text by remember { mutableStateOf(AiPricing.plain(config.usdRate)) }
     val rate = text.trim().toDoubleOrNull()?.takeIf { it > 0 && it < 100 }
     GlassDialog(show = true, title = "美元汇率", summary = "Claude 按美元计价；用量页把美元折成人民币加总时用。只是换算，不影响扣费。", onDismissRequest = onDismiss) {
-        TextField(
+        GroupedTextField(
             value = text,
             onValueChange = { text = it },
             label = "1 美元 = 多少元",
@@ -361,7 +360,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SegmentedControl(listOf(false to "人民币 ¥", true to "美元 $"), usd) { usd = it }
             listOf(Triple("输入", input) { v: String -> input = v }, Triple("缓存命中", cached) { v: String -> cached = v }, Triple("输出", output) { v: String -> output = v }).forEach { (label, value, set) ->
-                TextField(
+                GroupedTextField(
                     value = value,
                     onValueChange = set,
                     label = label,

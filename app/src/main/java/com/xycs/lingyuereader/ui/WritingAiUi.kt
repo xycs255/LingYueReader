@@ -49,7 +49,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -89,14 +88,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -407,6 +404,8 @@ internal enum class SuggestLine(val label: String) {
     DASHED("虚线"),
     DOTTED("点线"),
     DASH_DOT("点划线"),
+    /** 不是写作建议：本机按检查规则、AI 腔、黑名单标出来的（[ruleMarkLine]）。 */
+    SOLID("实线"),
 }
 
 /** 各类建议在正文里的划线：错字波浪线、设定双线、规范虚线、口吻点线、AI 腔点划线（和标签上的 ●▲■◆★ 一一对应）。 */
@@ -459,6 +458,7 @@ internal fun DrawScope.drawSuggestLine(line: SuggestLine, color: Color, fromX: F
             color, Offset(fromX, y), Offset(toX, y), strokeWidth = stroke, cap = StrokeCap.Round,
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 3.dp.toPx(), 0.01f, 3.dp.toPx())),
         )
+        SuggestLine.SOLID -> drawLine(color, Offset(fromX, y), Offset(toX, y), strokeWidth = stroke)
     }
 }
 
@@ -727,7 +727,7 @@ internal fun RuleNote(text: String, tag: String = "规则", onBan: (() -> Unit)?
 internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = text, onValueChange = { text = it }, label = hint, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
+        GroupedTextField(value = text, onValueChange = { text = it }, label = hint, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
         DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(text.trim()) }, confirmText = confirm, confirmEnabled = text.isNotBlank())
     }
 }
@@ -817,8 +817,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             "前后矛盾在“查”里的“三道审稿”事实关查。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
                     ) {
                         row {
-                            if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE))
-                            else NavRow("设置 AI 服务", value = if (!ai.enabled) "未开启" else "未填密钥", icon = LingYueIcons.Sparkle, iconBackground = Color(0xFFAF52DE)) { vm.open(Screen.Ai) }
+                            if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai)
+                            else NavRow("设置 AI 服务", value = if (!ai.enabled) "未开启" else "未填密钥", icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { vm.open(Screen.Ai) }
                         }
                     }
                     GroupedSection(
@@ -835,7 +835,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(header = "这部书的口味", footer = "一两句话说清这部书读起来是什么味道。AI 写正文时照这个口味写。") {
                         row {
-                            TextField(
+                            GroupedTextField(
                                 value = flavor,
                                 onValueChange = { flavor = it },
                                 label = FLAVOR_EXAMPLE,
@@ -862,7 +862,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(header = "文风", footer = "AI 改稿、写正文时都按这里写的来，比如“第一人称，口语化，少用成语”“对话多、短句为主”。") {
                         row {
-                            TextField(
+                            GroupedTextField(
                                 value = style,
                                 onValueChange = { style = it },
                                 label = "对文风的要求",
@@ -1063,7 +1063,7 @@ internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, o
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { toggle() }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.Top,
                 ) {
-                    Checkbox(state = ToggleableState(p.name in chosen), onClick = { toggle() })
+                    LingYueCheckbox(p.name in chosen, onClick = { toggle() })
                     Column(Modifier.padding(start = 12.dp)) {
                         Text(p.name + if (p.existing) "（更新）" else "", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
                         Text(p.text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
@@ -1106,7 +1106,7 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
                         "最多记 ${WorkAssist.KEEP_BANNED} 条，满了丢最早加的。在编辑器里点到标出的 AI 腔，点“以后都不要”也能加。",
                 ) {
                     row {
-                        TextField(
+                        GroupedTextField(
                             value = input,
                             // 一条说法不跨段：换行去掉。
                             onValueChange = { input = it.replace("\n", "") },
@@ -1169,7 +1169,7 @@ fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
                         "“这章写完了”时勾上“从这章的改稿里学”，学到的你勾了也记在这里。",
                 ) {
                     row {
-                        TextField(
+                        GroupedTextField(
                             value = input,
                             // 一条规则不跨段：换行去掉。
                             onValueChange = { input = it.replace("\n", "") },

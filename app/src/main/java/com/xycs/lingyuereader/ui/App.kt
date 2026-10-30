@@ -18,9 +18,7 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
-import top.yukonga.miuix.kmp.basic.Checkbox
 import com.xycs.lingyuereader.data.ShelfPrefs
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.graphicsLayer
@@ -114,7 +112,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
@@ -345,7 +342,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
                     Column {
                         GroupChips(vm, groups, shelfPrefs.group, hasUngrouped = all.any { it.groups.isEmpty() })
                         if (searching) {
-                            TextField(
+                            GroupedTextField(
                                 value = query,
                                 onValueChange = vm::setShelfQuery,
                                 label = "搜索书名或作者",
@@ -533,7 +530,7 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
     editing?.let { g ->
         var name by remember(g) { mutableStateOf(g) }
         GlassDialog(show = true, title = "分组“$g”", summary = "改名，或删除这个分组（书不会被删除）。", onDismissRequest = { editing = null }) {
-            TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(
                     text = "删除分组",
@@ -804,16 +801,13 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(
-                            state = ToggleableState(g in chosen),
-                            onClick = { chosen = if (g in chosen) chosen - g else chosen + g },
-                        )
+                        LingYueCheckbox(g in chosen, onClick = { chosen = if (g in chosen) chosen - g else chosen + g })
                         Text(g, modifier = Modifier.padding(start = 12.dp))
                     }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                TextField(
+                GroupedTextField(
                     value = newName,
                     onValueChange = { newName = it },
                     label = "新建分组",
@@ -845,7 +839,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
     if (dialogs.renaming) {
         var title by remember { mutableStateOf(entry.title) }
         GlassDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
-            TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             DialogButtons(
                 onDismiss = { dialogs.renaming = false },
                 onConfirm = {
@@ -973,7 +967,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 10.dp),
             )
-            TextField(
+            GroupedTextField(
                 value = title,
                 onValueChange = { title = it },
                 label = "书名",

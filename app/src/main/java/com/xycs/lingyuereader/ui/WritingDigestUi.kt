@@ -30,7 +30,6 @@ import com.xycs.lingyuereader.data.StoryPulse
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 
 // ---------- 分层前情、线索体检：规划树上的入口和对话框 ----------
 
@@ -100,7 +99,7 @@ internal fun DigestEditDialog(
 ) {
     var text by remember(initial) { mutableStateOf(initial) }
     GlassDialog(show = true, title = title, summary = summary, onDismissRequest = onDismiss) {
-        TextField(value = text, onValueChange = { text = it }, label = label,
+        GroupedTextField(value = text, onValueChange = { text = it }, label = label,
             modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 360.dp))
         if (edited && onResume != null) {
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

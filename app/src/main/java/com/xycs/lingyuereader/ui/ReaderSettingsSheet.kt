@@ -697,7 +697,8 @@ private fun EyePage(settings: ReaderSettings, ambient: AmbientLight?, update: ((
         },
     ) {
         row { ToggleRow("跟随环境光", settings.ambientLight) { v -> update { it.copy(ambientLight = v) } } }
-        row { ToggleRow("系统深色时用夜间背景", settings.autoNight) { v -> update { it.copy(autoNight = v) } } }
+        // 自己动过一次就按新的认法（应用是深色就换夜间），不再只认系统深色。
+        row { ToggleRow("深色模式时用夜间背景", settings.autoNight) { v -> update { it.copy(autoNight = v, autoNightSystemOnly = false) } } }
     }
     GroupedSection(footer = "日落后书页慢慢偏暖，只为看着柔和，不宣称护眼或助眠。") {
         row { ToggleRow("日落后逐渐变暖", settings.eveningWarmth) { v -> update { it.copy(eveningWarmth = v) } } }

@@ -27,7 +27,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 
 /**
  * 一章看到的上一章交接卡（草稿页“接上一章”、细纲卡页“上一章交接”共用）：在后台读（[com.xycs.lingyuereader.WritingAi.handoffView]），
@@ -154,13 +153,13 @@ internal fun HandoffEditDialog(vm: AppViewModel, holder: HandoffHolder, scope: C
         summary = "上一章《${view.chapterTitle}》结尾时的样子，写本章开头时先接住它。改过的不会被自动重新整理盖掉。",
         onDismissRequest = { holder.editing = false }) {
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextField(value = scene, onValueChange = { scene = it }, label = "场景 · 在哪、什么时间", modifier = Modifier.fillMaxWidth())
-            TextField(value = people, onValueChange = { people = it }, label = "在场人物 · 一行一人：林月：守在门口；左臂带伤",
+            GroupedTextField(value = scene, onValueChange = { scene = it }, label = "场景 · 在哪、什么时间", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = people, onValueChange = { people = it }, label = "在场人物 · 一行一人：林月：守在门口；左臂带伤",
                 modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp))
-            TextField(value = mood, onValueChange = { mood = it }, label = "情绪基调", modifier = Modifier.fillMaxWidth())
-            TextField(value = open, onValueChange = { open = it }, label = "没说完的话、没解决的悬念 · 一行一条，最多 ${Handoffs.MAX_OPEN} 条",
+            GroupedTextField(value = mood, onValueChange = { mood = it }, label = "情绪基调", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = open, onValueChange = { open = it }, label = "没说完的话、没解决的悬念 · 一行一条，最多 ${Handoffs.MAX_OPEN} 条",
                 modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp))
-            TextField(value = hook, onValueChange = { hook = it }, label = "章末钩子 · 细纲卡里写了就以细纲卡为准", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = hook, onValueChange = { hook = it }, label = "章末钩子 · 细纲卡里写了就以细纲卡为准", modifier = Modifier.fillMaxWidth())
         }
         DialogButtons(onDismiss = { holder.editing = false }, onConfirm = {
             holder.editing = false

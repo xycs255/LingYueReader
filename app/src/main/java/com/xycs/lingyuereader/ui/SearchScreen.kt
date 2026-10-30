@@ -41,7 +41,6 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -59,7 +58,7 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
         title = "书内搜索",
         onBack = { vm.back() },
         barBottom = {
-            TextField(
+            GroupedTextField(
                 value = query,
                 onValueChange = { query = it },
                 label = "人名、地名、原话…",
@@ -144,7 +143,7 @@ fun LibrarySearchScreen(vm: AppViewModel) {
         title = "在所有书里搜索",
         onBack = { vm.back() },
         barBottom = {
-            TextField(
+            GroupedTextField(
                 value = query,
                 onValueChange = { query = it },
                 label = "一句话、人名、地名…",

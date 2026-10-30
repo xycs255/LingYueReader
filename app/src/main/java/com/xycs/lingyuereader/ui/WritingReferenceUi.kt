@@ -46,7 +46,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.io.File
 
@@ -236,8 +235,8 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                     }
                     if (part == ReferencePart.RANGE) row {
                         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextField(value = rangeStart, onValueChange = { rangeStart = it.filter(Char::isDigit) }, label = "从第几个字符起（从 1 算起）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            TextField(value = rangeEnd, onValueChange = { rangeEnd = it.filter(Char::isDigit) }, label = "到第几个字符止（可空）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            GroupedTextField(value = rangeStart, onValueChange = { rangeStart = it.filter(Char::isDigit) }, label = "从第几个字符起（从 1 算起）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            GroupedTextField(value = rangeEnd, onValueChange = { rangeEnd = it.filter(Char::isDigit) }, label = "到第几个字符止（可空）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         }
                     }
                     when {

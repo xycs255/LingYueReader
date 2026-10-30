@@ -57,7 +57,6 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
@@ -118,7 +117,7 @@ internal fun StatusDialog(chapter: WorkChapter, ruleHits: Int? = null, onDismiss
                 Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = c.warning, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
             }
             if (unlocking) {
-                TextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
+                GroupedTextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
                 // 只改写法 / 涉及设定：一个开关（关着就是只改写法）。
                 Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow(
@@ -466,7 +465,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     }
                                 },
                             ) {
-                                TextField(
+                                GroupedTextField(
                                     value = now.beats,
                                     onValueChange = { v -> card = now.withBeats(v) },
                                     label = "节拍 · 比如：沈默赶到渡口，发现船不见了（800字）",
@@ -485,7 +484,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         ) {
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                    TextField(
+                                    GroupedTextField(
                                         value = now.summary,
                                         onValueChange = { v -> card = now.copy(summary = v) },
                                         label = "本章摘要 · 发生了什么、结果、留下什么",
@@ -559,7 +558,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
             beatsProposal?.let { proposed ->
                 var edited by remember(proposed) { mutableStateOf(proposed) }
                 GlassDialog(show = true, title = "AI 拆的节拍", summary = "按细纲卡和本章资料拆的，可以先改，用了才放进细纲卡", onDismissRequest = { beatsProposal = null }) {
-                    TextField(
+                    GroupedTextField(
                         value = edited,
                         onValueChange = { edited = it },
                         label = "一行一拍，行尾可写篇幅",
@@ -680,7 +679,7 @@ private fun CardFieldGrid(
                             modifier = if (single) Modifier else Modifier.weight(1f).fillMaxHeight(),
                             tag = if (aiDrafted && value.isNotBlank() && label != "细纲章号") AI_PENDING to c.warning else null,
                         ) {
-                            TextField(
+                            GroupedTextField(
                                 value = value,
                                 onValueChange = { v -> onChange(label, v) },
                                 label = if (hint.isNotEmpty()) "$label · $hint" else label,

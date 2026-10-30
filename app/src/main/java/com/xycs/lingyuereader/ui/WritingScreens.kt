@@ -151,7 +151,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -393,10 +392,10 @@ private fun WorkInfoDialog(
     var author by remember { mutableStateOf(initial.author) }
     var synopsis by remember { mutableStateOf(initial.synopsis) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
-        TextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+        GroupedTextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
         if (withSynopsis) {
-            TextField(
+            GroupedTextField(
                 value = synopsis,
                 onValueChange = { synopsis = it },
                 label = "简介",
@@ -977,7 +976,7 @@ private fun ChapterRow(
 private fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var name by remember { mutableStateOf(initial) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
         DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(name) }, confirmText = confirm, confirmEnabled = name.isNotBlank())
     }
 }
@@ -1633,12 +1632,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 val marks = remember(issueSpans, ruleSpans, c) {
                     // 按“哪条建议”“哪条规则的第几处”认，不按位置：正文一改位置就变，淡入淡出不能跟着乱。
+                    // 底色很淡，主要靠划线分（见 EditorMarks.kt）；同一条规则第 4 处起只画线不铺底，整页不像打满补丁。
                     val nth = HashMap<String, Int>()
-                    val ruleBack = c.warning.copy(alpha = 0.2f)
-                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack) } +
+                    ruleSpans.map { (r, h) ->
+                        val n = nth.merge(h.key, 1) { a, b -> a + b }!!
+                        TextMark(h.key to n, r.first, r.last + 1, markFill(c.warning, c.dark, n), line = ruleMarkLine, lineColor = markLineColor(c.warning))
+                    } +
                         issueSpans.map { (r, i) ->
                             val color = suggestColor(i.kind, c)
-                            TextMark(i, r.first, r.last + 1, color.copy(alpha = 0.14f), line = suggestLine(i.kind), lineColor = color)
+                            TextMark(i, r.first, r.last + 1, markFill(color, c.dark), line = suggestLine(i.kind), lineColor = color)
                         }
                 }
                 val markFades = remember(current) { MarkFades(effects) }

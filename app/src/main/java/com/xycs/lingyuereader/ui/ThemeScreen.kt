@@ -162,8 +162,10 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
     val c = LocalGroupedColors.current
     @Composable
     fun Screen(dark: Boolean, modifier: Modifier) {
-        val bg = if (dark) Color(0xFF000000) else Color(0xFFF2F2F7)
-        val ink = if (dark) Color.White else Color.Black
+        // 小手机照应用自己的暖纸、暖墨配色画，不用 iOS 的灰和纯黑。
+        val paper = paperAppColors(dark)
+        val bg = paper.surface
+        val ink = paper.onSurface
         Box(modifier.background(bg)) {
             Column(Modifier.padding(start = 7.dp, end = 7.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Box(Modifier.width(22.dp).height(5.dp).clip(CircleShape).background(ink.copy(alpha = 0.7f)))
@@ -177,7 +179,7 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
                     Box(Modifier.fillMaxWidth(w).height(3.dp).clip(CircleShape).background(ink.copy(alpha = 0.18f)))
                 }
             }
-            val bar = if (dark) Color(0xFF2C2C2E) else Color.White
+            val bar = paper.surfaceContainer
             if (a.floatingBar) {
                 Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 7.dp).size(width = 40.dp, height = 10.dp).clip(CircleShape).background(bar))
             } else {

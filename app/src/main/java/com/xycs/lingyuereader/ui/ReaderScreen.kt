@@ -184,12 +184,15 @@ fun ReaderScreen(vm: AppViewModel, screen: Screen.Reader) {
     val lightLevel = ambient.level
     val warmth = rememberEveningWarmth(settings.eveningWarmth && !eInk)
     val systemDark = isSystemInDarkTheme()
+    // 应用是不是深色：手动选了深色，或跟随系统时系统是深色。老版本升级上来、没动过开关的照旧只认系统深色。
+    val appDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    val nightOutside = if (settings.autoNightSystemOnly) systemDark else appDark
     val theme = when {
         settings.theme == ReaderTheme.NIGHT -> ReaderTheme.NIGHT
         // 自己选了深色的灰蓝，不再换成墨夜。
         settings.theme == ReaderTheme.SLATE -> ReaderTheme.SLATE
         lightLevel == LightLevel.DARK -> ReaderTheme.NIGHT
-        lightLevel == null && settings.autoNight && systemDark -> ReaderTheme.NIGHT
+        lightLevel == null && settings.autoNight && nightOutside -> ReaderTheme.NIGHT
         else -> settings.theme
     }
     val dim = if (lightLevel == LightLevel.DIM && theme != ReaderTheme.NIGHT) 0.9f else 1f

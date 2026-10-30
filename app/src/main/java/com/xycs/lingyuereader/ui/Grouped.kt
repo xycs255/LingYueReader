@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -105,6 +106,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,9 +119,7 @@ import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
-import androidx.compose.ui.state.ToggleableState
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -229,11 +230,15 @@ internal data class GroupedColors(
     val segmentIdle: Color = secondary.readableOn(listOf(fill))
 }
 
-/** 提醒、成功的基准色：浅色底用深一些的橙和绿，深色底用亮一些的；实际取值再按卡片底调到够对比度。 */
+/**
+ * 提醒、成功的基准色：浅色底用深一些的橙和绿，深色底用亮一些的；实际取值再按卡片底调到够对比度。
+ * 深色的两种降了饱和度（以前是 iOS 的 #FF9F0A、#30D158，在暖墨底上太艳，定稿方块、进度条一片荧光绿），
+ * 明度照旧够 4.5:1。
+ */
 private val WarningLight = Color(0xFFA85500)
-private val WarningDark = Color(0xFFFF9F0A)
+internal val WarningDark = Color(0xFFE8A33C)
 private val SuccessLight = Color(0xFF15803D)
-private val SuccessDark = Color(0xFF30D158)
+internal val SuccessDark = Color(0xFF5FBF7A)
 
 /**
  * 删除色、提醒色：和强调色太像（朱砂和正红、琥珀和橙）时转开一点色相，提醒色还要和删除色分开，
@@ -427,13 +432,43 @@ internal fun GroupedSection(
                 scope.rows.forEach { it() }
             }
         }
-        if (footer != null) {
+        if (footer != null) FooterText(footer, Modifier.padding(start = 28.dp, end = 28.dp, top = 8.dp))
+    }
+}
+
+/** 卡片下的说明最多露几行：再长的折起来，后面一个“展开”（design.md 原则 2：说明不比控件还占地方）。 */
+internal const val FOOTER_MAX_LINES = 2
+
+/**
+ * 卡片下的灰色说明：最多 [FOOTER_MAX_LINES] 行，放不下时末尾省略，下面一个强调色的“展开”，点了露出全文、变成“收起”。
+ * 读屏照旧念全文（省略只是画出来的样子），“展开”另是一个按钮。
+ */
+@Composable
+internal fun FooterText(text: String, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    var expanded by rememberSaveable(text) { mutableStateOf(false) }
+    var overflows by remember(text) { mutableStateOf(false) }
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            text,
+            color = c.secondary,
+            fontSize = TypeScale.Caption,
+            lineHeight = TypeScale.CaptionLine,
+            maxLines = if (expanded) Int.MAX_VALUE else FOOTER_MAX_LINES,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
+        )
+        if (overflows || expanded) {
             Text(
-                footer,
-                color = c.secondary,
+                if (expanded) "收起" else "展开",
+                color = c.tint,
                 fontSize = TypeScale.Caption,
-                lineHeight = TypeScale.CaptionLine,
-                modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 8.dp),
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .heightIn(min = 32.dp)
+                    .clip(RoundedCornerShape(Radius.Small))
+                    .clickable(role = Role.Button, onClickLabel = if (expanded) "收起说明" else "展开说明") { expanded = !expanded }
+                    .padding(vertical = 6.dp),
             )
         }
     }
@@ -585,25 +620,38 @@ internal fun ToggleRow(
     }
 }
 
-/** 一个动作：强调色文字（删除类用红色）。 */
+/**
+ * 一个动作：强调色文字（删除类用红色）。
+ * 不能点时仍是强调色（或红色），淡到 40%——以前变成第三级灰，看着像普通文字，不知道它是个按钮；
+ * [disabledHint] 写为什么点不了（“先填上面的说法”），不能点时显示在下面一行。
+ */
 @Composable
-internal fun ActionRow(title: String, destructive: Boolean = false, enabled: Boolean = true, centered: Boolean = false, onClick: () -> Unit) {
+internal fun ActionRow(
+    title: String,
+    destructive: Boolean = false,
+    enabled: Boolean = true,
+    centered: Boolean = false,
+    disabledHint: String? = null,
+    onClick: () -> Unit,
+) {
     val c = LocalGroupedColors.current
+    val accent = if (destructive) c.destructive else c.tint
     GroupedRow(onClick = onClick, enabled = enabled) {
-        Text(
-            title,
-            color = when {
-                !enabled -> c.tertiary
-                destructive -> c.destructive
-                else -> c.tint
-            },
-            fontSize = TypeScale.Body,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-            textAlign = if (centered) TextAlign.Center else null,
-        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp), horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start) {
+            Text(
+                title,
+                color = if (enabled) accent else accent.copy(alpha = DISABLED_ACTION_ALPHA),
+                fontSize = TypeScale.Body,
+                fontWeight = FontWeight.Medium,
+                textAlign = if (centered) TextAlign.Center else null,
+            )
+            if (!enabled && disabledHint != null) Text(disabledHint, color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
+        }
     }
 }
+
+/** 不能点的动作行字的透明度：还看得出是强调色的按钮，又明显点不了。 */
+internal const val DISABLED_ACTION_ALPHA = 0.4f
 
 /** 单选列表里的一项：选中的名字变强调色，右边打勾。 */
 @Composable
@@ -679,7 +727,7 @@ internal fun CheckboxRow(
         val fixed = !enabled && checked && !dimChecked
         // 勾选框只是样子：点按和读屏都交给整行。
         Box(Modifier.clearAndSetSemantics {}) {
-            Checkbox(state = ToggleableState(checked), onClick = { if (enabled) onChange(!checked) }, enabled = enabled || fixed)
+            LingYueCheckbox(checked, onClick = null, enabled = enabled || fixed)
         }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, color = if ((checked && dimChecked) || (!enabled && !fixed)) c.tertiary else c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium,
@@ -837,27 +885,34 @@ internal fun LabeledSliderRow(
     }
 }
 
+/**
+ * 开关关着时的轨道和把手。miuix 默认拿配色的 secondary 当关着的轨道：纸色深色方案里它是浅米色，
+ * 关着的开关比开着的强调色还亮，看一眼像是开着；浅色里是深褐，也太重。
+ * 这里关着一律用底槽色往字色提一档的灰（深色是比卡片亮一点的深块），把手浅色白、深色第三级灰，
+ * 都比开着时（强调色轨道）暗、不抢眼；墨水屏灰阶下靠把手的位置分。
+ */
+internal fun switchOffTrack(c: GroupedColors): Color = lerp(c.fill, c.label, if (c.dark) 0.10f else 0.16f)
+
+internal fun switchOffThumb(c: GroupedColors): Color = if (c.dark) c.tertiary else Color.White
+
 /** miuix 开关，强调色取 [LocalGroupedColors]。只画样子，点击由所在的行处理。 */
 @Composable
 internal fun LingYueSwitch(checked: Boolean, enabled: Boolean = true) {
     val c = LocalGroupedColors.current
+    val offTrack = switchOffTrack(c)
+    val offThumb = switchOffThumb(c)
     if (Effects.noMotion) {
-        // miuix 的开关滑块总要滑过去；关了动画时画一个不动的，大小、配色照 miuix。
-        val track = when {
-            checked -> c.switchOn
-            c.dark -> Color(0xFF474747)
-            else -> Color(0xFFE6E6E6)
-        }
+        // miuix 的开关滑块总要滑过去；关了动画时画一个不动的，大小照 miuix，配色同下。
         Box(
             Modifier
                 .size(width = 49.dp, height = 28.dp)
                 .graphicsLayer { alpha = if (enabled) 1f else 0.5f }
                 .clip(CircleShape)
-                .background(track)
+                .background(if (checked) c.switchOn else offTrack)
                 .padding(4.dp),
             contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
         ) {
-            Box(Modifier.size(20.dp).clip(CircleShape).background(Color.White))
+            Box(Modifier.size(20.dp).clip(CircleShape).background(if (checked) c.onTint else offThumb))
         }
         return
     }
@@ -865,8 +920,44 @@ internal fun LingYueSwitch(checked: Boolean, enabled: Boolean = true) {
         checked = checked,
         onCheckedChange = null,
         enabled = enabled,
-        colors = SwitchDefaults.switchColors(checkedTrackColor = c.switchOn),
+        colors = SwitchDefaults.switchColors(
+            checkedThumbColor = c.onTint,
+            uncheckedThumbColor = offThumb,
+            checkedTrackColor = c.switchOn,
+            uncheckedTrackColor = offTrack,
+            disabledCheckedTrackColor = c.switchOn.copy(alpha = 0.4f),
+            disabledUncheckedTrackColor = offTrack.copy(alpha = 0.5f),
+        ),
     )
+}
+
+/**
+ * 勾选框：没勾是第三级灰的空心圈（不是实心灰圆——miuix 的未选样子深色下是一块浅米色，看着像“在做”或“不可用”），
+ * 勾上是强调色实心圈里一个 [GroupedColors.onTint] 的勾。看着 22dp。
+ * 给了 [onClick] 时自己能点（读屏是勾选框）；放在整行能点的 [CheckboxRow] 里时传空，只画样子。
+ */
+@Composable
+internal fun LingYueCheckbox(checked: Boolean, onClick: (() -> Unit)?, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val c = LocalGroupedColors.current
+    val fill by animateColorAsState(if (checked) c.tint else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "checkFill")
+    val ring by animateColorAsState(if (checked) c.tint else c.tertiary, Motion.standard(Motion.SHORT), label = "checkRing")
+    val toggle = if (onClick != null) {
+        Modifier.toggleable(value = checked, enabled = enabled, role = Role.Checkbox) { onClick() }
+    } else Modifier
+    Box(
+        modifier
+            .then(toggle)
+            .size(26.dp)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.4f },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(22.dp)) {
+            val w = 1.5.dp.toPx()
+            drawCircle(fill)
+            drawCircle(ring, radius = size.minDimension / 2 - w / 2, style = Stroke(w))
+        }
+        if (checked) Icon(LingYueIcons.Check, contentDescription = null, tint = c.onTint, modifier = Modifier.size(14.dp))
+    }
 }
 
 /** miuix 滑块（HyperOS 的粗圆角条），强调色取 [LocalGroupedColors]；读屏能读值、能调。 */
@@ -999,7 +1090,7 @@ internal fun EmptyState(
         Box(Modifier.size(50.dp).clip(CircleShape).background(scheme.secondaryContainer), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = null, tint = scheme.onSurfaceVariantSummary, modifier = Modifier.size(23.dp))
         }
-        Text(title, color = scheme.onSurface, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+        Text(title, color = scheme.onSurface, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
         if (body != null) {
             Text(
                 body,
@@ -1201,6 +1292,149 @@ internal fun Modifier.horizontalFadingEdges(state: ScrollState, fade: Dp): Modif
                 )
             }
         }
+
+// ---------- 输入框 ----------
+
+/**
+ * 输入框（替代 miuix 的 TextField）：底槽色的圆角框（[Radius.Medium]），聚焦时描一道 1.5dp 强调色边；字是正文色 15sp。
+ * 空着时 [label] 当占位，第三级灰、15sp——以前 miuix 的占位是正文色、比填进去的字还大，看着像已经填好了；
+ * 填了字以后 [label] 缩成框里上方的一行 12sp 次要色小字，几格一起时还认得出哪格是哪格（[useLabelAsPlaceholder] 为真时不留，搜索框这种一格的）。
+ * 示例写进 [label] 时用“比如：……”开头，别写成像是作者自己的话。
+ * 读屏把 [label] 和内容一起念（标签画在输入框的装饰里，跟输入框合成一个节点）。
+ */
+@Composable
+internal fun GroupedTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = "",
+    useLabelAsPlaceholder: Boolean = false,
+    enabled: Boolean = true,
+    readOnly: Boolean = false,
+    textStyle: TextStyle? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null,
+    singleLine: Boolean = false,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    minLines: Int = 1,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        enabled = enabled,
+        readOnly = readOnly,
+        textStyle = fieldTextStyle(c, enabled, textStyle),
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        singleLine = singleLine,
+        maxLines = maxLines,
+        minLines = minLines,
+        visualTransformation = visualTransformation,
+        interactionSource = source,
+        cursorBrush = SolidColor(c.tint),
+        decorationBox = { inner ->
+            FieldDecoration(value.isEmpty(), label, useLabelAsPlaceholder, singleLine, enabled, source, leadingIcon, trailingIcon, inner)
+        },
+    )
+}
+
+/** 同上，值带选区（要自己挪光标的地方，比如批注框）。 */
+@Composable
+internal fun GroupedTextField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = "",
+    useLabelAsPlaceholder: Boolean = false,
+    enabled: Boolean = true,
+    readOnly: Boolean = false,
+    textStyle: TextStyle? = null,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null,
+    singleLine: Boolean = false,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    minLines: Int = 1,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        enabled = enabled,
+        readOnly = readOnly,
+        textStyle = fieldTextStyle(c, enabled, textStyle),
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        singleLine = singleLine,
+        maxLines = maxLines,
+        minLines = minLines,
+        visualTransformation = visualTransformation,
+        interactionSource = source,
+        cursorBrush = SolidColor(c.tint),
+        decorationBox = { inner ->
+            FieldDecoration(value.text.isEmpty(), label, useLabelAsPlaceholder, singleLine, enabled, source, leadingIcon, trailingIcon, inner)
+        },
+    )
+}
+
+private fun fieldTextStyle(c: GroupedColors, enabled: Boolean, extra: TextStyle?): TextStyle =
+    TextStyle(color = if (enabled) c.label else c.secondary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine).merge(extra)
+
+/** 输入框的框：底槽色圆角底、聚焦时的强调色边、占位或缩小的标签、两头的图标。 */
+@Composable
+private fun FieldDecoration(
+    empty: Boolean,
+    label: String,
+    useLabelAsPlaceholder: Boolean,
+    singleLine: Boolean,
+    enabled: Boolean,
+    source: MutableInteractionSource,
+    leadingIcon: (@Composable () -> Unit)?,
+    trailingIcon: (@Composable () -> Unit)?,
+    inner: @Composable () -> Unit,
+) {
+    val c = LocalGroupedColors.current
+    val focused by source.collectIsFocusedAsState()
+    val border by animateColorAsState(if (focused && enabled) c.tint else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "fieldBorder")
+    val shape = RoundedCornerShape(Radius.Medium)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(shape)
+            .background(c.fill)
+            .border(1.5.dp, border, shape),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        leadingIcon?.invoke()
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(start = if (leadingIcon != null) 0.dp else 14.dp, end = if (trailingIcon != null) 0.dp else 14.dp, top = 10.dp, bottom = 10.dp),
+        ) {
+            if (label.isNotEmpty() && !empty && !useLabelAsPlaceholder) {
+                Text(label, color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (empty && label.isNotEmpty()) {
+                    Text(label, color = c.tertiary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, maxLines = if (singleLine) 1 else 3, overflow = TextOverflow.Ellipsis)
+                }
+                inner()
+            }
+        }
+        trailingIcon?.invoke()
+    }
+}
 
 // ---------- 按钮、标签 ----------
 
@@ -1903,13 +2137,7 @@ internal fun GroupedListHeader(text: String, modifier: Modifier = Modifier) {
 /** 长列表卡片下的说明小字（和 [GroupedSection] 的 footer 一样）：末格用 `gap = 8.dp`，下面再留 12dp。 */
 @Composable
 internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        color = LocalGroupedColors.current.secondary,
-        fontSize = TypeScale.Caption,
-        lineHeight = TypeScale.CaptionLine,
-        modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
-    )
+    FooterText(text, modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp))
 }
 
 // ---------- 进度与入口卡片 ----------
@@ -2062,6 +2290,10 @@ private fun computeCategoryPalette(c: GroupedColors): Map<CategoryTone, Color> {
         }.readableOn(cards)
     }
 }
+
+/** 行首图标（[RowIcon]）的颜色：从分类色来，不写死色值（见 MeScreen 的 RowIconColors）。 */
+@Composable
+internal fun rowIconTone(tone: CategoryTone): Color = categoryColor(tone, LocalGroupedColors.current)
 
 /** 分类色的淡底：浅色 8%、深色 16%，叠在卡片底上。 */
 internal fun categoryFill(color: Color, c: GroupedColors): Color = lerp(c.cell, color, if (c.dark) 0.16f else 0.08f)

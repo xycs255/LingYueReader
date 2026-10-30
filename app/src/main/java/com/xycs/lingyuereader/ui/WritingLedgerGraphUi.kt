@@ -41,7 +41,6 @@ import com.xycs.lingyuereader.data.StoryLedger
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 
 internal enum class LedgerVisualTab(val title: String) {
     PEOPLE("人物"), PROMISES("伏笔"), KNOWLEDGE("知情"), RECORDS("全部记录")
@@ -475,9 +474,9 @@ internal fun LedgerQuickStateDialog(
     GlassDialog(show = true, title = target.subject + " · " + target.aspect, summary = "按章登记新状态；之前章节保留原来的状态。", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
             ChapterStepperRow("从第几章生效", number, chapters, optional = false) { number = it }
-            TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
             Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = TypeScale.Footnote)
             if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
@@ -512,8 +511,8 @@ internal fun LedgerQuickKnowledgeDialog(
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             ChapterStepperRow("从第几章得知", number, chapters, optional = false) { number = it }
-            TextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
-            TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
             if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
         DialogButtons(

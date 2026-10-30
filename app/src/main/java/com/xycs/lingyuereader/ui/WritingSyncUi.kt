@@ -32,7 +32,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -47,10 +46,8 @@ import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.SyncPlace
 import com.xycs.lingyuereader.ui.glass.GlassDialog
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 各组下面的说明。 */
@@ -238,7 +235,7 @@ internal fun SyncItemRow(
                             stateDescription = if (checked) "已勾选" else "没勾选"
                         },
                 ) {
-                    Checkbox(state = ToggleableState(checked), onClick = onToggle)
+                    LingYueCheckbox(checked, onClick = onToggle)
                 }
             }
             Column(Modifier.weight(1f).padding(start = if (item.writable && selectable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -285,7 +282,7 @@ internal fun SyncItemRow(
                     if (closes != null) {
                         Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     } else if (item.writable && selectable) {
-                        TextField(
+                        GroupedTextField(
                             value = edited.text,
                             onValueChange = onEdit,
                             label = if (item.place == SyncPlace.LEDGER) "记进账本的内容（可以改）" else "写进去的原文（可以改）",
@@ -296,7 +293,7 @@ internal fun SyncItemRow(
                     }
                     if (opens && item.writable && selectable) {
                         var raw by remember(item.key) { mutableStateOf(entry.payoff?.toString().orEmpty()) }
-                        TextField(
+                        GroupedTextField(
                             value = raw,
                             onValueChange = { v ->
                                 raw = v.filter { it.isDigit() }.take(5)
@@ -340,7 +337,7 @@ internal fun SyncTipDialog(onDismiss: (Boolean) -> Unit, onSync: (Boolean) -> Un
             Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { never = !never }.padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Checkbox(state = ToggleableState(never), onClick = { never = !never })
+            LingYueCheckbox(never, onClick = { never = !never })
             Text("不再提示", color = c.label, fontSize = TypeScale.Body, modifier = Modifier.padding(start = 12.dp))
         }
         DialogButtons(onDismiss = { onDismiss(never) }, onConfirm = { onSync(never) }, confirmText = "整理", dismissText = "不用了")

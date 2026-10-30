@@ -49,7 +49,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,7 +75,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
@@ -84,7 +82,6 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -264,7 +261,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                                 "用 AI 整理人物",
                                 value = if (extracting) "整理中……" else null,
                                 icon = LingYueIcons.Sparkle,
-                                iconBackground = Color(0xFFAF52DE),
+                                iconBackground = RowIconColors.Ai,
                                 enabled = !extracting,
                                 trailing = if (extracting) ({ Spinner() }) else null,
                             ) {
@@ -284,7 +281,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             }
                         }
                         row {
-                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7), enabled = !busy) { importing = true }
+                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = RowIconColors.Download, enabled = !busy) { importing = true }
                         }
                     }
                     val tags = missTags(budget)
@@ -377,7 +374,7 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
             val blank = item.text.isBlank()
             row {
                 GroupedRow(onClick = { onEdit(i) }) {
-                    Checkbox(state = ToggleableState(item.include && !blank), enabled = !blank, onClick = { onEdit(i) })
+                    LingYueCheckbox(item.include && !blank, enabled = !blank, onClick = { onEdit(i) })
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text(
                             item.title,
@@ -473,7 +470,7 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
     GlassDialog(show = true, title = item.title, onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(item.text.lineSequence().take(6).joinToString("\n").take(500).ifBlank { "原文为空，请核对后再导入" },
@@ -519,7 +516,7 @@ private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -
     var title by remember { mutableStateOf("") }
     GlassDialog(show = true, title = "新建文档", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
-        TextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
         Text("类型", fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
         // 十几种类型各有说明：勾选列表，在框里滚。
         Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
@@ -538,7 +535,7 @@ private fun DocPropsDialog(doc: PackDoc, onDismiss: () -> Unit, onSave: (PackDoc
     var always by remember { mutableStateOf(doc.always) }
     GlassDialog(show = true, title = "文档属性", onDismissRequest = onDismiss) {
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = title, onValueChange = { title = it }, label = "标题", singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = title, onValueChange = { title = it }, label = "标题", singleLine = true, modifier = Modifier.fillMaxWidth())
             PackDocFields(kind, priority, always, onKind = { kind = it }, onPriority = { priority = it }, onAlways = { always = it })
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(doc.copy(title = title, kind = kind, priority = priority, always = always)) }, confirmText = "保存")
