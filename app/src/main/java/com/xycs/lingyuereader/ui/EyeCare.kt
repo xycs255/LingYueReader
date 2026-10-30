@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,7 +55,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -365,11 +363,11 @@ private fun RestScene(night: Boolean, restMs: Long, onDone: () -> Unit, onSnooze
             Modifier.fillMaxWidth().padding(top = 96.dp, start = 32.dp, end = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("看看远处", color = ink, fontSize = 30.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+            Text("看看远处", color = ink, fontSize = TypeScale.Display, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             Text(
                 "把目光投向 6 米外的窗外或远处，眨眨眼，放松 20 秒。",
                 color = ink.copy(alpha = 0.8f),
-                fontSize = 15.sp,
+                fontSize = TypeScale.Body,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 12.dp),
             )
@@ -380,7 +378,7 @@ private fun RestScene(night: Boolean, restMs: Long, onDone: () -> Unit, onSnooze
                     drawArc(ink.copy(alpha = 0.15f), 0f, 360f, false, style = stroke)
                     if (!noMotion) drawArc(ink.copy(alpha = 0.7f), -90f, 360f * (1f - progress.value), false, style = stroke)
                 }
-                Text("$left", color = ink, fontSize = 26.sp)
+                Text("$left", color = ink, fontSize = TypeScale.Title)
             }
         }
         Row(
@@ -398,9 +396,9 @@ private fun SceneButton(label: String, onClick: () -> Unit) {
     Text(
         label,
         color = Color.White,
-        fontSize = 15.sp,
+        fontSize = TypeScale.Body,
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
+            .clip(Radius.Full)
             .background(Color.Black.copy(alpha = 0.28f))
             .clickable(onClick = onClick)
             .padding(horizontal = 22.dp, vertical = 10.dp),

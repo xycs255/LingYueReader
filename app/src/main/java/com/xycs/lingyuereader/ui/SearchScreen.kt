@@ -55,43 +55,33 @@ fun SearchScreen(vm: AppViewModel, bookId: String) {
 
     LaunchedEffect(Unit) { focus.requestFocus() }
 
-    GlassScaffold(
-        topBar = {
-            SmallTopAppBar(
-                color = Color.Transparent,
-                modifier = Modifier.glassBar(),
-                title = "书内搜索",
-                navigationIcon = {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(LingYueIcons.Back, contentDescription = "返回")
-                    }
-                },
-                bottomContent = {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = "人名、地名、原话…",
-                        useLabelAsPlaceholder = true,
-                        singleLine = true,
-                        leadingIcon = {
-                            Icon(
-                                LingYueIcons.Search,
-                                contentDescription = null,
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                modifier = Modifier.padding(start = 12.dp, end = 4.dp),
-                            )
-                        },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            vm.search(query)
-                            keyboard?.hide()
-                        }),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .focusRequester(focus),
+    SubPageScaffold(
+        title = "书内搜索",
+        onBack = { vm.back() },
+        barBottom = {
+            TextField(
+                value = query,
+                onValueChange = { query = it },
+                label = "人名、地名、原话…",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        LingYueIcons.Search,
+                        contentDescription = null,
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp),
                     )
                 },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    vm.search(query)
+                    keyboard?.hide()
+                }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .focusRequester(focus),
             )
         },
     ) { padding ->
@@ -150,40 +140,30 @@ fun LibrarySearchScreen(vm: AppViewModel) {
     var query by remember { mutableStateOf(state.query) }
     val keyboard = LocalSoftwareKeyboardController.current
 
-    GlassScaffold(
-        topBar = {
-            SmallTopAppBar(
-                color = Color.Transparent,
-                modifier = Modifier.glassBar(),
-                title = "在所有书里搜索",
-                navigationIcon = {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                        Icon(LingYueIcons.Back, contentDescription = "返回")
-                    }
-                },
-                bottomContent = {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = "一句话、人名、地名…",
-                        useLabelAsPlaceholder = true,
-                        singleLine = true,
-                        leadingIcon = {
-                            Icon(
-                                LingYueIcons.Search,
-                                contentDescription = null,
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                modifier = Modifier.padding(start = 12.dp, end = 4.dp),
-                            )
-                        },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            vm.searchLibrary(query)
-                            keyboard?.hide()
-                        }),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+    SubPageScaffold(
+        title = "在所有书里搜索",
+        onBack = { vm.back() },
+        barBottom = {
+            TextField(
+                value = query,
+                onValueChange = { query = it },
+                label = "一句话、人名、地名…",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                leadingIcon = {
+                    Icon(
+                        LingYueIcons.Search,
+                        contentDescription = null,
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 12.dp, end = 4.dp),
                     )
                 },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    vm.searchLibrary(query)
+                    keyboard?.hide()
+                }),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             )
         },
     ) { padding ->

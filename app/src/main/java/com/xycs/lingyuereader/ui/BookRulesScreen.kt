@@ -25,7 +25,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.ReplaceRule
@@ -114,159 +113,146 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
     }
     val tocError = toc.takeIf { it.isNotBlank() }?.let(TextRules::error)
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "净化与分章",
+        onBack = { vm.back() },
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "净化与分章",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(LingYueIcons.Back, contentDescription = "返回")
-                        }
-                    },
-                )
-            },
-        ) { padding ->
-            if (entry == null || !loaded) {
-                LoadingState("正在读取规则和原文……", Modifier.padding(top = padding.calculateTopPadding()))
-                return@GlassScaffold
-            }
-            val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
-            val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
-                overscrollEffect = null,
-            ) {
-                item {
-                    GroupedSection(header = "分章格式", footer = "留空时自动识别“第X章”“序章”“番外”等。分不对时选一个格式，或自己写正则（匹配到的整行当作章名）。") {
-                        row { CheckRow("自动识别", toc.isBlank()) { toc = "" } }
-                        TextRules.TOC_PRESETS.forEach { p -> row { CheckRow(p.label, toc == p.pattern) { toc = p.pattern } } }
-                        row {
-                            TextField(
-                                value = toc,
-                                onValueChange = { toc = it },
-                                label = "分章正则",
-                                singleLine = true,
-                                colors = fieldColors,
-                                textStyle = mono,
-                                modifier = Modifier.fillMaxWidth(),
+        if (entry == null || !loaded) {
+            LoadingState("正在读取规则和原文……", Modifier.padding(top = padding.calculateTopPadding()))
+            return@SubPageScaffold
+        }
+        val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
+        val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            item {
+                GroupedSection(header = "分章格式", footer = "留空时自动识别“第X章”“序章”“番外”等。分不对时选一个格式，或自己写正则（匹配到的整行当作章名）。") {
+                    row { CheckRow("自动识别", toc.isBlank()) { toc = "" } }
+                    TextRules.TOC_PRESETS.forEach { p -> row { CheckRow(p.label, toc == p.pattern) { toc = p.pattern } } }
+                    row {
+                        TextField(
+                            value = toc,
+                            onValueChange = { toc = it },
+                            label = "分章正则",
+                            singleLine = true,
+                            colors = fieldColors,
+                            textStyle = mono,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                if (tocError != null) {
+                    Text("正则有误：$tocError", color = c.destructive, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 20.dp))
+                }
+                val list = chapters
+                // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
+                GroupedSection(header = "预览") {
+                    row {
+                        if (tocHeld) {
+                            Text(
+                                "分章正则$tocRisk。先没试分章，请改写；确定没问题可以仍然试一下。",
+                                color = c.destructive,
+                                fontSize = TypeScale.Body,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            )
+                        } else if (list == null && tooSlow == null) {
+                            LoadingRow("正在试分章……")
+                        } else {
+                            val count = list?.size ?: 0
+                            Text(
+                                tooSlow ?: when {
+                                    count <= 1 -> "按这个规则只分出 $count 章，可能没匹配到章名。"
+                                    else -> "将分为 $count 章"
+                                },
+                                color = if (tooSlow != null || count <= 1) c.destructive else c.secondary,
+                                fontSize = TypeScale.Caption,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                             )
                         }
                     }
-                    if (tocError != null) {
-                        Text("正则有误：$tocError", color = c.destructive, fontSize = 13.sp, modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 20.dp))
+                    if (tocHeld) row { ActionRow("仍然试一下") { allowed = allowed + current.toc } }
+                    if (list != null && list.size > 1) {
+                        val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
+                        shown.forEach { title -> row { Text(title, color = if (title == "……") c.secondary else c.label, fontSize = TypeScale.Body, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
                     }
-                    val list = chapters
-                    // 组名就叫“预览”；试分的结果写在卡片第一行，不拿状态当组名。
-                    GroupedSection(header = "预览") {
-                        row {
-                            if (tocHeld) {
-                                Text(
-                                    "分章正则$tocRisk。先没试分章，请改写；确定没问题可以仍然试一下。",
-                                    color = c.destructive,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                )
-                            } else if (list == null && tooSlow == null) {
-                                LoadingRow("正在试分章……")
-                            } else {
-                                val count = list?.size ?: 0
-                                Text(
-                                    tooSlow ?: when {
-                                        count <= 1 -> "按这个规则只分出 $count 章，可能没匹配到章名。"
-                                        else -> "将分为 $count 章"
-                                    },
-                                    color = if (tooSlow != null || count <= 1) c.destructive else c.secondary,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                )
-                            }
-                        }
-                        if (tocHeld) row { ActionRow("仍然试一下") { allowed = allowed + current.toc } }
-                        if (list != null && list.size > 1) {
-                            val shown = list.take(12) + if (list.size > 12) listOf("……", list.last()) else emptyList()
-                            shown.forEach { title -> row { Text(title, color = if (title == "……") c.secondary else c.label, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
-                        }
-                    }
-                    GroupedSection(header = "净化规则") {
-                        if (rules.isEmpty()) {
-                            row { EmptyRow("还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。") }
-                        }
-                        rules.forEachIndexed { i, r ->
-                            row {
-                                val preview = rememberPreview(r, source.orEmpty())
-                                RuleRow(
-                                    rule = r,
-                                    matches = preview?.fold({ "匹配 ${it.first} 处" }, { (it as? RegexTooSlowException)?.let(::slowLabel) ?: "正则太慢" }) ?: "统计中……",
-                                    samples = preview?.getOrNull()?.second.orEmpty(),
-                                    onToggle = { on -> rules = rules.toMutableList().also { it[i] = r.copy(enabled = on) } },
-                                    onDelete = { rules = rules.filterIndexed { j, _ -> j != i } },
-                                )
-                            }
-                        }
-                    }
-                    val draft = ReplaceRule(pattern, replacement, regex)
-                    val error = if (regex && pattern.isNotEmpty()) TextRules.error(pattern) else null
-                    // 写法像会灾难性回溯的正则先不统计（统计也要整本跑一遍），作者点“仍然试一下”再统计。
-                    val draftRisk = if (regex && pattern.isNotEmpty() && error == null) TextRules.risky(pattern) else null
-                    val draftHeld = draftRisk != null && pattern !in allowed
-                    val draftPreview = rememberPreview(draft, source.orEmpty(), run = !draftHeld)
-                    val draftSlow = draftPreview?.isFailure == true
-                    GroupedSection(
-                        header = "添加规则",
-                        footer = when {
-                            error != null -> "正则有误：$error"
-                            draftHeld -> "这个正则$draftRisk。先没统计，请改写；确定没问题可以仍然试一下。"
-                            draftSlow && (draftPreview?.exceptionOrNull() as? RegexTooSlowException)?.let(::slowNote) != null ->
-                                slowNote(draftPreview?.exceptionOrNull() as RegexTooSlowException)
-                            draftSlow -> "正则太慢，在这本书上跑不完。请改写，避免 (\\w+\\s?)+ 这类套在一起的重复。"
-                            pattern.isNotEmpty() -> (draftPreview?.getOrNull()?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
-                                draftPreview?.getOrNull()?.second.orEmpty().joinToString("") { "\n$it" }
-                            else -> null
-                        },
-                    ) {
-                        row {
-                            val templates = listOf(ReplaceRule("", "") to "不用模板") + REPLACE_TEMPLATES.map { (label, t) -> t to label }
-                            PickerRow("常用", templates, templates.firstOrNull { it.first == draft }?.first ?: ReplaceRule("", "")) { t ->
-                                pattern = t.pattern
-                                replacement = t.replacement
-                                regex = t.regex
-                            }
-                        }
-                        row { TextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
-                        row { TextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, colors = fieldColors, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
-                        row { ToggleRow("按正则匹配", regex) { regex = it } }
-                        if (draftHeld) row { ActionRow("仍然试一下") { allowed = allowed + pattern } }
-                        row {
-                            // 正则要等统计完、确认不慢才能添加。
-                            ActionRow("添加", enabled = pattern.isNotEmpty() && error == null && !draftSlow && (!regex || draftPreview != null)) {
-                                rules = rules + draft
-                                pattern = ""
-                                replacement = ""
-                                regex = false
-                            }
-                        }
-                    }
-                    val canSave = !busy && tocError == null && tooSlow == null && !tocHeld
-                    // 主按钮和上面的卡片左右对齐（都缩进 12dp）。
-                    PrimaryButton(
-                        if (busy) "正在重新整理……" else "保存并重新分章",
-                        onClick = { vm.saveRules(entry, current) },
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        enabled = canSave,
-                    )
-                    Text(
-                        "规则只影响灵阅里的显示，不会改动原文件。",
-                        color = c.secondary,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp),
-                    )
                 }
+                GroupedSection(header = "净化规则") {
+                    if (rules.isEmpty()) {
+                        row { EmptyRow("还没有规则。在下面添加：查找的文字会被替换，替换为留空就是删除。") }
+                    }
+                    rules.forEachIndexed { i, r ->
+                        row {
+                            val preview = rememberPreview(r, source.orEmpty())
+                            RuleRow(
+                                rule = r,
+                                matches = preview?.fold({ "匹配 ${it.first} 处" }, { (it as? RegexTooSlowException)?.let(::slowLabel) ?: "正则太慢" }) ?: "统计中……",
+                                samples = preview?.getOrNull()?.second.orEmpty(),
+                                onToggle = { on -> rules = rules.toMutableList().also { it[i] = r.copy(enabled = on) } },
+                                onDelete = { rules = rules.filterIndexed { j, _ -> j != i } },
+                            )
+                        }
+                    }
+                }
+                val draft = ReplaceRule(pattern, replacement, regex)
+                val error = if (regex && pattern.isNotEmpty()) TextRules.error(pattern) else null
+                // 写法像会灾难性回溯的正则先不统计（统计也要整本跑一遍），作者点“仍然试一下”再统计。
+                val draftRisk = if (regex && pattern.isNotEmpty() && error == null) TextRules.risky(pattern) else null
+                val draftHeld = draftRisk != null && pattern !in allowed
+                val draftPreview = rememberPreview(draft, source.orEmpty(), run = !draftHeld)
+                val draftSlow = draftPreview?.isFailure == true
+                GroupedSection(
+                    header = "添加规则",
+                    footer = when {
+                        error != null -> "正则有误：$error"
+                        draftHeld -> "这个正则$draftRisk。先没统计，请改写；确定没问题可以仍然试一下。"
+                        draftSlow && (draftPreview?.exceptionOrNull() as? RegexTooSlowException)?.let(::slowNote) != null ->
+                            slowNote(draftPreview?.exceptionOrNull() as RegexTooSlowException)
+                        draftSlow -> "正则太慢，在这本书上跑不完。请改写，避免 (\\w+\\s?)+ 这类套在一起的重复。"
+                        pattern.isNotEmpty() -> (draftPreview?.getOrNull()?.let { "将匹配 ${it.first} 处" } ?: "统计中……") +
+                            draftPreview?.getOrNull()?.second.orEmpty().joinToString("") { "\n$it" }
+                        else -> null
+                    },
+                ) {
+                    row {
+                        val templates = listOf(ReplaceRule("", "") to "不用模板") + REPLACE_TEMPLATES.map { (label, t) -> t to label }
+                        PickerRow("常用", templates, templates.firstOrNull { it.first == draft }?.first ?: ReplaceRule("", "")) { t ->
+                            pattern = t.pattern
+                            replacement = t.replacement
+                            regex = t.regex
+                        }
+                    }
+                    row { TextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+                    row { TextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, colors = fieldColors, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
+                    row { ToggleRow("按正则匹配", regex) { regex = it } }
+                    if (draftHeld) row { ActionRow("仍然试一下") { allowed = allowed + pattern } }
+                    row {
+                        // 正则要等统计完、确认不慢才能添加。
+                        ActionRow("添加", enabled = pattern.isNotEmpty() && error == null && !draftSlow && (!regex || draftPreview != null)) {
+                            rules = rules + draft
+                            pattern = ""
+                            replacement = ""
+                            regex = false
+                        }
+                    }
+                }
+                val canSave = !busy && tocError == null && tooSlow == null && !tocHeld
+                // 主按钮和上面的卡片左右对齐（都缩进 12dp）。
+                PrimaryButton(
+                    if (busy) "正在重新整理……" else "保存并重新分章",
+                    onClick = { vm.saveRules(entry, current) },
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    enabled = canSave,
+                )
+                Text(
+                    "规则只影响灵阅里的显示，不会改动原文件。",
+                    color = c.secondary,
+                    fontSize = TypeScale.Caption,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp),
+                )
             }
         }
     }
@@ -278,14 +264,14 @@ private fun RuleRow(rule: ReplaceRule, matches: String, samples: List<String>, o
     val c = LocalGroupedColors.current
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text((if (rule.regex) "正则 " else "") + rule.pattern, color = c.label, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
+            Text((if (rule.regex) "正则 " else "") + rule.pattern, color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
             Text(
                 (if (rule.replacement.isEmpty()) "→ 删除" else "→ ${rule.replacement}") + " · $matches",
                 color = c.secondary,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 modifier = Modifier.padding(top = 2.dp),
             )
-            samples.forEach { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            samples.forEach { Text(it, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         IconButton(onClick = onDelete) {
             Icon(LingYueIcons.Delete, contentDescription = "删除这条", tint = c.destructive)

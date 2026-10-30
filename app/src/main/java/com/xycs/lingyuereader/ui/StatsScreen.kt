@@ -44,7 +44,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.DayStats
@@ -93,9 +92,9 @@ fun StatsScreen(vm: AppViewModel) {
                         row {
                             // 今天最要紧，写大；本周、本月、今年并排小一号。
                             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("今天", fontSize = 13.sp, color = c.secondary)
+                                Text("今天", fontSize = TypeScale.Caption, color = c.secondary)
                                 val todayShown = animateFromZero((days[today]?.millis ?: 0).toFloat())
-                                Text(minutes(todayShown.toLong()), color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
+                                Text(minutes(todayShown.toLong()), color = c.label, fontSize = TypeScale.Display, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
                                 Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
                                 Row(Modifier.fillMaxWidth()) {
                                     Figure("本周", week, Modifier.weight(1f))
@@ -111,11 +110,12 @@ fun StatsScreen(vm: AppViewModel) {
                             Column(Modifier.padding(16.dp)) {
                                 Heatmap(days, today, weeks = 20)
                                 Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("少", fontSize = 13.sp, color = c.secondary)
+                                    Text("少", fontSize = TypeScale.Caption, color = c.secondary)
                                     HEAT_LEVELS.indices.forEach { i ->
+                                        // 热力图图例的小格和热力图本身一样按格子大小画圆角。
                                         Box(Modifier.padding(horizontal = 2.dp).size(10.dp).clip(RoundedCornerShape(2.dp)).background(heatColor(i)))
                                     }
-                                    Text("多", fontSize = 13.sp, color = c.secondary)
+                                    Text("多", fontSize = TypeScale.Caption, color = c.secondary)
                                 }
                             }
                         }
@@ -134,12 +134,12 @@ fun StatsScreen(vm: AppViewModel) {
                                 // 书名、时长和进度条一起呈现，行高按内容自然展开。
                                 Column(Modifier.fillMaxWidth().testTag("stats-book-${b.id}").heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(b.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+                                        Text(b.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(durationLabel(b.readMillis), color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 12.dp))
                                     }
                                     val grown = animateFromZero(b.readMillis.toFloat() / longest)
-                                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
-                                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(Radius.Full).background(c.fill)) {
+                                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(Radius.Full).background(c.tint))
                                     }
                                 }
                             }
@@ -160,8 +160,8 @@ private fun Figure(label: String, millis: Long, modifier: Modifier = Modifier) {
     val shown = animateFromZero(millis.toFloat())
     val c = LocalGroupedColors.current
     Column(modifier) {
-        Text(minutes(shown.toLong()), color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-        Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
+        Text(minutes(shown.toLong()), color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium)
+        Text(label, fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -251,19 +251,19 @@ private fun GoalSection(vm: AppViewModel, todayMinutes: Int) {
                 val done = todayMinutes >= goal
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     Row(verticalAlignment = Alignment.Bottom) {
-                        Text("${animateFromZero(todayMinutes.toFloat()).toInt()}", color = c.label, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                        Text(" / $goal 分钟", color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp))
+                        Text("${animateFromZero(todayMinutes.toFloat()).toInt()}", color = c.label, fontSize = TypeScale.Display, fontWeight = FontWeight.SemiBold)
+                        Text(" / $goal 分钟", color = c.secondary, fontSize = TypeScale.Body, modifier = Modifier.padding(bottom = 4.dp))
                         Spacer(Modifier.weight(1f))
                         Text(
                             if (done) "今天的目标完成了" else "还差 ${goal - todayMinutes} 分钟",
-                            fontSize = 13.sp,
+                            fontSize = TypeScale.Caption,
                             color = if (done) c.tint else c.secondary,
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
                     }
-                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.fill)) {
+                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(8.dp).clip(Radius.Full).background(c.fill)) {
                         val filled = animateFromZero((todayMinutes.toFloat() / goal).coerceIn(0f, 1f))
-                        Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(RoundedCornerShape(4.dp)).background(c.tint))
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(filled.coerceIn(0f, 1f)).clip(Radius.Full).background(c.tint))
                     }
                 }
             }

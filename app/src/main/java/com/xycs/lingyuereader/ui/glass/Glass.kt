@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui.glass
 
+import com.xycs.lingyuereader.ui.TypeScale
+import com.xycs.lingyuereader.ui.Radius
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,7 +58,6 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -279,7 +280,7 @@ fun GlassMenu(content: @Composable () -> Unit) {
     Box(
         Modifier.glass(
             backdrop = LocalGlassBackdrop.current,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(Radius.Large),
             tint = panelTint(MiuixTheme.colorScheme.surface),
             blur = 16.dp,
             refraction = 10.dp,
@@ -311,6 +312,7 @@ fun GlassDialog(
     }
     val glass = Modifier.glass(
         backdrop = LocalGlassBackdrop.current,
+        // 对话框和 miuix 的弹窗一样用 32dp 圆角，和系统弹窗看着是一类。
         shape = RoundedCornerShape(32.dp),
         tint = panelTint(),
         blur = 24.dp,
@@ -367,6 +369,7 @@ private fun StillDialog(
                 Modifier
                     .widthIn(max = DialogDefaults.MaxWidth)
                     .fillMaxWidth()
+                    // 同上：对话框和 miuix 的弹窗一样 32dp。
                     .clip(RoundedCornerShape(32.dp))
                     .background(MiuixTheme.colorScheme.background)
                     .clickable(interactionSource = null, indication = null) {}
@@ -427,7 +430,7 @@ fun GlassSheet(
                     Text(
                         title,
                         color = titleColor,
-                        fontSize = 18.sp,
+                        fontSize = TypeScale.Headline,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
@@ -458,7 +461,7 @@ fun GlassSheet(
                 Text(
                     title,
                     color = titleColor,
-                    fontSize = 18.sp,
+                    fontSize = TypeScale.Headline,
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),

@@ -54,7 +54,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ai.AiAssistant
 import com.xycs.lingyuereader.ai.AiConfig
 import com.xycs.lingyuereader.ai.AiPrompts
@@ -121,16 +120,16 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
                         Text(
                             "这是之前在本章生成的提要（${java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(session.cachedAt))}）。读了新内容可以点“重新生成”。",
                             color = c.secondary,
-                            fontSize = 13.sp,
-                            lineHeight = 19.sp,
+                            fontSize = TypeScale.Caption,
+                            lineHeight = TypeScale.CaptionLine,
                         )
                     }
                     is AiTask.AskBook -> if (session.turns.isEmpty()) {
                         Text(
                             "只在你读过的部分里找答案，并标出引用的原文，不会剧透后面的内容。",
                             color = c.secondary,
-                            fontSize = 14.sp,
-                            lineHeight = 21.sp,
+                            fontSize = TypeScale.Caption,
+                            lineHeight = TypeScale.CaptionLine,
                         )
                         // 胶囊能点的范围比看着的高 12dp，上下不再另加间距。
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -167,7 +166,7 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
             Text(
                 "${config.providerLabel} · ${config.model} 生成，可能有误",
                 color = c.tertiary,
-                fontSize = 11.sp,
+                fontSize = TypeScale.Micro,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp, bottom = 12.dp),
@@ -181,12 +180,12 @@ internal fun AiSheet(session: AiSession, config: AiConfig, palette: ReaderPalett
 private fun QuoteBlock(text: String) {
     val c = LocalGroupedColors.current
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = 4.dp)) {
-        Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(c.tint.copy(alpha = 0.6f)))
+        Box(Modifier.width(3.dp).fillMaxHeight().clip(Radius.Full).background(c.tint.copy(alpha = 0.6f)))
         Text(
             text,
             color = c.secondary,
-            fontSize = 15.sp,
-            lineHeight = 23.sp,
+            fontSize = TypeScale.Body,
+            lineHeight = TypeScale.BodyLine,
             maxLines = 5,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 12.dp),
@@ -201,11 +200,11 @@ private fun QuestionBubble(text: String) {
         Text(
             text,
             color = c.label,
-            fontSize = 15.sp,
-            lineHeight = 21.sp,
+            fontSize = TypeScale.Body,
+            lineHeight = TypeScale.BodyLine,
             modifier = Modifier
                 .widthIn(max = 300.dp)
-                .clip(RoundedCornerShape(18.dp))
+                .clip(RoundedCornerShape(Radius.Large))
                 .background(c.fill)
                 .padding(horizontal = 14.dp, vertical = 9.dp),
         )
@@ -221,7 +220,7 @@ private fun Answer(turn: AiTurn, actions: AiActions) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (turn.answer.isNotEmpty()) {
             SelectionContainer {
-                Text(cited(turn.answer, c.tint), color = c.label, fontSize = 16.sp, lineHeight = 26.sp)
+                Text(cited(turn.answer, c.tint), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
             }
         }
         when {
@@ -230,9 +229,9 @@ private fun Answer(turn: AiTurn, actions: AiActions) {
                 Text(
                     "重试",
                     color = c.tint,
-                    fontSize = 15.sp,
+                    fontSize = TypeScale.Body,
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = actions.retry).padding(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.Medium)).clickable(role = Role.Button, onClick = actions.retry).padding(horizontal = 12.dp, vertical = 10.dp),
                 )
             }
             turn.loading -> Thinking(turn.answer.isEmpty(), turn.status)
@@ -259,9 +258,9 @@ private fun AnswerAction(label: String, onClick: () -> Unit) {
     Text(
         label,
         color = c.secondary,
-        fontSize = 13.sp,
+        fontSize = TypeScale.Caption,
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(Radius.Small))
             .clickable(role = Role.Button, onClick = onClick)
             .padding(vertical = 6.dp, horizontal = 2.dp),
     )
@@ -272,7 +271,7 @@ private fun cited(answer: String, tint: Color): AnnotatedString = buildAnnotated
     var at = 0
     Regex("""\[(\d{1,2})]""").findAll(answer).forEach { m ->
         append(answer.substring(at, m.range.first))
-        withStyle(SpanStyle(color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)) { append(m.value) }
+        withStyle(SpanStyle(color = tint, fontSize = TypeScale.Footnote, fontWeight = FontWeight.Medium)) { append(m.value) }
         at = m.range.last + 1
     }
     append(answer.substring(at))
@@ -285,15 +284,15 @@ private fun SourceRow(s: AiSource, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(c.cell)
             .clickable(onClickLabel = "跳到原文", role = Role.Button, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
-        Text("[${s.index}]", color = c.tint, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(end = 8.dp, top = 1.dp))
+        Text("[${s.index}]", color = c.tint, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, modifier = Modifier.padding(end = 8.dp, top = 1.dp))
         Column(Modifier.weight(1f)) {
-            Text(s.chapterTitle, color = c.label, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(s.text.replace('\n', ' '), color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(s.chapterTitle, color = c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(s.text.replace('\n', ' '), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 6.dp).size(14.dp).align(Alignment.CenterVertically))
     }
@@ -305,7 +304,7 @@ private fun Thinking(empty: Boolean, status: String? = null) {
     val c = LocalGroupedColors.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Spinner()
-        if (empty) Text(status ?: "正在思考……", color = c.secondary, fontSize = 14.sp)
+        if (empty) Text(status ?: "正在思考……", color = c.secondary, fontSize = TypeScale.Caption)
     }
 }
 
@@ -330,7 +329,7 @@ private fun AskField(hint: String, enabled: Boolean, onSend: (String) -> Unit) {
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(Radius.XLarge))
             .background(c.cell)
             .padding(end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -342,7 +341,7 @@ private fun AskField(hint: String, enabled: Boolean, onSend: (String) -> Unit) {
             useLabelAsPlaceholder = true,
             maxLines = 4,
             colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
-            textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 16.sp),
+            textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { send() }),
             modifier = Modifier.weight(1f),

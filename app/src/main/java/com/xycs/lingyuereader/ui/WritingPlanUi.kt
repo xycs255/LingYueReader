@@ -34,7 +34,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -111,17 +110,17 @@ internal fun StatusDialog(chapter: WorkChapter, ruleHits: Int? = null, onDismiss
                     else -> "细纲：只有细纲卡；草稿：在写；修订：改稿中；定稿：锁定。"
                 },
                 color = c.secondary,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
             )
             // 定稿前提醒一句检查规则的结果，不拦着。
             if (status == ChapterStatus.FINAL && !chapter.locked && (ruleHits ?: 0) > 0) {
-                Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = c.warning, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = c.warning, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
             }
             if (unlocking) {
                 TextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
                 // 只改写法 / 涉及设定：一个开关（关着就是只改写法）。
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow(
                         "涉及设定，要同步设定包",
                         checked = canon,
@@ -401,7 +400,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 planned?.missing != null -> "设定包的卷纲细纲里没找到这一章（${planned.missing}）。章号对不上时填下面的“细纲章号”。"
                                 else -> null
                             }
-                            if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            if (note != null) row { Text(note, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                             // 一键写本章时 AI 拟的：挂个小标签，看过没问题点一下确认；直接改哪一项也算确认。
                             if (now.aiOutline) {
                                 row { AiDraftedNote("AI 拟的", "写本章时 AI 按本章及以前的资料拟的，下面挂着“待确认”的几张就是。改哪一项都算确认。") }
@@ -521,8 +520,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         CARD_FIELDS.dropLast(1).forEach { (label, _, get) ->
                             val v = get(p)
                             if (v.isNotBlank()) {
-                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = 13.sp)
-                                Text(v, color = LocalGroupedColors.current.label, fontSize = 15.sp, lineHeight = 22.sp)
+                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = TypeScale.Caption)
+                                Text(v, color = LocalGroupedColors.current.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                             }
                         }
                     }
@@ -544,8 +543,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     Text(
                         "AI 拆好以后先给你看，用了才会换掉现在写的节拍；已写的勾会按新的条数重新算。",
                         color = LocalGroupedColors.current.secondary,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                     )
                     DialogButtons(
                         onDismiss = { askOverwriteBeats = false },
@@ -584,8 +583,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     Text(
                         "前六项换成细纲文档里这一章现在写的，你在这里改的会被覆盖。以后细纲再改，这里跟着变。摘要和细纲章号不动。",
                         color = LocalGroupedColors.current.secondary,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                     )
                     DialogButtons(
                         onDismiss = { replacing = false },
@@ -702,7 +701,7 @@ private fun AiDraftedNote(tag: String, text: String) {
     val c = LocalGroupedColors.current
     GroupedRow {
         Tag(tag, c.warning)
-        Text(text, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.weight(1f).padding(start = 8.dp))
     }
 }
 
@@ -773,7 +772,7 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                 summary = whenLabel(e.at) + (if (e.canon) if (e.synced) " · 涉及设定，已同步" else " · 涉及设定，待同步" else ""),
                 onDismissRequest = { open = null },
             ) {
-                if (e.reason.isNotBlank()) Text(e.reason, color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                if (e.reason.isNotBlank()) Text(e.reason, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 if (e.canon) {
                     DialogButtons(
                         onDismiss = { open = null; vm.open(Screen.WorkPack(workId)) },

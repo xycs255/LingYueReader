@@ -6,6 +6,7 @@ package com.xycs.lingyuereader.ui.glass
 // Adapted from Kyant0/AndroidLiquidGlass — https://github.com/Kyant0/AndroidLiquidGlass (Apache 2.0).
 // 灵阅：取自 miuix 0.9.4 示例应用（example/shared/.../component/liquid），只改了包名、深色判断和底部边距。
 
+import com.xycs.lingyuereader.ui.TypeScale
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.snap
@@ -73,7 +74,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
 import com.xycs.lingyuereader.ui.Effects
 import kotlinx.coroutines.launch
@@ -372,7 +372,7 @@ internal fun LiquidGlassNavigationBar(
                 }
                 Text(
                     text = item.label,
-                    fontSize = 10.sp,
+                    fontSize = TypeScale.Micro,
                     fontWeight = FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

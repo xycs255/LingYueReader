@@ -675,6 +675,7 @@ private fun Reader(
                         },
                         zoom = 1.35f,
                         size = DpSize(116.dp, 44.dp),
+                        // 放大镜是胶囊形：圆角取高度的一半。
                         cornerRadius = 22.dp,
                     )
                 },
@@ -857,12 +858,12 @@ private fun Reader(
         ) {
             Row(
                 Modifier
-                    .readerGlass(RoundedCornerShape(50), palette, glassBackdrop)
+                    .readerGlass(Radius.Full, palette, glassBackdrop)
                     .padding(horizontal = 22.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("永", color = palette.text, fontSize = kotlin.math.round(bubbleSize).sp, fontFamily = styles.fontFamily)
-                Text("字号 ${kotlin.math.round(bubbleSize).toInt()}", color = palette.secondary, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
+                Text("字号 ${kotlin.math.round(bubbleSize).toInt()}", color = palette.secondary, fontSize = TypeScale.Body, modifier = Modifier.padding(start = 12.dp))
             }
         }
         // 选区两端的把手：盖在正文上面，段末那一行下方的把手也按得到。
@@ -923,7 +924,7 @@ private fun Reader(
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .readerGlass(RoundedCornerShape(28.dp), palette, glassBackdrop)
+                    .readerGlass(Radius.Full, palette, glassBackdrop)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -931,11 +932,11 @@ private fun Reader(
                     Icon(LingYueIcons.Back, contentDescription = "返回书架", tint = palette.text)
                 }
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                    Text(entry.title, color = palette.text, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    Text(entry.title, color = palette.text, fontSize = TypeScale.Body, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
                     Text(
                         listOfNotNull(entry.author?.takeIf { it.isNotBlank() }, "已读 ${(bookFraction * 100).toInt()}%").joinToString(" · "),
                         color = palette.secondary,
-                        fontSize = 11.sp,
+                        fontSize = TypeScale.Micro,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1025,7 +1026,7 @@ private fun Reader(
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
-                    .readerGlass(RoundedCornerShape(30.dp), palette, glassBackdrop)
+                    .readerGlass(RoundedCornerShape(Radius.XLarge), palette, glassBackdrop)
                     .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp),
             ) {
                 BookProgress(
@@ -1361,7 +1362,7 @@ private fun SelectionBarRow(
     onCard: () -> Unit,
 ) {
     Box(Modifier.height(48.dp).widthIn(max = 340.dp)) {
-        Box(Modifier.matchParentSize().padding(vertical = 5.dp).shadow(8.dp, RoundedCornerShape(50)).clip(RoundedCornerShape(50)).background(palette.text))
+        Box(Modifier.matchParentSize().padding(vertical = 5.dp).shadow(8.dp, Radius.Full).clip(Radius.Full).background(palette.text))
         Row(
             Modifier.horizontalScroll(rememberScrollState()).height(48.dp).padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1374,10 +1375,10 @@ private fun SelectionBarRow(
             Text(
                 label,
                 color = palette.background,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 fontWeight = if (i == 0) FontWeight.Medium else FontWeight.Normal,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
+                    .clip(Radius.Full)
                     .clickable(role = Role.Button, onClick = action)
                     .height(48.dp)
                     .padding(horizontal = 10.dp, vertical = 14.dp),
@@ -1446,7 +1447,7 @@ private fun BookProgress(
             Text(
                 content.chapters[target].title,
                 color = if (dragging != null) palette.accent else palette.text,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1475,8 +1476,8 @@ private fun BookProgress(
             modifier = Modifier.padding(horizontal = 6.dp),
         )
         Row(Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, bottom = 4.dp)) {
-            Text("全书 ${percent.coerceIn(0, 100)}%", color = palette.secondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            if (pageLabel != null) Text("本章 $pageLabel", color = palette.secondary, fontSize = 11.sp)
+            Text("全书 ${percent.coerceIn(0, 100)}%", color = palette.secondary, fontSize = TypeScale.Micro, modifier = Modifier.weight(1f))
+            if (pageLabel != null) Text("本章 $pageLabel", color = palette.secondary, fontSize = TypeScale.Micro)
         }
     }
 }
@@ -1546,13 +1547,13 @@ private fun ChapterStep(label: String, icon: ImageVector, before: Boolean, enabl
     Row(
         Modifier
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
-        Text(label, color = color, fontSize = 13.sp)
+        Text(label, color = color, fontSize = TypeScale.Caption)
         if (!before) Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
     }
 }
@@ -1634,7 +1635,7 @@ private fun PressRingOverlay(ring: PressRing, color: Color) {
 private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop?, onReturn: () -> Unit, onDismiss: () -> Unit) {
     Row(
         Modifier
-            .readerGlass(RoundedCornerShape(50), palette, backdrop)
+            .readerGlass(Radius.Full, palette, backdrop)
             .padding(start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1642,14 +1643,14 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
             modifier = Modifier
                 .widthIn(max = 240.dp)
                 .heightIn(min = 48.dp)
-                .clip(RoundedCornerShape(50))
+                .clip(Radius.Full)
                 .clickable(role = Role.Button, onClick = onReturn)
                 .padding(start = 12.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(LingYueIcons.Back, contentDescription = null, tint = palette.accent, modifier = Modifier.size(16.dp))
-            Text("回到刚才 · $title", color = palette.accent, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("回到刚才 · $title", color = palette.accent, fontSize = TypeScale.Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Icon(
             LingYueIcons.Close,
@@ -1657,7 +1658,7 @@ private fun ReturnChip(title: String, palette: ReaderPalette, backdrop: Backdrop
             tint = palette.secondary,
             modifier = Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(50))
+                .clip(Radius.Full)
                 .clickable(role = Role.Button, onClick = onDismiss)
                 .padding(15.dp),
         )
@@ -1702,11 +1703,11 @@ private fun StatusLine(
             },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(label, color = palette.secondary, fontSize = 11.sp, letterSpacing = 0.04.em)
+            Text(title, color = palette.secondary, fontSize = TypeScale.Micro, letterSpacing = 0.04.em, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(label, color = palette.secondary, fontSize = TypeScale.Micro, letterSpacing = 0.04.em)
             if (clock) {
-                Text(rememberClock(), color = palette.secondary, fontSize = 11.sp)
-                rememberBattery()?.let { Text("$it%", color = palette.secondary, fontSize = 11.sp) }
+                Text(rememberClock(), color = palette.secondary, fontSize = TypeScale.Micro)
+                rememberBattery()?.let { Text("$it%", color = palette.secondary, fontSize = TypeScale.Micro) }
             }
         }
     }
@@ -1774,7 +1775,7 @@ private fun BarButton(
         modifier
             .height(60.dp)
             .pressScale(source, 0.94f)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(Radius.Large))
             .background(fill)
             .clickable(enabled = enabled, role = Role.Button, interactionSource = source, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1783,9 +1784,10 @@ private fun BarButton(
         if (icon != null) {
             Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
         } else {
+            // “Aa”在这里当图标用，字号按图标大小定。
             Text("Aa", color = color, fontSize = 19.sp, lineHeight = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
         }
-        Text(label, color = color, fontSize = 12.sp)
+        Text(label, color = color, fontSize = TypeScale.Footnote)
     }
 }
 

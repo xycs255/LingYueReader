@@ -36,7 +36,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.BookFormat
@@ -161,7 +160,7 @@ internal fun FormatPanel(
             if (counts.isEmpty()) "这一章不用排版。"
             else "共 ${included.size} 处：" + counts.filterKeys { it !in skip }.entries.joinToString("、") { (k, n) -> "${k.label} $n" }.ifEmpty { "都勾掉了" },
             color = c.label,
-            fontSize = 15.sp,
+            fontSize = TypeScale.Body,
             modifier = Modifier.padding(vertical = 4.dp),
         )
         if (counts.isNotEmpty()) {
@@ -186,20 +185,20 @@ internal fun FormatPanel(
             items(included.take(MAX_SHOWN), key = { "${it.kind}:${it.start}:${it.end}:${it.after}" }) { ch ->
                 Row(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                     Tag(ch.kind.label, c.tint, Modifier.padding(top = 2.dp))
-                    Text(changeSnippet(result.original, ch, removed, added), color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                    Text(changeSnippet(result.original, ch, removed, added), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(start = 8.dp))
                 }
             }
             if (included.size > MAX_SHOWN) {
-                item(key = "more") { Text("还有 ${included.size - MAX_SHOWN} 处没列出来。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp)) }
+                item(key = "more") { Text("还有 ${included.size - MAX_SHOWN} 处没列出来。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(vertical = 6.dp)) }
             }
             if (result.notes.isNotEmpty()) {
                 item(key = "notesHeader") {
-                    Text("提示（不会自动改）", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+                    Text("提示（不会自动改）", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
                 }
                 items(result.notes.take(MAX_SHOWN), key = { "note:${it.hint}:${it.at}" }) { n ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                         Tag(n.hint.label, c.warning, Modifier.padding(top = 2.dp))
-                        Text(noteSnippet(result.text, n, c.warning), color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                        Text(noteSnippet(result.text, n, c.warning), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(start = 8.dp))
                     }
                 }
             }
@@ -469,8 +468,8 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
                     Text(
                         "定稿的 ${p.locked.size} 章不排：${p.locked.joinToString("、") { it.title }}。要排先解锁。",
                         color = c.secondary,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
                     )
                 }

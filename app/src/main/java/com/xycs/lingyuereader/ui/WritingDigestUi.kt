@@ -21,7 +21,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.PulseKind
 import com.xycs.lingyuereader.data.PulseRow
 import com.xycs.lingyuereader.data.PulseState
@@ -44,14 +43,14 @@ internal fun TreeStoryRow(story: StoryDigest?, onClick: () -> Unit) {
     GroupedRow(onClick = onClick) {
         RowIcon(LingYueIcons.Notes, c.tint)
         Column(Modifier.weight(1f)) {
-            Text("故事至今", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text("故事至今", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
             Text(
                 when {
                     story == null -> "还没有：“这章写完了”收尾时自动整理"
                     else -> "${story.text.lines().count { it.isNotBlank() }} 句" +
                         (if (story.throughNo > 0) " · 写到第 ${story.throughNo} 章" else "") + if (story.edited) " · 你改过的" else ""
                 },
-                color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
@@ -65,8 +64,8 @@ internal fun TreePulseRow(note: String?, warn: Boolean, onClick: () -> Unit) {
     GroupedRow(onClick = onClick) {
         RowIcon(LingYueIcons.Threads, c.tint)
         Column(Modifier.weight(1f)) {
-            Text("线索与节奏体检", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Text(note ?: "每条线、伏笔、主要人物最近一次推进在哪一章", color = if (warn) c.warning else c.secondary, fontSize = 12.sp,
+            Text("线索与节奏体检", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
+            Text(note ?: "每条线、伏笔、主要人物最近一次推进在哪一章", color = if (warn) c.warning else c.secondary, fontSize = TypeScale.Footnote,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
@@ -106,7 +105,7 @@ internal fun DigestEditDialog(
         if (edited && onResume != null) {
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Tag(TAG_EDITED, LocalGroupedColors.current.warning)
-                Text("收尾时不会盖掉", color = LocalGroupedColors.current.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("收尾时不会盖掉", color = LocalGroupedColors.current.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
                 PillButton("改回自动", { onResume(); onDismiss() })
             }
         }
@@ -162,13 +161,13 @@ private fun PulseLine(r: PulseRow, onCarry: (PulseRow) -> Unit) {
     }) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Tag(r.kind.label, categoryColor(if (r.kind == PulseKind.FORESHADOW) CategoryTone.CYAN else if (r.kind == PulseKind.PERSON) CategoryTone.PURPLE else CategoryTone.SUCCESS, c))
-            Text(r.name, color = c.label, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(r.name, color = c.label, fontSize = TypeScale.Body, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Tag(r.state.label, color)
         }
         Text(
             listOfNotNull(r.lastNo?.let { "最近推进：第 $it 章" + r.lastTitle.takeIf { t -> t.isNotBlank() }?.let { t -> "《$t》" }.orEmpty() } ?: "还没推进过",
                 r.note.takeIf { it.isNotBlank() }).joinToString(" · "),
-            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(top = 2.dp),
+            color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(top = 2.dp),
         )
         if (r.state == PulseState.COLD || r.state == PulseState.STALLED) {
             Row(Modifier.padding(top = 4.dp)) { PillButton("带进下一章", { onCarry(r) }, style = PillStyle.Tinted) }

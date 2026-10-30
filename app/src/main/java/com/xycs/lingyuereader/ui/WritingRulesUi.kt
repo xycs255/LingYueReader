@@ -24,7 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -100,22 +99,12 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
         }
     }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "检查规则",
+        onBack = { vm.back() },
+        snackbar = snackbar,
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "检查规则",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    },
-                )
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-        ) { padding ->
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -136,8 +125,8 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                             row {
                                 GroupedRow {
                                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Text(CheckRules.describe(r), color = c.label, fontSize = 15.sp, lineHeight = 21.sp)
-                                        Text("${r.source.doc} · 第 ${r.source.line} 行", color = c.secondary, fontSize = 12.sp)
+                                        Text(CheckRules.describe(r), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                                        Text("${r.source.doc} · 第 ${r.source.line} 行", color = c.secondary, fontSize = TypeScale.Footnote)
                                     }
                                 }
                             }
@@ -170,7 +159,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                         Text(
                             if (!aiConfig.ready) "用 AI 整理要先在“我的 → AI 服务”里设置服务商。" else "用 AI 整理要先在设定包里放写作规范或称谓与语气文档。",
                             color = c.secondary,
-                            fontSize = 13.sp,
+                            fontSize = TypeScale.Caption,
                             modifier = Modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
                         )
                     }
@@ -180,8 +169,8 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                                 row {
                                     GroupedRow {
                                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            Text(u.text, color = c.destructive, fontSize = 15.sp, lineHeight = 21.sp)
-                                            Text("${u.doc} · 第 ${u.line} 行", color = c.secondary, fontSize = 12.sp)
+                                            Text(u.text, color = c.destructive, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                                            Text("${u.doc} · 第 ${u.line} 行", color = c.secondary, fontSize = TypeScale.Footnote)
                                         }
                                     }
                                 }
@@ -227,7 +216,6 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     vm.writing.saveRules(workId, edited) { vm.showMessage("已存进设定包的“${it.title}”") }
                 }
             }
-        }
     }
 }
 
@@ -249,13 +237,13 @@ private fun RulesDraftDialog(text: String, replacing: Boolean, onDismiss: () -> 
             Text(
                 "没看懂：" + parsed.unknown.take(3).joinToString("；") { it.text },
                 color = c.destructive,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
                 maxLines = 3,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-        if (parsed.rules.isEmpty()) Text("没有读懂的规则，先改一改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        if (parsed.rules.isEmpty()) Text("没有读懂的规则，先改一改。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 6.dp))
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(value.trimEnd() + "\n") }, confirmText = "存为检查规则", confirmEnabled = parsed.rules.isNotEmpty())
     }
 }

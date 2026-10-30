@@ -37,7 +37,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ai.AiConfig
@@ -105,16 +104,16 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 ) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                            Text("今天", fontSize = 13.sp, color = c.secondary)
+                            Text("今天", fontSize = TypeScale.Caption, color = c.secondary)
                             val shown = animateFromZero(measure.value(todayRow).toFloat())
                             Text(
                                 if (measure.money) "约 ¥" + AiPricing.amount(shown.toDouble()) else AiPricing.tokens(shown.toLong()) + " token",
                                 color = c.label,
-                                fontSize = 34.sp,
+                                fontSize = TypeScale.Display,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(top = 2.dp),
                             )
-                            Text(summaryLine(todayRow), fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
+                            Text(summaryLine(todayRow), fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
                             Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
                             Row(Modifier.fillMaxWidth()) {
                                 UsageFigure("本月", measure.label(monthRow), Modifier.weight(1f))
@@ -133,9 +132,9 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                             }
                             DailyBars(values, measure.money)
                             Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                                Text("30 天前", fontSize = 12.sp, color = c.secondary)
+                                Text("30 天前", fontSize = TypeScale.Footnote, color = c.secondary)
                                 Spacer(Modifier.weight(1f))
-                                Text("今天", fontSize = 12.sp, color = c.secondary)
+                                Text("今天", fontSize = TypeScale.Footnote, color = c.secondary)
                             }
                         }
                     }
@@ -199,8 +198,8 @@ private fun summaryLine(r: UsageRow): String =
 private fun UsageFigure(label: String, value: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Column(modifier) {
-        Text(value, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
+        Text(value, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -216,12 +215,12 @@ private fun UsageBarsSection(header: String, items: List<Pair<String, UsageRow>>
             row {
                 Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(name, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(measure.label(r) + " · ${r.usage.requests} 次", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+                        Text(name, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(measure.label(r) + " · ${r.usage.requests} 次", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 12.dp))
                     }
                     val grown = animateFromZero((measure.value(r) / top).toFloat())
-                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
-                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(Radius.Full).background(c.fill)) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(Radius.Full).background(c.tint))
                     }
                 }
             }
@@ -372,7 +371,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
                 )
             }
             if (AiPricing.choose(config)?.kind.let { it == AiPricing.PriceKind.MODEL || it == AiPricing.PriceKind.PROVIDER }) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ActionRow(if (AiPricing.reference(config) != null) "不用自己填的，用参考价" else "清除填的单价", destructive = true) { onSave(null) }
                 }
             }

@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -148,7 +147,7 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                                             Text(
                                                 "出自「${s.chapterTitle}」 · ${s.text.length} 字",
                                                 color = c.secondary,
-                                                fontSize = 13.sp,
+                                                fontSize = TypeScale.Caption,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f).padding(start = 8.dp),
@@ -157,8 +156,8 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                                         Text(
                                             if (open) s.text else s.text.replace('\n', ' ').take(PREVIEW_CHARS) + if (s.text.length > PREVIEW_CHARS) "……" else "",
                                             color = c.label,
-                                            fontSize = 15.sp,
-                                            lineHeight = 23.sp,
+                                            fontSize = TypeScale.Body,
+                                            lineHeight = TypeScale.BodyLine,
                                         )
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             PillButton("换一段", { vm.writingAi.shiftSample(workId, s.kind.name) })
@@ -178,8 +177,8 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                 Text(
                     "范例只用来学写法，AI 被要求不照抄、不接着这些段落的情节写。“最近一次发给 AI 的内容”里能看到实际带上的范例。",
                     color = c.secondary,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
+                    fontSize = TypeScale.Caption,
+                    lineHeight = TypeScale.CaptionLine,
                     fontWeight = FontWeight.Normal,
                     modifier = Modifier.padding(horizontal = 28.dp),
                 )

@@ -35,7 +35,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.Appearance
@@ -63,74 +62,61 @@ fun ThemeScreen(vm: AppViewModel) {
     val update = vm::updateAppearance
     val recolor: ((Appearance) -> Appearance) -> Unit = { t -> reveal?.change { update(t) } ?: update(t) }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "主题设置",
+        onBack = { vm.back() },
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "主题设置",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(LingYueIcons.Back, contentDescription = "返回")
-                        }
-                    },
-                )
-            },
-        ) { padding ->
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 24.dp),
-                overscrollEffect = null,
-            ) {
-                item {
-                    GroupedSection(header = "外观") {
-                        row { AppearancePicker(a) { m -> if (m != a.mode) recolor { it.copy(mode = m) } } }
-                    }
-                    GroupedSection(header = "强调色") {
-                        row { AccentDots(a.accent) { color -> if (color != a.accent) recolor { it.copy(accent = color) } } }
-                        row { ToggleRow("Monet 取色", a.monet, subtitle = "从壁纸取色（Android 12 起）；选了强调色时按它生成整套配色") { v -> recolor { it.copy(monet = v) } } }
-                        if (a.dynamicColors) {
-                            row {
-                                PickerRow("配色风格", PaletteStyle.entries.map { it to it.label }, a.paletteStyle) { p ->
-                                    recolor { it.copy(paletteStyle = p) }
-                                }
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 24.dp),
+            overscrollEffect = null,
+        ) {
+            item {
+                GroupedSection(header = "外观") {
+                    row { AppearancePicker(a) { m -> if (m != a.mode) recolor { it.copy(mode = m) } } }
+                }
+                GroupedSection(header = "强调色") {
+                    row { AccentDots(a.accent) { color -> if (color != a.accent) recolor { it.copy(accent = color) } } }
+                    row { ToggleRow("Monet 取色", a.monet, subtitle = "从壁纸取色（Android 12 起）；选了强调色时按它生成整套配色") { v -> recolor { it.copy(monet = v) } } }
+                    if (a.dynamicColors) {
+                        row {
+                            PickerRow("配色风格", PaletteStyle.entries.map { it to it.label }, a.paletteStyle) { p ->
+                                recolor { it.copy(paletteStyle = p) }
                             }
                         }
                     }
-                    // 每个开关的作用写在它自己下面，不堆在组末一大段。
-                    GroupedSection(header = "效果") {
-                        row { ToggleRow("模糊", a.blur, enabled = !settings.eInk, subtitle = "顶栏、底栏和面板透出后面的内容") { v -> update { it.copy(blur = v) } } }
-                        row { ToggleRow("液态玻璃", a.liquidGlass, enabled = !settings.eInk, subtitle = "玻璃边缘的折射和高光") { v -> update { it.copy(liquidGlass = v) } } }
-                        row { ToggleRow("悬浮底栏", a.floatingBar, subtitle = "底栏浮在内容上，按住可以左右拖动") { v -> update { it.copy(floatingBar = v) } } }
+                }
+                // 每个开关的作用写在它自己下面，不堆在组末一大段。
+                GroupedSection(header = "效果") {
+                    row { ToggleRow("模糊", a.blur, enabled = !settings.eInk, subtitle = "顶栏、底栏和面板透出后面的内容") { v -> update { it.copy(blur = v) } } }
+                    row { ToggleRow("液态玻璃", a.liquidGlass, enabled = !settings.eInk, subtitle = "玻璃边缘的折射和高光") { v -> update { it.copy(liquidGlass = v) } } }
+                    row { ToggleRow("悬浮底栏", a.floatingBar, subtitle = "底栏浮在内容上，按住可以左右拖动") { v -> update { it.copy(floatingBar = v) } } }
+                }
+                GroupedSection {
+                    row {
+                        ToggleRow("墨水屏 / 省电模式", settings.eInk, subtitle = "关掉玻璃、动画和环境光变色，书页纯黑白") { v -> vm.updateSettings { it.copy(eInk = v) } }
                     }
-                    GroupedSection {
-                        row {
-                            ToggleRow("墨水屏 / 省电模式", settings.eInk, subtitle = "关掉玻璃、动画和环境光变色，书页纯黑白") { v -> vm.updateSettings { it.copy(eInk = v) } }
+                }
+                val steps = Appearance.SCALES
+                val index = steps.indexOfFirst { kotlin.math.abs(it - a.scale) < 0.001f }.takeIf { it >= 0 } ?: steps.indexOf(1f)
+                GroupedSection(
+                    header = "动画与大小",
+                    footer = "书页的配色、字体、排版在阅读页的“外观”里调。",
+                ) {
+                    row {
+                        PickerRow("页面切换动画", PageTransition.entries.map { it to it.label }, a.transition, enabled = !settings.eInk) { t ->
+                            update { it.copy(transition = t) }
                         }
                     }
-                    val steps = Appearance.SCALES
-                    val index = steps.indexOfFirst { kotlin.math.abs(it - a.scale) < 0.001f }.takeIf { it >= 0 } ?: steps.indexOf(1f)
-                    GroupedSection(
-                        header = "动画与大小",
-                        footer = "书页的配色、字体、排版在阅读页的“外观”里调。",
-                    ) {
-                        row {
-                            PickerRow("页面切换动画", PageTransition.entries.map { it to it.label }, a.transition, enabled = !settings.eInk) { t ->
-                                update { it.copy(transition = t) }
-                            }
-                        }
-                        row {
-                            LabeledSliderRow(
-                                title = "界面缩放",
-                                value = index.toFloat(),
-                                valueText = "${(steps[index] * 100).toInt()}%",
-                                valueRange = 0f..steps.lastIndex.toFloat(),
-                                steps = steps.size - 2,
-                            ) { v -> update { it.copy(scale = steps[kotlin.math.round(v).toInt().coerceIn(steps.indices)]) } }
-                        }
+                    row {
+                        LabeledSliderRow(
+                            title = "界面缩放",
+                            value = index.toFloat(),
+                            valueText = "${(steps[index] * 100).toInt()}%",
+                            valueRange = 0f..steps.lastIndex.toFloat(),
+                            steps = steps.size - 2,
+                        ) { v -> update { it.copy(scale = steps[kotlin.math.round(v).toInt().coerceIn(steps.indices)]) } }
                     }
                 }
             }
@@ -147,14 +133,14 @@ private fun AppearancePicker(a: Appearance, onPick: (ThemeMode) -> Unit) {
             val on = m == a.mode
             Column(
                 Modifier
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(Radius.Medium))
                     .selectable(selected = on, role = Role.RadioButton) { onPick(m) }
                     .semantics { contentDescription = "${m.label}外观" }
                     .padding(6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 MiniPhone(m, a)
-                Text(m.label, color = c.label, fontSize = 15.sp, modifier = Modifier.padding(top = 10.dp))
+                Text(m.label, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.padding(top = 10.dp))
                 Box(
                     Modifier
                         .padding(top = 8.dp)
@@ -183,6 +169,7 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
                 Box(Modifier.width(22.dp).height(5.dp).clip(CircleShape).background(ink.copy(alpha = 0.7f)))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     listOf(0.9f, 0.55f, 0.3f).forEach { alpha ->
+                        // 迷你手机里的小方块，圆角按缩小的比例画。
                         Box(Modifier.size(width = 14.dp, height = 20.dp).clip(RoundedCornerShape(2.dp)).background(c.tint.copy(alpha = alpha)))
                     }
                 }
@@ -201,8 +188,8 @@ private fun MiniPhone(mode: ThemeMode, a: Appearance) {
     Box(
         Modifier
             .size(width = 66.dp, height = 128.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .border(1.dp, c.separator, RoundedCornerShape(12.dp)),
+            .clip(RoundedCornerShape(Radius.Medium))
+            .border(1.dp, c.separator, RoundedCornerShape(Radius.Medium)),
     ) {
         when (mode) {
             ThemeMode.LIGHT -> Screen(false, Modifier.fillMaxSize())

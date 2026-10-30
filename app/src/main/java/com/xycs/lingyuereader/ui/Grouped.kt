@@ -13,6 +13,10 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -143,6 +147,54 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * - 一行：左边名字（下面可有灰色说明），右边当前值和小箭头；开关、滑块、下拉选择、分段都用 miuix 自己的控件；
  * - 强调色跟随主题（Monet / 自选强调色），阅读页的面板跟随书页。
  */
+
+// ---------- 尺寸 token ----------
+
+/**
+ * 字号：七档，页面只引用这里，不直接写数字（以前散着 21 种，同一类东西大小不一）。
+ * 每档配一个行高（`…Line`），多行的说明、正文用它；单行的不必写行高。
+ * 读书正文、编辑器正文、生成的封面这些按书页或设置算字号的不在这里。
+ */
+internal object TypeScale {
+    /** 大数字（今天读了多少、总字数）、查词的词头。 */
+    val Display = 34.sp
+    val DisplayLine = 40.sp
+    /** 页内的大标题（书名、空状态里的大字）。 */
+    val Title = 22.sp
+    val TitleLine = 28.sp
+    /** 面板标题、标题栏的文字按钮、主按钮。 */
+    val Headline = 17.sp
+    val HeadlineLine = 23.sp
+    /** 正文、行名、胶囊按钮。 */
+    val Body = 15.sp
+    val BodyLine = 22.sp
+    /** 当前值、卡片下的说明、组名。 */
+    val Caption = 13.sp
+    val CaptionLine = 19.sp
+    /** 行下面的说明、标签。 */
+    val Footnote = 12.sp
+    val FootnoteLine = 17.sp
+    /** 角标、图标下的小字。 */
+    val Micro = 11.sp
+    val MicroLine = 14.sp
+}
+
+/**
+ * 圆角：四档加全圆。以前 17 种（1–30dp），同类东西各写各的。
+ * 细进度条、竖线这类两头圆的用 [Full]（或 CircleShape）；生成的封面、迷你书页这些画出来的小图另算，各在原处注明。
+ */
+internal object Radius {
+    /** 行首图标块、标签、小格。 */
+    val Small = 8.dp
+    /** 统计小卡片、工具格、主按钮、输入框、标签页。 */
+    val Medium = 12.dp
+    /** 卡片、大入口卡片。 */
+    val Large = 16.dp
+    /** 浮层面板、侧栏、底部浮块。 */
+    val XLarge = 20.dp
+    /** 两头全圆：胶囊、细进度条、圆钮。 */
+    val Full: RoundedCornerShape = RoundedCornerShape(50)
+}
 
 /** 设置页的配色，取自 miuix 的配色方案；[tint] 是强调色（选中、链接、开关、滑块）。 */
 @Immutable
@@ -369,7 +421,7 @@ internal fun GroupedSection(
             Card(
                 // 开关带出附属行、加载完多出几行时，卡片平滑长高，不一下跳开。
                 modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().animateHeightChanges(),
-                cornerRadius = 16.dp,
+                cornerRadius = Radius.Large,
                 colors = CardDefaults.defaultColors(color = c.cell),
             ) {
                 scope.rows.forEach { it() }
@@ -379,8 +431,8 @@ internal fun GroupedSection(
             Text(
                 footer,
                 color = c.secondary,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
                 modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 8.dp),
             )
         }
@@ -425,7 +477,7 @@ internal fun RowIcon(icon: ImageVector, background: Color) {
     val c = LocalGroupedColors.current
     val ink = lerp(c.label, background, 0.5f).readableOn(listOf(c.cell, c.background))
     val fill = lerp(c.cell, ink, if (c.dark) 0.20f else 0.12f)
-    Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(fill), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(28.dp).clip(RoundedCornerShape(Radius.Small)).background(fill), contentAlignment = Alignment.Center) {
         Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(17.dp))
     }
     Spacer(Modifier.width(12.dp))
@@ -435,8 +487,8 @@ internal fun RowIcon(icon: ImageVector, background: Color) {
 private fun RowScope.RowTitle(title: String, color: Color, enabled: Boolean, subtitle: String? = null, subtitleMaxLines: Int = Int.MAX_VALUE) {
     val c = LocalGroupedColors.current
     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, color = if (enabled) color else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
+        Text(title, color = if (enabled) color else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+        if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -447,7 +499,7 @@ private fun RowValue(value: String, enabled: Boolean = true) {
     Text(
         value,
         color = if (enabled) c.secondary else c.tertiary,
-        fontSize = 13.sp,
+        fontSize = TypeScale.Caption,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         textAlign = TextAlign.End,
@@ -545,7 +597,7 @@ internal fun ActionRow(title: String, destructive: Boolean = false, enabled: Boo
                 destructive -> c.destructive
                 else -> c.tint
             },
-            fontSize = 16.sp,
+            fontSize = TypeScale.Body,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f),
             textAlign = if (centered) TextAlign.Center else null,
@@ -630,9 +682,9 @@ internal fun CheckboxRow(
             Checkbox(state = ToggleableState(checked), onClick = { if (enabled) onChange(!checked) }, enabled = enabled || fixed)
         }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = if ((checked && dimChecked) || (!enabled && !fixed)) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+            Text(title, color = if ((checked && dimChecked) || (!enabled && !fixed)) c.tertiary else c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium,
                 maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis)
-            if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp)
+            if (subtitle != null) Text(subtitle, color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
         }
     }
 }
@@ -657,7 +709,7 @@ internal fun MarkedOptionRow(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(pressHighlight(pressed))
             .selectable(selected = selected, interactionSource = source, indication = null, role = Role.RadioButton, onClick = onClick)
             .semantics { if (done) stateDescription = doneLabel }
@@ -675,7 +727,7 @@ internal fun MarkedOptionRow(
             },
             Motion.standard(Motion.SHORT), label = "markedTitle",
         )
-        Text(title, color = titleColor, fontSize = 15.sp, lineHeight = 21.sp, maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis,
+        Text(title, color = titleColor, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, maxLines = titleMaxLines, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(start = 8.dp))
         AnimatedVisibility(
             visible = selected,
@@ -732,10 +784,10 @@ internal fun ValueRow(title: String, value: String, icon: ImageVector? = null, i
     val c = LocalGroupedColors.current
     GroupedRow {
         if (icon != null) RowIcon(icon, iconBackground)
-        Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        Text(title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f).widthIn(min = 16.dp))
         // 值靠右；太长（比如几个来源文件）就在右边折行。
-        Text(value, color = c.secondary, fontSize = 14.sp, textAlign = TextAlign.End, modifier = Modifier.widthIn(max = 230.dp))
+        Text(value, color = c.secondary, fontSize = TypeScale.Caption, textAlign = TextAlign.End, modifier = Modifier.widthIn(max = 230.dp))
     }
 }
 
@@ -778,8 +830,8 @@ internal fun LabeledSliderRow(
     val c = LocalGroupedColors.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-            Text(valueText, color = c.secondary, fontSize = 14.sp)
+            Text(title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            Text(valueText, color = c.secondary, fontSize = TypeScale.Caption)
         }
         LingYueSlider(value, onValueChange, valueRange, title, Modifier.fillMaxWidth(), steps, valueText = valueText, onValueChangeFinished = onValueChangeFinished)
     }
@@ -892,7 +944,7 @@ internal fun <T> SegmentedControl(
                     Text(
                         label,
                         color = color,
-                        fontSize = 13.sp,
+                        fontSize = TypeScale.Caption,
                         fontWeight = if (i == index) FontWeight.Medium else FontWeight.Normal,
                         maxLines = 1,
                     )
@@ -947,13 +999,13 @@ internal fun EmptyState(
         Box(Modifier.size(50.dp).clip(CircleShape).background(scheme.secondaryContainer), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = null, tint = scheme.onSurfaceVariantSummary, modifier = Modifier.size(23.dp))
         }
-        Text(title, color = scheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+        Text(title, color = scheme.onSurface, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
         if (body != null) {
             Text(
                 body,
                 color = scheme.onSurfaceVariantSummary,
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 6.dp).widthIn(max = 300.dp),
             )
@@ -993,7 +1045,7 @@ internal fun LabeledRow(title: String, control: @Composable () -> Unit) {
         Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Text(title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
         control()
     }
 }
@@ -1062,7 +1114,7 @@ internal fun NumberStepper(
                 }
             },
             singleLine = true,
-            textStyle = TextStyle(color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
+            textStyle = TextStyle(color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
             cursorBrush = SolidColor(c.tint),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
@@ -1075,7 +1127,7 @@ internal fun NumberStepper(
                 },
             decorationBox = { inner ->
                 Box(contentAlignment = Alignment.Center) {
-                    if (text.isEmpty()) Text(emptyText, color = c.tertiary, fontSize = 15.sp, maxLines = 1)
+                    if (text.isEmpty()) Text(emptyText, color = c.tertiary, fontSize = TypeScale.Body, maxLines = 1)
                     inner()
                 }
             },
@@ -1174,7 +1226,7 @@ internal fun PrimaryButton(
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .pressScale(source, 0.97f)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(background)
             .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -1182,7 +1234,7 @@ internal fun PrimaryButton(
         Text(
             label,
             color = content,
-            fontSize = 16.sp,
+            fontSize = TypeScale.Headline,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1239,7 +1291,7 @@ internal fun PillButton(
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, color = content, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(label, color = content, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1)
         }
     }
 }
@@ -1261,8 +1313,8 @@ internal fun buttonColors(c: GroupedColors, filled: Boolean = true, enabled: Boo
  */
 @Composable
 internal fun Tag(text: String, color: Color, modifier: Modifier = Modifier) {
-    Box(modifier.clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
-        Text(text, color = color, fontSize = 12.sp, maxLines = 1)
+    Box(modifier.clip(RoundedCornerShape(Radius.Small)).background(color.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
+        Text(text, color = color, fontSize = TypeScale.Footnote, maxLines = 1)
     }
 }
 
@@ -1315,7 +1367,7 @@ internal fun <T> DialogOptionList(
 ) {
     Column(modifier.fillMaxWidth()) {
         options.forEach { (value, label) ->
-            Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+            Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                 CheckRow(label, selected = value == selected, subtitle = description(value)) { onPick(value) }
             }
         }
@@ -1331,8 +1383,8 @@ internal fun DialogSectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
         color = LocalGroupedColors.current.secondary,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
+        fontSize = TypeScale.Caption,
+        lineHeight = TypeScale.CaptionLine,
         modifier = modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 2.dp).semantics { heading() },
     )
 }
@@ -1371,7 +1423,7 @@ internal fun LoadingRow(text: String, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Spinner()
-        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
     }
 }
 
@@ -1385,7 +1437,7 @@ internal fun LoadingState(text: String, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
     ) {
         Spinner(size = 28.dp)
-        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center)
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, textAlign = TextAlign.Center)
     }
 }
 
@@ -1403,7 +1455,7 @@ internal fun MenuDivider(color: Color) {
 internal fun EmptyRow(text: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Box(modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 14.dp), contentAlignment = Alignment.CenterStart) {
-        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
     }
 }
 
@@ -1417,8 +1469,8 @@ internal fun ErrorText(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
         color = c.destructive,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
+        fontSize = TypeScale.Body,
+        lineHeight = TypeScale.BodyLine,
         modifier = modifier.semantics { liveRegion = LiveRegionMode.Polite },
     )
 }
@@ -1463,10 +1515,10 @@ internal fun StepRow(title: String, mark: StepMark, label: String, detail: Strin
             }
         }
         Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = if (mark == StepMark.SKIPPED) c.tertiary else c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            if (detail != null) Text(detail, color = if (mark == StepMark.FAILED) c.destructive else c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+            Text(title, color = if (mark == StepMark.SKIPPED) c.tertiary else c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            if (detail != null) Text(detail, color = if (mark == StepMark.FAILED) c.destructive else c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         }
-        Text(label, color = tone, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+        Text(label, color = tone, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 8.dp))
     }
 }
 
@@ -1513,7 +1565,7 @@ internal fun InlinePanel(
     Column(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            .clip(RoundedCornerShape(topStart = Radius.XLarge, topEnd = Radius.XLarge))
             .background(c.cell)
             .semantics { paneTitle = title }
             .animateHeightChanges()
@@ -1524,11 +1576,11 @@ internal fun InlinePanel(
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, content = header)
             } else {
                 if (icon != null) Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.padding(end = 6.dp).size(18.dp))
-                Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(title, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 Text(
                     status.orEmpty(),
                     color = c.secondary,
-                    fontSize = 12.sp,
+                    fontSize = TypeScale.Footnote,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(start = 8.dp),
@@ -1580,7 +1632,7 @@ internal fun ToolTileGrid(
                                 .weight(1f)
                                 .heightIn(min = 52.dp)
                                 .pressScale(source, 0.95f)
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(Radius.Medium))
                                 .background(c.fill)
                                 .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = tile.onClick)
                                 .semantics { contentDescription = tile.label }
@@ -1593,7 +1645,7 @@ internal fun ToolTileGrid(
                             Text(
                                 tile.label,
                                 color = c.label,
-                                fontSize = 12.sp,
+                                fontSize = TypeScale.Footnote,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -1632,7 +1684,7 @@ internal fun LabeledIconButton(
         modifier
             .widthIn(min = 48.dp)
             .heightIn(min = 52.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(pressHighlight(pressed))
             .combinedClickable(
                 interactionSource = source,
@@ -1651,7 +1703,7 @@ internal fun LabeledIconButton(
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
-        Text(label, color = color, fontSize = 10.sp, lineHeight = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+        Text(label, color = color, fontSize = TypeScale.Micro, lineHeight = TypeScale.MicroLine, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -1683,13 +1735,13 @@ internal fun TextTab(
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(back).padding(horizontal = 12.dp),
+            Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(Radius.Medium)).background(back).padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(label, color = text, fontSize = 15.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+                Text(label, color = text, fontSize = TypeScale.Body, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
                 // 角标：提醒色的小数字（“查”上的问题数），读屏另在 [description] 里说。
-                if (badge != null) Text(badge, color = c.warning, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
+                if (badge != null) Text(badge, color = c.warning, fontSize = TypeScale.Micro, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
             }
         }
     }
@@ -1708,7 +1760,7 @@ internal fun StepIconButton(icon: ImageVector, description: String, enabled: Boo
     Box(
         modifier
             .size(width = 32.dp, height = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(pressHighlight(source.collectIsPressedAsState().value && enabled))
             .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = description },
@@ -1738,17 +1790,17 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
                 }
             }
         }
-        Text(title, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.align(Alignment.Center))
+        Text(title, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, modifier = Modifier.align(Alignment.Center))
         if (action != null) {
             Text(
                 action.first,
                 color = c.tint,
-                fontSize = 16.sp,
+                fontSize = TypeScale.Body,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(Radius.XLarge))
                     .clickable(role = Role.Button, onClick = action.second)
                     .padding(horizontal = 12.dp, vertical = 11.dp),
             )
@@ -1760,6 +1812,9 @@ internal fun SheetNavBar(title: String, back: String?, action: Pair<String, () -
  * 二级页的骨架：玻璃小标题栏（左边返回，右边 [actions]，文字按钮用 [BarTextAction]）、设置页的浅灰底、提示条。
  * 自己提供 [ProvideGroupedColors]；[content] 拿到的边距已经让出标题栏和系统栏，列表照
  * `contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp)` 来排。
+ * 所有二级页都用它，不在页面里直接写 miuix 的 SmallTopAppBar（以前三套写法，返回钮边距、标题字号各差一点）。
+ * - [subtitle]：标题下面一行次要色小字（设定包文档的类别）；
+ * - [barBottom]：标题栏下面跟着的一块（搜索页的输入框），一起是玻璃底。
  */
 @Composable
 internal fun SubPageScaffold(
@@ -1767,23 +1822,31 @@ internal fun SubPageScaffold(
     onBack: () -> Unit,
     actions: @Composable RowScope.() -> Unit = {},
     snackbar: SnackbarHostState? = null,
+    subtitle: String? = null,
+    barBottom: (@Composable () -> Unit)? = null,
+    containerColor: Color? = null,
+    contentWindowInsets: WindowInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout),
     content: @Composable (PaddingValues) -> Unit,
 ) {
     ProvideGroupedColors {
         val c = LocalGroupedColors.current
         GlassScaffold(
-            containerColor = c.background,
+            containerColor = containerColor ?: c.background,
+            contentWindowInsets = contentWindowInsets,
             topBar = {
                 SmallTopAppBar(
                     color = Color.Transparent,
                     modifier = Modifier.glassBar(),
                     title = title,
+                    subtitle = subtitle.orEmpty(),
+                    subtitleColor = c.secondary,
                     navigationIcon = {
                         IconButton(onClick = onBack, modifier = Modifier.padding(start = 12.dp)) {
                             Icon(LingYueIcons.Back, contentDescription = "返回")
                         }
                     },
                     actions = actions,
+                    bottomContent = { barBottom?.invoke() },
                 )
             },
             snackbarHost = { if (snackbar != null) SnackbarHost(snackbar) },
@@ -1799,11 +1862,11 @@ internal fun BarTextAction(text: String, onClick: () -> Unit, enabled: Boolean =
     Text(
         text,
         color = if (enabled) c.tint else c.tertiary,
-        fontSize = 17.sp,
+        fontSize = TypeScale.Headline,
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier
             .padding(end = 12.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 12.dp),
     )
@@ -1843,8 +1906,8 @@ internal fun GroupedListFooter(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
         color = LocalGroupedColors.current.secondary,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
+        fontSize = TypeScale.Caption,
+        lineHeight = TypeScale.CaptionLine,
         modifier = modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
     )
 }
@@ -1941,7 +2004,7 @@ internal fun EntryCard(
     Column(
         modifier
             .heightIn(min = 84.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(Radius.Large))
             .background(c.cell)
             .background(pressHighlight(pressed))
             .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
@@ -1953,8 +2016,8 @@ internal fun EntryCard(
             Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(14.dp))
         }
         Spacer(Modifier.height(8.dp))
-        Text(title, color = if (enabled) c.label else c.tertiary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (value != null) Text(value, color = c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(title, color = if (enabled) c.label else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (value != null) Text(value, color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -2052,7 +2115,7 @@ internal fun StatTile(
     val c = LocalGroupedColors.current
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(Radius.Medium)
     val tone = if (dimmed) c.tertiary else color
     Column(
         modifier
@@ -2070,12 +2133,12 @@ internal fun StatTile(
             .padding(horizontal = 10.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(26.dp).clip(RoundedCornerShape(Radius.Small)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
             }
             Spacer(Modifier.weight(1f))
             if (badge != null) {
-                Text(badge, color = if (dimmed) c.tertiary else c.secondary, fontSize = 11.sp, maxLines = 1, modifier = Modifier.padding(start = 4.dp))
+                Text(badge, color = if (dimmed) c.tertiary else c.secondary, fontSize = TypeScale.Micro, maxLines = 1, modifier = Modifier.padding(start = 4.dp))
             }
         }
         Spacer(Modifier.height(6.dp))
@@ -2086,14 +2149,14 @@ internal fun StatTile(
                 selected -> color
                 else -> c.label
             },
-            fontSize = 13.sp,
-            lineHeight = 17.sp,
+            fontSize = TypeScale.Caption,
+            lineHeight = TypeScale.CaptionLine,
             fontWeight = FontWeight.SemiBold,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         lines.forEach { line ->
-            Text(line, color = if (dimmed) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(line, color = if (dimmed) c.tertiary else c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -2148,7 +2211,7 @@ internal fun FieldCard(
     Column(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(if (empty) c.cell else categoryFill(color, c))
             .animateHeightChanges(),
     ) {
@@ -2167,10 +2230,10 @@ internal fun FieldCard(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(26.dp).clip(RoundedCornerShape(7.dp)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(26.dp).clip(RoundedCornerShape(Radius.Small)).background(lerp(c.cell, tone, if (c.dark) 0.24f else 0.14f)), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
                 }
-                Text(title, color = if (empty) c.tertiary else c.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                Text(title, color = if (empty) c.tertiary else c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(start = 8.dp))
                 Icon(
                     LingYueIcons.ChevronDown,
@@ -2182,8 +2245,8 @@ internal fun FieldCard(
             Text(
                 summary.ifBlank { emptyText },
                 color = if (empty) c.tertiary else c.label,
-                fontSize = 15.sp,
-                lineHeight = 21.sp,
+                fontSize = TypeScale.Body,
+                lineHeight = TypeScale.BodyLine,
                 maxLines = if (expanded) 1 else 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 6.dp),

@@ -42,7 +42,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.LedgerChapter
@@ -542,8 +541,8 @@ private fun LedgerRow(e: LedgerEntry, onClick: (() -> Unit)?) {
     ).filter { it.isNotBlank() }.joinToString(" · ")
     GroupedRow(onClick = onClick) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(e.text, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
+            Text(e.text, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2)
         }
         Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (e.secret) Tag("只有作者知道", c.warning)
@@ -591,7 +590,7 @@ private fun ChapterPickDialog(chapters: List<LedgerChapter>, selected: String?, 
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = if (chapters.size > CHAPTER_PICK_QUICK) 340.dp else 420.dp), state = state) {
             items(options, key = { it.first ?: "" }) { (id, label) ->
                 val no = chapters.firstOrNull { it.id == id }?.no
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     CheckRow(label, selected = id == selected, subtitle = no?.let { "第 $it 章" } ?: "列出所有条目") { onPick(id) }
                 }
             }
@@ -655,7 +654,7 @@ private fun LedgerEntryDialog(
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SegmentedControl(KIND_TABS, kind) { kind = it }
-            Text(kind.label + "：" + kind.hint, fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+            Text(kind.label + "：" + kind.hint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             if (kind != LedgerKind.TIME) {
                 val needed = kind == LedgerKind.STATE || kind == LedgerKind.KNOW
                 TextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -683,26 +682,26 @@ private fun LedgerEntryDialog(
                 }
             }
             if (initial.from == null && initial.volume != null && from == null) {
-                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             }
             if (kind == LedgerKind.PROMISE) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ToggleRow("已经收了", done) { done = it } }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ToggleRow("已经收了", done) { done = it } }
                 if (done) ChapterStepperRow("第几章收的", closed, chapters = emptyList(), start = payoff ?: from ?: 1) { closed = it }
             }
             if (kind == LedgerKind.KNOW) {
                 TextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
             if (kind != LedgerKind.TIME) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow("只有作者知道", secret, subtitle = "结局、对手的底牌这类：只给 AI 把握方向，不写进正文。") { secret = it }
                 }
             }
             if (initial.quote.isNotBlank()) {
-                Text("依据原文", fontSize = 13.sp, color = c.secondary)
-                Text(initial.quote, fontSize = 14.sp, lineHeight = 21.sp, color = c.label)
+                Text("依据原文", fontSize = TypeScale.Caption, color = c.secondary)
+                Text(initial.quote, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.label)
             }
             if (onDelete != null) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
             }
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(build()) }, confirmText = if (isNew) "添加" else "保存", confirmEnabled = text.isNotBlank())
@@ -726,9 +725,9 @@ private fun LedgerImport(layer: LedgerLayer.Import, padding: PaddingValues, onCh
                     GroupedRow(onClick = toggle) {
                         Checkbox(state = ToggleableState(on), onClick = toggle)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
                             val sub = listOf(e.subject, e.aspect, e.whenLabel).filter { it.isNotBlank() }.joinToString(" · ")
-                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = 13.sp)
+                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = TypeScale.Caption)
                         }
                     }
                 }

@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
@@ -188,24 +187,24 @@ private fun ProgressHead(
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         ProgressRing(progress, description = "共 ${number}${unit}，定稿 $finalized / 共 $total 章", size = 88.dp) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(number, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                Text(unit, color = c.secondary, fontSize = 11.sp, maxLines = 1)
+                Text(number, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(unit, color = c.secondary, fontSize = TypeScale.Micro, maxLines = 1)
             }
         }
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text("定稿 $finalized / 共 $total 章", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("定稿 $finalized / 共 $total 章", color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
             val meta = listOfNotNull(
                 work.volumes.size.takeIf { it > 1 }?.let { "$it 卷" },
                 work.author.ifBlank { null },
             ).joinToString(" · ")
-            if (meta.isNotEmpty()) Text(meta, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (statusSummary.isNotEmpty()) Text(statusSummary, color = c.secondary, fontSize = 12.sp, maxLines = 2)
+            if (meta.isNotEmpty()) Text(meta, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (statusSummary.isNotEmpty()) Text(statusSummary, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 2)
             if (dailyGoal > 0) {
                 Text(
                     "今天写了 $todayWords 字 · 目标 $dailyGoal",
                     color = if (todayWords >= dailyGoal) c.success else c.secondary,
-                    fontSize = 12.sp,
+                    fontSize = TypeScale.Footnote,
                     maxLines = 2,
                 )
             }

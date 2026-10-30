@@ -23,7 +23,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.CrashLog
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -130,7 +129,7 @@ private fun CrashLogDialogs(vm: AppViewModel, open: CrashLog.Entry?, onClose: ()
             val c = LocalGroupedColors.current
             Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 SelectionContainer {
-                    Text(CrashLog.report(e), color = c.label, fontSize = 12.sp, lineHeight = 17.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth())
+                    Text(CrashLog.report(e), color = c.label, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth())
                 }
             }
             DialogButtons(

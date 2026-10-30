@@ -500,7 +500,7 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
     val c = LocalGroupedColors.current
     val label = if (loading) "载入中" else rec.label
     val setup = enabled && rec.kind == EditorRecommendationKind.CONFIGURE_AI
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(Radius.Medium)
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     Box(
@@ -525,11 +525,11 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
         contentAlignment = Alignment.Center,
     ) {
         if (setup) {
-            Text(label, color = c.label, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("✦ $label", color = if (enabled) c.tint else c.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            Text("✦ $label", color = if (enabled) c.tint else c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!loading) Text(rec.reason, color = c.secondary, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!loading) Text(rec.reason, color = c.secondary, fontSize = TypeScale.Micro, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -543,13 +543,13 @@ private fun MoreSparkButton(more: Int, open: Boolean, onClick: () -> Unit) {
         Modifier
             .widthIn(min = 44.dp)
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(pressHighlight(source.collectIsPressedAsState().value))
             .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = if (open) "收起推荐" else "还有 $more 项推荐" },
         contentAlignment = Alignment.Center,
     ) {
-        Text(if (open) "收起" else "+$more", color = c.tint, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        Text(if (open) "收起" else "+$more", color = c.tint, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -561,7 +561,7 @@ internal fun EditorChipRow(backDescription: String, onBack: () -> Unit, content:
         Box(
             Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(Radius.Medium))
                 .clickable(role = Role.Button, onClick = onBack)
                 .semantics { contentDescription = backDescription },
             contentAlignment = Alignment.Center,
@@ -590,7 +590,7 @@ internal fun EditorChip(text: String, description: String? = null, fontSize: Int
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.heightIn(min = 40.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(10.dp)).background(c.fill).padding(horizontal = 12.dp),
+            Modifier.heightIn(min = 40.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(Radius.Medium)).background(c.fill).padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) { Text(text, color = c.label, fontSize = fontSize.sp, maxLines = 1) }
     }
@@ -600,7 +600,7 @@ internal fun EditorChip(text: String, description: String? = null, fontSize: Int
 @Composable
 internal fun EditorTip(text: String, onDismiss: () -> Unit) {
     val c = LocalGroupedColors.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(Radius.Medium)
     Row(
         Modifier
             .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -612,7 +612,7 @@ internal fun EditorTip(text: String, onDismiss: () -> Unit) {
             .padding(start = 14.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, color = c.label, fontSize = 14.sp, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
+        Text(text, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
         TextButton(text = "知道了", onClick = onDismiss)
     }
 }

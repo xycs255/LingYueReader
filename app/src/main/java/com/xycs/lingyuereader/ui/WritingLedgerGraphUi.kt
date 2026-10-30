@@ -29,7 +29,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.LedgerChapter
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.Foreshadow
@@ -122,7 +121,7 @@ private fun LedgerGraphCard(content: @Composable () -> Unit) {
     val c = LocalGroupedColors.current
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(16.dp)).background(c.cell).padding(14.dp),
+            .clip(RoundedCornerShape(Radius.Large)).background(c.cell).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) { content() }
 }
@@ -148,12 +147,12 @@ internal fun LazyListScope.ledgerPeopleGraph(
         val c = LocalGroupedColors.current
         LedgerGraphCard {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(c.fill), contentAlignment = Alignment.Center) {
-                    Text(who.take(1), color = c.tint, fontSize = 18.sp)
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(Radius.Medium)).background(c.fill), contentAlignment = Alignment.Center) {
+                    Text(who.take(1), color = c.tint, fontSize = TypeScale.Headline)
                 }
                 Column {
-                    Text(who, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Text(current.size.toString() + " 个状态方面", color = c.secondary, fontSize = 12.sp)
+                    Text(who, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
+                    Text(current.size.toString() + " 个状态方面", color = c.secondary, fontSize = TypeScale.Footnote)
                 }
             }
             // 方面多时换行，不横着溢出、也不切掉最后一个；胶囊能点的范围 48dp，行与行之间不再另加间距。
@@ -173,7 +172,7 @@ internal fun LazyListScope.ledgerPeopleGraph(
                 Text(
                     listOf(e.whenLabel, e.origin.label, e.quote.takeIf { it.isNotBlank() }?.let { "有原文依据" })
                         .filterNotNull().filter { it.isNotBlank() }.joinToString(" · "),
-                    color = c.secondary, fontSize = 12.sp,
+                    color = c.secondary, fontSize = TypeScale.Footnote,
                 )
             }
         }
@@ -308,7 +307,7 @@ private fun LedgerPromiseCard(
     val selected = (dragging?.roundToInt() ?: entry.payoff ?: (start + 1)).coerceIn(start, end)
     LedgerGraphCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
             Tag(if (entry.done) "已收" else if (due) "该回收" else "未收", if (entry.done) c.success else c.warning)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -322,7 +321,7 @@ private fun LedgerPromiseCard(
                 entry.payoff == null && !choosing -> "计划收章未定"
                 else -> "计划第 $selected 章收"
             },
-            color = c.secondary, fontSize = 12.sp,
+            color = c.secondary, fontSize = TypeScale.Footnote,
         )
         if (!entry.done && entry.payoff == null && !choosing) {
             PillButton("定计划收章", onClick = { choosing = true })
@@ -342,8 +341,8 @@ private fun LedgerPromiseCard(
                 },
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("第 $start 章", color = c.tertiary, fontSize = 11.sp)
-                Text("第 $end 章", color = c.tertiary, fontSize = 11.sp)
+                Text("第 $start 章", color = c.tertiary, fontSize = TypeScale.Micro)
+                Text("第 $end 章", color = c.tertiary, fontSize = TypeScale.Micro)
             }
             if (entry.payoff == null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -387,12 +386,12 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
         item(key = "graph:knowledge:$fact") {
             val c = LocalGroupedColors.current
             LedgerGraphCard {
-                Text(fact, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(fact, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
                 // 只有作者知道的真相：单独标出来，不当成谁已经知道。
                 f.truth.firstOrNull()?.let { t ->
                     Text(
                         "真相（作者）" + if (t.subject.isNotBlank()) "：${t.subject}还不知道" else "：只有作者知道",
-                        color = c.secondary, fontSize = 12.sp,
+                        color = c.secondary, fontSize = TypeScale.Footnote,
                     )
                 }
                 // 一人一格、对齐成一行；人多放不下时左右滑，还有没露出来的那一边渐隐。
@@ -406,7 +405,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                             else -> "该章未生效"
                         }
                         Column(Modifier.width(100.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(who, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+                            Text(who, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
                             PillButton(
                                 cellLabel,
                                 onClick = {
@@ -425,7 +424,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                         }
                     }
                 }
-                Text("已知格可查看来源；登记未知格须填写获知章和消息来源。", color = c.secondary, fontSize = 12.sp)
+                Text("已知格可查看来源；登记未知格须填写获知章和消息来源。", color = c.secondary, fontSize = TypeScale.Footnote)
             }
         }
     }
@@ -479,8 +478,8 @@ internal fun LedgerQuickStateDialog(
             TextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
             ChapterStepperRow("从第几章生效", number, chapters, optional = false) { number = it }
             TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
-            Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = 12.sp)
-            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)
+            Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = TypeScale.Footnote)
+            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
         DialogButtons(
             onDismiss = onDismiss,
@@ -515,7 +514,7 @@ internal fun LedgerQuickKnowledgeDialog(
             ChapterStepperRow("从第几章得知", number, chapters, optional = false) { number = it }
             TextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
             TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
-            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)
+            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
         DialogButtons(
             onDismiss = onDismiss,

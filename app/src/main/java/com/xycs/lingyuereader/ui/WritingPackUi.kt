@@ -54,7 +54,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -383,7 +382,7 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                         Text(
                             item.title,
                             color = if (item.include) c.label else c.tertiary,
-                            fontSize = 16.sp,
+                            fontSize = TypeScale.Body,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -396,27 +395,27 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                                 else if (!item.asChapters && item.title in existing) append(" · 替换同名")
                             },
                             color = c.secondary,
-                            fontSize = 13.sp,
+                            fontSize = TypeScale.Caption,
                         )
                         Text(
                             "来源：${item.fileName.replace('\\', '/')}",
                             color = c.secondary,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             "原文：${excerpt(item.text)}",
                             color = if (blank || item.garbled) c.warning else c.secondary,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = 12.sp)
+                        if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = TypeScale.Footnote)
                         if (item.garbled) Text(
                             "包含无法识别的字符，请核对原文件编码",
                             color = c.warning,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -445,7 +444,7 @@ private fun PackDocFields(
     onAlways: (Boolean) -> Unit,
 ) {
     val c = LocalGroupedColors.current
-    Text("类型", fontSize = 13.sp, color = c.secondary)
+    Text("类型", fontSize = TypeScale.Caption, color = c.secondary)
     DialogOptionList(KIND_OPTIONS, onPick = onKind, selected = kind, description = { it.hint })
     // 优先级 1–9（数字小的优先）；按类型带进来的 0（工作说明）也留着，不在打开时悄悄改掉。
     val low = minOf(priority, 1)
@@ -456,9 +455,9 @@ private fun PackDocFields(
         valueRange = low.toFloat()..9f,
         steps = 9 - low - 1,
     ) { onPriority(it.roundToInt()) }
-    Text("数字小的优先，资料冲突时以它为准。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+    Text("数字小的优先，资料冲突时以它为准。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
     SegmentedControl(listOf(true to "常用", false to "按需"), always, modifier = Modifier.padding(top = 6.dp), onSelect = onAlways)
-    Text(if (always) "常用：每次都带给 AI（太长会截断）。" else "按需：用到时才带。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+    Text(if (always) "常用：每次都带给 AI（太长会截断）。" else "按需：用到时才带。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
 }
 
 /** 改一个待导入文件：导不导、当设定（选类型、优先级、常用）还是当正文。 */
@@ -475,18 +474,18 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             TextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(item.text.lineSequence().take(6).joinToString("\n").take(500).ifBlank { "原文为空，请核对后再导入" },
                     color = if (item.text.isBlank() || item.garbled) c.warning else c.label,
-                    fontSize = 13.sp, lineHeight = 19.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = 12.sp)
+                    fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = TypeScale.Footnote)
             }
-            if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = 13.sp)
+            if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = TypeScale.Caption)
             else SegmentedControl(listOf(true to "导入", false to "不导入"), include) { include = it }
             SegmentedControl(listOf(false to "当设定", true to "当正文"), chapters) { chapters = it }
             if (chapters) {
-                Text("当正文：按章名拆成章节，接在最后一卷后面。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+                Text("当正文：按章名拆成章节，接在最后一卷后面。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             } else {
                 PackDocFields(
                     kind,
@@ -521,7 +520,7 @@ private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -
     GlassDialog(show = true, title = "新建文档", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         TextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
-        Text("类型", fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+        Text("类型", fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
         // 十几种类型各有说明：勾选列表，在框里滚。
         Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
             DialogOptionList(KIND_OPTIONS, onPick = { kind = it }, selected = kind, description = { it.hint })
@@ -587,56 +586,46 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
     }
     val scheme = MiuixTheme.colorScheme
 
-    ProvideGroupedColors {
-        val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = scheme.surface,
-            topBar = {
-                Row(Modifier.fillMaxWidth().glassBar().statusBarsPadding().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    Column(Modifier.weight(1f).padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp)).clickable { props = true }) {
-                        Text(doc?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val text = current?.text
-                        val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
-                        Text(
-                            buildString {
-                                if (doc != null) append("${doc.kind.label} · 优先级 ${doc.priority} · ${if (doc.always) "常用" else "按需"} · ")
-                                append("$count 字 · ")
-                                append(if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中")
+    val text = current?.text
+    val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
+    // 标题栏和别的二级页一样（SubPageScaffold）：标题是文档名，下面一行类别、优先级、字数和保存状态；改属性在“⋯”里。
+    SubPageScaffold(
+        title = doc?.title.orEmpty(),
+        onBack = { vm.back() },
+        subtitle = buildString {
+            if (doc != null) append("${doc.kind.label} · 优先级 ${doc.priority} · ${if (doc.always) "常用" else "按需"} · ")
+            append("$count 字 · ")
+            append(if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中")
+        },
+        actions = {
+        Box(Modifier.padding(end = 8.dp)) {
+            IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
+            OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
+                GlassMenu {
+                    ListPopupColumn {
+                        listOf<Pair<String, () -> Unit>>(
+                            "属性（类型、优先级）" to { props = true },
+                            "历史版本" to {
+                                current?.text?.toString()?.let { vm.writing.saveDoc(workId, docId, it, closing = true) }
+                                vm.open(Screen.WorkHistory(workId, "", docId))
                             },
-                            color = c.secondary,
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Box(Modifier.padding(end = 8.dp)) {
-                        IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
-                        OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
-                            GlassMenu {
-                                ListPopupColumn {
-                                    listOf<Pair<String, () -> Unit>>(
-                                        "属性（类型、优先级）" to { props = true },
-                                        "历史版本" to {
-                                            current?.text?.toString()?.let { vm.writing.saveDoc(workId, docId, it, closing = true) }
-                                            vm.open(Screen.WorkHistory(workId, "", docId))
-                                        },
-                                        "删除" to { deleting = true },
-                                    ).forEach { (label, action) ->
-                                        LingYueMenuItem(label, selected = false) {
-                                            menu = false
-                                            action()
-                                        }
-                                    }
-                                }
+                            "删除" to { deleting = true },
+                        ).forEach { (label, action) ->
+                            LingYueMenuItem(label, selected = false) {
+                                menu = false
+                                action()
                             }
                         }
                     }
                 }
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-            contentWindowInsets = WindowInsets(0),
-        ) { padding ->
+            }
+        }
+        },
+        snackbar = snackbar,
+        containerColor = scheme.surface,
+        contentWindowInsets = WindowInsets(0),
+    ) { padding ->
+        val c = LocalGroupedColors.current
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 if (current != null) {
                     BasicTextField(
@@ -645,12 +634,12 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
                             .fillMaxSize()
                             .semantics { contentDescription = "文档内容" }
                             .padding(start = 20.dp, end = 20.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
-                        textStyle = TextStyle(color = scheme.onSurface, fontSize = 16.sp, lineHeight = 26.sp),
+                        textStyle = TextStyle(color = scheme.onSurface, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine),
                         cursorBrush = SolidColor(scheme.primary),
                         lineLimits = TextFieldLineLimits.MultiLine(),
                         decorator = { inner ->
                             Box {
-                                if (current.text.isEmpty()) Text(doc?.kind?.hint.orEmpty(), color = c.tertiary, fontSize = 16.sp, lineHeight = 26.sp)
+                                if (current.text.isEmpty()) Text(doc?.kind?.hint.orEmpty(), color = c.tertiary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                                 inner()
                             }
                         },
@@ -678,6 +667,5 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
                     )
                 }
             }
-        }
     }
 }

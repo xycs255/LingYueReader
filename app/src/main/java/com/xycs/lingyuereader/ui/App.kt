@@ -361,7 +361,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
                                     modifier = Modifier
                                         .padding(horizontal = 20.dp)
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(Radius.Medium))
                                         .clickable { vm.openLibrarySearch(query) }
                                         .padding(horizontal = 8.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -521,7 +521,7 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
                             .padding(horizontal = 16.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(label, color = text, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        Text(label, color = text, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
             }
@@ -689,7 +689,7 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                 Box(
                     Modifier
                         .size(48.dp)
-                        .clip(RoundedCornerShape(50))
+                        .clip(Radius.Full)
                         .clickable(role = Role.Button) { menu = true }
                         .semantics { contentDescription = "操作" },
                     contentAlignment = Alignment.Center,
@@ -800,7 +800,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                 (all + extra).distinct().forEach { g ->
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { chosen = if (g in chosen) chosen - g else chosen + g }
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { chosen = if (g in chosen) chosen - g else chosen + g }
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -901,6 +901,7 @@ fun BookCover(
     val ink = Color(0xFFF6EEDF)
     Card(
         modifier = modifier.fillMaxWidth().aspectRatio(0.7f),
+        // 生成的封面照实物书的圆角，比界面的圆角档小。
         cornerRadius = if (compact) 4.dp else 6.dp,
         insideMargin = PaddingValues(0.dp),
         onClick = onClick,
@@ -920,7 +921,7 @@ fun BookCover(
                     color = ink,
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
+                    fontSize = TypeScale.Title,
                     modifier = Modifier.align(Alignment.Center),
                 )
             } else {
@@ -932,14 +933,15 @@ fun BookCover(
                         color = ink,
                         fontFamily = FontFamily.Serif,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        lineHeight = 20.sp,
+                        fontSize = TypeScale.Body,
+                        lineHeight = TypeScale.BodyLine,
                         maxLines = 4,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Box(Modifier.padding(top = 8.dp).width(18.dp).height(1.5.dp).background(ink.copy(alpha = 0.6f)))
                     Spacer(Modifier.weight(1f))
                     if (author.isNotBlank()) {
+                        // 封面上的作者名按封面大小定，比界面最小的字还小一号。
                         Text(author, color = ink.copy(alpha = 0.75f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
@@ -1025,7 +1027,7 @@ private fun ImportModeChoice(
         Motion.standard(Motion.SHORT), label = "importModeFill")
     val outline by animateColorAsState(if (selected) accent else MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
         Motion.standard(Motion.SHORT), label = "importModeOutline")
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(Radius.Large)
     Column(
         modifier
             .heightIn(min = 112.dp)
@@ -1040,7 +1042,7 @@ private fun ImportModeChoice(
     ) {
         ImportPaperPreview(combine, selected, replay)
         Text(label, color = if (selected) accent else MiuixTheme.colorScheme.onSurface,
-            fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -1065,6 +1067,7 @@ private fun ImportPaperPreview(combine: Boolean, selected: Boolean, replay: Int)
             Box(
                 Modifier.offset(x = x.dp, y = (i - 1).dp)
                     .width(29.dp).height(43.dp)
+                    // 实物封面图的圆角，同生成的封面。
                     .clip(RoundedCornerShape(3.dp))
                     .background(paper)
                     .border(0.5.dp, ink.copy(alpha = 0.28f), RoundedCornerShape(3.dp))

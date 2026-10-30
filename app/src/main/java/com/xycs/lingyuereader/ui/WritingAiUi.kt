@@ -59,7 +59,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -247,7 +246,7 @@ internal fun PanelBusy(text: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Spinner()
-        Text(text, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
     }
 }
 
@@ -324,12 +323,12 @@ internal fun WriteAiPanel(
                         val diffShown = canDiff && showDiff && compared != null
                         AnimatedContent(diffShown, transitionSpec = { Motion.fadeThrough() using null }, label = "aiDiff") { d ->
                             val body = compared?.takeIf { d } ?: AnnotatedString(state.text)
-                            Text(body, color = c.label, fontSize = 16.sp, lineHeight = 26.sp)
+                            Text(body, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                         }
                     }
                     state.error?.let { ErrorText(it, Modifier.padding(top = 6.dp)) }
                     if (canDiff && state.text.trim() == edit!!.original.trim()) {
-                        Text("AI 觉得这段不用改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                        Text("AI 觉得这段不用改。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 6.dp))
                     }
                     UsageNote(state.usage, state.cost, Modifier.padding(top = 6.dp))
                 }
@@ -542,11 +541,11 @@ internal fun InlineBar(
                         "AI 写了 $words 字（浅色部分），采纳才放进正文" + (inline.note?.let { "；$it" } ?: "") +
                             (if (inline.referenceAnalysisId != null && !inline.referenceValidated) "；范本核验未完成，请重写" else ""),
                         color = c.label,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp,
+                        fontSize = TypeScale.Body,
+                        lineHeight = TypeScale.BodyLine,
                     )
                     if (cliche > 0) {
-                        Text("这段有 $cliche 处 AI 腔", color = c.warning, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(top = 2.dp))
+                        Text("这段有 $cliche 处 AI 腔", color = c.warning, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, modifier = Modifier.padding(top = 2.dp))
                     }
                     UsageNote(inline.usage, inline.cost, Modifier.padding(top = 2.dp))
                 }
@@ -562,7 +561,7 @@ internal fun InlineBar(
 @Composable
 internal fun UsageNote(usage: com.xycs.lingyuereader.ai.AiUsage?, cost: com.xycs.lingyuereader.ai.AiCost?, modifier: Modifier = Modifier) {
     val text = usage?.let { com.xycs.lingyuereader.ai.AiPricing.brief(it, cost ?: com.xycs.lingyuereader.ai.AiCost()) } ?: return
-    Text(text, color = LocalGroupedColors.current.secondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
+    Text(text, color = LocalGroupedColors.current.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
 }
 
 /** 出几个版本时一版的状态，跟在分段控件的方向名后面。 */
@@ -692,14 +691,14 @@ internal fun SuggestionBar(issue: WriteIssue, onFix: () -> Unit, onIgnore: () ->
                             withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(shown.right) }
                         },
                         color = c.label,
-                        fontSize = 15.sp,
+                        fontSize = TypeScale.Body,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(start = 8.dp),
                     )
                 }
                 val why = listOf(shown.reason, shown.source.takeIf { it.isNotBlank() }?.let { "依据：$it" }).filterNotNull().filter { it.isNotBlank() }.joinToString("  ")
-                if (why.isNotBlank()) Text(why, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                if (why.isNotBlank()) Text(why, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
             }
         }
     }
@@ -717,7 +716,7 @@ internal fun RuleNote(text: String, tag: String = "规则", onBan: (() -> Unit)?
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Tag(tag, if (tag == "规则") c.warning else suggestColor(SuggestKind.CLICHE.name, c))
-        Text(text, color = c.label, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        Text(text, color = c.label, fontSize = TypeScale.Caption, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
         if (onBan != null) PillButton("以后都不要", onBan, modifier = Modifier.padding(start = 8.dp))
         else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
@@ -801,21 +800,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
     }
     var flavor by rememberAssistText(vm, workId, { it.flavor }) { a, text -> a.copy(flavor = text) }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "写作 AI",
+        onBack = { vm.back() },
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "写作 AI",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    },
-                )
-            },
-        ) { padding ->
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -912,7 +901,6 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     TextButton(text = "取消", onClick = { temperatureOpen = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
             }
-        }
     }
 }
 
@@ -1072,13 +1060,13 @@ internal fun ProposalsDialog(list: List<BibleProposal>, onDismiss: () -> Unit, o
             list.forEach { p ->
                 val toggle = { chosen = if (p.name in chosen) chosen - p.name else chosen + p.name }
                 Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { toggle() }.padding(vertical = 8.dp),
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { toggle() }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.Top,
                 ) {
                     Checkbox(state = ToggleableState(p.name in chosen), onClick = { toggle() })
                     Column(Modifier.padding(start = 12.dp)) {
-                        Text(p.name + if (p.existing) "（更新）" else "", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                        Text(p.text, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp)
+                        Text(p.name + if (p.existing) "（更新）" else "", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+                        Text(p.text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                     }
                 }
             }
@@ -1136,7 +1124,7 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
                     banned.asReversed().forEach { b ->
                         row {
                             GroupedRow {
-                                Text(b, color = c.label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                Text(b, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
                                 IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unban(b) } }) {
                                     Icon(LingYueIcons.Delete, contentDescription = "从黑名单删去「$b」", tint = c.destructive)
                                 }
@@ -1199,7 +1187,7 @@ fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
                     learned.asReversed().forEach { r ->
                         row {
                             GroupedRow {
-                                Text(r, color = c.label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                Text(r, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
                                 IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unlearn(r) } }) {
                                     Icon(LingYueIcons.Delete, contentDescription = "删去「$r」", tint = c.destructive)
                                 }

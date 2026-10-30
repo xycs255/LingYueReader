@@ -36,7 +36,6 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ChapterSyncResult
@@ -232,7 +231,7 @@ internal fun SyncItemRow(
             if (item.writable && selectable) {
                 Box(
                     Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.Small))
                         .clickable(onClick = onToggle)
                         .semantics {
                             contentDescription = "勾选：${item.title}"
@@ -243,7 +242,7 @@ internal fun SyncItemRow(
                 }
             }
             Column(Modifier.weight(1f).padding(start = if (item.writable && selectable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
+                Text(item.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, lineHeight = TypeScale.BodyLine)
                 val extra = when {
                     opens -> entry.payoff?.let { " · 计划第 $it 章收" }.orEmpty()
                     item.group == SyncGroup.STATE -> entry?.aspect?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
@@ -252,7 +251,7 @@ internal fun SyncItemRow(
                 Text(
                     (if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") +
                         (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + item.where + extra,
-                    color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp,
+                    color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                 )
             }
             if (item.writable && !selectable) Tag("待重整", c.warning, Modifier.padding(start = 8.dp))
@@ -273,18 +272,18 @@ internal fun SyncItemRow(
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (item.group == SyncGroup.CONFLICT) {
                         val says = if (item.place == SyncPlace.LEDGER) "账本" else "设定包${item.docTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }.orEmpty()}"
-                        if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
-                        if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                        if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     item.maybeSame?.let { same ->
-                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     item.reveals?.let { secret ->
-                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     val closes = item.closes
                     if (closes != null) {
-                        Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     } else if (item.writable && selectable) {
                         TextField(
                             value = edited.text,
@@ -293,7 +292,7 @@ internal fun SyncItemRow(
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
                         )
                     } else if (item.writable) {
-                        Text("候选内容：${edited.text}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("候选内容：${edited.text}", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                     }
                     if (opens && item.writable && selectable) {
                         var raw by remember(item.key) { mutableStateOf(entry.payoff?.toString().orEmpty()) }
@@ -310,10 +309,10 @@ internal fun SyncItemRow(
                         )
                     }
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onJump).padding(vertical = 6.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Small)).clickable(onClick = onJump).padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("依据：「${item.quote}」", color = c.tint, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+                        Text("依据：「${item.quote}」", color = c.tint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.weight(1f))
                         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
                     }
                     if (!item.writable && item.fixText) PillButton("去改正文", onClick = onJump, style = PillStyle.Tinted)
@@ -338,11 +337,11 @@ internal fun SyncTipDialog(onDismiss: (Boolean) -> Unit, onSync: (Boolean) -> Un
         onDismissRequest = { onDismiss(never) },
     ) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { never = !never }.padding(vertical = 8.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { never = !never }.padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Checkbox(state = ToggleableState(never), onClick = { never = !never })
-            Text("不再提示", color = c.label, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
+            Text("不再提示", color = c.label, fontSize = TypeScale.Body, modifier = Modifier.padding(start = 12.dp))
         }
         DialogButtons(onDismiss = { onDismiss(never) }, onConfirm = { onSync(never) }, confirmText = "整理", dismissText = "不用了")
     }

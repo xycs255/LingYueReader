@@ -30,7 +30,7 @@ internal fun LingYueMenuItem(label: String, selected: Boolean, color: Color = Co
         modifier = Modifier
             .widthIn(min = 200.dp)
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
