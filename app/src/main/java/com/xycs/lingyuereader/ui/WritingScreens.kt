@@ -443,6 +443,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     var editingInfo by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var addingVolume by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
     // 长按哪一章 / 点了哪一卷弹出菜单；菜单里选了改名、删除再弹对话框。
     var chapterMenu by remember { mutableStateOf<String?>(null) }
     var volumeMenu by remember { mutableStateOf<String?>(null) }
@@ -483,18 +484,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     LaunchedEffect(workId, work, assist?.synced) { assist?.let { unsynced = vm.writing.unsynced(workId, it.synced) } }
     var syncConfirm by remember { mutableStateOf(false) }
     var syncTipFor by remember { mutableStateOf<WorkChapter?>(null) }
-    var foreshadowNote by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(workId, pack, ledgers[workId]) {
-        val (legacy, latest) = vm.writing.foreshadows(workId)
-        val list = mergeWritingForeshadows(legacy, ledgers[workId].orEmpty()).map { it.display }
-        val open = list.filter { !it.done }
-        val due = open.count { it.payoff != null && it.payoff <= latest }
-        foreshadowNote = when {
-            list.isEmpty() -> null
-            due > 0 -> "$due 条该回收了"
-            else -> "${open.size} 条没回收"
-        }
-    }
     var statusHits by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(statusFor) { statusHits = statusFor?.let { ch -> vm.writing.checkChapter(workId, ch.id)?.hits?.size } }
     // 摘要写完时那一组要收起来：收起的那一下还显示最后一次的进度，不先变空。
@@ -511,7 +500,16 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
 
     val moveTips = remember(snackbar) { UndoTips(snackbar) }
     val treeActions = WritingTreeActions(
-        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
+        // 规划树的“总纲”打开总纲那份文档，名实一致；还没有就新建一份（带总纲模板）再打开。设定包没读出来时退回设定包页。
+        onOpenOutline = {
+            val docs = pack
+            val outline = docs?.firstOrNull { it.kind == PackKind.OUTLINE }
+            when {
+                docs == null -> vm.open(Screen.WorkPack(workId))
+                outline != null -> vm.open(Screen.PackDoc(workId, outline.id))
+                else -> vm.writing.addDoc(workId, PackKind.OUTLINE, PackKind.OUTLINE.label) { vm.open(Screen.PackDoc(workId, it.id)) }
+            }
+        },
         onToggleVolume = { id ->
             collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
         },
@@ -531,7 +529,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
         },
         onToggleReorder = { reorderMode = !reorderMode },
-        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
+        // 规划树上的伏笔记号：去账本的“伏笔”标签、翻到这一章（原来单独的伏笔页并进了这里）。
+        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id, promises = true)) },
         onDropChapter = { ch, volumeId, index ->
             vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
                 // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。只留最新一次的提示。
@@ -551,30 +550,32 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         actions = {
             Box(Modifier.padding(end = 12.dp)) {
                 IconButton(onClick = { menu = true }, enabled = !busy) { Icon(LingYueIcons.More, contentDescription = "更多") }
+                // 菜单画在最外层的弹层宿主里，读不到这里的配色：先读好再传进去。
+                val destructive = LocalGroupedColors.current.destructive
+                val divider = LocalGroupedColors.current.separator
                 OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
                     GlassMenu {
                         ListPopupColumn {
-                            val items = listOf<Pair<String, () -> Unit>>(
-                                "当书预览" to { vm.previewWork(workId, null) },
-                                "新建一卷" to { addingVolume = true },
-                                "作品信息" to { editingInfo = true },
-                                "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
-                                "全书排版" to { vm.open(Screen.WorkFormat(workId)) },
-                                "排版设置" to { vm.open(Screen.WorkFormatSettings(workId)) },
-                                "整理没整理的章节" to {
-                                    val blocked = vm.writingAi.syncBlocked
-                                    when {
-                                        blocked != null -> vm.showMessage(blocked)
-                                        unsynced.isEmpty() -> vm.showMessage("有正文的章都整理过了")
-                                        else -> syncConfirm = true
+                            // 分三节：作品、导出、删除（单独一节、红字、放最后）。当书预览、整理没整理的章节在页面上就有，这里不再重复；
+                            // 全书排版和排版设置合成一项“排版…”，进全书排版页，那页右上角是“设置”。
+                            // 导出的几种格式合成一项“导出…”、点了再选：菜单不用滚，360dp 的屏上也看得到最后的“删除作品”。
+                            val sections = listOf<List<Pair<String, () -> Unit>>>(
+                                listOf(
+                                    "新建一卷" to { addingVolume = true },
+                                    "作品信息" to { editingInfo = true },
+                                    "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
+                                    "排版…" to { vm.open(Screen.WorkFormat(workId)) },
+                                ),
+                                listOf("导出…" to { exporting = true }),
+                                listOf("删除作品" to { deleting = true }),
+                            )
+                            sections.forEachIndexed { i, items ->
+                                if (i > 0) MenuDivider(divider)
+                                items.forEach { (label, action) ->
+                                    LingYueMenuItem(label, selected = false, color = if (i == sections.lastIndex) destructive else Color.Unspecified) {
+                                        menu = false
+                                        action()
                                     }
-                                },
-                            ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
-                                ("删除作品" to { deleting = true })
-                            items.forEach { (label, action) ->
-                                LingYueMenuItem(label, selected = false) {
-                                    menu = false
-                                    action()
                                 }
                             }
                         }
@@ -637,7 +638,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         aiAdviceEnabled = assist?.realtime == true,
                         pendingChanges = pendingChanges,
                         unsyncedChapters = unsynced.size,
-                        foreshadowNote = foreshadowNote,
                         ruleCount = ruleCount,
                         busy = busy,
                         unsyncedIds = if (pack?.isNotEmpty() == true) unsynced else emptySet(),
@@ -659,7 +659,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                             openAi = { vm.open(Screen.WorkAi(workId)) },
                             preview = { vm.previewWork(workId, null) },
                             openChanges = { vm.open(Screen.WorkChanges(workId)) },
-                            openForeshadows = { vm.open(Screen.Foreshadows(workId)) },
                             openRules = { vm.open(Screen.WorkRules(workId)) },
                             organizeUnsynced = {
                                 val blocked = vm.writingAi.syncBlocked
@@ -703,6 +702,18 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
                 editingInfo = false
                 vm.writing.updateInfo(workId, t, a, s)
+            }
+        }
+        if (exporting) {
+            GlassDialog(show = true, title = "导出《${work.title}》", summary = "选一种格式，再选存到哪里。", onDismissRequest = { exporting = false }) {
+                DialogOptionList(
+                    ExportFormat.entries.map { it to it.label },
+                    onPick = { f ->
+                        exporting = false
+                        launchers.getValue(f).launch("${work.title}.${f.ext}")
+                    },
+                )
+                TextButton(text = "取消", onClick = { exporting = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         }
         if (addingVolume) {
@@ -1379,6 +1390,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             EditorEntry.SYNC -> startSync()
             EditorEntry.REFERENCE -> { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) }
             EditorEntry.PACK -> vm.open(Screen.WorkPack(workId))
+            EditorEntry.WORK_AI -> vm.open(Screen.WorkAi(workId))
             EditorEntry.PREV_CHAPTER -> chapters.getOrNull(index - 1)?.let { goTo(it.id) }
             EditorEntry.NEXT_CHAPTER -> if (index >= 0) chapters.getOrNull(index + 1)?.let { goTo(it.id) }
         }
@@ -1443,35 +1455,30 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         )
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
-                        val head = (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · "
+                        val state = chapter?.status?.label.orEmpty()
                         val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
                         // 规则、AI 腔、写作建议、审稿没处理的合成一个数；分类在问题面板里看。写作建议开着留一个短标识。
-                        val issues = if (problems.isNotEmpty()) " · ${problems.size} 处问题" else ""
-                        val tail = if (realtimeOn) " · 写作建议已开" else ""
-                        // 保存状态“编辑中 / 已保存”只淡入淡出（[Motion.SHORT]），不挪动别的字（几种状态都是三个字宽）；读屏照旧念一整行。
-                        Row(
+                        val issues = if (problems.isNotEmpty()) "${problems.size} 处问题" else ""
+                        val tail = if (realtimeOn) "写作建议已开" else ""
+                        val whole = listOf(state, "$count 字", saving, issues, tail).filter { it.isNotEmpty() }.joinToString(" · ")
+                        // 小屏放不下时先省字数、再省保存状态，“N 处问题”始终露着（它是问题面板的入口）；读屏照旧念一整行。
+                        EditorStatusLine(
+                            mapOf(
+                                EditorStatusPart.STATE to state,
+                                EditorStatusPart.WORDS to "$count 字",
+                                EditorStatusPart.SAVING to saving,
+                                EditorStatusPart.ISSUES to issues,
+                                EditorStatusPart.TAIL to tail,
+                            ),
                             Modifier
                                 .clip(RoundedCornerShape(6.dp))
-                                .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier)
-                                .clearAndSetSemantics {
-                                    this.text = AnnotatedString(head + saving + issues + tail)
-                                    onClick(label = if (problemsOpen) "收起问题面板" else "打开问题面板") {
-                                        if (problemsOpen) problemsOpen = false else openProblems()
-                                        true
-                                    }
-                                },
+                                .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier),
                         ) {
-                            Text(head, color = c.secondary, fontSize = 12.sp, maxLines = 1)
-                            AnimatedContent(
-                                saving,
-                                transitionSpec = {
-                                    ContentTransform(Effects.enter(fadeIn(Motion.standard(Motion.SHORT))), Effects.exit(fadeOut(Motion.exit())), sizeTransform = null)
-                                },
-                                label = "saveState",
-                            ) { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1) }
-                            // “N 处问题”用提醒色，看得出能点。
-                            if (issues.isNotEmpty()) Text(issues, color = c.warning, fontSize = 12.sp, maxLines = 1)
-                            Text(tail, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            this.text = AnnotatedString(whole)
+                            onClick(label = if (problemsOpen) "收起问题面板" else "打开问题面板") {
+                                if (problemsOpen) problemsOpen = false else openProblems()
+                                true
+                            }
                         }
                     }
                     StepIconButton(LingYueIcons.ChevronForward, "下一章", enabled = index >= 0 && index < chapters.lastIndex, onClick = { onEntry(EditorEntry.NEXT_CHAPTER) })

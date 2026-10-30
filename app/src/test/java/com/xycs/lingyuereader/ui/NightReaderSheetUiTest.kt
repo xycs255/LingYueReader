@@ -80,7 +80,7 @@ class NightReaderSheetUiTest {
         compose.onAllNodesWithText("测试书")[0].performClick()
         waitForText("正文一段")
         compose.onRoot().performTouchInput { click(center) }
-        waitForText("设置")
+        waitForText("更多")
     }
 
     private fun captureAndCheck(name: String, title: Rect, content: Rect) {

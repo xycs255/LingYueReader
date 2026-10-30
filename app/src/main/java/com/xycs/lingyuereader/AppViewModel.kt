@@ -151,7 +151,7 @@ sealed interface Screen {
     data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
-    /** AI 助手设置：服务商、模型、密钥。 */
+    /** AI 服务（全局）：服务商、模型、密钥。这部书怎么写在 [WorkAi]。 */
     data object Ai : Screen
     /** 离线语音：下载模型、选声音。 */
     data object OfflineVoice : Screen
@@ -174,12 +174,15 @@ sealed interface Screen {
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
     /** 一部作品的 AI 设置：首屏只放最常用的几项（服务商、温度、口味、黑名单、文风……）。 */
     data class WorkAi(val workId: String) : Screen
-    /** 作品 AI 设置的“高级设置”：设定包、写作范本、上限、文风范例、查 AI 腔、写作建议、学你的改法、AI 记录与用量、最近一次发给 AI 的内容。 */
+    /** 作品 AI 设置的“高级设置”：上限、文风范例、查 AI 腔、写作建议、学你的改法、AI 用量、最近一次发给 AI 的内容。 */
     data class WorkAiAdvanced(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
-    /** 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。 */
-    data class WorkLedger(val workId: String, val chapterId: String? = null) : Screen
+    /**
+     * 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。[promises] 为真时打开“伏笔”标签
+     * （原来单独的“伏笔”页并进了这里：该回收了、还没回收、已回收、来源文档）。
+     */
+    data class WorkLedger(val workId: String, val chapterId: String? = null, val promises: Boolean = false) : Screen
     /** 设定包里的一份文档。 */
     data class PackDoc(val workId: String, val docId: String) : Screen
     /** 一章的细纲卡。 */
@@ -192,8 +195,6 @@ sealed interface Screen {
     data class ChapterBrief(val workId: String, val chapterId: String) : Screen
 
     data class ChapterReview(val workId: String, val chapterId: String) : Screen
-
-    data class Foreshadows(val workId: String) : Screen
 
     data class ChapterDraft(val workId: String, val chapterId: String) : Screen
 

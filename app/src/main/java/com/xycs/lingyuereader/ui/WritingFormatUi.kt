@@ -274,7 +274,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
     fun update(t: (FormatSettings) -> FormatSettings) = vm.writingAi.updateAssist(workId) { it.copy(format = t(it.format)) }
     val snackbar = rememberWritingMessages(vm)
     var moreOpen by rememberSaveable(workId) { mutableStateOf(false) }
-    SubPageScaffold("排版", onBack = { vm.back() }, snackbar = snackbar) { padding ->
+    SubPageScaffold("排版设置", onBack = { vm.back() }, snackbar = snackbar) { padding ->
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -296,7 +296,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
             }
             item(key = "more") {
                 GroupedSection(
-                    footer = "编辑器“更多 → 自动排版”和作品页“全书排版”按这些规则排：先列出改了哪些，可以按类勾掉再排；" +
+                    footer = "编辑器“整理 → 自动排版”和作品页“排版…”（全书排版）按这些规则排：先列出改了哪些，可以按类勾掉再排；" +
                         "排之前存一个历史版本，排版改的不算码字数。“***”“——”这类单独一行的场景分隔原样不动。",
                 ) {
                     row { ExpandRow("更多排版规则", moreOpen, value = if (moreOpen) null else "$FORMAT_MORE_RULES 项") { moreOpen = !moreOpen } }
@@ -449,7 +449,7 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
             val noEnd = p.chapters.sumOf { ch -> ch.result.notes.count { it.hint == FormatHint.NO_END } }
             if (unpaired + noEnd > 0) {
                 item(key = "hints") {
-                    GroupedSection(header = "提示", footer = "只是提示，不会自动改；在编辑器里“更多 → 自动排版”能看到是哪几段。") {
+                    GroupedSection(header = "提示", footer = "只是提示，不会自动改；在编辑器里“整理 → 自动排版”能看到是哪几段。") {
                         if (unpaired > 0) row { ValueRow(FormatHint.UNPAIRED.label, "$unpaired 处") }
                         if (noEnd > 0) row { ValueRow(FormatHint.NO_END.label, "$noEnd 处") }
                     }

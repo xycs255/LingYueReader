@@ -82,7 +82,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
     val all = UsageBook.total(allRows)
     val measure = UsageMeasure(all.cost.cny > 0 || all.cost.usd > 0, config.usdRate)
 
-    SubPageScaffold("用量", onBack = { vm.back() }) { padding ->
+    SubPageScaffold("AI 用量", onBack = { vm.back() }) { padding ->
         val c = LocalGroupedColors.current
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
@@ -97,7 +97,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 }
                 val notes = buildList {
                     if (all.cost.usd > 0) add("美元按 1 美元 = ${AiPricing.plain(config.usdRate)} 元折算。")
-                    if (all.cost.unpriced > 0) add("有 ${all.cost.unpriced} 次请求没有单价，没算钱（在“我的 → AI 助手 → 价格”里填）。")
+                    if (all.cost.unpriced > 0) add("有 ${all.cost.unpriced} 次请求没有单价，没算钱（在“我的 → AI 服务 → 价格”里填）。")
                     if (all.usage.estimated) add("有 ${all.usage.estimatedRequests} 次服务商没返回用量，按字数估算。")
                 }
                 GroupedSection(
@@ -327,7 +327,7 @@ internal fun PriceSection(vm: AppViewModel, config: AiConfig) {
         }
         row {
             NavRow(
-                "用量",
+                "AI 用量",
                 value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (AiPricing.money(today.cost)?.let { "约 $it" } ?: "${AiPricing.tokens(today.usage.input + today.usage.output)} token"),
             ) { vm.open(com.xycs.lingyuereader.Screen.AiUsage(null)) }
         }

@@ -86,7 +86,7 @@ internal fun DraftReferenceChoiceDialog(
     val c = LocalGroupedColors.current
     GlassDialog(
         show = true,
-        title = "AI 写作范本",
+        title = "写作范本",
         summary = "范本只提供叙事和对白技法，人物、事件与句子不进入本书正文。",
         onDismissRequest = onDismiss,
     ) {

@@ -133,7 +133,7 @@ internal fun editorRecommendation(
         return EditorRecommendation(EditorRecommendationKind.PENDING_AI, label, reason, enabled = false)
     }
     if (status == ChapterStatus.FINAL) return EditorRecommendation(EditorRecommendationKind.UNLOCK, "解锁修改", "定稿正文已锁定")
-    if (!aiReady) return EditorRecommendation(EditorRecommendationKind.CONFIGURE_AI, "设置写作 AI", "连接后才会发送请求")
+    if (!aiReady) return EditorRecommendation(EditorRecommendationKind.CONFIGURE_AI, "设置 AI 服务", "连接后才会发送请求")
     val start = selection.min.coerceIn(0, text.length)
     val end = selection.max.coerceIn(start, text.length)
     if (start < end && text.subSequence(start, end).isNotBlank()) {
@@ -185,9 +185,11 @@ internal enum class EditorEntry(val label: String, val legacy: List<String> = li
     PREVIEW("预览本章"),
     LISTEN("听本章"),
     NEW_CHAPTER("写下一章"),
-    SYNC("整理本章进设定包", listOf("整理本章进设定包", "整理入账")),
-    REFERENCE("从范本找写法", listOf("从范本找写法", "范本写法")),
+    SYNC("整理进设定包", listOf("整理进设定包", "整理本章进设定包", "整理入账")),
+    REFERENCE("写作范本…", listOf("写作范本…", "写作范本", "从范本找写法", "范本写法", "AI 写作范本")),
     PACK("设定包"),
+    /** 这部书的写作 AI 设置（作品级：写作建议开关、温度、口味……）；全局的服务商、密钥在“我的 → AI 服务”。 */
+    WORK_AI("写作 AI 设置"),
     PREV_CHAPTER("上一章"),
     NEXT_CHAPTER("下一章"),
 }
@@ -203,8 +205,11 @@ internal fun editorTabEntries(group: EditorToolGroup, locked: Boolean, lastChapt
     EditorToolGroup.MORE -> listOfNotNull(EditorEntry.STATUS, EditorEntry.RENAME, EditorEntry.PREVIEW, EditorEntry.LISTEN, EditorEntry.NEW_CHAPTER.takeIf { lastChapter })
 }
 
-/** 右上“⋯”里只留不常用的几样（三道审稿“查”里也有：收尾页、问题面板也能去审稿，这里留一项给习惯从菜单找的）。 */
-internal val EDITOR_OVERFLOW = listOf(EditorEntry.REVIEW, EditorEntry.SYNC, EditorEntry.REFERENCE, EditorEntry.PACK)
+/**
+ * 右上“⋯”里只留不常用的几样。三道审稿不在这里：“查”标签、问题面板、✦ 推荐、收尾页都能去；
+ * “写作 AI 设置”进的是这部书的设置，不用先退回作品页。
+ */
+internal val EDITOR_OVERFLOW = listOf(EditorEntry.SYNC, EditorEntry.REFERENCE, EditorEntry.PACK, EditorEntry.WORK_AI)
 
 /** 顶栏章名左右的箭头。 */
 internal val EDITOR_TOP_BAR = listOf(EditorEntry.PREV_CHAPTER, EditorEntry.NEXT_CHAPTER)
@@ -334,6 +339,7 @@ internal fun entryIcon(entry: EditorEntry): ImageVector = when (entry) {
     EditorEntry.SYNC -> LingYueIcons.Download
     EditorEntry.REFERENCE -> LingYueIcons.Notes
     EditorEntry.PACK -> LingYueIcons.Folder
+    EditorEntry.WORK_AI -> LingYueIcons.Tune
     EditorEntry.PREV_CHAPTER -> LingYueIcons.ChevronBackward
     EditorEntry.NEXT_CHAPTER -> LingYueIcons.ChevronForward
 }

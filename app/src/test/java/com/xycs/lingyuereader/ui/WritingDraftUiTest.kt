@@ -183,7 +183,7 @@ class WritingDraftUiTest {
         waitForText("你的构思")
         waitForText("AI 拟写法")
         compose.onNodeWithText("写作范本").performScrollTo().performClick()
-        waitForText("AI 写作范本")
+        waitForText("不使用范本")
         compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
         waitFor { vm.companionReference(workId, c2) == analysis.id }
         waitForText("写法图与原文范围")

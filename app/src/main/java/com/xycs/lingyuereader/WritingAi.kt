@@ -453,7 +453,7 @@ class WritingAi(
      */
     fun run(workId: String, chapterId: String, text: String, task: WriteAiTask) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         job?.cancel()
@@ -761,7 +761,7 @@ class WritingAi(
      */
     fun decliche(workId: String, chapterId: String, text: String, ranges: List<IntRange>) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val picked = AiCliche.paragraphs(text, ranges, CLICHE_BATCH)
@@ -851,7 +851,7 @@ class WritingAi(
     fun writeInline(workId: String, chapterId: String, text: String, at: Int, mode: InlineMode, instruction: String = "", referenceAnalysisId: String? = null, beat: Int? = null,
                     variants: Boolean = false) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         cancelInline()
@@ -1078,7 +1078,7 @@ class WritingAi(
             return
         }
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val slot = d.selected
@@ -1145,7 +1145,7 @@ class WritingAi(
 
     /** 让 AI 从最近写的正文里整理人物，返回建议（作者勾选后才加进设定集）。 */
     suspend fun extractCharacters(workId: String): List<BibleProposal> {
-        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val (title, text) = withContext(Dispatchers.IO) {
             val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
             // 从后往前取，最近写的优先，够 EXTRACT_CHARS 字为止。
@@ -1170,7 +1170,7 @@ class WritingAi(
 
     /** 让 AI 从写作规范、称谓与语气文档里整理出检查规则，返回规则文本（作者看过、改过再存）。 */
     suspend fun draftRules(workId: String): String {
-        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val (title, docs) = withContext(Dispatchers.IO) {
             val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
             val text = store.pack(workId).filter { it.kind == PackKind.STYLE || it.kind == PackKind.VOICE }
@@ -1820,7 +1820,7 @@ class WritingAi(
 
     /** 让 AI 概括一章（存盘的正文），返回摘要文字，不存（作者看过、改过再存进细纲卡）。 */
     suspend fun summarize(workId: String, chapterId: String): String {
-        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val (work, text) = withContext(Dispatchers.IO) { store.get(workId) to store.text(workId, chapterId) }
         if (work == null) throw IllegalStateException("作品不在了")
         if (text.isBlank()) throw IllegalStateException("这一章还没有正文")
@@ -1836,7 +1836,7 @@ class WritingAi(
      * 不放整份设定包、不给查阅工具（整份设定包、read_doc 都能读到后面章节的细纲）。求稳：不带写正文的温度和思考开关。
      */
     suspend fun planCard(workId: String, chapterId: String): ChapterCard {
-        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val (system, prompt) = withContext(Dispatchers.IO) {
             val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
             val chapter = work.chapter(chapterId) ?: throw IllegalStateException("章节不在了")
@@ -1861,7 +1861,7 @@ class WritingAi(
      * [compiled] 是调用方刚编好的本章任务（一键写本章时）：有就拿它的篇幅，不再另编一次。
      */
     suspend fun splitBeats(workId: String, chapterId: String, card: ChapterCard, compiled: ChapterWritingTask? = null): String {
-        if (!ready) throw IllegalStateException("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
         val task = compiled ?: writingTask(workId, chapterId)
         var chapterLength = ""
         val (system, prompt) = withContext(Dispatchers.IO) {
@@ -1889,7 +1889,7 @@ class WritingAi(
     /** 给有正文、还没有摘要的章依次写摘要，写一章存一章（作者之后可以在细纲卡里改）。 */
     fun summarizeAll(workId: String) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         if (summaryJob?.isActive == true) return
@@ -2306,7 +2306,7 @@ class WritingAi(
             return
         }
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val key = workId to chapterId
@@ -2793,7 +2793,7 @@ class WritingAi(
     private fun writeProjectDraft(workId: String, chapterId: String, instruction: String, targetLength: String, more: Boolean = false, reviewOnly: Boolean = false, referenceAnalysisId: String? = null,
                                   prepare: Boolean = false) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val key = workId to chapterId
@@ -3178,7 +3178,7 @@ class WritingAi(
      */
     fun condenseDraft(workId: String, chapterId: String, length: String) {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val key = workId to chapterId
@@ -3260,7 +3260,7 @@ class WritingAi(
      */
     fun fixParagraph(workId: String, chapterId: String, index: Int, reasons: Set<FixReason>, note: String = "") {
         if (!ready) {
-            message("先在“我的 → AI 助手”里开启并填好服务商和密钥")
+            message("先在“我的 → AI 服务”里开启并填好服务商和密钥")
             return
         }
         val d = _drafts.value[workId to chapterId] ?: return
@@ -3516,7 +3516,7 @@ class WritingAi(
     /** 现在不能整理的原因（没设 AI、用的是本机模型）；能整理时为空。 */
     val syncBlocked: String?
         get() = when {
-            !ready -> "先在“我的 → AI 助手”里开启并填好服务商和密钥"
+            !ready -> "先在“我的 → AI 服务”里开启并填好服务商和密钥"
             !canUsePack -> "本机模型上下文太小、不能查设定包，整理进设定包要用联网的 AI 服务商"
             else -> null
         }
@@ -3801,7 +3801,7 @@ class WritingAi(
 
     /** 收尾里能不能写摘要、审稿（要 AI）：不能时是原因，能时为空。整理入账另看 [syncBlocked]。 */
     val finishAiBlocked: String?
-        get() = if (!ready) "没设置 AI：先在“我的 → AI 助手”里填好服务商和密钥" else null
+        get() = if (!ready) "没设置 AI：先在“我的 → AI 服务”里填好服务商和密钥" else null
 
     /** 这次实际能做的：AI 没配置（或本机模型不能整理）时去掉做不了的；这章没有 AI 原稿时不学。 */
     private fun usable(options: FinishOptions, learnable: Boolean) = options.copy(

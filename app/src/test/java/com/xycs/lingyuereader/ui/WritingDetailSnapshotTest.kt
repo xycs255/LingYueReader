@@ -64,7 +64,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页、
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、灵感、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页、
  * 编辑器的“问题”面板（状态行的“N 处问题”、全部和各个筛选）。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
@@ -317,8 +317,8 @@ class WritingDetailSnapshotTest {
     @Test
     fun editorToolsBottomCardAndPack() {
         openChapterThree()
-        // 没配置写作 AI：底栏是描边的“设置写作 AI”次要按钮。
-        waitForText("设置写作 AI")
+        // 没配置写作 AI：底栏是描边的“设置 AI 服务”次要按钮。
+        waitForText("设置 AI 服务")
         capture("detail-editor-bottom")
 
         openTools()
@@ -358,7 +358,7 @@ class WritingDetailSnapshotTest {
         openChapterThree()
         // 配好写作 AI、正文不空、没有选字：推荐“AI 接着写”。
         waitForText("AI 接着写")
-        waitForGone("设置写作 AI")
+        waitForGone("设置 AI 服务")
         capture("detail-editor-bottom-ai")
 
         // AI 写整章草稿：没有候选稿。
@@ -393,7 +393,7 @@ class WritingDetailSnapshotTest {
         capture("detail-ledger-people")
 
         compose.onNodeWithText("伏笔").performClick()
-        waitForText("账本伏笔 · 拖动计划收章")
+        waitForText("还没回收 · 拖动计划收章")
         waitForText("老周藏起的半张船票")
         capture("detail-ledger-foreshadow")
 
@@ -509,7 +509,7 @@ class WritingDetailSnapshotTest {
             beats = "林月求老周夜里渡河\n沈默出现，替她付了船钱\n船行到河心，沈默问起玉佩", beatsDone = listOf(1)))
     }
 
-    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、书灵（问主意、选范本）。 */
+    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、灵感（问主意、选范本）。 */
     private fun aiWriteAndCompanion(prefix: String) {
         seedBeats()
         openChapterThree()
@@ -550,7 +550,7 @@ class WritingDetailSnapshotTest {
     fun simplifyAiSettingsAndFormat() {
         openWork()
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
+        waitForText("这部书的口味")
         capture("simplify-work-ai-top")
         compose.onNodeWithText("高级设置").performScrollTo()
         capture("simplify-work-ai-bottom")
@@ -580,8 +580,8 @@ class WritingDetailSnapshotTest {
         waitForText("收尾要做的")
         waitForText("条不合规则")
         capture("$prefix-finish-setup")
-        compose.onNodeWithText("开始").performClick()
-        waitForDescription("整理入账：在做")
+        compose.onNodeWithText("开始收尾").performClick()
+        waitForDescription("整理进设定包和账本：在做")
         waitForDescription("写本章摘要：在做")
         capture("$prefix-finish-running")
         finishGate.countDown()

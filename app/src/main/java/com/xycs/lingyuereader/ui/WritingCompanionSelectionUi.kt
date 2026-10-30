@@ -25,7 +25,7 @@ internal fun WritingCompanionSelectionDialog(
     val c = LocalGroupedColors.current
     GlassDialog(
         show = true,
-        title = "选择 AI 写作范本",
+        title = "选择写作范本",
         summary = "选本章已分析的片段。AI 只借叙事与对白手法，按你的构思写新正文。",
         onDismissRequest = onDismiss,
     ) {

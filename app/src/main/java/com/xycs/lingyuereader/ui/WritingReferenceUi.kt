@@ -258,7 +258,7 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                         row { ActionRow("停止分析", destructive = true) { vm.referenceAi.stop() } }
                     }
                 } else {
-                    GroupedSection(footer = if (config.ready) "点下方按钮才会将所选范本原文和本章相关资料发给 AI，按所设服务商计费。浏览、选章与查看历史结果不会发请求。" else "先在“我的 → AI 助手”设置服务商与模型，再发起分析。") {
+                    GroupedSection(footer = if (config.ready) "点下方按钮才会将所选范本原文和本章相关资料发给 AI，按所设服务商计费。浏览、选章与查看历史结果不会发请求。" else "先在“我的 → AI 服务”设置服务商与模型，再发起分析。") {
                         row {
                             ActionRow("分析并给本章建议", enabled = !importing && !reading && config.ready && target != null && excerpt != null && previewError == null) {
                                 val ref = referenceId
@@ -285,7 +285,7 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                                 }
                             }
                         }
-                        if (!config.ready) row { NavRow("设置 AI 助手") { vm.open(Screen.Ai) } }
+                        if (!config.ready) row { NavRow("设置 AI 服务") { vm.open(Screen.Ai) } }
                     }
                 }
             }

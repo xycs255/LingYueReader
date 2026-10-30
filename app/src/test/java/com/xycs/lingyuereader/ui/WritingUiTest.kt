@@ -197,9 +197,9 @@ class WritingUiTest {
         waitForText("预览本章")
         // 不常用的在右上“⋯”里。
         compose.onNodeWithContentDescription("更多").performClick()
-        waitForText("从范本找写法")
-        compose.onNodeWithText("从范本找写法").performClick()
-        waitForText("写作范本")
+        waitForText("写作范本…")
+        compose.onNodeWithText("写作范本…").performClick()
+        compose.waitUntil(10_000) { vm.stack.value.last() is com.xycs.lingyuereader.Screen.WritingReference }
     }
 
     @Test

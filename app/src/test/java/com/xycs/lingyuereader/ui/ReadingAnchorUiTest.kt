@@ -104,15 +104,15 @@ class ReadingAnchorUiTest {
 
     private fun chooseRelaxedLayout() {
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
-        waitForText("阅读设置")
+        compose.onNodeWithText("更多").performClick()
+        waitForText("更多设置")
         compose.onNodeWithText("排版").performScrollTo().performClick()
         compose.onNodeWithText("宽松").performClick()
         // 第一次返回回到设置首页，第二次关面板。
         compose.activity.onBackPressedDispatcher.onBackPressed()
         compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("阅读设置").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("更多设置").fetchSemanticsNodes().isEmpty() }
     }
 
     private fun openCatalog() {

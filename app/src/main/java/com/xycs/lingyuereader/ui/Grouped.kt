@@ -1389,6 +1389,15 @@ internal fun LoadingState(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * 下拉菜单里分节的一道细线（作品页“⋯”的作品 / 导出 / 删除）：0.5dp、左右缩进 16dp、上下各留 4dp。
+ * 菜单画在弹层宿主里，读不到设置页配色：[color] 在调用处读好传进来（一般是 [GroupedColors.separator]）。
+ */
+@Composable
+internal fun MenuDivider(color: Color) {
+    Box(Modifier.widthIn(min = 200.dp).padding(horizontal = 16.dp, vertical = 4.dp).height(0.5.dp).background(color))
+}
+
 /** 卡片里的“还没有……”：一行次要色的字，和别的行一样高。整页什么都没有时用 [EmptyState]。 */
 @Composable
 internal fun EmptyRow(text: String, modifier: Modifier = Modifier) {

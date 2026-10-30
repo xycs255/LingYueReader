@@ -183,7 +183,7 @@ class WritingSyncUiTest {
 
     private fun openSyncFromEditor() {
         compose.onNodeWithContentDescription("更多").performClick()
-        compose.onNodeWithText("整理本章进设定包").performClick()
+        compose.onNodeWithText("整理进设定包").performClick()
         waitForText("新人物：杜娘")
     }
 
