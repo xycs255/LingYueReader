@@ -1,6 +1,18 @@
 package com.xycs.lingyuereader
 
 import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.Digests
+import com.xycs.lingyuereader.data.DraftIntent
+import com.xycs.lingyuereader.data.EditLearning
+import com.xycs.lingyuereader.data.LedgerKind
+import com.xycs.lingyuereader.data.PulseChapter
+import com.xycs.lingyuereader.data.PulseRow
+import com.xycs.lingyuereader.data.RepeatReport
+import com.xycs.lingyuereader.data.RepeatScan
+import com.xycs.lingyuereader.data.StoryDigest
+import com.xycs.lingyuereader.data.StoryPulse
+import com.xycs.lingyuereader.data.VolumeDigest
+import com.xycs.lingyuereader.data.syncNames
 import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.ChapterBriefs
@@ -82,6 +94,9 @@ enum class ExportFormat(val label: String, val ext: String, val mime: String) {
  * 写作：作品列表、码字统计，以及改作品、存正文。读写盘都排成一队在后台做（先改的先落盘），
  * 改完再更新界面看的 [works]、[stats]。出错时用 [message] 告诉读者。
  */
+/** 一次读四样（[WritingModel.repeatScan] 里用）。 */
+private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
+
 class WritingModel(
     private val store: WorkStore,
     private val scope: CoroutineScope,
@@ -192,6 +207,159 @@ class WritingModel(
      * 规划树上每章的小标记（细纲卡、节拍、AI 拟的、账本里的伏笔），按章 id。每章的细纲卡只读一次（章号也从这张卡算）；
      * 作品又变了、上一轮还没算完时，上一轮在章与章之间停下，不在写盘队列里白占着。
      */
+    // ---------- 分层前情：故事至今、卷摘要 ----------
+
+    private val _digests = MutableStateFlow<Map<String, Digests>>(emptyMap())
+    /** 各作品的故事至今和卷摘要（规划树、卷菜单上看、改）。 */
+    val digests: StateFlow<Map<String, Digests>> = _digests.asStateFlow()
+
+    fun loadDigests(workId: String) {
+        scope.launch {
+            val d = withContext(disk) { runCatching { store.digests(workId) }.getOrNull() } ?: return@launch
+            _digests.update { it + (workId to d) }
+        }
+    }
+
+    /** 改分层前情（作者改的、改回自动的）：存好再换掉页面上的。 */
+    private fun changeDigests(workId: String, done: String?, transform: (Digests) -> Digests) {
+        scope.launch {
+            try {
+                val d = withContext(disk) { store.updateDigests(workId, transform) }
+                _digests.update { it + (workId to d) }
+                done?.let(message)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("保存失败：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    /**
+     * 作者改故事至今：存成“你改过的”，收尾时不再自动更新。清空就是删掉（下次收尾从头整理）。
+     * 写到哪一章照旧（作者改的是内容，不是范围）；还没有时按现在写到的最后一章算。
+     */
+    fun saveStory(workId: String, text: String) = changeDigests(workId, "故事至今存好了") { d ->
+        val t = text.trim()
+        if (t.isEmpty()) return@changeDigests d.copy(story = null)
+        val old = d.story
+        val through = old?.let { it.throughId to it.throughNo } ?: run {
+            val w = store.get(workId)
+            val last = w?.chapters?.lastOrNull { it.words > 0 }
+            (last?.id.orEmpty()) to (last?.let { w.chapterNo(it.id, store.card(workId, it.id)) } ?: 0)
+        }
+        d.copy(story = StoryDigest(t, through.first, through.second, edited = true, at = System.currentTimeMillis()))
+    }
+
+    /** 作者改一卷的卷摘要：存成“你改过的”，之后收尾不再自动汇总这一卷。清空就是删掉。 */
+    fun saveVolumeDigest(workId: String, volumeId: String, text: String) = changeDigests(workId, "卷摘要存好了") { d ->
+        val t = text.trim()
+        if (t.isEmpty()) d.copy(volumes = d.volumes - volumeId)
+        else d.copy(volumes = d.volumes + (volumeId to VolumeDigest(t, d.volumes[volumeId]?.chapters.orEmpty(), edited = true, at = System.currentTimeMillis())))
+    }
+
+    /** “改回自动”：留着现在的内容，去掉“你改过的”，下次收尾接着自动更新（[volumeId] 为空是故事至今）。 */
+    fun resumeDigest(workId: String, volumeId: String?) = changeDigests(workId, "下次收尾时接着自动整理") { d ->
+        if (volumeId == null) d.copy(story = d.story?.copy(edited = false))
+        else d.copy(volumes = d.volumes[volumeId]?.let { d.volumes + (volumeId to it.copy(edited = false)) } ?: d.volumes)
+    }
+
+    // ---------- 本书高频说法、句式单调 ----------
+
+    private val repeatCache = RepeatScan.Cache()
+
+    /**
+     * 查当前这一章（编辑器里的 [text]）的本书高频说法和句式单调：最近 [RepeatScan.WINDOW] 章（含这一章）的叙述部分。
+     * 在后台算；别的章按章的修改时间记着算过的 n-gram，没改就不重算，正文在变时只重算这一章。
+     */
+    suspend fun repeatScan(workId: String, chapterId: String, text: String): RepeatReport = withContext(Dispatchers.Default) {
+        val (work, names, assist, dismissed) = withContext(disk) {
+            val w = store.get(workId)
+            val places = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
+                .filter { it.kind == LedgerKind.STATE && it.aspect == "位置" && it.text.trim().length in 2..12 }.map { it.text.trim().trimEnd('。') }
+            Quad(w, runCatching { store.syncNames(workId) }.getOrDefault(emptySet()) + places, store.assist(workId),
+                runCatching { store.learning(workId).dismissed.toSet() }.getOrDefault(emptySet()))
+        }
+        if (work == null) return@withContext RepeatReport()
+        val i = work.chapters.indexOfFirst { it.id == chapterId }
+        if (i < 0) return@withContext RepeatReport()
+        val window = work.chapters.subList(maxOf(0, i - RepeatScan.WINDOW + 1), i).filter { it.words > 0 }
+        val nameKey = names.sorted().hashCode().toString()
+        val grams = window.map { c ->
+            ensureActive()
+            c.title to repeatCache.get(c.id, "${c.updatedAt}:$nameKey") { RepeatScan.grams(store.text(workId, c.id), names) }
+        } + (work.chapters[i].title to repeatCache.get(chapterId, "${text.hashCode()}:${text.length}:$nameKey") { RepeatScan.grams(text, names) })
+        RepeatReport(RepeatScan.phrases(grams, text, names, assist.banned, dismissed), RepeatScan.monotony(text, dismissed))
+    }
+
+    /** 本书高频、句式单调点了“不再提”：记进改稿学习的“不再提”（随备份走），以后不再列。 */
+    fun dismissRepeat(workId: String, key: String, then: () -> Unit = {}) {
+        scope.launch {
+            try {
+                withContext(disk) { store.updateLearning(workId) { EditLearning.dismiss(it, listOf(key)) } }
+                then()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("没记下：${e.message ?: "写入出错"}")
+            }
+        }
+    }
+
+    // ---------- 线索与节奏体检 ----------
+
+    private val pulseCache = HashMap<String, Pair<Int, List<PulseRow>>>()
+
+    /**
+     * 线索与节奏体检（[StoryPulse]）：到现在写到的这一章（有正文的最后一章）为止。在后台算；
+     * 各章细纲卡的修改时间和账本都没变就用上次算的。
+     */
+    suspend fun pulse(workId: String): List<PulseRow> = withContext(disk) {
+        val work = store.get(workId) ?: return@withContext emptyList()
+        val last = work.chapters.indexOfLast { it.words > 0 }
+        if (last < 0) return@withContext emptyList()
+        val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
+        val chapters = work.chapters.take(last + 1).map { c ->
+            ensureActive()
+            val card = store.plannedCard(workId, c.id).card
+            PulseChapter(c.id, work.chapterNo(c.id, card) ?: 0, c.title, card.threads, card.change, card.moves) to card.updatedAt
+        }
+        val stamp = listOf(chapters.map { it.first.id to it.second }, chapters.map { it.first }, ledger).hashCode()
+        pulseCache[workId]?.takeIf { it.first == stamp }?.let { return@withContext it.second }
+        val rows = withContext(Dispatchers.Default) { StoryPulse.check(chapters.map { it.first }, ledger) }
+        pulseCache[workId] = stamp to rows
+        rows
+    }
+
+    /**
+     * 体检表里点“带进下一章”：把这一条写进下一章（现在写到的这一章后面那一章）草稿页的“作者这次的要求”，
+     * 写本章、AI 拟细纲时都会照办。复用现有的作者要求，不另造机制；已经写过同一句的不重复加。
+     */
+    fun carryToNext(workId: String, row: PulseRow, then: (String) -> Unit = {}) {
+        scope.launch {
+            try {
+                val title = withContext(disk) {
+                    val work = store.get(workId) ?: error("作品不在了")
+                    val last = work.chapters.indexOfLast { it.words > 0 }
+                    val next = work.chapters.getOrNull(last + 1) ?: error("后面还没有下一章：先在规划树里加一章")
+                    val old = store.draftIntent(workId, next.id) ?: DraftIntent()
+                    val line = row.request()
+                    if (line !in old.instruction) {
+                        val joined = listOf(old.instruction.trim(), line).filter { it.isNotEmpty() }.joinToString("；")
+                        store.setDraftIntent(workId, next.id, joined, old.targetLength, old.workflowChoice)
+                    }
+                    next.title
+                }
+                then(title)
+                message("已写进《$title》的作者要求")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message(e.message ?: "没写进去")
+            }
+        }
+    }
+
     suspend fun treeMarks(workId: String): Map<String, ChapterTreeMarks> = withContext(disk) {
         val work = store.get(workId) ?: return@withContext emptyMap()
         val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())

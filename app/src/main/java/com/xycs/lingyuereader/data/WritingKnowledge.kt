@@ -427,7 +427,7 @@ fun WorkStore.chapterHints(workId: String, chapterId: String, text: String, upTo
         val past = b.items.filter { it.group == "前情" }
         if (past.isNotEmpty()) {
             out.append("\n【前情】\n")
-            past.sortedBy { ChapterRefs.number(it.title) ?: 0 }.forEach { out.append("- ").append(it.title).append("：").append(it.text).append('\n') }
+            past.sortedBy { ChapterBriefs.pastOrder(it) }.forEach { out.append("- ").append(it.title).append("：").append(it.text).append('\n') }
         }
         // 账本是最新进展：放在前情之后、伏笔和察觉之前。
         b.ledgerText?.let { out.append('\n').append(it).append('\n') }

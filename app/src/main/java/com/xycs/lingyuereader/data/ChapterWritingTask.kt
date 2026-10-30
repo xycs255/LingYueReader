@@ -60,6 +60,8 @@ data class ChapterWritingTask(
         field("时间与倒计时", card.countdown)
         field("章末钩子", card.hook)
         field("本章推进的线", card.threads)
+        field("本章要改变的（人物关系、处境、知道的事）", card.change)
+        field("伏笔动作", ForeshadowMoves.format(card.moves))
         if (previous.isNotBlank()) field("用户已定前章结尾（正文事实）", previous)
         if (previous.isBlank() && previousDraft.isNotBlank()) field(PREVIOUS_DRAFT, previousDraft)
         if (context.isNotBlank()) field("按本章挑选的资料（其中规划只用于约束，不冒充已发生）", context)
@@ -254,21 +256,24 @@ fun WorkStore.writingTask(
         ?: docs.filter { it.first.kind == PackKind.RULES }.asSequence().flatMap { CheckRules.parse(it.second).rules.asSequence() }
             .filterIsInstance<CheckRule.Length>().firstOrNull()?.let(ProjectLengths::of)
         ?: "依本章细纲；未规定时写足关键选择与后果，不为统一字数注水"
+    val volumeOf = work.volumes.flatMap { v -> v.chapters.map { it.id to v.id } }.toMap()
     val confirmedSummaries = work.chapters.take(index).filter { it.status == ChapterStatus.FINAL }.mapNotNull { c ->
         val summary = this.card(workId, c.id).summary
-        if (summary.isBlank()) null else chapterNo(work, c.id)?.let { ChapterSummary(it, c.title, summary) }
+        if (summary.isBlank()) null else chapterNo(work, c.id)?.let { ChapterSummary(it, c.title, summary, volumeOf[c.id].orEmpty()) }
     }
+    // 分层前情只认定稿：故事至今写到的那章、卷摘要用到的各章都得是定稿（见 [StoryDigests.layers]）。
+    val layers = StoryDigests.layers(work, chapterId, number ?: (index + 1), digests(workId), confirmedOnly = true)
     val currentLedger = ledger(workId)
     checkpoint()
     val briefCard = listOf(card.facts, card.boundary, card.pov, card.hook, card.threads).joinToString("\n")
     val briefChapter = number ?: index + 1
     // 挑本章资料要把设定包切块、算二元组，是最费内存的一步：同样的输入（设定包同一版）只挑一次。
-    val context = material.brief(listOf("task", briefCard, briefChapter, volume, writingAssist.briefLimit, confirmedSummaries, currentLedger)) {
+    val context = material.brief(listOf("task", briefCard, briefChapter, volume, writingAssist.briefLimit, confirmedSummaries, currentLedger, layers)) {
         ChapterBriefs.build(
             docs.filter { it.first.kind != PackKind.INSTRUCTION && ProjectSources.phaseOf(it.first.title) == null },
             text = "", card = briefCard,
             chapter = briefChapter, volume = volume, limit = writingAssist.briefLimit,
-            summaries = confirmedSummaries, style = true, ledger = currentLedger, prep = material.prep,
+            summaries = confirmedSummaries, style = true, ledger = currentLedger, prep = material.prep, layers = layers,
         )
     }.render().orEmpty()
     checkpoint()
@@ -278,6 +283,9 @@ fun WorkStore.writingTask(
     val state = listOf(work.title, chapter.title, number.toString(), volume.toString(), instruction.trim(), length, card.facts, card.boundary, card.pov, card.countdown, card.hook, card.threads, previous, context) +
         // 只在带了未定稿结尾时才进指纹：没有它的任务指纹和以前一样，旧的审读不因升级失效。
         listOfNotNull(previousDraft.takeIf { it.isNotBlank() }?.let { "previousDraft\u0000$it" }) +
+        // 本章改变了什么、伏笔动作同理：写了才进指纹。
+        listOfNotNull(card.change.takeIf { it.isNotBlank() }?.let { "change\u0000$it" },
+            card.moves.takeIf { it.isNotEmpty() }?.let { "moves\u0000" + ForeshadowMoves.format(it) }) +
         warnings + blocking + listOf(
             // 润色的采纳、不采纳记录只是文风范例，与审读依据无关：不进指纹，免得改别章时让所有章的审读失效。
             StoryLedger.toJson(currentLedger).toString(), writingAssist.style, sampleSignature,

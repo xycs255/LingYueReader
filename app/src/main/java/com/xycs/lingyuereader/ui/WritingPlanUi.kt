@@ -43,6 +43,7 @@ import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.ForeshadowMoves
 import com.xycs.lingyuereader.data.PlannedCard
 import com.xycs.lingyuereader.data.outlineHash
 import com.xycs.lingyuereader.data.withOutline
@@ -145,8 +146,14 @@ private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> =
     Triple("倒计时", "章首交代：离某件事还有多久", { it.countdown }),
     Triple("章末钩子", "一个动作、一句没说完的话、一点异样", { it.hook }),
     Triple("推进的线", "比如：明线、暗线、主角线，或某个配角的弧线", { it.threads }),
+    Triple(CHANGE, "一两句：人物关系、处境、知道的事变了什么", { it.change }),
+    Triple(MOVES, "一行一条：埋 / 推进 / 回收 / 暂缓：哪条伏笔", { ForeshadowMoves.format(it.moves) }),
     Triple("细纲章号", "发布章号顺延时填（比如拆成上下章）", { it.plan }),
 )
+
+/** 细纲卡新加的两张：本章改变了什么、伏笔动作。 */
+internal const val CHANGE = "本章改变了什么"
+internal const val MOVES = "伏笔动作"
 
 /** 改一项。作者动了前六项，这份细纲就是作者认过的了：不再标“AI 拟的”。细纲章号不是 AI 拟的，改它不算。 */
 private fun ChapterCard.with(field: String, value: String) = when (field) {
@@ -156,6 +163,8 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
     "倒计时" -> copy(countdown = value, aiOutline = false)
     "章末钩子" -> copy(hook = value, aiOutline = false)
     "细纲章号" -> copy(plan = value)
+    CHANGE -> copy(change = value, aiOutline = false)
+    MOVES -> copy(moves = ForeshadowMoves.parse(value, moves), aiOutline = false)
     else -> copy(threads = value, aiOutline = false)
 }
 
@@ -186,6 +195,12 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
         threads = pick { it.threads },
         summary = pick { it.summary },
         plan = pick { it.plan },
+        change = pick { it.change },
+        moves = when {
+            edited.moves != base.moves -> edited.moves
+            latest.moves != storedAtOpen.moves -> latest.moves
+            else -> base.moves
+        },
         beats = beats,
         beatsDone = if (Beats.parse(doneFrom.beats).size == Beats.parse(beats).size) doneFrom.beatsDone else emptyList(),
         auto = when {
@@ -252,6 +267,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var beatsProposal by remember { mutableStateOf<String?>(null) }
     // 就地展开改的那一张小卡片（项名；节拍卡是 [BEATS]），同时只开一张。
     var expandedField by remember(chapterId) { mutableStateOf<String?>(null) }
+    // 伏笔动作的文本框原样留着作者正在打的字（存的是拆好的几条，拆完再拼回去，换行、半行字会被吞掉）。
+    var movesDraft by remember(chapterId) { mutableStateOf<String?>(null) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     // AI 拆节拍：按这一页上现在的细纲卡（可能还没存）拆；拆好的先给作者看、改，用了才进卡片。
@@ -417,7 +434,12 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             expanded = expandedField,
                             aiDrafted = now.aiOutline,
                             onToggle = { label -> expandedField = if (expandedField == label) null else label },
-                        ) { label, v -> card = now.with(label, v) }
+                            // 卡片被别处换掉了（用了 AI 拟的、换成细纲里的），文本框跟着换成卡片上的。
+                            movesText = movesDraft?.takeIf { ForeshadowMoves.parse(it, now.moves) == now.moves },
+                        ) { label, v ->
+                            if (label == MOVES) movesDraft = v
+                            card = now.with(label, v)
+                        }
                         // 节拍单独一张卡：各拍一直列着，已写的打勾；点卡片头改节拍原文。
                         val done = now.beatsDone.toSet()
                         val list = beats(now)
@@ -459,7 +481,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         )
                         GroupedSection(
                             header = "写完以后",
-                            footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章），AI 就知道前面写了什么。" +
+                            footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章；往卷有卷摘要时用卷摘要），AI 就知道前面写了什么。收尾时还会顺带汇总卷摘要和“故事至今”。" +
                                 "可以自己写，也可以让 AI 概括正文再改。",
                         ) {
                             row {
@@ -508,7 +530,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         onDismiss = { proposal = null },
                         onConfirm = {
                             proposal = null
-                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0, aiOutline = false)
+                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads,
+                                change = p.change.ifBlank { card?.change.orEmpty() }, moves = p.moves.ifEmpty { card?.moves.orEmpty() }, auto = 0, aiOutline = false)
                             info = info?.copy(source = null)
                         },
                         confirmText = "用这份",
@@ -594,6 +617,8 @@ private val CARD_LOOK: Map<String, Pair<ImageVector, CategoryTone>> = mapOf(
     "倒计时" to (LingYueIcons.Timer to CategoryTone.CYAN),
     "章末钩子" to (LingYueIcons.Hook to CategoryTone.BLUE),
     "推进的线" to (LingYueIcons.Threads to CategoryTone.SUCCESS),
+    CHANGE to (LingYueIcons.Bulb to CategoryTone.TINT),
+    MOVES to (LingYueIcons.Flag to CategoryTone.CYAN),
     "细纲章号" to (LingYueIcons.ListView to CategoryTone.NEUTRAL),
 )
 
@@ -609,7 +634,15 @@ internal const val AI_PENDING_BEATS = "AI 拆的·待确认"
  * [aiDrafted] 为真时前六项里填了的挂“AI 拟的·待确认”（细纲章号不是 AI 拟的，不挂）。
  */
 @Composable
-private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boolean, onToggle: (String) -> Unit, onChange: (String, String) -> Unit) {
+private fun CardFieldGrid(
+    card: ChapterCard,
+    expanded: String?,
+    aiDrafted: Boolean,
+    onToggle: (String) -> Unit,
+    /** 伏笔动作文本框里作者正在打的原文；为空时按卡片上存的几条拼出来。 */
+    movesText: String? = null,
+    onChange: (String, String) -> Unit,
+) {
     val c = LocalGroupedColors.current
     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         val columns = if (maxWidth >= 600.dp) 3 else 2
@@ -637,7 +670,7 @@ private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boole
                     r.forEach { i ->
                         val (label, hint, get) = CARD_FIELDS[i]
                         val (icon, tone) = CARD_LOOK.getValue(label)
-                        val value = get(card)
+                        val value = if (label == MOVES) movesText ?: get(card) else get(card)
                         FieldCard(
                             label,
                             icon,

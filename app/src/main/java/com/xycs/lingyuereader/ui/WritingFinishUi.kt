@@ -249,6 +249,7 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
             row { StepRow("写本章摘要", run.summary.mark(), run.summary.label, run.summaryError) }
             if (run.options.learn) row { StepRow("从改稿里学", run.learn.mark(), run.learn.label, run.learnError.takeIf { run.learn == StepState.FAILED }) }
             if (run.options.handoff) row { StepRow("整理交接卡", run.handoff.mark(), run.handoff.label, run.handoffError ?: run.handoffNote) }
+            if (run.digest != StepState.SKIPPED) row { StepRow("整理前情", run.digest.mark(), run.digest.label, run.digestError ?: run.digestNote) }
             row { StepRow("定稿", StepMark.WAITING, StepState.WAITING.label, "确认以后再做") }
         }
         when (run.stage) {
@@ -359,6 +360,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                 val error = run.handoffError
                 if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                 else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            }
+        }
+    }
+    // 前情（故事至今、卷摘要）整理好就存下了：这里只说一句结果，没成的原因照实说，不拦收尾。
+    if (run.digest != StepState.SKIPPED && (run.digestError ?: run.digestNote) != null) item(key = "digest") {
+        val c = LocalGroupedColors.current
+        GroupedSection(header = "前情", footer = "故事至今在规划树下面，卷摘要在卷的菜单里，都能看、能改。") {
+            row {
+                val error = run.digestError
+                if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                else Text(run.digestNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }

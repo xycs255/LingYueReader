@@ -73,6 +73,7 @@ import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterTreeMarks
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.Volume
+import com.xycs.lingyuereader.data.Digests
 import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.ui.glass.GlassMenu
@@ -110,6 +111,10 @@ internal data class WritingTreeActions(
     val onOpenLedger: (WorkChapter) -> Unit = {},
     /** 拖动松手：把这一章移到某卷的第几个（从 0 数，按去掉这一章后的那一卷算）。 */
     val onDropChapter: (WorkChapter, String, Int) -> Unit = { _, _, _ -> },
+    /** 总纲上面的“故事至今”、卷菜单里的“卷摘要”、“线索与节奏体检”：看、改。 */
+    val onOpenStory: () -> Unit = {},
+    val onVolumeDigest: (Volume) -> Unit = {},
+    val onOpenPulse: () -> Unit = {},
 )
 
 /** Save only stable IDs, using a Bundle-compatible list so folds survive configuration changes. */
@@ -318,6 +323,11 @@ internal fun LazyListScope.writingPlanningTreeItems(
     marks: Map<String, ChapterTreeMarks> = emptyMap(),
     length: CheckRule.Length? = null,
     drag: TreeDragController? = null,
+    /** 分层前情（为空时不显示“故事至今”一行，卷菜单里也没有“卷摘要”）。 */
+    digests: Digests? = null,
+    /** 线索体检的一句结果（为空时不显示体检那一行）；[pulseWarn] 为真时用提醒色。 */
+    pulse: String? = null,
+    pulseWarn: Boolean = false,
 ) {
     val chapters = work.chapters
     val positions = chapters.withIndex().associate { it.value.id to it.index }
@@ -342,6 +352,7 @@ internal fun LazyListScope.writingPlanningTreeItems(
                     lastVolume = lastVolume,
                     menuOpen = volumeMenuId == volume.id,
                     canDelete = work.volumes.size > 1,
+                    digest = digests?.let { d -> d.volumes[volume.id]?.let { if (it.edited) TAG_EDITED else "有卷摘要" } ?: "" },
                     actions = actions,
                     indicator = drag?.drop?.takeIf { it.anchor == volumeKey(volume.id) && !it.same },
                 )
@@ -373,6 +384,13 @@ internal fun LazyListScope.writingPlanningTreeItems(
                     ) { actions.onAddChapter(volume) }
                 }
             }
+        }
+    }
+    // 故事至今、线索体检单独一张卡片接在树下面：放在总纲上面会把前几章挤出首屏，作者最常点的是章。
+    if (digests != null || pulse != null) item(key = "tree:digest", contentType = "tree-digest") {
+        GroupedListCell(first = true, last = true, gap = 12.dp, modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
+            if (digests != null) TreeStoryRow(digests.story, actions.onOpenStory)
+            if (pulse != null) TreePulseRow(pulse, pulseWarn, actions.onOpenPulse)
         }
     }
     item(key = "tree:hint", contentType = "tree-hint") {
@@ -456,6 +474,8 @@ private fun TreeVolumeRow(
     canDelete: Boolean,
     actions: WritingTreeActions,
     indicator: TreeDrop?,
+    /** 卷摘要的状况（“有卷摘要”“你改过的”，没有为空串）；为空（null）时菜单里没有“卷摘要”。 */
+    digest: String? = null,
 ) {
     val c = LocalGroupedColors.current
     val line = treeLine()
@@ -480,7 +500,7 @@ private fun TreeVolumeRow(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(volume.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "$total 章 · 定稿 $finals · ${treeWords(volume.chapters.sumOf { it.words })}",
+                    "$total 章 · 定稿 $finals · ${treeWords(volume.chapters.sumOf { it.words })}" + digest?.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty(),
                     color = c.secondary,
                     fontSize = 12.sp,
                     maxLines = 1,
@@ -503,6 +523,7 @@ private fun TreeVolumeRow(
             GlassMenu {
                 ListPopupColumn {
                     TreeMenuAction("改名", c.label) { actions.onDismissVolumeMenu(); actions.onRenameVolume(volume) }
+                    if (digest != null) TreeMenuAction("卷摘要", c.label) { actions.onDismissVolumeMenu(); actions.onVolumeDigest(volume) }
                     if (canDelete) TreeMenuAction("删除本卷", c.destructive) { actions.onDismissVolumeMenu(); actions.onDeleteVolume(volume) }
                 }
             }

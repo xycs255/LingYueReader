@@ -58,6 +58,10 @@ data class FinishRun(
     val handoffError: String? = null,
     /** 交接卡这一步的说明（比如保留了作者改过的那一份）。 */
     val handoffNote: String? = null,
+    /** 整理前情（故事至今、卷摘要）：跟着写本章摘要走，整理好就存下，没成不拦收尾。 */
+    val digest: StepState = StepState.WAITING,
+    val digestError: String? = null,
+    val digestNote: String? = null,
 ) {
     /**
      * 这一章的收尾手上有东西：在跑、在写入、审出问题等着选、没成等着重试、等着确认。这时换一章收尾会把它丢掉

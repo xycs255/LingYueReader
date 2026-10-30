@@ -4,6 +4,9 @@ import com.xycs.lingyuereader.data.BeatTask
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterHandoff
+import com.xycs.lingyuereader.data.DigestJob
+import com.xycs.lingyuereader.data.ForeshadowMoves
+import com.xycs.lingyuereader.data.StoryDigests
 import com.xycs.lingyuereader.data.Handoffs
 import com.xycs.lingyuereader.data.ChapterWritingTask
 import com.xycs.lingyuereader.data.ChapterRefs
@@ -163,6 +166,10 @@ object WritePrompts {
             val craftSources = evidence.sources.filter { it.supportsCraft && !it.supportsFact }
             if (craftSources.isNotEmpty()) append(craftSources.joinToString("；", prefix = "写法与规则来源编号：", postfix = "。") { "${it.label} ${it.ref}" })
             append("若找不到可定位原文，把问题放进 missing 等作者核对，不把猜测列为必改。来源定位只能证明引文存在，仍须判断其含义。\n")
+        }
+        if (task.card.change.isNotBlank() || task.card.moves.isNotEmpty()) {
+            append("本章任务写了“本章要改变的”“伏笔动作”：核对它们有没有用场面落到正文里，只在旁白里一句带过或没写的列为 FACT，")
+            append("依据引目标章细纲卡；写出来了的不要列。\n")
         }
         if (task.previous.isBlank() && task.previousDraft.isNotBlank()) {
             // 未定稿的上一章结尾只给写的人接场面：审读不能拿它当已定前文。
@@ -464,6 +471,12 @@ object WritePrompts {
             if (beatScope && list.size > 1) append("（分在各拍里写，这次只写第 $n 拍的部分）")
             append('\n')
         }
+        // 本章改变了什么：写正文时要用场面写出来的变化（细纲卡新加的一栏，空着不写）。
+        if (t.card.change.isNotBlank()) append(CHANGE_HEAD).append(line(t.card.change)).append('\n')
+        if (t.card.moves.isNotEmpty() && t.scope != ProseScope.REVISE) {
+            append(MOVES_HEAD).append('\n')
+            t.card.moves.forEach { append("- ").append(line(it.line())).append('\n') }
+        }
         if (t.card.boundary.isNotBlank()) append("这一章不写到：").append(line(t.card.boundary)).append('\n')
         if (t.card.countdown.isNotBlank()) append("时间：").append(line(t.card.countdown)).append('\n')
         // 后面的剧情只用来铺垫：能埋就埋一笔，但不能写到它发生。
@@ -473,6 +486,12 @@ object WritePrompts {
         }
         if (facts.isNotEmpty()) append("这些事要写出来，但写成场面和对话，不要列清单式交代。")
     }.trim()
+
+    /** 任务卡里“本章改变了什么”那一行的开头。 */
+    const val CHANGE_HEAD = "这一章过后要变的（人物关系、处境、知道的事，用场面写出来，别靠旁白交代）："
+
+    /** 任务卡里“伏笔动作”一节的开头：埋只留细节，推进要有新东西，回收要说破，暂缓的只能轻轻带过。 */
+    const val MOVES_HEAD = "这一章对伏笔做的事（埋：留个细节就行；推进：给出新线索或新变化；回收：写出答案；暂缓：只轻轻带过，别推进）："
 
     /** 任务卡里“可以埋的伏笔”一节的开头，顺带一句铺垫的规矩。 */
     const val SEEDS_HEAD = "这一章可以埋的伏笔（后面的事只用来铺垫：留个细节或疑点就行，别收、别说破、别让人物提前知道）："
@@ -671,6 +690,7 @@ object WritePrompts {
         val lines = listOf(
             "本章事实与结果" to card.facts, "后文承接边界" to card.boundary, "视角人物" to card.pov,
             "倒计时" to card.countdown, "章末钩子" to card.hook, "推进的线" to card.threads,
+            "本章改变了什么" to card.change, "伏笔动作" to ForeshadowMoves.format(card.moves).replace("\n", "；"),
         ).filter { it.second.isNotBlank() }
         if (lines.isNotEmpty()) {
             append("本章细纲卡（事实边界：写的内容不能和它冲突；场面怎么写可以自由发挥）：\n")
@@ -805,8 +825,9 @@ object WritePrompts {
     }
 
     /** 事实关：对照设定资料（系统提示里）、细纲卡、上一章结尾，只挑事实、因果、视角、承接上的问题。 */
-    fun factReview(text: String, title: String, previous: String): String = buildString {
+    fun factReview(text: String, title: String, previous: String, card: ChapterCard? = null): String = buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
+        landing(card)?.let { append(it).append("\n\n") }
         append("下面是这一章「").append(title).append("」的正文：\n\n").append(text).append("\n\n")
         append("请做事实审稿，对照上面的设定资料（包括到这一章为止人物知道什么、还不知道什么、没回收的伏笔）和本章细纲卡，找出：\n")
         append("1. 和设定、不变量、细纲卡的事实边界矛盾的；\n")
@@ -814,9 +835,26 @@ object WritePrompts {
         append("3. 视角越界，写进了不该进的人物心里；\n")
         append("4. 和上一章结尾、钩子接不上的；\n")
         append("5. 因果断裂、前后说法不一的。\n")
+        if (landing(card) != null) append(LANDING_RULE).append('\n')
         append("只挑确实有问题的，没有就返回空列表；不要提文笔和写法。")
         append(REVIEW_JSON)
     }
+
+    /**
+     * 细纲卡里“本章改变了什么”“伏笔动作”写成审稿时要核对的一节；两项都空为空（不核对）。
+     */
+    fun landing(card: ChapterCard?): String? {
+        if (card == null || (card.change.isBlank() && card.moves.isEmpty())) return null
+        return buildString {
+            append("细纲卡要这一章落地的：\n")
+            if (card.change.isNotBlank()) append("- 本章改变了什么：").append(line(card.change)).append('\n')
+            card.moves.forEach { append("- 伏笔动作：").append(line(it.line())).append('\n') }
+        }.trim()
+    }
+
+    /** 事实审稿多问的一句：细纲卡要的变化和伏笔动作有没有落到正文里。引文规矩照旧，只能摘正文原句。 */
+    const val LANDING_RULE = "6. 上面“细纲卡要这一章落地的”几项，正文里有没有用场面写出来：只在旁白里一句带过、或者根本没写的，各列一条；" +
+        "quote 摘正文里最接近的那一句（真没有就摘本章最后一句），problem 写明是细纲卡的哪一项没落地。写出来了的不要列。"
 
     /** 写法关：只按作者自己的写作规范审，不用模型自己的口味。 */
     fun craftReview(text: String, title: String, rules: String): String = buildString {
@@ -845,6 +883,45 @@ object WritePrompts {
     /** 本章摘要的要求：单独写摘要（[summary]）和整理时顺带写（[sync] 的 summary 字段）用同一句，两边写出来的一个样。 */
     private const val SUMMARY_RULE = "用 150 到 300 字概括这一章：谁、在哪、做了什么、结果怎样；人数、伤亡、得失、谁知道了什么这类会影响后文的事实要写准；" +
         "章末留下的钩子写一句。只写事实，不评价写法，不猜后文。"
+
+    /**
+     * 整理前情（“这章写完了”收尾时顺带做，见 [com.xycs.lingyuereader.data.StoryDigests.plan]）：更新故事至今、汇总一卷的卷摘要，
+     * 一次请求做完。只给章摘要和旧梗概，不给正文、不给查阅工具：输入小，也天然不含后文。只要 JSON，按
+     * [com.xycs.lingyuereader.data.StoryDigests.parse] 读。求稳：不带温度、能关思考的模型关掉思考。
+     */
+    fun digest(job: DigestJob): String = buildString {
+        if (job.story) {
+            if (job.pastVolumes.isNotEmpty()) {
+                append("前面各卷的卷摘要：\n")
+                job.pastVolumes.forEach { (t, s) -> append("《").append(t.trim()).append("》").append(line(s)).append('\n') }
+                append('\n')
+            }
+            if (job.oldStory.isNotBlank()) append("到目前为止的故事梗概（“故事至今”）：\n").append(job.oldStory.trim()).append("\n\n")
+            append(if (job.oldStory.isNotBlank()) "之后新写的几章的摘要：\n" else "已经写了的各章的摘要：\n")
+            job.newChapters.forEach { (t, s) -> append("「").append(t.trim()).append("」").append(line(s)).append('\n') }
+            append('\n')
+        }
+        if (job.volumeId != null) {
+            append("《").append(job.volumeTitle.trim()).append("》这一卷各章的摘要：\n")
+            job.volumeChapters.forEach { (t, s) -> append("「").append(t.trim()).append("」").append(line(s)).append('\n') }
+            append('\n')
+        }
+        append("请整理这部小说的前情，给写后面的章当背景：\n")
+        if (job.story) {
+            append("- story：").append(if (job.oldStory.isNotBlank()) "更新故事梗概：" else "写一份故事梗概：")
+            append("不超过 ").append(StoryDigests.STORY_SENTENCES).append(" 句，一句一件会影响后文的事（谁、做了什么、结果怎样），按发生的先后排；")
+            if (job.oldStory.isNotBlank()) append("旧梗概里已经不要紧的细节合并或删掉，新几章里要紧的事补进去；")
+            append("人物关系、谁知道了什么、没了结的悬念要留着。\n")
+        }
+        if (job.volumeId != null) {
+            append("- volume：按《").append(job.volumeTitle.trim()).append("》各章的摘要写这一卷的卷摘要，300 到 600 字：主线走到哪了、")
+            append("人物有什么变化（只写变了的）、世界有什么变化、埋下还没收的伏笔、留给下一卷的悬念。\n")
+        }
+        append("只用上面摘要里有的事实，不评价写法，不猜后文，不加没写到的事。\n")
+        append("只输出 JSON：{")
+        val keys = listOfNotNull("\"story\":[\"一句\",\"一句\"]".takeIf { job.story }, "\"volume\":\"卷摘要\"".takeIf { job.volumeId != null })
+        append(keys.joinToString(",")).append("}")
+    }
 
     /** 本章摘要：给写后面的章当前情用，只写事实。 */
     fun summary(text: String, title: String): String = buildString {
@@ -888,13 +965,13 @@ object WritePrompts {
     }
 
     /** 拟细纲时各项的标签（AI 照这个格式回，按它拆回细纲卡）。 */
-    private val PLAN_FIELDS = listOf("本章事实与结果", "后文承接边界", "视角人物", "倒计时", "章末钩子", "推进的线")
+    private val PLAN_FIELDS = listOf("本章事实与结果", "后文承接边界", "视角人物", "倒计时", "章末钩子", "推进的线", "本章改变了什么", "伏笔动作")
 
     /**
      * 拟这一章的细纲卡：按系统提示里的本章资料（总纲、前后几章的细纲或摘要、人物、察觉、伏笔），接上一章结尾，
      * 不越过下一章已经定下的细纲。[written] 是这一章已经写了的正文（可空）。
      */
-    fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String): String = buildString {
+    fun plan(title: String, previous: String, next: ChapterCard?, nextTitle: String?, written: String, request: String = ""): String = buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")
         if (next != null && !next.outlineEmpty) {
             append("下一章「").append(nextTitle.orEmpty()).append("」已经定下的细纲（这一章不能写到它的事，要能接上它）：\n")
@@ -904,7 +981,10 @@ object WritePrompts {
         append("请为这一章「").append(title).append("」拟细纲卡：只划事实边界，不写文笔。\n")
         append("- 从设定资料里找这一章该发生的事（总纲、分卷速查、接续索引里写到这一章或这一段的），接上上一章结尾和前情；资料里没写到的，按总纲的走向补最小的一步，不要发明大事件。\n")
         append("- 人数、伤亡、日期、谁知道了什么要和资料一致；不写资料里后面才发生的事。\n")
-        append("按下面的格式输出，每项一行（没有的项写“无”），不要别的话：\n")
+        append("- 本章改变了什么：一两句话，写这一章过后人物关系、处境、知道的事有什么变化，要能在正文里看出来，比如“林月知道了……”“两人从互相提防变成暂时合作”。\n")
+        append("- 伏笔动作：一行一条，行首写“埋”“推进”“回收”或“暂缓”加冒号，再写一句是哪条伏笔、做到哪一步；只写资料里有的伏笔和本章新埋的，没有就写“无”。\n")
+        if (request.isNotBlank()) append("- 作者这次的要求：").append(line(request)).append("（在不越过资料的前提下照办）\n")
+        append("按下面的格式输出，每项一行（伏笔动作可以写几行；没有的项写“无”），不要别的话：\n")
         PLAN_FIELDS.forEach { append(it).append("：\n") }
     }
 
@@ -923,7 +1003,8 @@ object WritePrompts {
             }
         }
         fun get(i: Int) = values[PLAN_FIELDS[i]]?.toString()?.trim()?.takeIf { it != "无" && it != "（无）" }.orEmpty()
-        return ChapterCard(facts = get(0), boundary = get(1), pov = get(2), countdown = get(3), hook = get(4), threads = get(5))
+        return ChapterCard(facts = get(0), boundary = get(1), pov = get(2), countdown = get(3), hook = get(4), threads = get(5),
+            change = get(6), moves = ForeshadowMoves.parse(get(7)))
     }
 
     /** 从写作规范里挑出能逐章数出来的硬规则，改写成灵阅的检查规则格式（见 [com.xycs.lingyuereader.data.CheckRules]）。 */

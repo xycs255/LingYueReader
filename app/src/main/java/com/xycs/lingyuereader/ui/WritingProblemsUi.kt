@@ -30,6 +30,10 @@ import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.Monotony
+import com.xycs.lingyuereader.data.RepeatPhrase
+import com.xycs.lingyuereader.data.RepeatReport
+import com.xycs.lingyuereader.data.RepeatScan
 import com.xycs.lingyuereader.data.ReviewGate
 import com.xycs.lingyuereader.data.ReviewIssue
 import com.xycs.lingyuereader.data.RuleHit
@@ -49,6 +53,8 @@ internal enum class ProblemFilter(val label: String) {
     SUGGEST("建议"),
     /** 本章最近一次三道审稿里还没处理的（事实关、写法关；规则关和“规则”重复，不再列）。 */
     REVIEW("审稿"),
+    /** 本书高频说法、句式单调（本机算，最近十章的叙述）：只是建议，单开一组，免得和写作建议的“改 / 忽略”混在一起。 */
+    REPEAT("本书高频"),
 }
 
 /**
@@ -83,6 +89,20 @@ internal sealed interface Problem {
         override val order get() = at ?: Int.MAX_VALUE
     }
 
+    /** 本书高频的一个说法：最近几章叙述里反复出现的。 */
+    data class Repeat(val phrase: RepeatPhrase) : Problem {
+        override val filter get() = ProblemFilter.REPEAT
+        override val key: Any get() = phrase.key
+        override val order get() = phrase.here.firstOrNull()?.first ?: Int.MAX_VALUE
+    }
+
+    /** 当前这一章的一处句式单调（句长太齐、段首重复、他她开头太多）。整章的排最前。 */
+    data class Mono(val mono: Monotony) : Problem {
+        override val filter get() = ProblemFilter.REPEAT
+        override val key: Any get() = mono.key + mono.ranges.firstOrNull()?.first
+        override val order get() = mono.ranges.firstOrNull()?.first ?: -1
+    }
+
     /** 审稿里一处还没处理的问题。[at] 是原句在正文里的位置，找不到（改过了）为空。 */
     data class Review(val gate: ReviewGate, val issue: ReviewIssue, val at: Int?) : Problem {
         override val filter get() = ProblemFilter.REVIEW
@@ -96,7 +116,7 @@ internal sealed interface Problem {
  * [report] 是本机检查（检查规则加 AI 腔、黑名单）的结果；[suggestions] 是正文里显示着的写作建议；
  * [review] 是本章最近一次审稿，只取事实关、写法关里没处理的。
  */
-internal fun collectProblems(text: String, report: RuleReport?, suggestions: List<WriteIssue>, review: ChapterReview?): List<Problem> {
+internal fun collectProblems(text: String, report: RuleReport?, suggestions: List<WriteIssue>, review: ChapterReview?, repeats: RepeatReport? = null): List<Problem> {
     val out = mutableListOf<Problem>()
     report?.hits.orEmpty().forEach { h ->
         if (AiCliche.isVoice(h)) h.ranges.forEachIndexed { i, r -> out += Problem.Cliche(h, r, i) }
@@ -109,6 +129,8 @@ internal fun collectProblems(text: String, report: RuleReport?, suggestions: Lis
             out += Problem.Review(g.gate, i, i.quote.takeIf { it.isNotBlank() }?.let { q -> text.indexOf(q).takeIf { it >= 0 } })
         }
     }
+    repeats?.phrases.orEmpty().forEach { out += Problem.Repeat(it) }
+    repeats?.monotony.orEmpty().forEach { out += Problem.Mono(it) }
     // 列表按键认条目，键重复 LazyColumn 直接闪退：上面几个来源各自已经去了重，这里再兜一次（旧盘上的、以后新加的来源）。
     return out.distinctBy { it.key }.sortedWith(compareBy({ it.order }, { it.filter.ordinal }))
 }
@@ -138,6 +160,9 @@ internal class ProblemActions(
     val jumpReview: (ReviewIssue) -> Unit,
     val markReview: (ReviewGate, ReviewIssue, String) -> Unit,
     val fixReview: ((ReviewGate, ReviewIssue) -> Unit)?,
+    /** 本书高频、句式单调：选中正文里的这一处、以后不再提（记进改稿学习的“不再提”）。 */
+    val jumpRange: (IntRange) -> Unit = {},
+    val dismissRepeat: (String) -> Unit = {},
 )
 
 /**
@@ -210,6 +235,12 @@ internal fun ProblemsPanel(
         if (filter == ProblemFilter.RULE && report != null) {
             Text(statsLine(report.stats), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
         }
+        if (filter == ProblemFilter.REPEAT) {
+            Text(
+                "最近 ${RepeatScan.WINDOW} 章的叙述里反复出现的说法和本章的句式，本机算；对白不查，人名地名不算。只是提醒，觉得没问题就点“不再提”。",
+                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+            )
+        }
         if (filter == ProblemFilter.REVIEW) {
             Text(
                 review?.let { "上次审稿：${whenLabel(it.at)} · 事实关、写法关没处理的" } ?: "还没有审过：三道审稿审完，没处理的问题列在这里",
@@ -256,6 +287,8 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                     val k = p.gate.kind()
                     Tag("${suggestShape(k.name)} ${p.gate.label}", suggestColor(k.name, c), Modifier.semantics { contentDescription = "审稿${p.gate.label}" })
                 }
+                is Problem.Repeat -> Tag(ProblemFilter.REPEAT.label, categoryColor(CategoryTone.PURPLE, c))
+                is Problem.Mono -> Tag(p.mono.kind.label, categoryColor(CategoryTone.PURPLE, c))
             }
             val head: AnnotatedString = when (p) {
                 is Problem.Rule -> AnnotatedString(p.hit.message)
@@ -266,6 +299,8 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                     withStyle(SpanStyle(color = c.success, fontWeight = FontWeight.Medium)) { append(p.issue.right) }
                 }
                 is Problem.Review -> AnnotatedString(p.issue.problem)
+                is Problem.Repeat -> AnnotatedString("「${p.phrase.phrase}」近 ${RepeatScan.WINDOW} 章 ${p.phrase.total} 次")
+                is Problem.Mono -> AnnotatedString(p.mono.message)
             }
             Text(head, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
         }
@@ -284,6 +319,8 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                 p.issue.quote.takeIf { it.isNotBlank() }?.let { "「$it」" + if (p.at == null) "（正文里没找到，可能改过了）" else "" },
                 p.issue.fix.takeIf { it.isNotBlank() }?.let { "改：$it" },
             ).joinToString("  ").ifBlank { null }
+            is Problem.Repeat -> "分布在：" + p.phrase.spread.joinToString("、") { (t, n) -> "$t $n 次" }
+            is Problem.Mono -> null
         }
         if (detail != null) {
             Text(detail, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
@@ -310,6 +347,16 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                     PillButton("不改", { actions.markReview(p.gate, p.issue, ReviewIssue.IGNORED) })
                     val ai = actions.fixReview
                     if (ai != null && p.issue.quote.isNotBlank()) PillButton("按这条让 AI 改", { ai(p.gate, p.issue) }, style = PillStyle.Tinted)
+                }
+                is Problem.Repeat -> {
+                    val here = p.phrase.here
+                    if (here.isNotEmpty()) PillButton("跳到位置", { actions.jumpRange(here.first()) })
+                    PillButton("加进黑名单", { actions.ban(p.phrase.phrase) }, style = PillStyle.Tinted)
+                    PillButton("不再提", { actions.dismissRepeat(p.phrase.key) })
+                }
+                is Problem.Mono -> {
+                    p.mono.ranges.firstOrNull()?.let { r -> PillButton("跳到位置", { actions.jumpRange(r) }) }
+                    PillButton("不再提", { actions.dismissRepeat(p.mono.key) })
                 }
             }
         }

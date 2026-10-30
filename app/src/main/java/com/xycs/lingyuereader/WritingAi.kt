@@ -31,6 +31,9 @@ import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChapterBrief
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
+import com.xycs.lingyuereader.data.StoryDigest
+import com.xycs.lingyuereader.data.StoryDigests
+import com.xycs.lingyuereader.data.VolumeDigest
 import com.xycs.lingyuereader.data.ChapterReview
 import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.plannedCard
@@ -1282,7 +1285,7 @@ class WritingAi(
         "在编辑器里写" -> AiFeature.INLINE
         "写本章", "接着写" -> AiFeature.DRAFT
         "事实关", "写法关" -> AiFeature.REVIEW
-        "整理本章", "从改稿学", "整理交接" -> AiFeature.SYNC
+        "整理本章", "从改稿学", "整理交接", "整理前情" -> AiFeature.SYNC
         "重写这段" -> AiFeature.DRAFT
         "拟细纲", "章节摘要", "拆节拍" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
@@ -1765,8 +1768,10 @@ class WritingAi(
                                         else work.chapters.getOrNull(i - 1)?.let { store.text(workId, it.id).takeLast(1_500) }.orEmpty(),
                                         taskSnapshot?.project == true)
                                 }
+                                // 细纲卡写了“本章改变了什么”“伏笔动作”的，事实关顺带核对它们落没落到正文里。
+                                val planned = withContext(Dispatchers.IO) { runCatching { store.plannedCard(workId, chapterId).card }.getOrNull() }
                                 val answer = askWithPack("事实关", workId, WritePrompts.system(work.title, assist, pack),
-                                    WritePrompts.factReview(text, title, previous), whole = true, toolsUpTo = chapterId,
+                                    WritePrompts.factReview(text, title, previous, planned), whole = true, toolsUpTo = chapterId,
                                     phase = WritingPhase.REVIEW, confirmedOnly = true, requireTools = project)
                                 reviewResult(gate, answer)
                             }
@@ -1845,7 +1850,9 @@ class WritingAi(
             val text = store.text(workId, chapterId)
             val pack = if (canUsePack) store.chapterHints(workId, chapterId, text, upTo = true, noAhead = true)
                 else store.brief(workId, chapterId, text, if (localModel) LOCAL_BRIEF_LIMIT else null, prose = true)?.render()
-            WritePrompts.system(work.title, assistOf(workId), pack) to WritePrompts.plan(chapter.title, previous, null, null, text)
+            // 作者在草稿页写的“作者这次的要求”（体检表里带进来的“推进某条线”也在这里）拟细纲时一并照办。
+            val request = store.draftIntent(workId, chapterId)?.instruction.orEmpty()
+            WritePrompts.system(work.title, assistOf(workId), pack) to WritePrompts.plan(chapter.title, previous, null, null, text, request)
         }
         val meter = AiMeter(AiFeature.PLAN, workId)
         val answer = askWithPack("拟细纲", workId, system, prompt, whole = true, useTools = false, toolsUpTo = chapterId, lean = true, meter = meter)
@@ -3812,6 +3819,9 @@ class WritingAi(
         handoff = options.handoff && ready && !localModel,
     )
 
+    /** 整理前情（故事至今、卷摘要）跟着“写本章摘要”走：要联网的服务商，本机模型不做。 */
+    private fun digestOn(o: FinishOptions) = o.summary && ready && !localModel
+
     /** 这章有没有采纳进正文的 AI 原稿（读盘，在后台读）。 */
     private suspend fun hasOriginals(workId: String, chapterId: String): Boolean =
         withContext(Dispatchers.IO) { runCatching { store.learning(workId).originals[chapterId].orEmpty().isNotEmpty() }.getOrDefault(false) }
@@ -3859,7 +3869,7 @@ class WritingAi(
         val o = usable(run.options, run.learnable)
         fun state(on: Boolean) = if (on) StepState.WAITING else StepState.SKIPPED
         val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary),
-            learnable = run.learnable, learn = state(o.learn), handoff = state(o.handoff))
+            learnable = run.learnable, learn = state(o.learn), handoff = state(o.handoff), digest = state(digestOn(o)))
         _finish.value = next
         finishJob = scope.launch {
             if (o.review && !finishReview(next.workId, next.chapterId)) return@launch
@@ -3970,6 +3980,9 @@ class WritingAi(
         if (o.learn && run.learn != StepState.DONE) finishLearn(workId, chapterId)
         // 整理交接卡：给下一章接着写。没成不拦收尾，原因写在确认页上。
         if (o.handoff && run.handoff != StepState.DONE) finishHandoff(workId, chapterId)
+        // 整理前情（故事至今、卷摘要）：用刚写好的摘要。没成不拦收尾，下次收尾再补。
+        val digestRun = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId }
+        if (digestOn(o) && digestRun != null && digestRun.digest != StepState.DONE && digestRun.summary == StepState.DONE) finishDigest(workId, chapterId, digestRun.draft)
         val now = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
         if (now.sync == StepState.FAILED || now.summary == StepState.FAILED) {
             updateFinish(workId, chapterId) { it.copy(stage = FinishStage.AI_FAILED) }
@@ -4039,6 +4052,52 @@ class WritingAi(
         } catch (e: Throwable) {
             updateFinish(workId, chapterId) { it.copy(handoff = StepState.FAILED, handoffError = "交接卡没整理成：${finishError(e, "请求失败")}") }
         }
+    }
+
+    /**
+     * 收尾里的“整理前情”：按 [StoryDigests.plan] 看这一次要不要更新故事至今、要不要汇总本卷的卷摘要，要的话合成一次小请求。
+     * 只给章摘要和旧梗概（[WritePrompts.digest]），不带温度，能关思考的官方 V4 关掉思考，只要 JSON，用量记在“整理”类。
+     * 整理好就存下；作者改过的不盖掉（整理途中改了也不盖）。没成只记原因，不拦收尾，下次收尾时没并进去的章一起补上。
+     */
+    private suspend fun finishDigest(workId: String, chapterId: String, summary: String) {
+        updateFinish(workId, chapterId) { it.copy(digest = StepState.RUNNING, digestError = null, digestNote = null) }
+        try {
+            val (work, job) = withContext(Dispatchers.IO) {
+                val w = store.get(workId) ?: error("作品不在了")
+                val summaries = w.chapters.associate { c -> c.id to store.card(workId, c.id).summary }
+                w to StoryDigests.plan(w, chapterId, summary, summaries, store.digests(workId))
+            }
+            if (job.isEmpty) {
+                // 这次不用整理（章还少、旧章重收尾）就不占一行；作者改过的故事至今照实说一句留着了。
+                val note = digestSkipNote(workId)
+                updateFinish(workId, chapterId) { it.copy(digest = if (note == null) StepState.SKIPPED else StepState.DONE, digestNote = note) }
+                return
+            }
+            val answer = ask("整理前情", workId, WritePrompts.system(work.title, assistOf(workId)), WritePrompts.digest(job), whole = true, noThinking = true)
+            val (story, volume) = StoryDigests.parse(answer, job.story, job.volumeId != null)
+            val number = withContext(Dispatchers.IO) { store.chapterNo(work, chapterId) } ?: 0
+            val now = System.currentTimeMillis()
+            withContext(draftDisk) {
+                store.updateDigests(workId) { d ->
+                    var next = d
+                    if (story != null && d.story?.edited != true) next = next.copy(story = StoryDigest(story, chapterId, number, at = now))
+                    val vid = job.volumeId
+                    if (volume != null && vid != null && d.volumes[vid]?.edited != true) next = next.copy(volumes = next.volumes + (vid to VolumeDigest(volume, job.volumeChapterIds, at = now)))
+                    next
+                }
+            }
+            val notes = listOfNotNull("故事至今更新到这一章".takeIf { story != null }, "《${job.volumeTitle}》的卷摘要汇总好了".takeIf { volume != null })
+            updateFinish(workId, chapterId) { it.copy(digest = StepState.DONE, digestNote = notes.joinToString("；") + "，写后面的章时当前情带上") }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            updateFinish(workId, chapterId) { it.copy(digest = StepState.FAILED, digestError = "前情没整理成：${finishError(e, "请求失败")}；下次收尾再补") }
+        }
+    }
+
+    /** 这次不用整理前情时：故事至今是作者改过的，说一句留着了；别的情况（章还少、旧章重收尾）不用说。 */
+    private suspend fun digestSkipNote(workId: String): String? = withContext(Dispatchers.IO) {
+        if (store.digests(workId).story?.edited == true) "故事至今你改过，留着你改的" else null
     }
 
     /** 请 AI 归纳改法：不走写正文的路径，不带温度，能关思考的官方 V4 关掉思考（[quiet]）。回的不是约定的 JSON 就照实报错。 */

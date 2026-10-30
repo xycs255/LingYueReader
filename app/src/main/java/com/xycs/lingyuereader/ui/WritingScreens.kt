@@ -503,6 +503,24 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     if (summary != null) lastSummary[0] = summary
 
     LaunchedEffect(workId, work, ledgers[workId]) { treeMarks = vm.writing.treeMarks(workId) }
+    // 分层前情（故事至今、卷摘要）：规划树上看、改；作品变了（收尾刚整理过）重读。
+    val allDigests by vm.writing.digests.collectAsStateWithLifecycle()
+    LaunchedEffect(workId, work) { vm.writing.loadDigests(workId) }
+    var editingStory by remember { mutableStateOf(false) }
+    var digestVolume by remember { mutableStateOf<Volume?>(null) }
+    // 线索与节奏体检：在后台算（有缓存），作品或账本变了重算；体检表开着时显示这一份。
+    var pulseRows by remember { mutableStateOf<List<com.xycs.lingyuereader.data.PulseRow>?>(null) }
+    var pulseOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(workId, work, ledgers[workId]) {
+        pulseRows = try {
+            vm.writing.pulse(workId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList()
+        }
+    }
 
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
@@ -532,6 +550,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         },
         onToggleReorder = { reorderMode = !reorderMode },
         onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
+        onOpenStory = { editingStory = true },
+        onVolumeDigest = { digestVolume = it },
+        onOpenPulse = { pulseOpen = true },
         onDropChapter = { ch, volumeId, index ->
             vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
                 // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。只留最新一次的提示。
@@ -685,6 +706,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     marks = treeMarks,
                     length = lengthRule,
                     drag = drag,
+                    digests = allDigests[workId] ?: com.xycs.lingyuereader.data.Digests(),
+                    pulse = pulseRows?.let(::pulseNote) ?: "正在体检……",
+                    pulseWarn = pulseRows.orEmpty().any { it.state == com.xycs.lingyuereader.data.PulseState.COLD || it.state == com.xycs.lingyuereader.data.PulseState.STALLED },
                 )
             }
             // 规划树拖着的那一章浮在列表上面跟手。
@@ -792,6 +816,33 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                 )
             }
         }
+        if (editingStory) {
+            val story = allDigests[workId]?.story
+            DigestEditDialog(
+                title = "故事至今",
+                summary = STORY_SUMMARY,
+                initial = story?.text.orEmpty(),
+                edited = story?.edited == true,
+                label = "一行一句，按发生的先后",
+                onDismiss = { editingStory = false },
+                onSave = { vm.writing.saveStory(workId, it) },
+                onResume = { vm.writing.resumeDigest(workId, null) },
+            )
+        }
+        digestVolume?.let { v ->
+            val d = allDigests[workId]?.volumes?.get(v.id)
+            DigestEditDialog(
+                title = "${v.title} · 卷摘要",
+                summary = VOLUME_SUMMARY,
+                initial = d?.text.orEmpty(),
+                edited = d?.edited == true,
+                label = "主线进展、人物变化、世界变化、没收的伏笔、留给下一卷的悬念",
+                onDismiss = { digestVolume = null },
+                onSave = { vm.writing.saveVolumeDigest(workId, v.id, it) },
+                onResume = { vm.writing.resumeDigest(workId, v.id) },
+            )
+        }
+        if (pulseOpen) PulseDialog(pulseRows, onDismiss = { pulseOpen = false }) { row -> vm.writing.carryToNext(workId, row) }
         renamingVolume?.let { v ->
             NameDialog("卷名", v.title, "好", onDismiss = { renamingVolume = null }) { name ->
                 renamingVolume = null
@@ -1083,10 +1134,28 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     val problemText = current?.text?.toString().orEmpty()
     var problems by remember(workId, chapterId) { mutableStateOf<List<Problem>>(emptyList()) }
     val problemsFor = remember(workId, chapterId) { arrayOfNulls<String>(1) }
-    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview) {
+    // 本书高频说法、句式单调：最近十章的叙述，在后台算（别的章按修改时间记着，只重算这一章）；停笔一会儿再算。
+    // 点了“不再提”、黑名单变了也重算。定稿的章不查（反正不能改）。
+    var repeats by remember(workId, chapterId) { mutableStateOf<com.xycs.lingyuereader.data.RepeatReport?>(null) }
+    var repeatTick by remember(workId, chapterId) { mutableStateOf(0) }
+    val bannedNow = assists[workId]?.banned
+    LaunchedEffect(problemText, repeatTick, bannedNow, locked) {
+        if (locked) { repeats = null; return@LaunchedEffect }
+        delay(REPEAT_DEBOUNCE_MS)
+        repeats = try {
+            vm.writing.repeatScan(workId, chapterId, problemText)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            null
+        }
+    }
+    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview, repeats) {
         if (problemsFor[0] != null && problemsFor[0] != problemText) delay(PROBLEMS_DEBOUNCE_MS)
         val issues = shownRealtime.issues
-        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview) }
+        val found = repeats
+        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview, found) }
         problemsFor[0] = problemText
     }
 
@@ -1964,6 +2033,14 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         chapterReview?.let { com.xycs.lingyuereader.ReviewFix(gate, issue, it.at, it.textHash) },
                                     )
                                 }.takeIf { !locked },
+                                jumpRange = { r ->
+                                    st.edit { selection = clampRange(r, length) }
+                                    runCatching { focus.requestFocus() }
+                                },
+                                dismissRepeat = { key ->
+                                    vm.writing.dismissRepeat(workId, key) { repeatTick++ }
+                                    vm.showMessage("以后不再提")
+                                },
                             ),
                             onClose = {
                                 problemsOpen = false
@@ -2475,3 +2552,6 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
 
 /** 问题清单在作者打字时停笔多久再重算（检查规则也是停笔 400 毫秒才查）。 */
 internal const val PROBLEMS_DEBOUNCE_MS = 300L
+
+/** 本书高频说法停笔多久再查：要读最近十章（有缓存），比规则检查重一点，打字时不跟着算。 */
+internal const val REPEAT_DEBOUNCE_MS = 800L
