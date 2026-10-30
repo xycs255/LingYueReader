@@ -71,6 +71,11 @@ data class ChapterCard(
     val change: String = "",
     /** 伏笔动作：这一章对哪些伏笔做什么（埋、推进、回收、暂缓），见 [ForeshadowMoves]。同样不算进 [auto] 的指纹。 */
     val moves: List<ForeshadowMove> = emptyList(),
+    /**
+     * 本章摘要过期了：定稿章解锁改过、重新定稿时标上（见 [FinalCascade]），下次收尾或作者改摘要时重新写。
+     * 摘要一改就清掉（[WorkStore.saveCard]、[WorkStore.updateCard]）。
+     */
+    val summaryStale: Boolean = false,
 ) {
     /** 写之前的六项是不是都空着：判断要不要从细纲提取、算不算作者手写的细纲时看它。 */
     val outlineEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
@@ -97,7 +102,7 @@ data class ChapterCard(
 }
 
 /** 变更登记的种类。 */
-enum class ChangeKind(val label: String) { UNLOCK("解锁修改"), FINALIZE("定稿"), CANON("设定变更") }
+enum class ChangeKind(val label: String) { UNLOCK("解锁修改"), FINALIZE("定稿"), CANON("设定变更"), CASCADE("改定稿后核对") }
 
 /**
  * 一条变更登记：哪一章、为什么改。[canon] 为真表示改动涉及不变量或设定，要同步改设定包（不变量、细纲、人物档案、察觉表），
@@ -112,6 +117,8 @@ data class ChangeEntry(
     val reason: String = "",
     val canon: Boolean = false,
     val synced: Boolean = false,
+    /** 解锁时正文的指纹（[ChapterSyncs.hash]）：重新定稿时比一比，改过才做级联核对（[FinalCascade]）。旧登记没有，为空。 */
+    val textHash: Int? = null,
 ) {
     val pending: Boolean get() = canon && !synced
 }
@@ -228,6 +235,13 @@ data class WorkAssist(
      * 写正文、改稿时带最近 [PROMPT_LEARNED] 条（见 [com.xycs.lingyuereader.ai.WritePrompts.proseTail]）。
      */
     val learned: List<String> = emptyList(),
+    /**
+     * 数值与持有（[LedgerKind.HOLD]）：整理入账时让 AI 提议境界、钱财、关键物品在谁手里，写正文时带上出场人物的当前值。
+     * 默认关：只对有修炼、金手指、货币、关键物品体系的书有用，别的书打开只多噪音。
+     */
+    val holdings: Boolean = false,
+    /** 拟细纲前先给 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）：细纲卡页、一键写本章都先停下等作者挑。默认关。 */
+    val planOptions: Boolean = false,
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -745,7 +759,8 @@ class WorkStore(
         if (c.status == status) return work
         if (c.locked) require(reason.isNotBlank()) { "改定稿的章节要先写原因" }
         when {
-            c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon))
+            c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon,
+                textHash = ChapterSyncs.hash(text(workId, chapterId))))
             status == ChapterStatus.FINAL -> {
                 text(workId, chapterId).takeIf { it.isNotBlank() }?.let { snapshot(workId, chapterId, it) }
                 addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.FINALIZE, c.id, c.title, reason.trim(), canon))
@@ -1054,7 +1069,8 @@ class WorkStore(
     fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val old = card(workId, chapterId)
-        val next = linkMoves(workId, card).copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
+        val next = linkMoves(workId, card).let { if (it.summary != old.summary) it.copy(summaryStale = false) else it }
+            .copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
         check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
         update(workId) { it }
     }
@@ -1076,6 +1092,7 @@ class WorkStore(
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val old = card(workId, chapterId)
         val changed = transform(old).let { if (it.moves != old.moves) linkMoves(workId, it) else it }
+            .let { if (it.summary != old.summary) it.copy(summaryStale = false) else it }
         if (changed.copy(updatedAt = old.updatedAt) == old) return old
         val next = changed.copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
         check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
@@ -2022,7 +2039,7 @@ class WorkStore(
                     val done = cardJson.opt("beatsDone")
                     require(done is JSONArray && (0 until done.length()).all { (done.opt(it) as? Number)?.toLong() in 1L..Beats.MAX.toLong() }) { "备份细纲卡节拍损坏" }
                 }
-                listOf("aiOutline", "aiBeats").forEach { key ->
+                listOf("aiOutline", "aiBeats", "summaryStale").forEach { key ->
                     require(!cardJson.has(key) || cardJson.opt(key) is Boolean) { "备份细纲卡标记损坏" }
                 }
                 require(!cardJson.has("moves") || cardJson.opt("moves") is JSONArray) { "备份细纲卡伏笔动作损坏" }
@@ -2469,6 +2486,7 @@ class WorkStore(
             .put("beats", beats).put("beatsDone", JSONArray(beatsDone))
             .put("aiOutline", aiOutline).put("aiBeats", aiBeats)
             .put("change", change).put("moves", ForeshadowMoves.toJson(moves))
+            .apply { if (summaryStale) put("summaryStale", true) }
 
         // 旧卡片没有节拍两项、AI 拟的两个标记、本章改变了什么和伏笔动作：读成空的、没标。
         private fun JSONObject.toCard() =
@@ -2476,16 +2494,19 @@ class WorkStore(
                 beats = optString("beats"),
                 beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty(),
                 aiOutline = optBoolean("aiOutline"), aiBeats = optBoolean("aiBeats"),
-                change = optString("change"), moves = ForeshadowMoves.fromJson(optJSONArray("moves")))
+                change = optString("change"), moves = ForeshadowMoves.fromJson(optJSONArray("moves")),
+                summaryStale = optBoolean("summaryStale"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
             .put("reason", reason).put("canon", canon).put("synced", synced)
+            .apply { textHash?.let { put("textHash", it) } }
 
         private fun JSONObject.toChange(): ChangeEntry? {
             val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
             val kind = runCatching { ChangeKind.valueOf(optString("kind")) }.getOrDefault(ChangeKind.CANON)
-            return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"))
+            return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"),
+                textHash = if (has("textHash") && !isNull("textHash")) (opt("textHash") as? Number)?.toInt() else null)
         }
 
         private fun PackDoc.toJson(): JSONObject = JSONObject()
@@ -2526,6 +2547,7 @@ class WorkStore(
                 .put("handoff", finish.handoff))
             .put("draftPrep", draftPrep)
             .put("learned", JSONArray(learned))
+            .put("holdings", holdings).put("planOptions", planOptions)
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2619,6 +2641,9 @@ class WorkStore(
                 draftPrep = optBoolean("draftPrep", true),
                 // 旧数据没有这一项：还没学到什么。
                 learned = WorkAssist.cleanLearned(optJSONArray("learned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
+                // 旧数据没有这两项：数值与持有、先给 3 个走向都关着。
+                holdings = optBoolean("holdings", false),
+                planOptions = optBoolean("planOptions", false),
             )
         }
 

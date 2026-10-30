@@ -14,9 +14,11 @@ data class StoryDigest(
     val throughNo: Int = 0,
     val edited: Boolean = false,
     val at: Long = 0,
+    /** 过期了：写到的某一章定稿后又改过（[FinalCascade]）。下次收尾从头整理一遍；整理好之前照旧用这一份。 */
+    val stale: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().put("text", text).put("throughId", throughId).put("throughNo", throughNo)
-        .put("edited", edited).put("at", at)
+        .put("edited", edited).put("at", at).apply { if (stale) put("stale", true) }
 }
 
 /**
@@ -28,8 +30,11 @@ data class VolumeDigest(
     val chapters: List<String> = emptyList(),
     val edited: Boolean = false,
     val at: Long = 0,
+    /** 过期了：这一卷里某一章定稿后又改过（[FinalCascade]）。下次这一卷有章收尾时重新汇总。 */
+    val stale: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().put("text", text).put("chapters", JSONArray(chapters)).put("edited", edited).put("at", at)
+        .apply { if (stale) put("stale", true) }
 }
 
 /** 一部作品的分层前情：故事至今和各卷的卷摘要（卷 id → 摘要）。存在作品目录的 digests.json 里。 */
@@ -59,6 +64,8 @@ data class DigestJob(
     val volumeChapters: List<Pair<String, String>> = emptyList(),
     /** 这一卷汇总用了哪几章（章 id）。 */
     val volumeChapterIds: List<String> = emptyList(),
+    /** 故事至今这次写到哪一章（章 id）；空着是收尾的这一章。过期重整时可能是更后面的章（不让梗概倒退）。 */
+    val throughId: String = "",
 ) {
     val isEmpty: Boolean get() = !story && volumeId == null
 }
@@ -98,13 +105,13 @@ object StoryDigests {
     /** 读 digests.json；旧数据没有这份为空，缺的字段读成默认值，空的卷摘要不要。 */
     fun fromJson(o: JSONObject): Digests {
         val story = o.optJSONObject("story")?.let { s ->
-            StoryDigest(s.optString("text"), s.optString("throughId"), s.optInt("throughNo"), s.optBoolean("edited"), s.optLong("at"))
+            StoryDigest(s.optString("text"), s.optString("throughId"), s.optInt("throughNo"), s.optBoolean("edited"), s.optLong("at"), s.optBoolean("stale"))
         }?.takeIf { it.text.isNotBlank() }
         val volumes = o.optJSONObject("volumes")?.let { m ->
             m.keys().asSequence().mapNotNull { id ->
                 val v = m.optJSONObject(id) ?: return@mapNotNull null
                 val chapters = v.optJSONArray("chapters")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotEmpty() } }.orEmpty()
-                VolumeDigest(v.optString("text"), chapters, v.optBoolean("edited"), v.optLong("at")).takeIf { it.text.isNotBlank() }?.let { id to it }
+                VolumeDigest(v.optString("text"), chapters, v.optBoolean("edited"), v.optLong("at"), v.optBoolean("stale")).takeIf { it.text.isNotBlank() }?.let { id to it }
             }.toMap()
         }.orEmpty()
         return Digests(story, volumes)
@@ -148,14 +155,18 @@ object StoryDigests {
         val index = work.chapters.indexOfFirst { it.id == chapterId }
         if (index < 0 || summary.isBlank()) return DigestJob(false, "", emptyList())
         fun summaryOf(c: WorkChapter) = if (c.id == chapterId) summary.trim() else summaries[c.id].orEmpty().trim()
-        val old = digests.story
-        val throughAt = old?.let { s -> work.chapters.indexOfFirst { it.id == s.throughId } } ?: -1
-        val summarized = work.chapters.take(index + 1).count { summaryOf(it).isNotEmpty() }
-        val wantStory = old?.edited != true && !(old != null && throughAt >= index) && (old != null || summarized >= STORY_MIN)
+        val stored = digests.story
+        val throughAt = stored?.let { s -> work.chapters.indexOfFirst { it.id == s.throughId } } ?: -1
+        // 过期了（写到的章定稿后又改过）：从头整理一遍，写到原来写到的和这一章里靠后的那一章，梗概不倒退。
+        val rebuild = stored?.stale == true && !stored.edited
+        val old = stored.takeIf { !rebuild }
+        val end = if (rebuild) maxOf(index, throughAt) else index
+        val summarized = work.chapters.take(end + 1).count { summaryOf(it).isNotEmpty() }
+        val wantStory = stored?.edited != true && !(old != null && throughAt >= index) && (old != null || rebuild || summarized >= STORY_MIN)
         val start = if (old != null && throughAt >= 0) throughAt + 1 else 0
         val vi = work.volumes.indexOfFirst { v -> v.chapters.any { it.id == chapterId } }
         val newChapters = if (!wantStory) emptyList() else
-            capped(work.chapters.subList(start, index + 1).map { it.title to summaryOf(it) }.filter { it.second.isNotEmpty() })
+            capped(work.chapters.subList(start, end + 1).map { it.title to summaryOf(it) }.filter { it.second.isNotEmpty() })
         val pastVolumes = if (!wantStory || old != null) emptyList()
             else work.volumes.take(maxOf(vi, 0)).mapNotNull { v -> digests.volumes[v.id]?.let { v.title to it.text } }
         val volume = work.volumes.getOrNull(vi)
@@ -166,6 +177,7 @@ object StoryDigests {
             val done = digests.volumes[volume.id]?.chapters.orEmpty()
             val due = when {
                 with.isEmpty() -> false
+                digests.volumes[volume.id]?.stale == true -> true
                 complete && with.size >= VOLUME_MIN -> done.toSet() != with.map { it.id }.toSet()
                 with.size < VOLUME_EVERY -> false
                 else -> with.size - done.size >= VOLUME_EVERY
@@ -181,6 +193,7 @@ object StoryDigests {
             volumeTitle = volumeJob?.first?.title.orEmpty(),
             volumeChapters = volumeJob?.second?.let { list -> capped(list.map { it.title to summaryOf(it) }) }.orEmpty(),
             volumeChapterIds = volumeJob?.second?.map { it.id }.orEmpty(),
+            throughId = work.chapters[end].id,
         )
     }
 

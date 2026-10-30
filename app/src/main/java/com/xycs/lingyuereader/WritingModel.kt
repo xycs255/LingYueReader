@@ -1,6 +1,12 @@
 package com.xycs.lingyuereader
 
 import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.CascadeReport
+import com.xycs.lingyuereader.data.HoldIssue
+import com.xycs.lingyuereader.data.Holdings
+import com.xycs.lingyuereader.data.advanceFromCard
+import com.xycs.lingyuereader.data.cascadeFinal
+import com.xycs.lingyuereader.data.refinalPending
 import com.xycs.lingyuereader.data.Digests
 import com.xycs.lingyuereader.data.DraftIntent
 import com.xycs.lingyuereader.data.EditLearning
@@ -579,13 +585,54 @@ class WritingModel(
      * 同 [setStatus]，但等它写完、失败时抛出来（不另提示）：“这章写完了”收尾要知道定稿这一步成没成，没成可以重试。
      */
     suspend fun setStatusNow(workId: String, chapterId: String, status: ChapterStatus, reason: String = "", canon: Boolean = false, currentText: String? = null) {
-        val (work, stats) = withContext(disk) {
+        val (work, stats, refinal) = withContext(disk) {
+            // 解锁改过的定稿章重新定稿：定稿以后做一次级联核对（[cascade]）。看的是定稿前的登记，所以先判断再改状态。
+            val refinal = status == ChapterStatus.FINAL && store.get(workId)?.chapter(chapterId)?.locked == false &&
+                runCatching { store.refinalPending(workId, chapterId, currentText) }.getOrDefault(false)
             val updated = requireNotNull(store.setStatus(workId, chapterId, status, reason, canon, currentText)) { "章节不在了" }
             refreshChanges(workId)
-            updated to store.stats()
+            // 定稿：细纲卡里写了“推进”的伏笔记成账本里的最近推进（写不进去不挡定稿）。
+            if (status == ChapterStatus.FINAL && runCatching { store.advanceFromCard(workId, chapterId) }.getOrDefault(0) > 0 &&
+                _ledgers.value.containsKey(workId)) _ledgers.update { it + (workId to store.ledger(workId)) }
+            Triple(updated, store.stats(), refinal)
         }
         publish(work)
         _stats.value = stats
+        if (refinal) cascade(workId, chapterId)
+    }
+
+    /**
+     * 定稿章改过、重新定稿以后的级联核对（[cascadeFinal]）：本机做，不发请求，在写盘队列里跑，不挡定稿。
+     * 账本、变更登记、前情有人在看就刷新；做完说一句标了什么。[then] 给测试等结果用。
+     */
+    fun cascade(workId: String, chapterId: String, then: (CascadeReport) -> Unit = {}) {
+        scope.launch {
+            try {
+                val (report, title) = withContext(disk) {
+                    val r = store.cascadeFinal(workId, chapterId)
+                    refreshChanges(workId)
+                    if (_ledgers.value.containsKey(workId)) _ledgers.update { it + (workId to store.ledger(workId)) }
+                    if (_digests.value.containsKey(workId)) _digests.update { it + (workId to store.digests(workId)) }
+                    r to store.get(workId)?.chapter(chapterId)?.title.orEmpty()
+                }
+                if (!report.isEmpty) message(report.message(title))
+                then(report)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message("改定稿后的核对没做成：${e.message ?: "读写出错"}")
+            }
+        }
+    }
+
+    /**
+     * 数值与持有的本机对账（[Holdings.check]）：牵涉到 [chapterId] 这一章的那几处（问题面板“事实”一组）。
+     * 账本里没有这一类的条目时为空。在后台算。
+     */
+    suspend fun holdIssues(workId: String, chapterId: String): List<HoldIssue> = withContext(disk) {
+        val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
+        if (ledger.none { it.kind == LedgerKind.HOLD }) return@withContext emptyList()
+        withContext(Dispatchers.Default) { Holdings.check(ledger).filter { chapterId in it.chapterIds } }
     }
 
     /** 手动登记一条设定变更（和章节无关的也行）。 */

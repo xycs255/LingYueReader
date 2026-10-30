@@ -737,6 +737,13 @@ internal fun AskDialog(title: String, hint: String, confirm: String, onDismiss: 
 
 /** “这部书的口味”的占位提示。 */
 /** “缺细纲、节拍时 AI 先补上”的说明：作品 AI 设置首屏和“AI 写整章草稿”页是同一个开关。 */
+internal const val PLAN_OPTIONS_NOTE = "细纲卡页、一键写本章拟细纲之前，先出 3 个走向（每个 150 字以内，各有一句看点），你挑一个再展开；" +
+    "多一次小请求，用量记在“拟细纲”类。一键写本章会停在这一步等你挑。"
+
+/** 高级设置里“数值与持有”的说明。 */
+internal const val HOLDINGS_NOTE = "有修炼、金手指、货币、关键物品的书才用得上：整理入账时 AI 提议境界、钱财、法宝在谁手里（期初 → 变化 → 期末），" +
+    "你确认了才记；本机对账，上一章的期末和这一章的期初对不上、一件东西同时在两个人手里，放进问题面板的“事实”。写正文时带上出场人物的当前值。"
+
 internal const val DRAFT_PREP_NOTE = "细纲卡没有“本章事实与结果”先拟一份，没有节拍先拆，存进细纲卡等你确认；你写了的不动。关了就有什么写什么。"
 
 internal const val FLAVOR_EXAMPLE = "轻松带吐槽的穿越历史爽文，主角爱用历史知识算计人，叙述者偶尔玩梗。"
@@ -887,6 +894,11 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                                 vm.writingAi.updateAssist(workId) { it.copy(draftPrep = on) }
                             }
                         }
+                        row {
+                            ToggleRow("拟细纲前先给 3 个走向", checked = assist.planOptions, subtitle = PLAN_OPTIONS_NOTE) { on ->
+                                vm.writingAi.updateAssist(workId) { it.copy(planOptions = on) }
+                            }
+                        }
                     }
                     // 其余的收进二级页：值和存储都不变，只是换个地方放。挪了位置的在这里说一次。
                     GroupedSection(footer = "设定包、写作范本、文风范例、查 AI 腔、写作建议、AI 记录和用量挪进了“高级设置”，和知识库、本章资料的上限放在一起。") {
@@ -970,6 +982,13 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
                 }
                 StyleSamplesSection(vm, workId, assist)
                 StyleSamplesMoreSection(vm, workId, assist, header = null)
+                GroupedSection(header = "故事账本", footer = HOLDINGS_NOTE) {
+                    row {
+                        ToggleRow("记数值与持有", assist.holdings) { on ->
+                            vm.writingAi.updateAssist(workId) { it.copy(holdings = on) }
+                        }
+                    }
+                }
                 GroupedSection(
                     header = "AI 腔",
                     footer = "本机按内置清单标出套话，不花钱；AI 写正文、改稿时也叮嘱它别这样写。",

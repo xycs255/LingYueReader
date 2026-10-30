@@ -30,6 +30,8 @@ import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.WriteIssue
 import com.xycs.lingyuereader.data.AiCliche
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.HoldIssue
+import com.xycs.lingyuereader.data.ToneIssue
 import com.xycs.lingyuereader.data.Monotony
 import com.xycs.lingyuereader.data.RepeatPhrase
 import com.xycs.lingyuereader.data.RepeatReport
@@ -53,6 +55,8 @@ internal enum class ProblemFilter(val label: String) {
     SUGGEST("建议"),
     /** 本章最近一次三道审稿里还没处理的（事实关、写法关；规则关和“规则”重复，不再列）。 */
     REVIEW("审稿"),
+    /** 本机对账查出来的事实问题：数值与持有前后对不上、一件东西同时在两个人手里（[com.xycs.lingyuereader.data.Holdings]）。 */
+    FACT("事实"),
     /** 本书高频说法、句式单调（本机算，最近十章的叙述）：只是建议，单开一组，免得和写作建议的“改 / 忽略”混在一起。 */
     REPEAT("本书高频"),
 }
@@ -103,6 +107,20 @@ internal sealed interface Problem {
         override val order get() = mono.ranges.firstOrNull()?.first ?: -1
     }
 
+    /** AI 腔审读的一条（作者点了“AI 查 AI 腔”才有）：只是建议，可以接到“这段不行”重写。[at] 是原句在正文里的位置。 */
+    data class Tone(val issue: ToneIssue, val at: Int?) : Problem {
+        override val filter get() = ProblemFilter.SUGGEST
+        override val key: Any get() = issue.key
+        override val order get() = at ?: Int.MAX_VALUE
+    }
+
+    /** 数值与持有对账的一处：两条账本记录对不上。[at] 是这一章那一条原句的位置（不在这一章、找不到为空）。 */
+    data class Hold(val issue: HoldIssue, val at: Int?) : Problem {
+        override val filter get() = ProblemFilter.FACT
+        override val key: Any get() = issue.key
+        override val order get() = at ?: Int.MAX_VALUE
+    }
+
     /** 审稿里一处还没处理的问题。[at] 是原句在正文里的位置，找不到（改过了）为空。 */
     data class Review(val gate: ReviewGate, val issue: ReviewIssue, val at: Int?) : Problem {
         override val filter get() = ProblemFilter.REVIEW
@@ -116,7 +134,8 @@ internal sealed interface Problem {
  * [report] 是本机检查（检查规则加 AI 腔、黑名单）的结果；[suggestions] 是正文里显示着的写作建议；
  * [review] 是本章最近一次审稿，只取事实关、写法关里没处理的。
  */
-internal fun collectProblems(text: String, report: RuleReport?, suggestions: List<WriteIssue>, review: ChapterReview?, repeats: RepeatReport? = null): List<Problem> {
+internal fun collectProblems(text: String, report: RuleReport?, suggestions: List<WriteIssue>, review: ChapterReview?, repeats: RepeatReport? = null,
+                             tones: List<ToneIssue> = emptyList(), holds: List<HoldIssue> = emptyList()): List<Problem> {
     val out = mutableListOf<Problem>()
     report?.hits.orEmpty().forEach { h ->
         if (AiCliche.isVoice(h)) h.ranges.forEachIndexed { i, r -> out += Problem.Cliche(h, r, i) }
@@ -131,6 +150,11 @@ internal fun collectProblems(text: String, report: RuleReport?, suggestions: Lis
     }
     repeats?.phrases.orEmpty().forEach { out += Problem.Repeat(it) }
     repeats?.monotony.orEmpty().forEach { out += Problem.Mono(it) }
+    tones.forEach { t -> out += Problem.Tone(t, text.indexOf(t.quote).takeIf { it >= 0 }) }
+    holds.forEach { h ->
+        val at = listOf(h.second, h.first).firstNotNullOfOrNull { e -> e.quote.takeIf { it.isNotBlank() }?.let { q -> text.indexOf(q).takeIf { it >= 0 } } }
+        out += Problem.Hold(h, at)
+    }
     // 列表按键认条目，键重复 LazyColumn 直接闪退：上面几个来源各自已经去了重，这里再兜一次（旧盘上的、以后新加的来源）。
     return out.distinctBy { it.key }.sortedWith(compareBy({ it.order }, { it.filter.ordinal }))
 }
@@ -163,7 +187,16 @@ internal class ProblemActions(
     /** 本书高频、句式单调：选中正文里的这一处、以后不再提（记进改稿学习的“不再提”）。 */
     val jumpRange: (IntRange) -> Unit = {},
     val dismissRepeat: (String) -> Unit = {},
+    /** AI 腔审读：选中原句；接到“这段不行”重写这一段（定稿了为空）；不要这一条。 */
+    val jumpQuote: (String) -> Unit = {},
+    val rewriteTone: ((ToneIssue) -> Unit)? = null,
+    val dropTone: (ToneIssue) -> Unit = {},
+    /** 事实（对账）：去账本看那两条。 */
+    val openLedger: () -> Unit = {},
 )
+
+/** “AI 查 AI 腔”的状态：在查、没查成、查完的一句说明（查完没问题也说一声）。 */
+internal data class ToneState(val running: Boolean = false, val error: String? = null, val note: String? = null)
 
 /**
  * 编辑器里的“问题”面板：本章查出来的问题都列在这里——检查规则、AI 腔、写作建议（含去 AI 腔的改法）、
@@ -187,15 +220,20 @@ internal fun ProblemsPanel(
     onCliche: (() -> Unit)?,
     onOpenRules: () -> Unit,
     onOpenReview: () -> Unit,
+    /** “AI 查 AI 腔”（有 AI 时）：默认不跑，点了才查；结果进“建议”。 */
+    onTone: (() -> Unit)? = null,
+    tone: ToneState = ToneState(),
 ) {
     val c = LocalGroupedColors.current
     val counts = problemCounts(problems)
     // 没有的类不显示；正在看的那类改完了（0 条）也留着，免得筛选一下跳走。
-    val shown = ProblemFilter.entries.filter { it == ProblemFilter.ALL || it == filter || (counts[it] ?: 0) > 0 }
+    // 能“AI 查 AI 腔”时“建议”一直在（按钮在这一类下面），哪怕还没有建议。
+    val shown = ProblemFilter.entries.filter { it == ProblemFilter.ALL || it == filter || (counts[it] ?: 0) > 0 || (it == ProblemFilter.SUGGEST && onTone != null) }
     val list = if (filter == ProblemFilter.ALL) problems else problems.filter { it.filter == filter }
     // 底下一排：全部、AI 腔下“去 AI 腔”（复用一键去 AI 腔），规则下“管理规则”，审稿下去审稿页（重新审、看全部）。
     val cliche = onCliche?.takeIf { filter == ProblemFilter.ALL || filter == ProblemFilter.CLICHE }
-    val hasActions = cliche != null || filter == ProblemFilter.RULE || filter == ProblemFilter.REVIEW
+    val toneAction = onTone?.takeIf { filter == ProblemFilter.ALL || filter == ProblemFilter.SUGGEST }
+    val hasActions = cliche != null || toneAction != null || filter == ProblemFilter.RULE || filter == ProblemFilter.REVIEW
     InlinePanel(
         "问题",
         onClose = onClose,
@@ -203,6 +241,7 @@ internal fun ProblemsPanel(
         actions = if (!hasActions) null else {
             {
                 if (cliche != null) PillButton("去 AI 腔", cliche, style = PillStyle.Filled)
+                if (toneAction != null) PillButton("AI 查 AI 腔", toneAction, enabled = !tone.running, style = PillStyle.Tinted)
                 if (filter == ProblemFilter.RULE) PillButton("管理规则", onOpenRules)
                 if (filter == ProblemFilter.REVIEW) PillButton("三道审稿", onOpenReview)
             }
@@ -215,6 +254,11 @@ internal fun ProblemsPanel(
             realtime.clicheError != null -> ErrorText("去 AI 腔没成：${realtime.clicheError}", line)
             realtime.clicheNote != null && realtime.issues.none { it.kind == SuggestKind.CLICHE.name } ->
                 Text(realtime.clicheNote, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = line)
+        }
+        when {
+            tone.running -> PanelBusy("AI 正在查 AI 腔……", line)
+            tone.error != null -> ErrorText("AI 腔没查成：${tone.error}", line)
+            tone.note != null -> Text(tone.note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = line)
         }
         if (realtimeOn) {
             when {
@@ -238,6 +282,18 @@ internal fun ProblemsPanel(
         if (filter == ProblemFilter.REPEAT) {
             Text(
                 "最近 ${RepeatScan.WINDOW} 章的叙述里反复出现的说法和本章的句式，本机算；对白不查，人名地名不算。只是提醒，觉得没问题就点“不再提”。",
+                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+            )
+        }
+        if (filter == ProblemFilter.FACT) {
+            Text(
+                "故事账本里“数值与持有”本机对账：同一项上一次的期末要等于这一次的期初，一件东西同一时间只在一个人手里。改正文或改账本都行。",
+                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+            )
+        }
+        if (filter == ProblemFilter.SUGGEST && onTone != null) {
+            Text(
+                "“AI 查 AI 腔”按一组固定问题查：情绪贴标签、替读者总结、对白交代设定、段尾升华、比喻扎堆这类。点了才查，用量记在“审稿”；结果只是建议，可以接到“这段不行”重写。",
                 color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
             )
         }
@@ -289,6 +345,8 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                 }
                 is Problem.Repeat -> Tag(ProblemFilter.REPEAT.label, categoryColor(CategoryTone.PURPLE, c))
                 is Problem.Mono -> Tag(p.mono.kind.label, categoryColor(CategoryTone.PURPLE, c))
+                is Problem.Tone -> Tag(p.issue.kind.label, suggestColor(SuggestKind.CLICHE.name, c))
+                is Problem.Hold -> Tag(ProblemFilter.FACT.label, suggestColor(SuggestKind.CANON.name, c))
             }
             val head: AnnotatedString = when (p) {
                 is Problem.Rule -> AnnotatedString(p.hit.message)
@@ -301,6 +359,8 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                 is Problem.Review -> AnnotatedString(p.issue.problem)
                 is Problem.Repeat -> AnnotatedString("「${p.phrase.phrase}」近 ${RepeatScan.WINDOW} 章 ${p.phrase.total} 次")
                 is Problem.Mono -> AnnotatedString(p.mono.message)
+                is Problem.Tone -> AnnotatedString(p.issue.problem)
+                is Problem.Hold -> AnnotatedString(p.issue.title)
             }
             Text(head, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
         }
@@ -321,6 +381,14 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
             ).joinToString("  ").ifBlank { null }
             is Problem.Repeat -> "分布在：" + p.phrase.spread.joinToString("、") { (t, n) -> "$t $n 次" }
             is Problem.Mono -> null
+            is Problem.Tone -> listOfNotNull(
+                "「${p.issue.quote}」" + if (p.at == null) "（正文里没找到，可能改过了）" else "",
+                p.issue.fix.takeIf { it.isNotBlank() }?.let { "改：$it" },
+            ).joinToString("  ")
+            // 两处原句都给：哪一章怎么写的。
+            is Problem.Hold -> listOf(p.issue.first, p.issue.second).joinToString("\n") { e ->
+                (e.from?.let { "第 $it 章" } ?: "开头") + "：" + (e.quote.takeIf { it.isNotBlank() }?.let { "「$it」" } ?: "（没有原句）")
+            }
         }
         if (detail != null) {
             Text(detail, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
@@ -357,6 +425,17 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                 is Problem.Mono -> {
                     p.mono.ranges.firstOrNull()?.let { r -> PillButton("跳到位置", { actions.jumpRange(r) }) }
                     PillButton("不再提", { actions.dismissRepeat(p.mono.key) })
+                }
+                is Problem.Tone -> {
+                    if (p.at != null) PillButton("跳到原文", { actions.jumpQuote(p.issue.quote) })
+                    val rewrite = actions.rewriteTone
+                    if (rewrite != null && p.at != null) PillButton("这段不行", { rewrite(p.issue) }, style = PillStyle.Tinted)
+                    PillButton("忽略", { actions.dropTone(p.issue) })
+                }
+                is Problem.Hold -> {
+                    val q = listOf(p.issue.second, p.issue.first).map { it.quote }.firstOrNull { it.isNotBlank() && p.at != null && it in text }
+                    if (q != null) PillButton("跳到原文", { actions.jumpQuote(q) })
+                    PillButton("去账本", { actions.openLedger() })
                 }
             }
         }

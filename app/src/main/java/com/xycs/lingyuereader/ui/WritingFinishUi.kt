@@ -286,7 +286,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.SUMMARY in run.wrote
         GroupedSection(
             header = "本章摘要",
-            footer = if (run.oldSummary.isNotBlank()) "细纲卡里已经有摘要了：默认留旧的，选“用新的”才换成下面这段。" else "写进细纲卡，写后面的章时带给 AI。",
+            footer = if (run.oldSummary.isNotBlank()) "细纲卡里已经有摘要了：默认留旧的，选“用新的”才换成下面这段（定稿后又改过、摘要过期了的，默认用新的）。" else "写进细纲卡，写后面的章时带给 AI。",
         ) {
             if (run.oldSummary.isNotBlank()) {
                 row {

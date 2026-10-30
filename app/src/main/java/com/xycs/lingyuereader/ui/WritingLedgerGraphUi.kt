@@ -36,6 +36,8 @@ import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.LedgerOrigin
+import com.xycs.lingyuereader.data.Foreshadows
+import com.xycs.lingyuereader.data.PromiseState
 import com.xycs.lingyuereader.data.StoryLedger
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlin.math.roundToInt
@@ -190,6 +192,8 @@ internal fun LazyListScope.ledgerPromiseGraph(
     personFilter: String?,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    /** 作者手动改伏笔状态（埋下、推进中、暂缓、已收）。 */
+    onState: (LedgerEntry, PromiseState) -> Unit = { _, _ -> },
 ) {
     val promises = ledgerGraphPromises(entries, chapter, personFilter)
     if (promises.isEmpty()) {
@@ -197,9 +201,10 @@ internal fun LazyListScope.ledgerPromiseGraph(
         return
     }
     item(key = "graph:promise:intro") { GroupedListHeader("账本伏笔 · 拖动计划收章") }
-    items(promises, key = { "graph:promise:" + it.id }) { e -> LedgerPromiseCard(e, chapters, onPayoff, onOpen) }
+    items(promises, key = { "graph:promise:" + it.id }) { e -> LedgerPromiseCard(e, chapters, onPayoff, onOpen, onState) }
     item(key = "graph:promise:foot") {
-        GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。")
+        GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。" +
+            "“最近推进”只算细纲卡伏笔动作里的推进、整理时 AI 附了原句的推进，正文里只提一句不算。")
     }
 }
 
@@ -216,8 +221,11 @@ private fun LedgerPromiseCard(
     chapters: List<LedgerChapter>,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    onState: (LedgerEntry, PromiseState) -> Unit,
 ) {
     val c = LocalGroupedColors.current
+    var picking by remember(entry.id) { mutableStateOf(false) }
+    val state = Foreshadows.state(entry)
     val start = (entry.from ?: 1).coerceAtLeast(1)
     val end = maxOf(start + 2, chapters.maxOfOrNull { it.no } ?: start + 2, (entry.payoff ?: start) + 2)
     // 拖动途中的值；没拖过是空的，显示账本里的计划。保存失败时复位，卡片不留一个没存下来的计划。
@@ -228,7 +236,7 @@ private fun LedgerPromiseCard(
     LedgerGraphCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Tag(if (entry.done) "已收" else "未收", if (entry.done) c.success else c.warning)
+            Tag(state.label, promiseStateColor(state, c))
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(c.tint))
@@ -243,6 +251,7 @@ private fun LedgerPromiseCard(
             },
             color = c.secondary, fontSize = 12.sp,
         )
+        Text(entry.lastAdvanced?.let { "最近推进：第 $it 章" } ?: "最近推进：还没有", color = c.secondary, fontSize = 12.sp)
         if (!entry.done && entry.payoff == null && !choosing) {
             PillButton("定计划收章", onClick = { choosing = true })
         } else if (!entry.done) {
@@ -279,8 +288,39 @@ private fun LedgerPromiseCard(
                 }
             }
         }
-        PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton("改状态", onClick = { picking = true })
+            PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        }
     }
+    if (picking) {
+        GlassDialog(show = true, title = "伏笔状态", summary = entry.text, onDismissRequest = { picking = false }) {
+            DialogOptionList(
+                PromiseState.entries.map { it to it.label },
+                selected = state,
+                description = { s ->
+                    when (s) {
+                        PromiseState.PLANTED -> "埋下了，还没推进过"
+                        PromiseState.ADVANCING -> "有过实质推进；还没收"
+                        PromiseState.PAUSED -> "先放着：线索体检不催，拟细纲也不挑它"
+                        PromiseState.CLOSED -> "已经收了"
+                    }
+                },
+                onPick = { s ->
+                    picking = false
+                    if (s != state) onState(entry, s)
+                },
+            )
+        }
+    }
+}
+
+/** 伏笔状态标签的颜色：已收成功色，暂缓次要色，推进中主题色，埋下（还没动过）提醒色。 */
+internal fun promiseStateColor(state: PromiseState, c: GroupedColors) = when (state) {
+    PromiseState.CLOSED -> c.success
+    PromiseState.PAUSED -> c.secondary
+    PromiseState.ADVANCING -> c.tint
+    PromiseState.PLANTED -> c.warning
 }
 
 internal fun LazyListScope.ledgerKnowledgeGraph(

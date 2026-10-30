@@ -61,8 +61,9 @@ private fun SyncGroup.hint(): String = when (this) {
     SyncGroup.STATE -> "人物此刻在哪、身体怎样、带着什么、想要什么，记进故事账本；同一人物同一方面以最新的为准。"
     SyncGroup.EVENT -> "已经发生、会影响后文的事，世界的变化，记进故事账本。"
     SyncGroup.AWARENESS -> "这一章里谁知道了什么、瞒着谁、误会了什么，记进故事账本。"
-    SyncGroup.PROMISE -> "这一章新埋下的伏笔、悬念、约定，和收掉的伏笔，记进故事账本。"
+    SyncGroup.PROMISE -> "这一章新埋下的伏笔、悬念、约定，推进了、收掉了的旧伏笔，记进故事账本。推进要有原句，只提一句的不算。"
     SyncGroup.TIME -> "这一章在故事里是什么时候、离上一章过了多久，记进故事账本。"
+    SyncGroup.HOLD -> "境界、钱财、关键物品在谁手里：期初 → 变化 → 期末，记进故事账本。期初和账本里上一次记的期末对不上的默认不勾，看过再定。"
 }
 
 /**
@@ -251,7 +252,7 @@ internal fun SyncItemRow(
                 }
                 Text(
                     (if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") +
-                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + item.where + extra,
+                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + (if (item.holdMismatch != null) "期初对不上 · " else "") + item.where + extra,
                     color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp,
                 )
             }
@@ -277,7 +278,18 @@ internal fun SyncItemRow(
                         if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                     }
                     item.maybeSame?.let { same ->
-                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        val note = if (item.group == SyncGroup.PROMISE) "；像是账本里已有的伏笔：要是这一章是推进它，别勾，重新整理时让 AI 引用编号；确实是新埋的再勾上"
+                            else "；确实是另一件事再勾上"
+                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + note, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    item.holdMismatch?.let { last ->
+                        Text("期初「${item.entry?.before.orEmpty()}」和账本里" + (last.from?.let { "第 $it 章" } ?: "") + "记的期末「${last.text}」对不上" +
+                            last.quote.takeIf { it.isNotBlank() }?.let { "（那一处原句：「$it」）" }.orEmpty() + "；看过哪边对再勾",
+                            color = c.warning, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                    item.advances?.let { promise ->
+                        Text("推进的是账本里这一条：${promise.text}" + promise.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } +
+                            promise.lastAdvanced?.let { "，上次推进在第 $it 章" }.orEmpty(), color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
                     }
                     item.reveals?.let { secret ->
                         Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
@@ -285,6 +297,9 @@ internal fun SyncItemRow(
                     val closes = item.closes
                     if (closes != null) {
                         Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                    } else if (item.advances != null) {
+                        // 推进只记“第几章推进过”，不改伏笔的内容：推进了什么只给作者看。
+                        if (edited.text.isNotBlank()) Text("推进了什么：${edited.text}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
                     } else if (item.writable && selectable) {
                         TextField(
                             value = edited.text,

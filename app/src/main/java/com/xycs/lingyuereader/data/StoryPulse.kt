@@ -43,7 +43,8 @@ data class PulseChapter(
  *
  * 怎么算“推进”：
  * - 线：那一章的细纲卡把它写进了“推进的线”，或者“本章改变了什么”里写到了它；
- * - 伏笔：账本里它埋下、收回的那一章，以及细纲卡伏笔动作里对它“埋 / 推进 / 回收”的章（“暂缓”不算推进，最近一次是暂缓的标“暂缓”，不催）；
+ * - 伏笔：账本里它埋下的那一章、记下的最近一次实质推进（[LedgerEntry.lastAdvanced]，正文里只提一句不算），以及细纲卡伏笔动作里
+ *   对它“埋 / 推进 / 回收”的章（“暂缓”不算推进，最近一次是暂缓的、账本里标了暂缓的标“暂缓”，不催）；
  * - 人物：账本里以他为主语、从那一章起记下的状态、事件、知情，或者“本章改变了什么”里写到了他。
  */
 object StoryPulse {
@@ -122,19 +123,21 @@ object StoryPulse {
         fun touches(id: String, text: String): List<Pair<Int, ForeshadowMove>> = chapters.indices.flatMap { i ->
             chapters[i].moves.filter { m -> (id.isNotEmpty() && m.ledgerId == id) || (m.ledgerId.isEmpty() && ForeshadowMoves.similarity(m.text, text) >= 0.6) }.map { i to it }
         }
-        fun foreshadowRow(name: String, planted: Int?, moves: List<Pair<Int, ForeshadowMove>>) {
-            val points = (listOfNotNull(planted) + moves.filter { it.second.action.moves }.map { it.first }).sorted()
+        // 伏笔：埋下、账本里记的最近一次实质推进（[LedgerEntry.lastAdvanced]，只提一句不算）、细纲卡里的伏笔动作。
+        // 作者在账本里设了“暂缓”的，和细纲卡最近一次写了暂缓的一样，不催。
+        fun foreshadowRow(name: String, planted: Int?, moves: List<Pair<Int, ForeshadowMove>>, advanced: Int? = null, paused: Boolean = false) {
+            val points = (listOfNotNull(planted, advanced) + moves.filter { it.second.action.moves }.map { it.first }).sorted()
             val last = points.lastOrNull()
             val lastMove = moves.maxByOrNull { it.first }
             val idle = last?.let { now - it } ?: (now + 1)
-            val deferred = lastMove != null && lastMove.second.action == MoveAction.DEFER && (last == null || lastMove.first >= last)
+            val deferred = paused || lastMove != null && lastMove.second.action == MoveAction.DEFER && (last == null || lastMove.first >= last)
             val state = when {
                 deferred -> PulseState.DEFERRED
                 idle >= COLD_FORESHADOW -> PulseState.COLD
                 else -> PulseState.OK
             }
             val note = when (state) {
-                PulseState.DEFERRED -> "第 ${chapters[lastMove!!.first].number} 章的伏笔动作写了暂缓，不催"
+                PulseState.DEFERRED -> if (paused) "账本里标了暂缓，不催" else "第 ${chapters[lastMove!!.first].number} 章的伏笔动作写了暂缓，不催"
                 PulseState.COLD -> "已经 $idle 章没动（超过 $COLD_FORESHADOW 章算冷了）"
                 else -> ""
             }
@@ -144,7 +147,8 @@ object StoryPulse {
         promises.forEach { p ->
             val moves = touches(p.id, p.text)
             linked += moves
-            foreshadowRow(p.text.trim().trimEnd('。').take(30), indexOf(p.from), moves)
+            foreshadowRow(p.text.trim().trimEnd('。').take(30), indexOf(p.from), moves,
+                p.lastAdvanced?.takeIf { it <= currentNo }?.let(::indexOf), p.state == PromiseState.PAUSED)
         }
         // 细纲卡里埋下、账本里还没有的：按“埋”那一条认，后面说的像它的算同一条。
         chapters.indices.flatMap { i -> chapters[i].moves.filter { it.action == MoveAction.PLANT && it.ledgerId.isEmpty() }.map { i to it } }
