@@ -39,10 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.LedgerChapter
@@ -65,13 +63,11 @@ import com.xycs.lingyuereader.ui.glass.GlassMenu
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -557,8 +553,8 @@ private fun LedgerRow(e: LedgerEntry, onClick: (() -> Unit)?) {
     ).filter { it.isNotBlank() }.joinToString(" · ")
     GroupedRow(onClick = onClick) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(e.text, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
+            Text(e.text, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2)
         }
         Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (e.recheck) Tag("待复核", c.destructive)
@@ -607,7 +603,7 @@ private fun ChapterPickDialog(chapters: List<LedgerChapter>, selected: String?, 
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = if (chapters.size > CHAPTER_PICK_QUICK) 340.dp else 420.dp), state = state) {
             items(options, key = { it.first ?: "" }) { (id, label) ->
                 val no = chapters.firstOrNull { it.id == id }?.no
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     CheckRow(label, selected = id == selected, subtitle = no?.let { "第 $it 章" } ?: "列出所有条目") { onPick(id) }
                 }
             }
@@ -683,26 +679,26 @@ private fun LedgerEntryDialog(
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SegmentedControl(if (holdings || kind == LedgerKind.HOLD || initial.kind == LedgerKind.HOLD) KIND_TABS + HOLD_TAB else KIND_TABS, kind) { kind = it }
-            Text(kind.label + "：" + kind.hint, fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+            Text(kind.label + "：" + kind.hint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             if (kind != LedgerKind.TIME) {
                 val needed = kind == LedgerKind.STATE || kind == LedgerKind.KNOW || kind == LedgerKind.HOLD
-                TextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(subjects.filter { it != subject.trim() }) { subject = it }
             }
             if (kind == LedgerKind.HOLD) {
-                TextField(value = aspect, onValueChange = { aspect = it }, label = "哪一项（境界、灵石、某件法宝）", singleLine = true, modifier = Modifier.fillMaxWidth())
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                GroupedTextField(value = aspect, onValueChange = { aspect = it }, label = "哪一项（境界、灵石、某件法宝）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow("这是一件物品", item, subtitle = "同一时间只能在一个人手里；期末写“持有”或“没有了”。") { item = it }
                 }
-                TextField(value = before, onValueChange = { before = it }, label = "期初（这一章开始时）", singleLine = true, modifier = Modifier.fillMaxWidth())
-                TextField(value = delta, onValueChange = { delta = it }, label = "变化（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = before, onValueChange = { before = it }, label = "期初（这一章开始时）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = delta, onValueChange = { delta = it }, label = "变化（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
             if (kind == LedgerKind.STATE) {
-                TextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(LEDGER_ASPECTS.filter { it != aspect.trim() }) { aspect = it }
             }
-            TextField(value = text, onValueChange = { text = it }, label = if (kind == LedgerKind.HOLD) "期末（这一章结束时）" else "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
-            if (initial.recheck) Text("这一章定稿后改过，这一条的原句在正文里找不到了：核对过、改好了点保存，就不再标待复核。", fontSize = 13.sp, lineHeight = 18.sp, color = c.warning)
+            GroupedTextField(value = text, onValueChange = { text = it }, label = if (kind == LedgerKind.HOLD) "期末（这一章结束时）" else "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
+            if (initial.recheck) Text("这一章定稿后改过，这一条的原句在正文里找不到了：核对过、改好了点保存，就不再标待复核。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.warning)
             // 章号用步进器：－ ＋ 一章章调，点数字直接输入；空着是“不填”。计划收章、写到哪章止可以超过现有的章。
             Column {
                 val fromTitle = when (kind) {
@@ -720,26 +716,26 @@ private fun LedgerEntryDialog(
                 }
             }
             if (initial.from == null && initial.volume != null && from == null) {
-                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             }
             if (kind == LedgerKind.PROMISE) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ToggleRow("已经收了", done) { done = it } }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ToggleRow("已经收了", done) { done = it } }
                 if (done) ChapterStepperRow("第几章收的", closed, chapters = emptyList(), start = payoff ?: from ?: 1) { closed = it }
             }
             if (kind == LedgerKind.KNOW) {
-                TextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
             if (kind != LedgerKind.TIME) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow("只有作者知道", secret, subtitle = "结局、对手的底牌这类：只给 AI 把握方向，不写进正文。") { secret = it }
                 }
             }
             if (initial.quote.isNotBlank()) {
-                Text("依据原文", fontSize = 13.sp, color = c.secondary)
-                Text(initial.quote, fontSize = 14.sp, lineHeight = 21.sp, color = c.label)
+                Text("依据原文", fontSize = TypeScale.Caption, color = c.secondary)
+                Text(initial.quote, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.label)
             }
             if (onDelete != null) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
             }
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(build()) }, confirmText = if (isNew) "添加" else "保存", confirmEnabled = text.isNotBlank())
@@ -761,11 +757,11 @@ private fun LedgerImport(layer: LedgerLayer.Import, padding: PaddingValues, onCh
                 val toggle = { onChange(layer.copy(picked = if (on) layer.picked - e.id else layer.picked + e.id)) }
                 GroupedListCell(i == 0, i == list.lastIndex) {
                     GroupedRow(onClick = toggle) {
-                        Checkbox(state = ToggleableState(on), onClick = toggle)
+                        LingYueCheckbox(on, onClick = toggle)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
                             val sub = listOf(e.subject, e.aspect, e.whenLabel).filter { it.isNotBlank() }.joinToString(" · ")
-                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = 13.sp)
+                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = TypeScale.Caption)
                         }
                     }
                 }

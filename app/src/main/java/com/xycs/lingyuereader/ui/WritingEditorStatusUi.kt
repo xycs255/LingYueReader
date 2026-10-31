@@ -16,7 +16,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 编辑器顶栏章名下面那一行的几段：章节状态、字数、保存状态、问题数、“写作建议已开”。 */
@@ -54,7 +53,7 @@ internal fun EditorStatusLine(
     val c = LocalGroupedColors.current
     val parts = EditorStatusPart.entries.filter { !texts[it].isNullOrEmpty() }
     val measurer = rememberTextMeasurer()
-    val style = remember { TextStyle(fontSize = 12.sp) }
+    val style = remember { TextStyle(fontSize = TypeScale.Footnote) }
     BoxWithConstraints(modifier) {
         val max = with(LocalDensity.current) { maxWidth.roundToPx() }
         val shown = remember(texts, max) {
@@ -73,21 +72,21 @@ internal fun EditorStatusLine(
                 val dot = if (i > 0) " · " else ""
                 when (part) {
                     EditorStatusPart.SAVING -> {
-                        if (dot.isNotEmpty()) Text(dot, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+                        if (dot.isNotEmpty()) Text(dot, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
                         AnimatedContent(
                             text,
                             transitionSpec = {
                                 ContentTransform(Effects.enter(fadeIn(Motion.standard(Motion.SHORT))), Effects.exit(fadeOut(Motion.exit())), sizeTransform = null)
                             },
                             label = "saveState",
-                        ) { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1) }
+                        ) { Text(it, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1) }
                     }
-                    EditorStatusPart.ISSUES -> Text(dot + text, color = c.warning, fontSize = 12.sp, maxLines = 1)
+                    EditorStatusPart.ISSUES -> Text(dot + text, color = c.warning, fontSize = TypeScale.Footnote, maxLines = 1)
                     EditorStatusPart.TAIL -> Text(
-                        dot + text, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        dot + text, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    else -> Text(dot + text, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+                    else -> Text(dot + text, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
                 }
             }
         }

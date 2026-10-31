@@ -38,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.CrashLog
@@ -61,7 +60,6 @@ import com.xycs.lingyuereader.ai.AiPricing
 import com.xycs.lingyuereader.ai.AiRequestBudgetPreview
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -411,7 +409,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     row { DraftIdeaSummary(card) }
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            TextField(
+                            GroupedTextField(
                                 value = instruction,
                                 onValueChange = { instructionChoice = it },
                                 label = "这一章想怎么写（可空）· 比如：多写对白，节奏快一点",
@@ -421,7 +419,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            TextField(
+                            GroupedTextField(
                                 value = targetLength, onValueChange = { targetLengthChoice = it },
                                 label = "目标篇幅（可空，默认依本章细纲）",
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 100.dp),
@@ -455,8 +453,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     val written = draft?.beats?.takeIf { it.total == beatList.size && text.isNotBlank() }?.written ?: 0
                     GroupedSection(
                         header = "节拍",
-                        footer = "本章有节拍：写本章时一拍一拍地写，每拍写完存一次候选稿。中途停下或出错，“接着写”从下一拍开始；" +
-                            "各拍写完再照常审读。节拍在细纲卡里改（上面“编辑细纲卡”）。",
+                        footer = "本章有节拍：一拍一拍地写，每拍存一次候选稿，中途停下“接着写”从下一拍开始。节拍在细纲卡里改。",
                     ) {
                         beatList.forEach { b ->
                             row {
@@ -477,32 +474,32 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         row {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                                 val preview = if (text.isBlank()) budgetPreview else null
-                                Text(if (text.isBlank()) "写本章请求预算" else "后续 AI 请求", color = c.label, fontSize = 13.sp)
+                                Text(if (text.isBlank()) "写本章请求预算" else "后续 AI 请求", color = c.label, fontSize = TypeScale.Caption)
                                 when {
-                                    text.isNotBlank() -> Text("接着写与审读会另行发送请求，当前暂未估算。", color = c.secondary, fontSize = 12.sp)
+                                    text.isNotBlank() -> Text("接着写与审读会另行发送请求，当前暂未估算。", color = c.secondary, fontSize = TypeScale.Footnote)
                                     aiConfig.onDevice -> Text("本机离线模型，不产生接口费用；可写范围仍受设备性能和模型上下文限制。",
-                                        color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                        color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
                                     preview != null -> {
                                         Text("${preview.provider} · ${preview.model} · 首轮输入约 ${AiPricing.tokens(preview.inputTokens)} token" +
                                             (preview.outputTokenLimit?.let { " · 输出最多 ${AiPricing.tokens(it.toLong())} token（含思考）" } ?: ""),
-                                            color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
-                                        Text(draftBudgetCost(preview, aiConfig.usdRate), color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                            color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
+                                        Text(draftBudgetCost(preview, aiConfig.usdRate), color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
                                         Text(draftRequestsLine(preview) +
                                             if (preview.tools) "；查资料时每次最多追加 ${preview.maxToolRounds} 次请求" else "",
-                                            color = c.secondary, fontSize = 12.sp, lineHeight = 18.sp)
+                                            color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine)
                                         if (preview.exceedsPlanningBudget) Text(
                                             "输入与输出预留超出灵阅 ${AiPricing.tokens(preview.planningTokens.toLong())} token 的规划预算；建议减少常驻资料。不会自动截取或阻止发送。",
-                                            color = c.warning, fontSize = 12.sp, lineHeight = 18.sp,
+                                            color = c.warning, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine,
                                         )
                                     }
-                                    budgetPreviewError -> Text("暂不能估算本次用量；仍可由你决定是否写作。", color = c.secondary, fontSize = 12.sp)
-                                    else -> Text("正在按本章资料估算……", color = c.secondary, fontSize = 12.sp)
+                                    budgetPreviewError -> Text("暂不能估算本次用量；仍可由你决定是否写作。", color = c.secondary, fontSize = TypeScale.Footnote)
+                                    else -> Text("正在按本章资料估算……", color = c.secondary, fontSize = TypeScale.Footnote)
                                 }
                                 if (text.isBlank() && !aiConfig.onDevice) Text("首轮费用含可能的缓存写入，仅为粗估范围，非封顶；缓存命中不保证。审读、修订与查阅还会产生费用。",
-                                    color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
+                                    color = c.secondary, fontSize = TypeScale.Micro, lineHeight = TypeScale.MicroLine)
                                 if (text.isBlank() && prepNames.isNotEmpty() && writeBlocking.isEmpty()) Text(
                                     "写之前另加约 ${prepNames.size} 次小请求（${prepNames.joinToString("、")}，用量记在“拟细纲”类），已算进上面的请求次数；首轮按现在的细纲卡估。",
-                                    color = c.secondary, fontSize = 11.sp, lineHeight = 16.sp)
+                                    color = c.secondary, fontSize = TypeScale.Micro, lineHeight = TypeScale.MicroLine)
                             }
                         }
                     }
@@ -517,7 +514,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             when (m) {
                                 DraftMode.STOP -> ActionRow("停止", destructive = true) { vm.writingAi.stopDraft(workId, chapterId) }
                                 DraftMode.WRITE -> ActionRow("写本章", enabled = canWrite) { startDraft() }
-                                DraftMode.REWRITE -> Text("AI 已写出候选稿，请在下方审定。", color = c.secondary, fontSize = 13.sp,
+                                DraftMode.REWRITE -> Text("AI 已写出候选稿，请在下方审定。", color = c.secondary, fontSize = TypeScale.Caption,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                             }
                         }
@@ -614,12 +611,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                         activeMap?.let { map ->
                             if (map.note?.startsWith("已停止") == true) {
-                                row { Text(map.note.orEmpty(), color = c.secondary, fontSize = 13.sp,
+                                row { Text(map.note.orEmpty(), color = c.secondary, fontSize = TypeScale.Caption,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                             } else if (map.loading || map.error != null || map.stale || verifiedMap === map) {
                                 row { VerifiedMethodMapPanel(map) }
                             } else {
-                                row { Text("正在复核这张写法图的来源与本章资料……", color = c.secondary, fontSize = 13.sp,
+                                row { Text("正在复核这张写法图的来源与本章资料……", color = c.secondary, fontSize = TypeScale.Caption,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                             }
                             map.request?.let { request ->
@@ -652,7 +649,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         draft?.directions?.takeIf { loading && draft.prep == com.xycs.lingyuereader.DraftPrep.CHOOSE }?.let { list ->
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp)) {
-                                    Text("先挑一个走向：挑好了按它拟细纲，接着往下写。都不想要就点上面的“停止”。", color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                                    Text("先挑一个走向：挑好了按它拟细纲，接着往下写。都不想要就点上面的“停止”。", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                                     DirectionOptions(list) { o -> vm.writingAi.pickDirection(workId, chapterId, list.indexOf(o)) }
                                 }
@@ -661,12 +658,12 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         draft?.referenceAnalysisId?.let { usedId ->
                             analyses.firstOrNull { it.id == usedId }?.let { used ->
                                 row { Text("本稿写作参考：《${used.referenceTitle}》 · ${used.chapterTitle}（${used.part.label}）",
-                                    color = c.secondary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
+                                    color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                             }
                         }
                         draft?.error?.let { e -> row { ErrorText((if (draft.workflow) "本次流程未完成：" else "没写成：") + e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
                         draft?.revisionWarning?.let { warning -> row { ErrorText(warning, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
-                        draft?.notice?.takeIf { !loading }?.let { notice -> row { Text(notice, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp,
+                        draft?.notice?.takeIf { !loading }?.let { notice -> row { Text(notice, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) } }
                         if (text.isNotBlank()) {
                             if (counterpart != null) row {
@@ -700,7 +697,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             SelectionContainer {
                                 Text(
                                     report.render().ifBlank { "本次审读未提出必改问题，仍需你通读和采纳。" },
-                                    color = c.label, fontSize = 14.sp, lineHeight = 23.sp,
+                                    color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine,
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 )
                             }
@@ -725,14 +722,14 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     GroupedSection(header = "你来审定", footer = "草稿由 AI 写出。你决定修改方向、是否采纳；采纳后仍需确认定稿。") {
                         row {
                             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                                Text(sourceSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
-                                Text(reviewSummary, color = c.secondary, fontSize = 13.sp, lineHeight = 20.sp)
+                                Text(sourceSummary, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
+                                Text(reviewSummary, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                             }
                         }
                         row { ActionRow("放进正文", enabled = !locked && !revisionWriteBlocked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
-                        if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = 13.sp,
+                        if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = TypeScale.Caption,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
-                        if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
+                        if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp)) }
                         row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
                         if (overBy != null && lengthBudget != null) row {
                             ActionRow("压到约 ${lengthBudget.target} 字", enabled = !locked && !revisionWriteBlocked) {
@@ -776,7 +773,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         if (directionDialog) {
             GlassDialog(show = true, title = "修改方向", summary = "写给 AI 的新要求，按它重写一版；这一版留着，可以切回来。",
                 onDismissRequest = { directionDialog = false }) {
-                TextField(value = directionText, onValueChange = { directionText = it },
+                GroupedTextField(value = directionText, onValueChange = { directionText = it },
                     label = "比如：对白增加试探，仍遵守本章结果", modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 250.dp))
                 DialogButtons(onDismiss = { directionDialog = false }, onConfirm = {
                     instructionChoice = directionText
@@ -795,7 +792,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             rejectReasons = if (on) rejectReasons + r else rejectReasons - r
                         }
                     }
-                    if (FixReason.OTHER in rejectReasons) TextField(value = rejectNote, onValueChange = { rejectNote = it.replace("\n", "") },
+                    if (FixReason.OTHER in rejectReasons) GroupedTextField(value = rejectNote, onValueChange = { rejectNote = it.replace("\n", "") },
                         label = "说一句哪里不行（可空）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
                 DialogButtons(onDismiss = { rejecting = null }, onConfirm = {
@@ -807,7 +804,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         HandoffEditDialog(vm, handoff, scope)
         if (editingDraft) {
             GlassDialog(show = true, title = "修改候选稿", summary = "只修改这份候选稿。保存后旧审读结果失效，需要针对新稿重新审读。", onDismissRequest = { editingDraft = false }) {
-                TextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
+                GroupedTextField(value = editedDraft, onValueChange = { editedDraft = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp))
                 DialogButtons(onDismiss = { editingDraft = false }, onConfirm = {
                     vm.writingAi.updateDraftText(workId, chapterId, editedDraft)
                     editingDraft = false
@@ -830,7 +827,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
         if (showTask) (draft?.task ?: task)?.let { currentTask ->
             GlassDialog(show = true, title = "本章写作任务", onDismissRequest = { showTask = false }) {
                 SelectionContainer {
-                    Text(currentTask.render(), fontSize = 14.sp, lineHeight = 23.sp, modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()))
+                    Text(currentTask.render(), fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()))
                 }
                 DialogOkButton("好") { showTask = false }
             }
@@ -893,12 +890,12 @@ private fun ParagraphFixSection(fix: ParagraphFix, locked: Boolean, onAccept: ()
             else -> {
                 row {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text("原段", color = c.destructive, fontSize = 12.sp, modifier = Modifier.padding(bottom = 3.dp))
-                        Text(fix.original, color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
-                            modifier = Modifier.fillMaxWidth().background(c.destructive.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).padding(8.dp))
-                        Text("新段", color = c.success, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp, bottom = 3.dp))
-                        Text(fix.text, color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
-                            modifier = Modifier.fillMaxWidth().background(c.success.copy(alpha = 0.10f), RoundedCornerShape(8.dp)).padding(8.dp))
+                        Text("原段", color = c.destructive, fontSize = TypeScale.Footnote, modifier = Modifier.padding(bottom = 3.dp))
+                        Text(fix.original, color = c.label, fontSize = TypeScale.Headline, lineHeight = TypeScale.HeadlineLine,
+                            modifier = Modifier.fillMaxWidth().background(c.destructive.copy(alpha = 0.10f), RoundedCornerShape(Radius.Small)).padding(8.dp))
+                        Text("新段", color = c.success, fontSize = TypeScale.Footnote, modifier = Modifier.padding(top = 10.dp, bottom = 3.dp))
+                        Text(fix.text, color = c.label, fontSize = TypeScale.Headline, lineHeight = TypeScale.HeadlineLine,
+                            modifier = Modifier.fillMaxWidth().background(c.success.copy(alpha = 0.10f), RoundedCornerShape(Radius.Small)).padding(8.dp))
                         UsageNote(fix.usage, fix.cost, Modifier.padding(top = 8.dp))
                         Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PillButton("采纳这段", onClick = onAccept, style = PillStyle.Filled, enabled = !locked)
@@ -931,20 +928,20 @@ private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasi
             if (card.facts.isNotBlank()) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("本章事实与结果", color = c.secondary, fontSize = 13.sp)
+                        Text("本章事实与结果", color = c.secondary, fontSize = TypeScale.Caption)
                         if (card.aiOutline) Tag("AI 拟的", c.warning)
                     }
-                    Text(card.facts.trim(), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                    Text(card.facts.trim(), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
             }
             if (beatList.isNotEmpty()) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("节拍（${beatList.size} 拍）", color = c.secondary, fontSize = 13.sp)
+                        Text("节拍（${beatList.size} 拍）", color = c.secondary, fontSize = TypeScale.Caption)
                         if (card.aiBeats) Tag("AI 拆的", c.warning)
                     }
                     beatList.forEach { b ->
-                        Text("${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                        Text("${b.index}. ${b.text}" + (b.length?.let { "（约 $it 字）" } ?: ""), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                 }
             }
@@ -973,10 +970,10 @@ private fun DraftIdeaSummary(card: ChapterCard?) {
 @Composable
 private fun DraftIdeaTile(label: String, value: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
-    Column(modifier.background(c.fill, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 8.dp)) {
-        Text(label, color = c.secondary, fontSize = 11.sp)
+    Column(modifier.background(c.fill, RoundedCornerShape(Radius.Medium)).padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Text(label, color = c.secondary, fontSize = TypeScale.Micro)
         Text(value.trim().ifBlank { "未填写" }, color = if (value.isBlank()) c.tertiary else c.label,
-            fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 3.dp))
     }
 }
@@ -996,9 +993,9 @@ private fun DraftStatusRow(words: Int, status: DraftStatus, over: Int? = null) {
     val c = LocalGroupedColors.current
     GroupedRow {
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("$words 字", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text("$words 字", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
             // 比目标长太多：提醒色标出来（见上面算的 overBy）。
-            if (over != null) Text("比目标长 $over%", color = c.warning, fontSize = 13.sp, maxLines = 1)
+            if (over != null) Text("比目标长 $over%", color = c.warning, fontSize = TypeScale.Caption, maxLines = 1)
         }
         AnimatedContent(
             status,
@@ -1010,7 +1007,7 @@ private fun DraftStatusRow(words: Int, status: DraftStatus, over: Int? = null) {
             when {
                 s.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Spinner()
-                    Text(s.lookup?.let { "正在查：$it" } ?: s.stage ?: "正在写……", color = c.secondary, fontSize = 14.sp, maxLines = 1)
+                    Text(s.lookup?.let { "正在查：$it" } ?: s.stage ?: "正在写……", color = c.secondary, fontSize = TypeScale.Caption, maxLines = 1)
                 }
                 s.stage != null -> Tag(s.stage, if (s.stage == DraftStage.READY.label) c.success else c.warning)
                 s.hits == 0 -> Tag("合规则", c.success)

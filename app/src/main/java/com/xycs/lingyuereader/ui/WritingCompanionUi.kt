@@ -10,7 +10,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ai.IdeaKind
 import top.yukonga.miuix.kmp.basic.Text
 
@@ -56,10 +55,10 @@ internal fun WritingCompanionPanel(
             ) {
                 IdeaKind.entries.forEach { k -> PillButton(k.label, { onIdea(k) }, style = PillStyle.Tinted) }
             }
-            Text("根据写到这里的内容和设定包出主意，不会改你的稿子。", color = c.secondary, fontSize = 12.sp, lineHeight = 17.sp,
+            Text("根据写到这里的内容和设定包出主意，不会改你的稿子。", color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine,
                 modifier = Modifier.padding(bottom = 6.dp))
         } else {
-            Text("先设置 AI 服务，才能问主意。", color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(bottom = 6.dp))
+            Text("先设置 AI 服务，才能问主意。", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(bottom = 6.dp))
         }
         CompanionLabel("范本")
         Text(
@@ -69,8 +68,8 @@ internal fun WritingCompanionPanel(
                 else -> "$source\n“AI 写…”时只借它的叙事与对白手法；人物、事件与结果依本书构思。"
             },
             color = if (missing) c.warning else c.secondary,
-            fontSize = 13.sp,
-            lineHeight = 19.sp,
+            fontSize = TypeScale.Caption,
+            lineHeight = TypeScale.CaptionLine,
             modifier = Modifier.padding(bottom = 6.dp),
         )
     }
@@ -79,5 +78,5 @@ internal fun WritingCompanionPanel(
 /** 灵感面板里一节的小标题。 */
 @Composable
 private fun CompanionLabel(text: String) {
-    Text(text, color = LocalGroupedColors.current.label, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp).semantics { heading() })
+    Text(text, color = LocalGroupedColors.current.label, fontSize = TypeScale.Caption, modifier = Modifier.padding(bottom = 4.dp).semantics { heading() })
 }

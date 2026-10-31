@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.MethodDialogueLane
 import com.xycs.lingyuereader.MethodNarrativeNode
 import com.xycs.lingyuereader.WritingMethodMapState
@@ -33,25 +32,25 @@ internal fun VerifiedMethodMapPanel(state: WritingMethodMapState, modifier: Modi
     Column(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when {
-            state.loading -> Text("AI 正在为所选原文绘制写法图…", color = c.secondary, fontSize = 13.sp)
+            state.loading -> Text("AI 正在为所选原文绘制写法图…", color = c.secondary, fontSize = TypeScale.Caption)
             state.error != null -> ErrorText(state.error)
-            state.stale -> Text("范本或本章资料变了，请重新生成写法图。", color = c.secondary, fontSize = 13.sp)
+            state.stale -> Text("范本或本章资料变了，请重新生成写法图。", color = c.secondary, fontSize = TypeScale.Caption)
             else -> {
-                Text("叙事路径 · AI 解读所选片段", color = c.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("叙事路径 · AI 解读所选片段", color = c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.SemiBold)
                 if (state.nodes.isEmpty()) {
-                    Text("这段没有足够的可核对证据，暂不绘制叙事节点。", color = c.secondary, fontSize = 13.sp)
+                    Text("这段没有足够的可核对证据，暂不绘制叙事节点。", color = c.secondary, fontSize = TypeScale.Caption)
                 } else {
                     state.nodes.forEachIndexed { index, node ->
                         NarrativeMark(node, index < state.nodes.lastIndex)
                     }
                 }
-                Text("对白推进 · AI 解读所选片段", color = c.label, fontSize = 14.sp,
+                Text("对白推进 · AI 解读所选片段", color = c.label, fontSize = TypeScale.Body,
                     fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 5.dp))
                 val dialogue = state.dialogue
                 if (dialogue == null) {
-                    Text("所选原文没有两句可核对发言及局面变化，暂不绘制对白图。", color = c.secondary, fontSize = 13.sp)
+                    Text("所选原文没有两句可核对发言及局面变化，暂不绘制对白图。", color = c.secondary, fontSize = TypeScale.Caption)
                 } else {
-                    Text("表层话题：${dialogue.topic}", color = c.secondary, fontSize = 12.sp)
+                    Text("表层话题：${dialogue.topic}", color = c.secondary, fontSize = TypeScale.Footnote)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         DialogueMark(dialogue.first, Modifier.weight(1f))
                         DialogueMark(dialogue.second, Modifier.weight(1f))
@@ -59,12 +58,12 @@ internal fun VerifiedMethodMapPanel(state: WritingMethodMapState, modifier: Modi
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(7.dp).background(c.tint, CircleShape))
                         Spacer(Modifier.width(8.dp))
-                        Text("话后局面：${dialogue.outcome}", color = c.label, fontSize = 13.sp)
+                        Text("话后局面：${dialogue.outcome}", color = c.label, fontSize = TypeScale.Caption)
                     }
                     Text("原文短引“${dialogue.outcomeQuote}” · 第 ${dialogue.outcomeStart + 1}—${dialogue.outcomeEnd} 字符",
-                        color = c.secondary, fontSize = 11.sp)
+                        color = c.secondary, fontSize = TypeScale.Micro)
                 }
-                state.note?.let { Text(it, color = c.secondary, fontSize = 11.sp) }
+                state.note?.let { Text(it, color = c.secondary, fontSize = TypeScale.Micro) }
                 UsageNote(state.usage, state.cost)
             }
         }
@@ -82,10 +81,10 @@ private fun NarrativeMark(node: MethodNarrativeNode, connected: Boolean) {
                     Offset(size.width / 2f, size.height), strokeWidth = size.width)
             }
         }
-        Column(Modifier.weight(1f).background(c.fill, RoundedCornerShape(10.dp))
+        Column(Modifier.weight(1f).background(c.fill, RoundedCornerShape(Radius.Medium))
             .padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Text("${node.kind} · ${node.label}", color = c.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Text("“${node.quote}” · 第 ${node.start + 1}—${node.end} 字符", color = c.secondary, fontSize = 11.sp)
+            Text("${node.kind} · ${node.label}", color = c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.SemiBold)
+            Text("“${node.quote}” · 第 ${node.start + 1}—${node.end} 字符", color = c.secondary, fontSize = TypeScale.Micro)
         }
     }
 }
@@ -93,11 +92,11 @@ private fun NarrativeMark(node: MethodNarrativeNode, connected: Boolean) {
 @Composable
 private fun DialogueMark(lane: MethodDialogueLane, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
-    Column(modifier.background(c.fill, RoundedCornerShape(10.dp)).padding(10.dp),
+    Column(modifier.background(c.fill, RoundedCornerShape(Radius.Medium)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Text(lane.speaker, color = c.tint, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Text("“${lane.quote}”", color = c.label, fontSize = 13.sp)
-        Text("第 ${lane.start + 1}—${lane.end} 字符", color = c.secondary, fontSize = 11.sp)
-        Text("目的（AI 推断）：${lane.inferredIntent}", color = c.secondary, fontSize = 12.sp)
+        Text(lane.speaker, color = c.tint, fontSize = TypeScale.Footnote, fontWeight = FontWeight.SemiBold)
+        Text("“${lane.quote}”", color = c.label, fontSize = TypeScale.Caption)
+        Text("第 ${lane.start + 1}—${lane.end} 字符", color = c.secondary, fontSize = TypeScale.Micro)
+        Text("目的（AI 推断）：${lane.inferredIntent}", color = c.secondary, fontSize = TypeScale.Footnote)
     }
 }

@@ -18,7 +18,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.FinishRun
@@ -37,7 +36,6 @@ import com.xycs.lingyuereader.data.SyncItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 整理结果超过这么多条时，确认页先折叠成一行“新设定 N 条、账本 N 条、冲突 N 条”。 */
@@ -135,7 +133,7 @@ private fun FinishBlocked(title: String, other: FinishRun, onOpen: () -> Unit, o
     ) {
         row {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("《$title》正在收尾，等它完成或先停下", color = c.warning, fontSize = 16.sp, lineHeight = 22.sp)
+                Text("《$title》正在收尾，等它完成或先停下", color = c.warning, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("去看看", onClick = onOpen, style = PillStyle.Filled)
                     if (!applying) PillButton("先停下它", onClick = onStop)
@@ -215,7 +213,7 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
                 row {
                     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         val parts = listOfNotNull(rules.takeIf { it > 0 }?.let { "$it 条不合规则" }, cliche.takeIf { it > 0 }?.let { "$it 处 AI 腔" })
-                        Text("还有 " + parts.joinToString("、"), color = c.warning, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        Text("还有 " + parts.joinToString("、"), color = c.warning, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
                         PillButton("回去看看", onClick = onBack, style = PillStyle.Tinted)
                     }
                 }
@@ -257,7 +255,7 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
             FinishStage.REVIEW_FOUND -> GroupedSection(footer = "回去改：进审稿页逐条看，改完回这里接着收尾。不管它也可以，审稿结果留在审稿页上。") {
                 row {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("审出 ${run.reviewIssues} 条问题", color = c.warning, fontSize = 16.sp)
+                        Text("审出 ${run.reviewIssues} 条问题", color = c.warning, fontSize = TypeScale.Body)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PillButton("回去改", onClick = onReview, style = PillStyle.Filled)
                             PillButton("不管，继续收尾", onClick = { vm.writingAi.continueFinish() })
@@ -290,7 +288,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         ) {
             if (run.oldSummary.isNotBlank()) {
                 row {
-                    Text("细纲卡里已有：${run.oldSummary}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                    Text("细纲卡里已有：${run.oldSummary}", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                 }
                 row {
@@ -303,7 +301,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             }
             if (!run.keepOld) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    TextField(
+                    GroupedTextField(
                         value = run.draft,
                         onValueChange = { if (!busy && !written) vm.writingAi.editFinishSummary(it) },
                         label = "AI 写的摘要（可以改）",
@@ -359,7 +357,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             row {
                 val error = run.handoffError
                 if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
-                else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }
@@ -371,7 +369,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             row {
                 val error = run.digestError
                 if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
-                else Text(run.digestNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                else Text(run.digestNote.orEmpty(), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }
@@ -381,8 +379,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.LEARN in run.wrote
         GroupedSection(
             header = "从改稿里学到的",
-            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提，" +
-                "AI 归纳的点了“不要”才不再提。都能在作品 AI 设置里看、删。",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，AI 以后照着写；没勾的不再提。都能在写作 AI 里看、删。",
         ) {
             run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
             if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }
@@ -403,7 +400,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                                 cand.after.isBlank() -> "原来「${cand.before}」→ 你点了“这段不行”"
                                 else -> "原来「${cand.before}」→ 你改成「${cand.after}」"
                             },
-                            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                            color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                             modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
                         )
                         // AI 归纳的默认不勾：没勾不等于不要，作者点了“不要”才记进“不再提”。

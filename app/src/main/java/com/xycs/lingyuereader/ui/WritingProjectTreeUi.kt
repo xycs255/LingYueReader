@@ -68,7 +68,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterTreeMarks
 import com.xycs.lingyuereader.data.CheckRule
@@ -275,8 +274,8 @@ internal fun TreeDragGhost(drag: TreeDragController, modifier: Modifier = Modifi
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
             .alpha(0.88f)
-            .shadow(8.dp, RoundedCornerShape(14.dp))
-            .clip(RoundedCornerShape(14.dp))
+            .shadow(8.dp, RoundedCornerShape(Radius.Medium))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(c.cell)
             .heightIn(min = 52.dp)
             .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -286,8 +285,8 @@ internal fun TreeDragGhost(drag: TreeDragController, modifier: Modifier = Modifi
             StatusGlyph(chapter.status)
             Spacer(Modifier.width(10.dp))
             Column {
-                Text(chapter.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(drag.drop?.let { if (it.same) "在原位松手不改" else "松手移到这里" } ?: "拖到想放的位置", color = c.secondary, fontSize = 12.sp)
+                Text(chapter.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(drag.drop?.let { if (it.same) "在原位松手不改" else "松手移到这里" } ?: "拖到想放的位置", color = c.secondary, fontSize = TypeScale.Footnote)
             }
         }
     }
@@ -397,7 +396,7 @@ internal fun LazyListScope.writingPlanningTreeItems(
         Text(
             "点章写正文，点右侧卡片看细纲；长按章节弹出菜单（改名、改状态、删除），长按后拖动可以直接调整顺序。",
             color = LocalGroupedColors.current.secondary,
-            fontSize = 13.sp,
+            fontSize = TypeScale.Caption,
             modifier = Modifier.padding(horizontal = 28.dp),
         )
     }
@@ -435,9 +434,9 @@ private fun TreeOutlineRow(work: Work, hasChildren: Boolean, onClick: () -> Unit
     ) {
         RowIcon(LingYueIcons.Book, c.tint)
         Column(Modifier.weight(1f)) {
-            Text("总纲 · ${work.title}", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("总纲 · ${work.title}", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             // 点这一行打开总纲那份文档（设定包在作品页的“设定包”卡片里）。
-            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 总纲文档", color = c.secondary, fontSize = 12.sp)
+            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 总纲文档", color = c.secondary, fontSize = TypeScale.Footnote)
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
@@ -456,10 +455,10 @@ private fun TreeReorderRow(active: Boolean, onToggle: () -> Unit) {
             Text(
                 if (active) "完成调整" else "调整章节顺序",
                 color = if (active) c.tint else c.label,
-                fontSize = 15.sp,
+                fontSize = TypeScale.Body,
                 fontWeight = FontWeight.SemiBold,
             )
-            Text(if (active) "用每章右侧的箭头上移、下移" else "逐章上移、下移；也可以长按章节直接拖", color = c.secondary, fontSize = 12.sp)
+            Text(if (active) "用每章右侧的箭头上移、下移" else "逐章上移、下移；也可以长按章节直接拖", color = c.secondary, fontSize = TypeScale.Footnote)
         }
         if (active) Tag("调整中", c.tint)
         else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
@@ -494,16 +493,16 @@ private fun TreeVolumeRow(
             },
         ) {
             Spacer(Modifier.width(VolumeX - 16.dp - 14.dp))
-            Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(c.fill), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(Radius.Small)).background(c.fill), contentAlignment = Alignment.Center) {
                 Icon(LingYueIcons.Book, contentDescription = null, tint = c.tint, modifier = Modifier.size(17.dp))
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(volume.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(volume.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     "$total 章 · 定稿 $finals · ${treeWords(volume.chapters.sumOf { it.words })}" + digest?.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty(),
                     color = c.secondary,
-                    fontSize = 12.sp,
+                    fontSize = TypeScale.Footnote,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -578,11 +577,11 @@ private fun TreeChapterRow(
             StatusGlyph(chapter.status)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(chapter.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(chapter.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${chapter.status.label} · ${treeWords(chapter.words)}", color = c.secondary, fontSize = 12.sp, maxLines = 1)
-                        if (unsynced) Text("· 未整理", color = c.warning, fontSize = 12.sp, maxLines = 1)
+                        Text("${chapter.status.label} · ${treeWords(chapter.words)}", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
+                        if (unsynced) Text("· 未整理", color = c.warning, fontSize = TypeScale.Footnote, maxLines = 1)
                     }
                     lengthFraction(chapter.words, length)?.let { (fraction, over) ->
                         FillBar(
@@ -714,7 +713,7 @@ private fun MarkCount(icon: androidx.compose.ui.graphics.vector.ImageVector, cou
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(12.dp))
         Spacer(Modifier.width(2.dp))
-        Text("$count", color = color, fontSize = 11.sp, maxLines = 1)
+        Text("$count", color = color, fontSize = TypeScale.Micro, maxLines = 1)
     }
 }
 
@@ -744,7 +743,7 @@ private fun TreeAddRow(lastVolume: Boolean, indicator: TreeDrop?, onClick: () ->
             Spacer(Modifier.width(ChapterDotX - 16.dp))
             Icon(LingYueIcons.Add, contentDescription = null, tint = c.tint, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
-            Text("新的一章", color = c.tint, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Text("新的一章", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -796,7 +795,7 @@ private fun MoveArrow(up: Boolean, enabled: Boolean, label: String, onClick: () 
 @Composable
 private fun TreeMenuAction(label: String, color: Color, onClick: () -> Unit) {
     Row(
-        Modifier.widthIn(min = 200.dp).heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+        Modifier.widthIn(min = 200.dp).heightIn(min = 48.dp).clip(RoundedCornerShape(Radius.Medium))
             .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

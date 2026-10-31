@@ -49,12 +49,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -77,7 +75,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
@@ -85,7 +82,6 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -256,8 +252,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                     }
                     GroupedSection(
                         header = "整理与导入",
-                        footer = "数字小的优先：资料之间有冲突时，AI 以优先级高的为准，你在“写作 AI → 文风”里写的要求最优先。" +
-                            "“常用”的文档每次请 AI 都会带上（太长会截断），“按需”的先不带。",
+                        footer = "数字小的优先，资料冲突时以它为准；“常用”的每次都带给 AI，“按需”的用到时才带。",
                     ) {
                         row {
                             // 整理的时候右边转圈；整理完弹出建议。
@@ -265,7 +260,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                                 "用 AI 整理人物",
                                 value = if (extracting) "整理中……" else null,
                                 icon = LingYueIcons.Sparkle,
-                                iconBackground = Color(0xFFAF52DE),
+                                iconBackground = RowIconColors.Ai,
                                 enabled = !extracting,
                                 trailing = if (extracting) ({ Spinner() }) else null,
                             ) {
@@ -285,7 +280,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             }
                         }
                         row {
-                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = Color(0xFF30B0C7), enabled = !busy) { importing = true }
+                            NavRow("导入设定包", value = "文件、文件夹、zip", icon = LingYueIcons.Download, iconBackground = RowIconColors.Download, enabled = !busy) { importing = true }
                         }
                     }
                     val tags = missTags(budget)
@@ -371,19 +366,18 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
         .take(2).joinToString(" · ").take(140).ifBlank { "原文为空，请核对后再导入" }
     GroupedSection(
         header = "${items.size} 个文件",
-        footer = "按文件名自动归类，点一行可以改。同名的文档会被替换，旧的内容存进历史版本；这次导入的文件之间重名的加编号，都留着。" +
-            "“正文”会按章名拆开，接在最后一卷后面，重名的章同样加编号。",
+        footer = "按文件名自动归类，点一行可以改；同名的替换掉，旧的存进历史版本。“正文”按章名拆开，接在最后一卷后面。",
     ) {
         items.forEachIndexed { i, item ->
             val blank = item.text.isBlank()
             row {
                 GroupedRow(onClick = { onEdit(i) }) {
-                    Checkbox(state = ToggleableState(item.include && !blank), enabled = !blank, onClick = { onEdit(i) })
+                    LingYueCheckbox(item.include && !blank, enabled = !blank, onClick = { onEdit(i) })
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text(
                             item.title,
                             color = if (item.include) c.label else c.tertiary,
-                            fontSize = 16.sp,
+                            fontSize = TypeScale.Body,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -396,27 +390,27 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
                                 else if (!item.asChapters && item.title in existing) append(" · 替换同名")
                             },
                             color = c.secondary,
-                            fontSize = 13.sp,
+                            fontSize = TypeScale.Caption,
                         )
                         Text(
                             "来源：${item.fileName.replace('\\', '/')}",
                             color = c.secondary,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             "原文：${excerpt(item.text)}",
                             color = if (blank || item.garbled) c.warning else c.secondary,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = 12.sp)
+                        if (blank) Text("空白文件已跳过，不会覆盖现有资料", color = c.warning, fontSize = TypeScale.Footnote)
                         if (item.garbled) Text(
                             "包含无法识别的字符，请核对原文件编码",
                             color = c.warning,
-                            fontSize = 12.sp,
+                            fontSize = TypeScale.Footnote,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -445,7 +439,7 @@ private fun PackDocFields(
     onAlways: (Boolean) -> Unit,
 ) {
     val c = LocalGroupedColors.current
-    Text("类型", fontSize = 13.sp, color = c.secondary)
+    Text("类型", fontSize = TypeScale.Caption, color = c.secondary)
     DialogOptionList(KIND_OPTIONS, onPick = onKind, selected = kind, description = { it.hint })
     // 优先级 1–9（数字小的优先）；按类型带进来的 0（工作说明）也留着，不在打开时悄悄改掉。
     val low = minOf(priority, 1)
@@ -456,9 +450,9 @@ private fun PackDocFields(
         valueRange = low.toFloat()..9f,
         steps = 9 - low - 1,
     ) { onPriority(it.roundToInt()) }
-    Text("数字小的优先，资料冲突时以它为准。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+    Text("数字小的优先，资料冲突时以它为准。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
     SegmentedControl(listOf(true to "常用", false to "按需"), always, modifier = Modifier.padding(top = 6.dp), onSelect = onAlways)
-    Text(if (always) "常用：每次都带给 AI（太长会截断）。" else "按需：用到时才带。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+    Text(if (always) "常用：每次都带给 AI（太长会截断）。" else "按需：用到时才带。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
 }
 
 /** 改一个待导入文件：导不导、当设定（选类型、优先级、常用）还是当正文。 */
@@ -474,19 +468,19 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
     GlassDialog(show = true, title = item.title, onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            GroupedTextField(value = title, onValueChange = { title = it }, label = "导入后的标题", singleLine = true, modifier = Modifier.fillMaxWidth())
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(c.fill).padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("来源：${item.fileName.replace('\\', '/')}", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(item.text.lineSequence().take(6).joinToString("\n").take(500).ifBlank { "原文为空，请核对后再导入" },
                     color = if (item.text.isBlank() || item.garbled) c.warning else c.label,
-                    fontSize = 13.sp, lineHeight = 19.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = 12.sp)
+                    fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                if (item.garbled) Text("包含无法识别的字符，请核对原文件编码", color = c.warning, fontSize = TypeScale.Footnote)
             }
-            if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = 13.sp)
+            if (blank) Text("空白文件不能导入，请在原文件中补充内容后重试。", color = c.warning, fontSize = TypeScale.Caption)
             else SegmentedControl(listOf(true to "导入", false to "不导入"), include) { include = it }
             SegmentedControl(listOf(false to "当设定", true to "当正文"), chapters) { chapters = it }
             if (chapters) {
-                Text("当正文：按章名拆成章节，接在最后一卷后面。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+                Text("当正文：按章名拆成章节，接在最后一卷后面。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             } else {
                 PackDocFields(
                     kind,
@@ -520,8 +514,8 @@ private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -
     var title by remember { mutableStateOf("") }
     GlassDialog(show = true, title = "新建文档", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
-        TextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
-        Text("类型", fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+        GroupedTextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("类型", fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
         // 十几种类型各有说明：勾选列表，在框里滚。
         Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
             DialogOptionList(KIND_OPTIONS, onPick = { kind = it }, selected = kind, description = { it.hint })
@@ -539,7 +533,7 @@ private fun DocPropsDialog(doc: PackDoc, onDismiss: () -> Unit, onSave: (PackDoc
     var always by remember { mutableStateOf(doc.always) }
     GlassDialog(show = true, title = "文档属性", onDismissRequest = onDismiss) {
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = title, onValueChange = { title = it }, label = "标题", singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = title, onValueChange = { title = it }, label = "标题", singleLine = true, modifier = Modifier.fillMaxWidth())
             PackDocFields(kind, priority, always, onKind = { kind = it }, onPriority = { priority = it }, onAlways = { always = it })
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(doc.copy(title = title, kind = kind, priority = priority, always = always)) }, confirmText = "保存")
@@ -587,56 +581,48 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
     }
     val scheme = MiuixTheme.colorScheme
 
-    ProvideGroupedColors {
-        val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = scheme.surface,
-            topBar = {
-                Row(Modifier.fillMaxWidth().glassBar().statusBarsPadding().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    Column(Modifier.weight(1f).padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp)).clickable { props = true }) {
-                        Text(doc?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val text = current?.text
-                        val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
-                        Text(
-                            buildString {
-                                if (doc != null) append("${doc.kind.label} · 优先级 ${doc.priority} · ${if (doc.always) "常用" else "按需"} · ")
-                                append("$count 字 · ")
-                                append(if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中")
+    val text = current?.text
+    val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
+    // 标题栏和别的二级页一样（SubPageScaffold）：标题是文档名，下面一行类别、优先级、字数和保存状态；改属性在“⋯”里。
+    SubPageScaffold(
+        title = doc?.title.orEmpty(),
+        onBack = { vm.back() },
+        subtitle = buildString {
+            if (doc != null) append("${doc.kind.label} · 优先级 ${doc.priority} · ${if (doc.always) "常用" else "按需"} · ")
+            append("$count 字 · ")
+            append(if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中")
+        },
+        actions = {
+        Box(Modifier.padding(end = 8.dp)) {
+            IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
+            OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
+                GlassMenu {
+                    ListPopupColumn {
+                        listOf<Pair<String, () -> Unit>>(
+                            "属性（类型、优先级）" to { props = true },
+                            "历史版本" to {
+                                current?.text?.toString()?.let { vm.writing.saveDoc(workId, docId, it, closing = true) }
+                                vm.open(Screen.WorkHistory(workId, "", docId))
                             },
-                            color = c.secondary,
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Box(Modifier.padding(end = 8.dp)) {
-                        IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
-                        OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
-                            GlassMenu {
-                                ListPopupColumn {
-                                    listOf<Pair<String, () -> Unit>>(
-                                        "属性（类型、优先级）" to { props = true },
-                                        "历史版本" to {
-                                            current?.text?.toString()?.let { vm.writing.saveDoc(workId, docId, it, closing = true) }
-                                            vm.open(Screen.WorkHistory(workId, "", docId))
-                                        },
-                                        "删除" to { deleting = true },
-                                    ).forEach { (label, action) ->
-                                        LingYueMenuItem(label, selected = false) {
-                                            menu = false
-                                            action()
-                                        }
-                                    }
-                                }
+                            "删除" to { deleting = true },
+                        ).forEach { (label, action) ->
+                            LingYueMenuItem(label, selected = false) {
+                                menu = false
+                                action()
                             }
                         }
                     }
                 }
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-            contentWindowInsets = WindowInsets(0),
-        ) { padding ->
+            }
+        }
+        },
+        snackbar = snackbar,
+        containerColor = scheme.surface,
+        contentWindowInsets = WindowInsets(0),
+    ) { padding ->
+        val c = LocalGroupedColors.current
+        // 正文照原来的缩进留着（包一层，免得整段重排）。
+        run {
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 if (current != null) {
                     BasicTextField(
@@ -645,12 +631,12 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
                             .fillMaxSize()
                             .semantics { contentDescription = "文档内容" }
                             .padding(start = 20.dp, end = 20.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
-                        textStyle = TextStyle(color = scheme.onSurface, fontSize = 16.sp, lineHeight = 26.sp),
+                        textStyle = TextStyle(color = scheme.onSurface, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine),
                         cursorBrush = SolidColor(scheme.primary),
                         lineLimits = TextFieldLineLimits.MultiLine(),
                         decorator = { inner ->
                             Box {
-                                if (current.text.isEmpty()) Text(doc?.kind?.hint.orEmpty(), color = c.tertiary, fontSize = 16.sp, lineHeight = 26.sp)
+                                if (current.text.isEmpty()) Text(doc?.kind?.hint.orEmpty(), color = c.tertiary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                                 inner()
                             }
                         },

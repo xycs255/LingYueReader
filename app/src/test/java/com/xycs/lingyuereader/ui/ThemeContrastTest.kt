@@ -145,9 +145,9 @@ class ThemeContrastTest {
         val dark = paperAppColors(true).let { it.grouped(it.primary, true) }
         // 深色的删除色本来就和琥珀分得开，不动。
         assertEquals(paperAppColors(true).error, dark.destructive)
-        // 深色的提醒橙和琥珀撞色，只往黄那边转一点。
+        // 深色的提醒色（降了饱和度的 #E8A33C）和琥珀撞色时只转一点色相，不会变成别的颜色；也不再是 iOS 的 #FF9F0A。
         assertTrue(dark.warning != Color(0xFFFF9F0A))
-        assertTrue(colorDifference(dark.warning, Color(0xFFFF9F0A)) < 6f)
+        assertTrue(colorDifference(dark.warning, WarningDark) < 6f)
     }
 
     @Test

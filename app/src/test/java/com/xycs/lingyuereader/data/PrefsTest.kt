@@ -86,4 +86,62 @@ class PrefsTest {
         assertEquals(appearance, prefs.appearance())
         assertEquals(shelf, prefs.shelf())
     }
+
+    /** 还什么都没存过的新安装：“深色模式时用夜间背景”直接认应用的深色。 */
+    @Test
+    fun freshInstallFollowsTheAppDarkMode() {
+        val fresh = Prefs(context).settings()
+        assertTrue(fresh.autoNight)
+        assertFalse(fresh.autoNightSystemOnly)
+        // 迁移只做一次：之后再建 Prefs 也不会把新安装当成老用户。
+        Prefs(context).saveAppearance(Appearance(mode = ThemeMode.DARK))
+        assertFalse(Prefs(context).settings().autoNightSystemOnly)
+    }
+
+    /** 升级上来的老用户（已经存过设置、还没有设置版本）：照旧只认系统深色，开关的值不动。 */
+    @Test
+    fun upgradeKeepsTheOldSystemOnlyBehaviour() {
+        val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
+        sp.edit().putString("ui.mode", ThemeMode.DARK.name).putFloat("fontSize", 21f).commit()
+        val upgraded = Prefs(context).settings()
+        assertTrue(upgraded.autoNight)
+        assertTrue(upgraded.autoNightSystemOnly)
+        assertEquals(21f, upgraded.fontSize, 0f)
+
+        // 自己关掉过的照旧是关的。
+        sp.edit().clear().putBoolean("autoNight", false).commit()
+        val off = Prefs(context).settings()
+        assertFalse(off.autoNight)
+        assertTrue(off.autoNightSystemOnly)
+    }
+
+    /** 老用户自己动过一次开关就改成新的认法，以后再打开也不会被迁移改回去。 */
+    @Test
+    fun touchingTheSwitchOnceMovesToTheNewBehaviour() {
+        val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
+        sp.edit().putString("theme", ReaderTheme.PAPER.name).commit()
+        val p = Prefs(context)
+        assertTrue(p.settings().autoNightSystemOnly)
+        p.saveSettings(p.settings().copy(autoNight = true, autoNightSystemOnly = false))
+        assertFalse(Prefs(context).settings().autoNightSystemOnly)
+        assertFalse(Prefs(context).settings().autoNightSystemOnly)
+    }
+
+    /** 备份里带着这一项，恢复到新手机上行为一样；老备份没有这一项也能导入。 */
+    @Test
+    fun backupCarriesTheNightSetting() {
+        val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
+        sp.edit().putString("theme", ReaderTheme.PAPER.name).commit()
+        val p = Prefs(context)
+        val exported = p.exportJson()
+        assertTrue(exported.getJSONObject("autoNightSystemOnly").getBoolean("b"))
+        sp.edit().clear().commit()
+        val restored = Prefs(context)
+        restored.importJson(exported)
+        assertTrue(restored.settings().autoNightSystemOnly)
+        restored.importJson(JSONObject().put("autoNightSystemOnly", JSONObject().put("b", false)))
+        assertFalse(restored.settings().autoNightSystemOnly)
+        restored.importJson(JSONObject().put("fontSize", JSONObject().put("f", 20.0)))
+        assertFalse(restored.settings().autoNightSystemOnly)
+    }
 }

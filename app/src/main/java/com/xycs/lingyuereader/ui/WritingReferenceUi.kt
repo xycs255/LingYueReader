@@ -31,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -47,7 +46,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.io.File
 
@@ -198,7 +196,7 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
             overscrollEffect = null,
         ) {
             item(key = "source") {
-                GroupedSection(footer = "导入作者选择的 TXT 或 EPUB，分析其叙事与对白，再对照你正在写的章节给建议。范本独立保存，情节和人物不会写入本书设定。") {
+                GroupedSection(footer = "导入 TXT 或 EPUB，分析叙事和对白，对照你在写的章给建议；范本单独存，不写进本书设定。") {
                     row {
                         if (importing) LoadingRow("正在导入范本……")
                         else ActionRow("添加范本", enabled = !running) { pickFile.launch(arrayOf("*/*")) }
@@ -237,8 +235,8 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                     }
                     if (part == ReferencePart.RANGE) row {
                         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextField(value = rangeStart, onValueChange = { rangeStart = it.filter(Char::isDigit) }, label = "从第几个字符起（从 1 算起）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            TextField(value = rangeEnd, onValueChange = { rangeEnd = it.filter(Char::isDigit) }, label = "到第几个字符止（可空）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            GroupedTextField(value = rangeStart, onValueChange = { rangeStart = it.filter(Char::isDigit) }, label = "从第几个字符起（从 1 算起）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                            GroupedTextField(value = rangeEnd, onValueChange = { rangeEnd = it.filter(Char::isDigit) }, label = "到第几个字符止（可空）", enabled = !running, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         }
                     }
                     when {
@@ -303,8 +301,8 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
                     selectedAnalysis?.let { result ->
                         row { TwoLine("《${result.referenceTitle}》 · ${result.chapterTitle}", "${result.part.label} · 第 ${result.start + 1}—${result.end} 字符 · ${whenLabel(result.createdAt)}") }
                     }
-                    state?.note?.takeIf { historySelection == null }?.let { note -> row { Text(note, color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) } }
-                    if (historyCurrent == false) row { Text("来源或当前章已变动，建议重新分析。", color = c.warning, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
+                    state?.note?.takeIf { historySelection == null }?.let { note -> row { Text(note, color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp)) } }
+                    if (historyCurrent == false) row { Text("来源或当前章已变动，建议重新分析。", color = c.warning, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp)) }
                     row { SelectionContainer { Column(Modifier.fillMaxWidth().padding(16.dp)) { MarkdownText(body) } } }
                     if (historySelection == null && state?.loading != true) row { UsageNote(state?.usage, state?.cost, Modifier.padding(16.dp)) }
                     if (target != null) row { NavRow("回到正文继续写", value = target.title) {
@@ -352,7 +350,7 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
         }
         if (showExcerpt) excerpt?.let { chosen ->
             GlassDialog(show = true, title = "《${reference?.title.orEmpty()}》 · ${sourceChapter?.title.orEmpty()}", summary = "${part.label} · 实际发送第 ${chosen.start + 1}—${chosen.end} 字符，共 ${chosen.text.length} 字符", onDismissRequest = { showExcerpt = false }) {
-                SelectionContainer { Text(chosen.text, modifier = Modifier.fillMaxWidth().heightIn(max = 450.dp).verticalScroll(rememberScrollState()), fontSize = 15.sp, lineHeight = 25.sp) }
+                SelectionContainer { Text(chosen.text, modifier = Modifier.fillMaxWidth().heightIn(max = 450.dp).verticalScroll(rememberScrollState()), fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine) }
                 DialogOkButton("好") { showExcerpt = false }
             }
         }

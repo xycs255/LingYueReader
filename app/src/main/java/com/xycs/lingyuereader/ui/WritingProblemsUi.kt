@@ -24,7 +24,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.RealtimeState
 import com.xycs.lingyuereader.ai.SuggestKind
 import com.xycs.lingyuereader.ai.WriteIssue
@@ -253,18 +252,18 @@ internal fun ProblemsPanel(
             realtime.cliche -> PanelBusy("正在去 AI 腔……", line)
             realtime.clicheError != null -> ErrorText("去 AI 腔没成：${realtime.clicheError}", line)
             realtime.clicheNote != null && realtime.issues.none { it.kind == SuggestKind.CLICHE.name } ->
-                Text(realtime.clicheNote, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = line)
+                Text(realtime.clicheNote, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = line)
         }
         when {
             tone.running -> PanelBusy("AI 正在查 AI 腔……", line)
             tone.error != null -> ErrorText("AI 腔没查成：${tone.error}", line)
-            tone.note != null -> Text(tone.note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = line)
+            tone.note != null -> Text(tone.note, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = line)
         }
         if (realtimeOn) {
             when {
                 realtime.checking -> PanelBusy("正在看刚写的段落……", line)
                 realtime.error != null -> ErrorText("写作建议没查成：${realtime.error}", line)
-                realtime.waiting != null -> Text(realtime.waiting, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = line)
+                realtime.waiting != null -> Text(realtime.waiting, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = line)
             }
         }
         if (shown.size > 2 || filter != ProblemFilter.ALL) {
@@ -277,30 +276,30 @@ internal fun ProblemsPanel(
         }
         // 各筛选下的一行说明：规则下是本章统计，审稿下是哪一次审的。
         if (filter == ProblemFilter.RULE && report != null) {
-            Text(statsLine(report.stats), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp))
+            Text(statsLine(report.stats), color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(vertical = 2.dp))
         }
         if (filter == ProblemFilter.REPEAT) {
             Text(
                 "最近 ${RepeatScan.WINDOW} 章的叙述里反复出现的说法和本章的句式，本机算；对白不查，人名地名不算。只是提醒，觉得没问题就点“不再提”。",
-                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+                color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(vertical = 2.dp),
             )
         }
         if (filter == ProblemFilter.FACT) {
             Text(
                 "故事账本里“数值与持有”本机对账：同一项上一次的期末要等于这一次的期初，一件东西同一时间只在一个人手里。改正文或改账本都行。",
-                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+                color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(vertical = 2.dp),
             )
         }
         if (filter == ProblemFilter.SUGGEST && onTone != null) {
             Text(
                 "“AI 查 AI 腔”按一组固定问题查：情绪贴标签、替读者总结、对白交代设定、段尾升华、比喻扎堆这类。点了才查，用量记在“审稿”；结果只是建议，可以接到“这段不行”重写。",
-                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+                color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(vertical = 2.dp),
             )
         }
         if (filter == ProblemFilter.REVIEW) {
             Text(
                 review?.let { "上次审稿：${whenLabel(it.at)} · 事实关、写法关没处理的" } ?: "还没有审过：三道审稿审完，没处理的问题列在这里",
-                color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp),
+                color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(vertical = 2.dp),
             )
         }
         AnimatedContent(list.isEmpty(), transitionSpec = { Motion.fadeThrough() using null }, label = "problemsEmpty") { empty ->
@@ -315,7 +314,7 @@ internal fun ProblemsPanel(
                 }
                 if (note == null && filter == ProblemFilter.RULE) PanelBusy("正在检查……", Modifier.padding(vertical = 8.dp))
                 else if (note != null) {
-                    Text(note, color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(vertical = 8.dp))
+                    Text(note, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(vertical = 8.dp))
                 }
             } else {
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
@@ -362,7 +361,7 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
                 is Problem.Tone -> AnnotatedString(p.issue.problem)
                 is Problem.Hold -> AnnotatedString(p.issue.title)
             }
-            Text(head, color = c.label, fontSize = 15.sp, lineHeight = 21.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
+            Text(head, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 8.dp))
         }
         val detail = when (p) {
             // 规则的说明里已经带着原文（“「没抬头」1 处，不用”）时不再重复。
@@ -391,7 +390,7 @@ private fun ProblemRow(p: Problem, text: String, actions: ProblemActions, modifi
             }
         }
         if (detail != null) {
-            Text(detail, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            Text(detail, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when (p) {

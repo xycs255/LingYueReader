@@ -28,7 +28,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.SentRequest
@@ -64,20 +63,20 @@ internal fun SentDialog(sent: SentRequest, onDismiss: () -> Unit) {
             (sent.usage?.let { com.xycs.lingyuereader.ai.AiPricing.brief(it, sent.cost ?: com.xycs.lingyuereader.ai.AiCost()) }?.let { " · $it" }.orEmpty()), onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("系统提示（${sent.system.length} 字）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            SelectionContainer { Text(sent.system, color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
-            Text("请求（${sent.prompt.length} 字）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
-            SelectionContainer { Text(sent.prompt, color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
+            Text("系统提示（${sent.system.length} 字）", color = c.secondary, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium)
+            SelectionContainer { Text(sent.system, color = c.label, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine) }
+            Text("请求（${sent.prompt.length} 字）", color = c.secondary, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+            SelectionContainer { Text(sent.prompt, color = c.label, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine) }
             if (sent.lookups.isNotEmpty()) {
-                Text("AI 查了（${sent.lookups.size} 次）", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
-                sent.lookups.forEach { Text("· $it", color = c.label, fontSize = 13.sp, lineHeight = 19.sp) }
+                Text("AI 查了（${sent.lookups.size} 次）", color = c.secondary, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+                sent.lookups.forEach { Text("· $it", color = c.label, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine) }
             }
-            Text("用量", color = c.secondary, fontSize = 13.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
+            Text("用量", color = c.secondary, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 8.dp))
             Text(
                 sent.usage?.let { com.xycs.lingyuereader.ai.AiPricing.detail(it, sent.cost ?: com.xycs.lingyuereader.ai.AiCost()) } ?: "还在等服务商回答，或这次没有用量（本机模型不计）",
                 color = c.label,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
             )
         }
         // 左边“复制”（复制了不关），右边“好”。
@@ -167,7 +166,7 @@ fun WorkAiLogScreen(vm: AppViewModel, workId: String) {
                 onDismissRequest = { open = null },
             ) {
                 Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
-                    SelectionContainer { Text(r.text, color = c.label, fontSize = 15.sp, lineHeight = 23.sp) }
+                    SelectionContainer { Text(r.text, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine) }
                 }
                 // 标有用 / 没用（标过的再点一次就取消）、复制：一行一项，标过的打勾；删除单独放最后、红色，还要再确认。
                 DialogOptionList(
@@ -190,7 +189,7 @@ fun WorkAiLogScreen(vm: AppViewModel, workId: String) {
                         open = null
                     },
                 )
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ActionRow("删除这条记录", destructive = true) {
                         open = null
                         deleting = r

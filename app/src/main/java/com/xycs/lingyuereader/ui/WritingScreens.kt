@@ -151,7 +151,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -311,26 +310,26 @@ fun WritingHomeScreen(vm: AppViewModel) {
                     ) {
                         row {
                             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("今天", fontSize = 13.sp, color = c.secondary)
+                                Text("今天", fontSize = TypeScale.Caption, color = c.secondary)
                                 Row(verticalAlignment = Alignment.Bottom) {
-                                    Text("$written", color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("$written", color = c.label, fontSize = TypeScale.Display, fontWeight = FontWeight.SemiBold)
                                     Text(
                                         if (stats.goal > 0) " / ${stats.goal} 字" else " 字",
                                         color = c.secondary,
-                                        fontSize = 15.sp,
+                                        fontSize = TypeScale.Body,
                                         modifier = Modifier.padding(start = 2.dp, bottom = 6.dp),
                                     )
                                 }
                                 if (stats.goal > 0) {
                                     // 进度条打开时从 0 长到今天写到的地方（和统计页一样）；减少动效时直接画好。
                                     val fraction = animateFromZero((written.toFloat() / stats.goal).coerceIn(0f, 1f))
-                                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
-                                        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(Radius.Full).background(c.fill)) {
+                                        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(Radius.Full).background(c.tint))
                                     }
                                     Text(
                                         if (written >= stats.goal) "今天的目标完成了" else "还差 ${stats.goal - written} 字",
                                         color = c.secondary,
-                                        fontSize = 13.sp,
+                                        fontSize = TypeScale.Caption,
                                         modifier = Modifier.padding(top = 8.dp),
                                     )
                                 }
@@ -393,10 +392,10 @@ private fun WorkInfoDialog(
     var author by remember { mutableStateOf(initial.author) }
     var synopsis by remember { mutableStateOf(initial.synopsis) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
-        TextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+        GroupedTextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
         if (withSynopsis) {
-            TextField(
+            GroupedTextField(
                 value = synopsis,
                 onValueChange = { synopsis = it },
                 label = "简介",
@@ -888,7 +887,7 @@ private fun MenuAction(label: String, color: Color, onClick: () -> Unit) {
         Modifier
             .widthIn(min = 200.dp)
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -914,8 +913,8 @@ private fun VolumeRow(
     val c = LocalGroupedColors.current
     Box {
         GroupedRow(onClick = onClick) {
-            Text(v.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+            Text(v.title, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 12.dp))
             Icon(LingYueIcons.More, contentDescription = "卷设置", tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
         }
         OverlayListPopup(show = showMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = onDismissMenu) {
@@ -977,7 +976,7 @@ private fun ChapterRow(
 private fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var name by remember { mutableStateOf(initial) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
         DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(name) }, confirmText = confirm, confirmEnabled = name.isNotBlank())
     }
 }
@@ -1553,8 +1552,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     // 点章名改名；点下面一行（有问题时）打开问题面板。
                     Column(Modifier.weight(1f)) {
                         Text(
-                            chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { renaming = true },
+                            chapter?.title.orEmpty(), color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clip(RoundedCornerShape(Radius.Small)).combinedClickableCompat { renaming = true },
                         )
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
@@ -1574,7 +1573,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 EditorStatusPart.TAIL to tail,
                             ),
                             Modifier
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.Small))
                                 .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier),
                         ) {
                             this.text = AnnotatedString(whole)
@@ -1667,12 +1666,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 val marks = remember(issueSpans, ruleSpans, c) {
                     // 按“哪条建议”“哪条规则的第几处”认，不按位置：正文一改位置就变，淡入淡出不能跟着乱。
+                    // 底色很淡，主要靠划线分（见 EditorMarks.kt）；同一条规则第 4 处起只画线不铺底，整页不像打满补丁。
                     val nth = HashMap<String, Int>()
-                    val ruleBack = c.warning.copy(alpha = 0.2f)
-                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack) } +
+                    ruleSpans.map { (r, h) ->
+                        val n = nth.merge(h.key, 1) { a, b -> a + b }!!
+                        TextMark(h.key to n, r.first, r.last + 1, markFill(c.warning, c.dark, n), line = ruleMarkLine, lineColor = markLineColor(c.warning))
+                    } +
                         issueSpans.map { (r, i) ->
                             val color = suggestColor(i.kind, c)
-                            TextMark(i, r.first, r.last + 1, color.copy(alpha = 0.14f), line = suggestLine(i.kind), lineColor = color)
+                            TextMark(i, r.first, r.last + 1, markFill(color, c.dark), line = suggestLine(i.kind), lineColor = color)
                         }
                 }
                 val markFades = remember(current) { MarkFades(effects) }
@@ -1793,6 +1795,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 // 矮屏（键盘弹出）时底下少留一点，多露半行正文。
                                 .padding(start = 22.dp, end = 22.dp, top = padding.calculateTopPadding() + 12.dp, bottom = if (compact) 4.dp else 12.dp),
                             // 每段首行空两格（只是显示，存的正文不带缩进），段和折行一眼分得清。
+                            // 编辑器正文的字号、行距单独定（像书页，不跟界面字号档走）。
                             textStyle = TextStyle(color = scheme.onSurface, fontSize = 18.sp, lineHeight = 32.sp, textIndent = TextIndent(firstLine = 2.em)),
                             cursorBrush = SolidColor(if (companionPosition == null) scheme.primary else Color.Unspecified),
                             lineLimits = TextFieldLineLimits.MultiLine(),
@@ -1816,7 +1819,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         },
                                 ) {
                                     if (current.text.isEmpty()) {
-                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp)
+                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp) // 和编辑器正文一样大
                                     }
                                     inner()
                                 }
@@ -1834,7 +1837,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         Modifier.fillMaxWidth().background(c.background).padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("已定稿，正文锁定。要改先登记原因。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text("已定稿，正文锁定。要改先登记原因。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
                         TextButton(text = "解锁修改", onClick = { statusDialog = true })
                     }
                 }
@@ -2586,7 +2589,7 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
         open?.let { (s, text) ->
             GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
                 Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
+                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
                 DialogButtons(
                     onDismiss = { open = null },

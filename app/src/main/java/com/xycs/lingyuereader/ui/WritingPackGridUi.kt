@@ -34,7 +34,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.BudgetMiss
 import com.xycs.lingyuereader.data.PackBudget
 import com.xycs.lingyuereader.data.PackKind
@@ -149,8 +148,8 @@ internal fun PackBudgetRow(budget: PackBudget?, error: String?, onOpen: () -> Un
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("写正文每次带 ${packWords(budget.proseChars)}", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                Text(budget.chapterTitle?.let { "按「$it」算 · 文风范例、正文另算" } ?: "还没有章：只算作者说明", color = c.secondary, fontSize = 12.sp,
+                Text("写正文每次带 ${packWords(budget.proseChars)}", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
+                Text(budget.chapterTitle?.let { "按「$it」算 · 文风范例、正文另算" } ?: "还没有章：只算作者说明", color = c.secondary, fontSize = TypeScale.Footnote,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
@@ -163,7 +162,7 @@ internal fun PackBudgetRow(budget: PackBudget?, error: String?, onOpen: () -> Un
         LimitLine("本章资料", budget.briefChars, budget.briefLimit)
         LimitLine("知识库（审稿、整理用）", budget.knowledgeChars, budget.knowledgeLimit)
         if (budget.misses.isNotEmpty()) {
-            Text("${budget.misses.size} 份放不下或被截掉 · 点开看是哪几份", color = c.destructive, fontSize = 13.sp, lineHeight = 18.sp)
+            Text("${budget.misses.size} 份放不下或被截掉 · 点开看是哪几份", color = c.destructive, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         }
     }
 }
@@ -175,7 +174,7 @@ private fun LegendDot(label: String, value: String, color: Color, hollow: Boolea
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).clip(CircleShape).then(if (hollow) Modifier.border(1.5.dp, color, CircleShape) else Modifier.background(color)))
         Spacer(Modifier.width(4.dp))
-        Text("$label $value", color = c.secondary, fontSize = 12.sp, maxLines = 1)
+        Text("$label $value", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
     }
 }
 
@@ -187,8 +186,8 @@ private fun LimitLine(label: String, used: Int, limit: Int) {
     val full = fraction >= 0.95f
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row {
-            Text(label, color = c.secondary, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${packWords(used)} / 上限 ${packWords(limit)}", color = if (full) c.warning else c.secondary, fontSize = 12.sp, maxLines = 1)
+            Text(label, color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${packWords(used)} / 上限 ${packWords(limit)}", color = if (full) c.warning else c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
         }
         FillBar(fraction, Modifier.fillMaxWidth(), color = if (full) c.warning else c.tint, animate = false)
     }
@@ -210,27 +209,27 @@ internal fun PackBudgetDialog(budget: PackBudget, onDismiss: () -> Unit, onSetti
         Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             // 放不下的最要紧，放在最前面。
             if (budget.misses.isNotEmpty()) {
-                Text("放不下、被截掉的 ${budget.misses.size} 份", color = c.destructive, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text("放不下、被截掉的 ${budget.misses.size} 份", color = c.destructive, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium)
                 budget.misses.forEach { m -> MissLine(m) }
             }
             DialogSectionLabel("写正文带上的 ${packWords(budget.proseChars)}", if (budget.misses.isEmpty()) Modifier else Modifier.padding(top = 8.dp))
             budget.slices.forEach { s ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 28.dp)) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(packKindColor(s.kind, c)))
-                    Text(s.label, color = c.label, fontSize = 14.sp, modifier = Modifier.weight(1f).padding(start = 8.dp))
-                    Text(packWords(s.chars), color = c.secondary, fontSize = 14.sp)
+                    Text(s.label, color = c.label, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                    Text(packWords(s.chars), color = c.secondary, fontSize = TypeScale.Caption)
                 }
             }
-            if (budget.slices.isEmpty()) Text("还没有带上任何资料。", color = c.secondary, fontSize = 14.sp)
+            if (budget.slices.isEmpty()) Text("还没有带上任何资料。", color = c.secondary, fontSize = TypeScale.Caption)
             DialogSectionLabel("上限", Modifier.padding(top = 8.dp))
             Text(
                 "本章资料：这一章挑了 ${packWords(budget.briefChars)}，写正文最多带 ${packWords(budget.briefLimit)}" +
                     "（作品设的本章资料上限 ${packWords(budget.briefSetting)} 的一半，其余让 AI 需要时自己查）。",
-                color = c.label, fontSize = 14.sp, lineHeight = 20.sp,
+                color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine,
             )
             Text(
                 "知识库：审稿、整理时把标了“常用”的文档整份放进去，现在 ${packWords(budget.knowledgeChars)}，最多 ${packWords(budget.knowledgeLimit)}。",
-                color = c.label, fontSize = 14.sp, lineHeight = 20.sp,
+                color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine,
             )
         }
         DialogButtons(onDismiss = onSettings, dismissText = "去调上限", onConfirm = onDismiss, confirmText = "好")
@@ -243,9 +242,9 @@ private fun MissLine(m: BudgetMiss) {
     Column(Modifier.padding(vertical = 4.dp)) {
         Text(
             (if (m.whole) "整份没带 · " else "截掉后面 · ") + m.title,
-            color = c.destructive, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            color = c.destructive, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis,
         )
-        Text(m.reason, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+        Text(m.reason, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
     }
 }
 

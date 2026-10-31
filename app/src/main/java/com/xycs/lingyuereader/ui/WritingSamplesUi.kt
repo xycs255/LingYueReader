@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -54,10 +53,7 @@ private fun rememberStylePick(vm: AppViewModel, workId: String, assist: WorkAssi
 internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
     GroupedSection(
         header = "文风范例",
-        footer = "从你标了“定稿”的章里挑几段——一段叙述描写、一段对白多的、一段动作场面，每段 200–500 字——放进发给 AI 的内容里当范例。" +
-            "AI 写、AI 写整章草稿、润色、更生动、扩写、缩写、按要求改时照着学句式、节奏、用词和对白方式，不照抄内容；挑错、写作建议、审稿不带。" +
-            "写第 N 章时只从它前面的章里挑，不会剧透。本机模型只带三分之一。在本机挑，同样的定稿章挑出同样的几段（开头不变，服务商能缓存）。" +
-            "最多带多少字、挑了哪几段在下面。",
+        footer = "从定稿的章里挑几段叙述、对白、动作当范例，AI 写和改稿时学句式和节奏、不抄内容；写第 N 章只从前面的章挑。",
     ) {
         row {
             ToggleRow("用定稿章当文风范例", assist.sampleLimit > 0) { on ->
@@ -148,7 +144,7 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                                             Text(
                                                 "出自「${s.chapterTitle}」 · ${s.text.length} 字",
                                                 color = c.secondary,
-                                                fontSize = 13.sp,
+                                                fontSize = TypeScale.Caption,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f).padding(start = 8.dp),
@@ -157,8 +153,8 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                                         Text(
                                             if (open) s.text else s.text.replace('\n', ' ').take(PREVIEW_CHARS) + if (s.text.length > PREVIEW_CHARS) "……" else "",
                                             color = c.label,
-                                            fontSize = 15.sp,
-                                            lineHeight = 23.sp,
+                                            fontSize = TypeScale.Body,
+                                            lineHeight = TypeScale.BodyLine,
                                         )
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             PillButton("换一段", { vm.writingAi.shiftSample(workId, s.kind.name) })
@@ -178,8 +174,8 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                 Text(
                     "范例只用来学写法，AI 被要求不照抄、不接着这些段落的情节写。“最近一次发给 AI 的内容”里能看到实际带上的范例。",
                     color = c.secondary,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
+                    fontSize = TypeScale.Caption,
+                    lineHeight = TypeScale.CaptionLine,
                     fontWeight = FontWeight.Normal,
                     modifier = Modifier.padding(horizontal = 28.dp),
                 )

@@ -35,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ReviewFix
@@ -83,8 +82,8 @@ internal fun TwoLine(title: String, subtitle: String?, maxLines: Int = 3, traili
     val c = LocalGroupedColors.current
     GroupedRow {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            if (!subtitle.isNullOrBlank()) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+            Text(title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            if (!subtitle.isNullOrBlank()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
         }
         if (trailing != null) Box(Modifier.padding(start = 8.dp)) { trailing() }
     }
@@ -120,9 +119,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             if (p != null && (p.instructions.isNotEmpty() || p.knowledge.isNotEmpty() || p.onDemand.isNotEmpty())) {
                 GroupedSection(
                     header = "AI 拿到的设定包",
-                    footer = "照你在设定包里写的工作说明办：工作说明和知识库整份放在每次请求的最前面（文档不改就不变，DeepSeek 这类服务商会缓存，" +
-                        "后面几次便宜很多）；没整份给出的文档，AI 看目录自己读、按关键词搜，已写的章也能读全文。" +
-                        "知识库按模型的上下文最多放约 ${p.budget / 10_000} 万字，放不下时从最大的一份起改成按需查；上限可以在作品的 AI 设置里改。",
+                    footer = "照设定包里的工作说明办：工作说明和知识库（最多约 ${p.budget / 10_000} 万字）放在每次请求的最前面，放不下的 AI 按需查。",
                 ) {
                     p.instructions.forEach { d -> row { TwoLine(d.title, "工作说明 · 放在最前面") } }
                     p.knowledge.forEach { d -> row { TwoLine(d.title, "知识库 · 整份 · ${d.kind.label}") } }
@@ -157,8 +154,8 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 ) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("第 ${b.chapter} 章 · 第 ${b.volume} 卷", color = c.label, fontSize = 17.sp)
-                            Text(if (b.present.isEmpty()) "正文和细纲卡里还没认出人物" else "出场：" + b.present.joinToString("、"), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+                            Text("第 ${b.chapter} 章 · 第 ${b.volume} 卷", color = c.label, fontSize = TypeScale.Headline)
+                            Text(if (b.present.isEmpty()) "正文和细纲卡里还没认出人物" else "出场：" + b.present.joinToString("、"), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                         }
                     }
                 }
@@ -174,8 +171,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     val rows = ledgerRows(s)
                     GroupedSection(
                         header = "故事账本 · 到第 ${s.chapter} 章为止",
-                        footer = "账本里到这一章为止的进展，放在前情后面带给 AI（约 ${b.ledgerText?.length ?: 0} 字，放不下的按离这一章远近省略）；" +
-                            "和察觉表、伏笔表重复的条目以账本为准，只有作者知道的另列，不进正文。",
+                        footer = "账本里到这一章的进展放在前情后面带给 AI（约 ${b.ledgerText?.length ?: 0} 字，远的先省）；和察觉表、伏笔表重复的以账本为准。",
                     ) {
                         rows.take(LEDGER_ROWS).forEach { r -> row { TwoLine(r.title, r.subtitle, trailing = r.tag?.let { t -> { Tag(t, c.warning) } }) } }
                         if (rows.size > LEDGER_ROWS) row { EmptyRow("还有 ${rows.size - LEDGER_ROWS} 条没列出") }
@@ -201,7 +197,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
         open?.let { item ->
             GlassDialog(show = true, title = item.title, summary = item.reason, onDismissRequest = { open = null }) {
                 Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-                    Text(item.text, color = c.label, fontSize = 14.sp, lineHeight = 21.sp)
+                    Text(item.text, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
                 DialogOkButton("好") { open = null }
             }
@@ -304,7 +300,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
             GroupedSection {
                 row {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp)
+                        Text(chapter?.title.orEmpty(), color = c.label, fontSize = TypeScale.Headline)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (running != null) Spinner(size = 12.dp)
                             Text(
@@ -314,7 +310,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     else -> "还没有审过"
                                 },
                                 color = c.secondary,
-                                fontSize = 13.sp,
+                                fontSize = TypeScale.Caption,
                             )
                         }
                     }
@@ -409,7 +405,7 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         }
                     })
                 }
-                Text("处理", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
+                Text("处理", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
                 SegmentedControl(
                     listOf("" to "没处理", ReviewIssue.FIXED to "已改", ReviewIssue.IGNORED to "不改"),
                     issue.state,
@@ -432,12 +428,12 @@ fun ChapterReviewScreen(vm: AppViewModel, workId: String, chapterId: String) {
 private fun GateStatusRow(gate: ReviewGate, status: GateStatus) {
     val c = LocalGroupedColors.current
     GroupedRow(Modifier.groupedSemantics("${gate.label}：${status.text}")) {
-        Text("结果", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+        Text("结果", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
         AnimatedContent(status, transitionSpec = { Motion.fadeThrough() }, contentAlignment = Alignment.CenterEnd, label = "gateStatus") { s ->
             when (s.kind) {
                 GateStatusKind.RUNNING -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Spinner()
-                    Text(s.text, color = c.secondary, fontSize = 14.sp)
+                    Text(s.text, color = c.secondary, fontSize = TypeScale.Caption)
                 }
                 GateStatusKind.OPEN -> Tag(s.text, c.warning)
                 GateStatusKind.DONE -> Tag(s.text, c.success)
@@ -458,9 +454,9 @@ private fun IssueRow(issue: ReviewIssue, onClick: () -> Unit) {
     val titleColor by animateColorAsState(if (issue.open) c.label else c.secondary, Motion.standard(Motion.SHORT), label = "issueTitle")
     GroupedRow(onClick = onClick) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(issue.problem, color = titleColor, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
-            if (issue.quote.isNotBlank()) Text("「${issue.quote}」", color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (issue.fix.isNotBlank()) Text("改：${issue.fix}", color = c.tint, fontSize = 13.sp, lineHeight = 18.sp)
+            Text(issue.problem, color = titleColor, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, lineHeight = TypeScale.BodyLine)
+            if (issue.quote.isNotBlank()) Text("「${issue.quote}」", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (issue.fix.isNotBlank()) Text("改：${issue.fix}", color = c.tint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         }
         AnimatedVisibility(
             visible = !issue.open,
@@ -524,7 +520,7 @@ internal fun EditorNote(text: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(LingYueIcons.Star, contentDescription = null, tint = c.warning, modifier = Modifier.size(16.dp))
-        Text(text, color = c.label, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 6.dp))
+        Text(text, color = c.label, fontSize = TypeScale.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 6.dp))
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
 }

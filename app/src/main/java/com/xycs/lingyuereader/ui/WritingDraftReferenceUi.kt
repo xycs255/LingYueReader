@@ -21,7 +21,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Icon
@@ -64,8 +63,8 @@ private fun DraftStep(label: String, icon: ImageVector, done: Boolean, current: 
         Text(
             label,
             color = if (current) c.label else c.secondary,
-            fontSize = 11.sp,
-            lineHeight = 14.sp,
+            fontSize = TypeScale.Micro,
+            lineHeight = TypeScale.MicroLine,
             fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -100,7 +99,7 @@ internal fun DraftReferenceChoiceDialog(
                 ) { onSelect(analysis.id) }
             }
         }
-        if (analyses.isEmpty()) Text("本章还没有范本分析。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+        if (analyses.isEmpty()) Text("本章还没有范本分析。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp))
         ActionRow("新增或分析范本", onClick = onCreate)
         DialogOkButton("关闭", primary = false, onClick = onDismiss)
     }
