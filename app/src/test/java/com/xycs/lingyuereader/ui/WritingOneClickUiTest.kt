@@ -138,7 +138,9 @@ class WritingOneClickUiTest {
 
         // 进度依次出现：拟细纲 → 拆节拍 → 写第 1 / 3 拍。
         waitForText("正在拟细纲")
-        waitFor { kinds.toList() == listOf("拟细纲") }
+        // 先等请求到（满载时本机准备资料可能慢），再断言第一条正是拟细纲；失败时报出实际收到的请求。
+        waitFor(30_000) { kinds.isNotEmpty() }
+        assertEquals("收到的请求：$kinds", listOf("拟细纲"), kinds.toList())
         holds.getValue("拟细纲").countDown()
         waitForText("正在拆节拍")
         holds.getValue("拆节拍").countDown()
