@@ -32,11 +32,9 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ChapterSyncResult
@@ -48,10 +46,8 @@ import com.xycs.lingyuereader.data.SyncGroup
 import com.xycs.lingyuereader.data.SyncItem
 import com.xycs.lingyuereader.data.SyncPlace
 import com.xycs.lingyuereader.ui.glass.GlassDialog
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 各组下面的说明。 */
@@ -61,8 +57,9 @@ private fun SyncGroup.hint(): String = when (this) {
     SyncGroup.STATE -> "人物此刻在哪、身体怎样、带着什么、想要什么，记进故事账本；同一人物同一方面以最新的为准。"
     SyncGroup.EVENT -> "已经发生、会影响后文的事，世界的变化，记进故事账本。"
     SyncGroup.AWARENESS -> "这一章里谁知道了什么、瞒着谁、误会了什么，记进故事账本。"
-    SyncGroup.PROMISE -> "这一章新埋下的伏笔、悬念、约定，和收掉的伏笔，记进故事账本。"
+    SyncGroup.PROMISE -> "这一章新埋下的伏笔、悬念、约定，推进了、收掉了的旧伏笔，记进故事账本。推进要有原句，只提一句的不算。"
     SyncGroup.TIME -> "这一章在故事里是什么时候、离上一章过了多久，记进故事账本。"
+    SyncGroup.HOLD -> "境界、钱财、关键物品在谁手里：期初 → 变化 → 期末，记进故事账本。期初和账本里上一次记的期末对不上的默认不勾，看过再定。"
 }
 
 /**
@@ -160,7 +157,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
 @Composable
 private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
     if (session == null) {
-        GroupedSection { row { EmptyRow("没有在整理的章节。") } }
+        EmptyState(LingYueIcons.Download, "没有在整理的章节", "定稿以后可以把这一章整理进设定包和账本。")
         return
     }
     val dropped = session.results.sumOf { it.dropped }
@@ -232,18 +229,18 @@ internal fun SyncItemRow(
             if (item.writable && selectable) {
                 Box(
                     Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.Small))
                         .clickable(onClick = onToggle)
                         .semantics {
                             contentDescription = "勾选：${item.title}"
                             stateDescription = if (checked) "已勾选" else "没勾选"
                         },
                 ) {
-                    Checkbox(state = ToggleableState(checked), onClick = onToggle)
+                    LingYueCheckbox(checked, onClick = onToggle)
                 }
             }
             Column(Modifier.weight(1f).padding(start = if (item.writable && selectable) 12.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(item.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, lineHeight = 22.sp)
+                Text(item.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, lineHeight = TypeScale.BodyLine)
                 val extra = when {
                     opens -> entry.payoff?.let { " · 计划第 $it 章收" }.orEmpty()
                     item.group == SyncGroup.STATE -> entry?.aspect?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
@@ -251,8 +248,8 @@ internal fun SyncItemRow(
                 }
                 Text(
                     (if (showChapter) "第 ${item.chapter} 章 · " else "") + (if (repeat) "前面章已有 · " else "") +
-                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + item.where + extra,
-                    color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp,
+                        (if (item.maybeSame != null) "可能和账本里某条重复 · " else "") + (if (item.holdMismatch != null) "期初对不上 · " else "") + item.where + extra,
+                    color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                 )
             }
             if (item.writable && !selectable) Tag("待重整", c.warning, Modifier.padding(start = 8.dp))
@@ -273,31 +270,45 @@ internal fun SyncItemRow(
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (item.group == SyncGroup.CONFLICT) {
                         val says = if (item.place == SyncPlace.LEDGER) "账本" else "设定包${item.docTitle.takeIf { it.isNotBlank() }?.let { "《$it》" }.orEmpty()}"
-                        if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
-                        if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        if (item.packSays.isNotBlank()) Text("$says：${item.packSays}", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                        if (item.textSays.isNotBlank()) Text("正文：${item.textSays}", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     item.maybeSame?.let { same ->
-                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + "；确实是另一件事再勾上", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        val note = if (item.group == SyncGroup.PROMISE) "；像是账本里已有的伏笔：要是这一章是推进它，别勾，重新整理时让 AI 引用编号；确实是新埋的再勾上"
+                            else "；确实是另一件事再勾上"
+                        Text("账本里已有：${same.text}" + same.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } + note, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                    }
+                    item.holdMismatch?.let { last ->
+                        Text("期初「${item.entry?.before.orEmpty()}」和账本里" + (last.from?.let { "第 $it 章" } ?: "") + "记的期末「${last.text}」对不上" +
+                            last.quote.takeIf { it.isNotBlank() }?.let { "（那一处原句：「$it」）" }.orEmpty() + "；看过哪边对再勾",
+                            color = c.warning, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                    }
+                    item.advances?.let { promise ->
+                        Text("推进的是账本里这一条：${promise.text}" + promise.whenLabel.let { if (it.isEmpty()) "" else "（$it）" } +
+                            promise.lastAdvanced?.let { "，上次推进在第 $it 章" }.orEmpty(), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     item.reveals?.let { secret ->
-                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("账本里原本记着只有作者知道：${secret.text}；勾上记下从这一章起知道了", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                     val closes = item.closes
                     if (closes != null) {
-                        Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("收的是账本里这一条：${closes.text}" + closes.whenLabel.let { if (it.isEmpty()) "" else "（$it）" }, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                    } else if (item.advances != null) {
+                        // 推进只记“第几章推进过”，不改伏笔的内容：推进了什么只给作者看。
+                        if (edited.text.isNotBlank()) Text("推进了什么：${edited.text}", color = c.secondary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     } else if (item.writable && selectable) {
-                        TextField(
+                        GroupedTextField(
                             value = edited.text,
                             onValueChange = onEdit,
                             label = if (item.place == SyncPlace.LEDGER) "记进账本的内容（可以改）" else "写进去的原文（可以改）",
                             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 220.dp),
                         )
                     } else if (item.writable) {
-                        Text("候选内容：${edited.text}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp)
+                        Text("候选内容：${edited.text}", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                     }
                     if (opens && item.writable && selectable) {
                         var raw by remember(item.key) { mutableStateOf(entry.payoff?.toString().orEmpty()) }
-                        TextField(
+                        GroupedTextField(
                             value = raw,
                             onValueChange = { v ->
                                 raw = v.filter { it.isDigit() }.take(5)
@@ -310,10 +321,10 @@ internal fun SyncItemRow(
                         )
                     }
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onJump).padding(vertical = 6.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Small)).clickable(onClick = onJump).padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("依据：「${item.quote}」", color = c.tint, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f))
+                        Text("依据：「${item.quote}」", color = c.tint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.weight(1f))
                         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(14.dp))
                     }
                     if (!item.writable && item.fixText) PillButton("去改正文", onClick = onJump, style = PillStyle.Tinted)
@@ -338,11 +349,11 @@ internal fun SyncTipDialog(onDismiss: (Boolean) -> Unit, onSync: (Boolean) -> Un
         onDismissRequest = { onDismiss(never) },
     ) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { never = !never }.padding(vertical = 8.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { never = !never }.padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Checkbox(state = ToggleableState(never), onClick = { never = !never })
-            Text("不再提示", color = c.label, fontSize = 15.sp, modifier = Modifier.padding(start = 12.dp))
+            LingYueCheckbox(never, onClick = { never = !never })
+            Text("不再提示", color = c.label, fontSize = TypeScale.Body, modifier = Modifier.padding(start = 12.dp))
         }
         DialogButtons(onDismiss = { onDismiss(never) }, onConfirm = { onSync(never) }, confirmText = "整理", dismissText = "不用了")
     }

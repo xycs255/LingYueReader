@@ -2,7 +2,6 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -250,6 +249,7 @@ internal fun ScrollReader(
                         palette.accent.copy(alpha = 0.6f * a),
                         topLeft = Offset(margin * 0.2f, markerY - 1.dp.toPx()),
                         size = Size(margin * 0.6f, 2.dp.toPx()),
+                        // 书页上画的细线，圆角按线宽定。
                         cornerRadius = CornerRadius(1.dp.toPx()),
                     )
                 }
@@ -281,15 +281,15 @@ internal fun ScrollReader(
                 Modifier.fillMaxWidth().padding(vertical = 48.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("· 本章完 ·", color = palette.secondary, fontSize = 13.sp, letterSpacing = 0.3.em)
+                Text("· 本章完 ·", color = palette.secondary, fontSize = TypeScale.Caption, letterSpacing = 0.3.em)
                 if (onCompanion != null) {
                     Text(
                         "AI 伴读：本章要点与思考题",
                         color = palette.accent,
-                        fontSize = 14.sp,
+                        fontSize = TypeScale.Body,
                         modifier = Modifier
                             .padding(top = 16.dp)
-                            .clip(RoundedCornerShape(50))
+                            .clip(Radius.Full)
                             .clickable(onClick = onCompanion)
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                     )
@@ -297,10 +297,10 @@ internal fun ScrollReader(
                 Spacer(Modifier.height(24.dp))
                 if (nextTitle != null) {
                     Button(onClick = onNext, colors = ButtonDefaults.buttonColors(color = palette.bar)) {
-                        Text("下一章　$nextTitle", color = palette.accent, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("下一章　$nextTitle", color = palette.accent, fontSize = TypeScale.Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 } else {
-                    Text("全书完", color = palette.secondary, fontSize = 13.sp)
+                    Text("全书完", color = palette.secondary, fontSize = TypeScale.Caption)
                 }
             }
         }

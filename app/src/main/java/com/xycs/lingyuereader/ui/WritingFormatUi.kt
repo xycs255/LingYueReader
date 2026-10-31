@@ -33,10 +33,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.BookFormat
@@ -161,7 +161,7 @@ internal fun FormatPanel(
             if (counts.isEmpty()) "这一章不用排版。"
             else "共 ${included.size} 处：" + counts.filterKeys { it !in skip }.entries.joinToString("、") { (k, n) -> "${k.label} $n" }.ifEmpty { "都勾掉了" },
             color = c.label,
-            fontSize = 15.sp,
+            fontSize = TypeScale.Body,
             modifier = Modifier.padding(vertical = 4.dp),
         )
         if (counts.isNotEmpty()) {
@@ -186,20 +186,20 @@ internal fun FormatPanel(
             items(included.take(MAX_SHOWN), key = { "${it.kind}:${it.start}:${it.end}:${it.after}" }) { ch ->
                 Row(Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem()).fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                     Tag(ch.kind.label, c.tint, Modifier.padding(top = 2.dp))
-                    Text(changeSnippet(result.original, ch, removed, added), color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                    Text(changeSnippet(result.original, ch, removed, added), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(start = 8.dp))
                 }
             }
             if (included.size > MAX_SHOWN) {
-                item(key = "more") { Text("还有 ${included.size - MAX_SHOWN} 处没列出来。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp)) }
+                item(key = "more") { Text("还有 ${included.size - MAX_SHOWN} 处没列出来。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(vertical = 6.dp)) }
             }
             if (result.notes.isNotEmpty()) {
                 item(key = "notesHeader") {
-                    Text("提示（不会自动改）", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
+                    Text("提示（不会自动改）", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 10.dp, bottom = 2.dp))
                 }
                 items(result.notes.take(MAX_SHOWN), key = { "note:${it.hint}:${it.at}" }) { n ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                         Tag(n.hint.label, c.warning, Modifier.padding(top = 2.dp))
-                        Text(noteSnippet(result.text, n, c.warning), color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(start = 8.dp))
+                        Text(noteSnippet(result.text, n, c.warning), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(start = 8.dp))
                     }
                 }
             }
@@ -274,7 +274,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
     fun update(t: (FormatSettings) -> FormatSettings) = vm.writingAi.updateAssist(workId) { it.copy(format = t(it.format)) }
     val snackbar = rememberWritingMessages(vm)
     var moreOpen by rememberSaveable(workId) { mutableStateOf(false) }
-    SubPageScaffold("排版", onBack = { vm.back() }, snackbar = snackbar) { padding ->
+    SubPageScaffold("排版设置", onBack = { vm.back() }, snackbar = snackbar) { padding ->
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -282,22 +282,25 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
         ) {
             item(key = "typing") {
                 GroupedSection(
-                    footer = "打出 ... 或第三个点变成“……”，-- 变成“——”；汉字后面紧跟着打的半角 , . ? ! : ; 换成全角（数字后面的点不换，好打小数）；" +
-                        "\" ' 按这一段里的配对变成开引号或闭引号。拼音还没上屏时不动；换得不对，点一次撤销就回到换之前。键盘上方的快捷标点照旧。",
+                    footer = "打 ... 变“……”、-- 变“——”，汉字后面的半角标点换成全角，引号按配对变；换得不对点一次撤销。",
                 ) {
                     row { ToggleRow("输入时自动排版", f.onInput, subtitle = "边打边把标点换成中文的样子") { on -> update { it.copy(onInput = on) } } }
                 }
             }
             // 常用的只露两样：输入时自动排版（上面）和引号风格；一键排版的其余规则收进“更多排版规则”，值都不变。
             item(key = "quoteStyle") {
-                GroupedSection(header = "引号风格", footer = "输入时自动排版和一键排版都按这个风格换引号。") {
-                    row { SegmentedRow(QuoteStyle.entries.map { it to it.label }, f.quoteStyle) { v -> update { it.copy(quoteStyle = v) } } }
+                // 分段格写“中文引号 “””“直角引号 「」”，用书页的衬线字显示：界面字体里弯引号小得像两个点，看不出是哪种。
+                GroupedSection(header = "引号风格", footer = "对白外层用前一对，里面再引用用后一对；输入时自动排版、一键排版都照这个换。") {
+                    row {
+                        SegmentedRow(QuoteStyle.entries.map { it to quoteStyleName(it) }, f.quoteStyle, fontFamily = FontFamily.Serif) { v ->
+                            update { it.copy(quoteStyle = v) }
+                        }
+                    }
                 }
             }
             item(key = "more") {
                 GroupedSection(
-                    footer = "编辑器“更多 → 自动排版”和作品页“全书排版”按这些规则排：先列出改了哪些，可以按类勾掉再排；" +
-                        "排之前存一个历史版本，排版改的不算码字数。“***”“——”这类单独一行的场景分隔原样不动。",
+                    footer = "编辑器“整理 → 自动排版”和全书排版照这些规则排；排之前存一个历史版本，场景分隔行原样不动。",
                 ) {
                     row { ExpandRow("更多排版规则", moreOpen, value = if (moreOpen) null else "$FORMAT_MORE_RULES 项") { moreOpen = !moreOpen } }
                 }
@@ -430,7 +433,7 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
             val todo = p.chapters.filter { ch -> ch.result.changes.any { it.kind !in skip } }
             item(key = "summary") {
                 if (counts.isEmpty()) {
-                    GroupedSection(footer = title?.let { "《$it》按现在的排版设置不用改。" }) { row { EmptyRow("各章都排好了") } }
+                    EmptyState(LingYueIcons.Format, "各章都排好了", title?.let { "《$it》按现在的排版设置不用改。" })
                 } else {
                     GroupedSection(header = "共 $included 处 · ${todo.size} 章", footer = "关掉的这类不排。规则在右上角“设置”里改。") {
                         counts.forEach { (k, n) ->
@@ -449,7 +452,7 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
             val noEnd = p.chapters.sumOf { ch -> ch.result.notes.count { it.hint == FormatHint.NO_END } }
             if (unpaired + noEnd > 0) {
                 item(key = "hints") {
-                    GroupedSection(header = "提示", footer = "只是提示，不会自动改；在编辑器里“更多 → 自动排版”能看到是哪几段。") {
+                    GroupedSection(header = "提示", footer = "只是提示，不会自动改；在编辑器里“整理 → 自动排版”能看到是哪几段。") {
                         if (unpaired > 0) row { ValueRow(FormatHint.UNPAIRED.label, "$unpaired 处") }
                         if (noEnd > 0) row { ValueRow(FormatHint.NO_END.label, "$noEnd 处") }
                     }
@@ -469,12 +472,18 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
                     Text(
                         "定稿的 ${p.locked.size} 章不排：${p.locked.joinToString("、") { it.title }}。要排先解锁。",
                         color = c.secondary,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
                     )
                 }
             }
         }
     }
+}
+
+/** 排版设置里引号风格的叫法：名字加一对外层引号（“中文引号 “””“直角引号 「」”）。 */
+internal fun quoteStyleName(style: QuoteStyle): String = when (style) {
+    QuoteStyle.CURLY -> "中文引号 ${style.open}${style.close}"
+    QuoteStyle.CORNER -> "直角引号 ${style.open}${style.close}"
 }

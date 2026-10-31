@@ -52,7 +52,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -478,7 +477,7 @@ private fun SpreadContent(
         }
         if (topInset > PAGE_HEADER && spread.none { PageItem.Title in it.items }) {
             Text(
-                chapter.title, color = styles.palette.secondary, fontSize = 12.sp, letterSpacing = 0.12.em,
+                chapter.title, color = styles.palette.secondary, fontSize = TypeScale.Footnote, letterSpacing = 0.12.em,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(
                     start = styles.horizontalPadding, end = styles.horizontalPadding, top = topInset - PAGE_HEADER,

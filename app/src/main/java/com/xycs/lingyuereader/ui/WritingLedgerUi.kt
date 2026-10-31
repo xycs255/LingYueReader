@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,43 +29,49 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.LedgerChapter
+import com.xycs.lingyuereader.Screen
+import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.ChapterBriefs
+import com.xycs.lingyuereader.data.Foreshadow
+import com.xycs.lingyuereader.data.PackKind
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.LedgerOrigin
 import com.xycs.lingyuereader.data.LedgerVersion
+import com.xycs.lingyuereader.data.Foreshadows
+import com.xycs.lingyuereader.data.PromiseState
 import com.xycs.lingyuereader.data.StoryLedger
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
@@ -84,6 +91,9 @@ private val KIND_TABS = listOf(
     LedgerKind.PROMISE to "伏笔",
     LedgerKind.TIME to "时间",
 )
+
+/** 打开了“数值与持有”（或改的正是这一类）时多一格。 */
+private val HOLD_TAB = LedgerKind.HOLD to "数值"
 
 /** 账本页上叠着的一层：导入前的预览、历史版本、某个历史版本的条目。 */
 private sealed interface LedgerLayer {
@@ -107,29 +117,70 @@ private data class LedgerView(val chapter: LedgerChapter?, val person: String?)
 
 /**
  * 故事账本：随章推进、会变的东西——人物状态、发生的事、知情、伏笔、时间线。
+ * 伏笔标签合并了原来的“伏笔”页：该回收了 / 还没回收 / 已回收、设定包伏笔表里还没导入的、来源文档（[Screen.WorkLedger.promises] 为真时直接翻到这一标签）。
  * 默认按类别列出全部条目（人物状态再按人物归在一起）；“看到第几章”选了某一章，就只看到这一章为止的状态（[StoryLedger.snapshot]），
  * 写前对照、改旧章时用。点一条改，右上角加一条；菜单里从设定包导入、导出到设定包、历史版本。
  */
 @Composable
-fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null) {
+fun WorkLedgerScreen(vm: AppViewModel, screen: Screen.WorkLedger) {
+    val workId = screen.workId
+    val chapterId = screen.chapterId
     val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    // 数值与持有按作品开关（默认关）：关着时加一条的类别里没有这一格，账本里已有的照样列着。
+    val holdings = assists[workId]?.holdings == true
     val work = works.firstOrNull { it.id == workId }
-    LaunchedEffect(workId) { vm.writing.loadLedger(workId) }
+    val packs by vm.writing.packs.collectAsStateWithLifecycle()
+    val pack = packs[workId]
+    LaunchedEffect(workId) {
+        vm.writing.loadLedger(workId)
+        vm.writing.loadPack(workId)
+    }
     val entries = ledgers[workId]
+    // 伏笔标签：设定包伏笔表里的条目（还没导入的也列）和写到了第几章（算哪些该回收了）；设定包、账本变了重读。
+    var foreshadowSource by remember { mutableStateOf<Pair<List<Foreshadow>, Int>?>(null) }
+    // 读不出来时按没有伏笔表算：没读完（null）时页面按加载中显示，不能一直卡在加载中。
+    LaunchedEffect(workId, pack, entries) {
+        foreshadowSource = try {
+            vm.writing.foreshadows(workId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList<Foreshadow>() to 0
+        }
+    }
+    var closing by remember { mutableStateOf<WritingForeshadow?>(null) }
     // 能翻到的章（章号要读细纲卡，在后台算）；章节改了重算。
     var chapters by remember { mutableStateOf<List<LedgerChapter>?>(null) }
     LaunchedEffect(workId, work) { chapters = vm.writing.ledgerChapters(workId) }
     // 看到哪一章：空是全部。从编辑器进来时直接翻到那一章。
     var at by rememberSaveable { mutableStateOf(chapterId) }
-    var person by rememberSaveable { mutableStateOf<String?>(null) }
+    var person by rememberSaveable { mutableStateOf(screen.person) }
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     // 正在改的一条（新加的也在这里，[adding] 为真）；要删的一条。
     var editing by remember { mutableStateOf<LedgerEntry?>(null) }
     var adding by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LedgerEntry?>(null) }
-    var visualTab by rememberSaveable { mutableStateOf(if (chapterId == null) LedgerVisualTab.PEOPLE else LedgerVisualTab.RECORDS) }
+    var visualTab by rememberSaveable {
+        mutableStateOf(
+            when {
+                screen.tab != null -> LedgerVisualTab.entries.firstOrNull { it.name == screen.tab } ?: LedgerVisualTab.PEOPLE
+                screen.promises -> LedgerVisualTab.PROMISES
+                chapterId == null -> LedgerVisualTab.PEOPLE
+                else -> LedgerVisualTab.RECORDS
+            },
+        )
+    }
+    // 去别的页（编辑伏笔表、打开一章……）时这一页的界面被收掉，rememberSaveable 也跟着没了：
+    // 把标签、看到第几章、只看谁写回栈里这一项，返回时照着重建，不回到入口的默认。
+    val entry by rememberUpdatedState(screen)
+    DisposableEffect(Unit) {
+        onDispose { vm.keepState(entry, entry.copy(chapterId = at, tab = visualTab.name, person = person)) }
+    }
     var quickState by remember { mutableStateOf<LedgerQuickState?>(null) }
     var quickKnowledge by remember { mutableStateOf<LedgerQuickKnowledge?>(null) }
     var graphUndo by remember { mutableStateOf<LedgerGraphUndo?>(null) }
@@ -271,10 +322,9 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                 }
                 null -> {
                     val list = entries
-                    when {
-                        list == null || (at != null && chapters == null) ->
-                            Box(Modifier.fillMaxSize().padding(contentPadding)) { LoadingState("正在读故事账本……") }
-                        list.isEmpty() -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
+                    when (ledgerBody(list, at != null && chapters == null, foreshadowSource?.first)) {
+                        LedgerBody.LOADING -> Box(Modifier.fillMaxSize().padding(contentPadding)) { LoadingState("正在读故事账本……") }
+                        LedgerBody.EMPTY -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
                             item(key = "empty") {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     EmptyState(
@@ -288,7 +338,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                 }
                             }
                         }
-                        else -> {
+                        LedgerBody.TABS -> if (list != null) {
                             // 换章、换人物时整块淡出淡入（过渡时新旧两份同时在）；减少动效时直接换。
                             AnimatedContent(
                                 LedgerView(chapter, person?.takeIf { it in subjects }),
@@ -296,11 +346,12 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                 label = "ledgerView",
                             ) { view ->
                                 LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
-                                    item(key = "head") {
-                                        LedgerHead(view, list.size, subjects, onPick = { picking = true }, onPerson = { person = it })
-                                    }
+                                    // 先切类、再筛：分段标签在最上面，下面一行两枚下拉胶囊（看到第几章、只看谁）。
                                     item(key = "graph:tabs") {
                                         LedgerVisualTabs(visualTab) { visualTab = it }
+                                    }
+                                    item(key = "head") {
+                                        LedgerHead(view, visualTab, list, subjects, onPick = { picking = true }, onPerson = { person = it })
                                     }
                                     graphUndo?.let { change ->
                                         item(key = "graph:undo") {
@@ -323,6 +374,14 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                             list, view.chapter, chapters.orEmpty(), view.person,
                                             onPayoff = { e, payoff, failed -> saveGraph(e, e.copy(payoff = payoff), "调整伏笔计划", failed) },
                                             onOpen = open,
+                                            sources = LedgerPromiseSources(
+                                                legacy = foreshadowSource?.first.orEmpty(),
+                                                latest = foreshadowSource?.second ?: 0,
+                                                docs = pack.orEmpty().filter { it.kind == PackKind.FORESHADOW }.map { it.id to it.title },
+                                            ),
+                                            onClose = { closing = it },
+                                            onOpenDoc = { vm.open(Screen.PackDoc(workId, it)) },
+                                            onState = { e, state -> saveGraph(e, Foreshadows.withState(e, state, view.chapter?.no), "改伏笔状态") },
                                         )
                                         LedgerVisualTab.KNOWLEDGE -> ledgerKnowledgeGraph(
                                             list, view.chapter, view.person,
@@ -364,6 +423,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                 e,
                 isNew = adding,
                 subjects = subjects,
+                holdings = holdings,
                 onDismiss = { editing = null },
                 onDelete = if (adding) null else ({
                     editing = null
@@ -378,6 +438,25 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                 } else {
                     vm.writing.editLedger(workId, listOf(LedgerOp.Update(changed, expected = e)), "手动修改")
                 }
+            }
+        }
+        closing?.let { f ->
+            GlassDialog(show = true, title = f.display.what, summary = ChapterBrief.foreshadowWhen(f.display).trim('（', '）').ifEmpty { null }, onDismissRequest = { closing = null }) {
+                DialogButtons(
+                    onDismiss = { closing = null },
+                    onConfirm = {
+                        closing = null
+                        val source = foreshadowSource
+                        val latest = source?.second?.takeIf { it > 0 }
+                        val current = mergeWritingForeshadows(source?.first.orEmpty(), vm.writing.ledgers.value[workId].orEmpty())
+                            .firstOrNull { ChapterBriefs.same(it.display.what, f.display.what) } ?: f
+                        // 先写账本（当前状态）；伏笔表里那一行跟着标上，旧表镜像失败也不会让界面与 AI 用不同的回收状态。
+                        vm.writing.editLedger(workId, listOf(current.close(latest)), "回收伏笔") {
+                            current.legacy.forEach { old -> vm.writing.markForeshadow(workId, old) }
+                        }
+                    },
+                    confirmText = "标为已回收",
+                )
             }
         }
         deleting?.let { e ->
@@ -401,21 +480,55 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     }
 }
 
-/** 顶上一组：看到第几章、只看谁。 */
+/**
+ * 分段标签下面的筛选：一行两枚下拉胶囊，“第 N 章 ⌄”（点了选看到第几章）和“全部人物 ⌄”（点了弹菜单）。
+ * 以前是两整行，压在分段标签上面，先筛后选类。读屏念“看到第几章：第 12 章”“只看谁：全部人物”。
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LedgerHead(view: LedgerView, count: Int, subjects: List<String>, onPick: () -> Unit, onPerson: (String?) -> Unit) {
+private fun LedgerHead(view: LedgerView, tab: LedgerVisualTab, entries: List<LedgerEntry>, subjects: List<String>, onPick: () -> Unit, onPerson: (String?) -> Unit) {
     val ch = view.chapter
-    GroupedSection(
-        footer = if (ch == null) "共 $count 条，按类别列出。点一条可以改。"
-        else "到「${ch.title}」为止：每个人在哪、知道什么、还欠着哪些伏笔。写这一章时 AI 拿到的就是这一份。",
-    ) {
-        row { NavRow("看到第几章", value = ch?.let { "第 ${it.no} 章" } ?: "全部") { onPick() } }
-        if (subjects.isNotEmpty()) {
-            row {
-                PickerRow("人物", listOf("" to "全部") + subjects.map { it to it }, view.person.orEmpty()) { onPerson(it.ifEmpty { null }) }
+    GroupedSection(footer = ledgerHeadFooter(ch, tab, entries, view.person)) {
+        row {
+            FlowRow(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                val chapterText = ch?.let { "第 ${it.no} 章" } ?: "全部章节"
+                DropdownChip(chapterText, onPick, description = "看到第几章：$chapterText")
+                if (subjects.isNotEmpty()) {
+                    val who = view.person ?: "全部人物"
+                    DropdownChipPicker(listOf("" to "全部人物") + subjects.map { it to it }, view.person.orEmpty(), description = "只看谁：$who") {
+                        onPerson(it.ifEmpty { null })
+                    }
+                }
             }
         }
     }
+}
+
+/** 账本页正文显示哪一种：加载中、整页空状态、分段标签。 */
+internal enum class LedgerBody { LOADING, EMPTY, TABS }
+
+/**
+ * [entries] 是账本（没读出来为空），[waitingChapters] 为真时翻到了某一章、章节列表还没算出来，[foreshadows] 是设定包伏笔表里的伏笔（没读完为空）。
+ * 账本空时还要等伏笔表读完才知道是整页空状态还是分段标签：没读完先按加载中，不闪一下“账本还是空的”。
+ * 账本空、但伏笔表里有条目时照常显示分段标签：伏笔标签里列着它们，能标为已回收。
+ */
+internal fun ledgerBody(entries: List<LedgerEntry>?, waitingChapters: Boolean, foreshadows: List<Foreshadow>?): LedgerBody = when {
+    entries == null || waitingChapters -> LedgerBody.LOADING
+    entries.isNotEmpty() -> LedgerBody.TABS
+    foreshadows == null -> LedgerBody.LOADING
+    foreshadows.isEmpty() -> LedgerBody.EMPTY
+    else -> LedgerBody.TABS
+}
+
+/**
+ * 筛选行下面的一句：翻到某一章时说这一份是什么；“全部记录”下说筛完还有几条（按“只看谁”过滤后的数，和下面列出来的对得上）；
+ * 人物、伏笔、知情三个标签各有自己的组名和说明，这里不再说“按类别列出”。
+ */
+internal fun ledgerHeadFooter(chapter: LedgerChapter?, tab: LedgerVisualTab, entries: List<LedgerEntry>, person: String?): String? = when {
+    chapter != null -> "到「${chapter.title}」为止：每个人在哪、知道什么、还欠着哪些伏笔。写这一章时 AI 拿到的就是这一份。"
+    tab != LedgerVisualTab.RECORDS -> null
+    person == null -> "共 ${entries.size} 条，按类别列出。点一条可以改。"
+    else -> "${person}的 ${entries.count { it.subject == person }} 条（共 ${entries.size} 条），按类别列出。点一条可以改。"
 }
 
 /** 一组条目：组名、连成一张卡片的各条、卡片下的说明。空的不出。键带上 [key]，同一条在别的组里也不重。 */
@@ -437,6 +550,9 @@ private fun aspectOrder(e: LedgerEntry) = LEDGER_ASPECTS.indexOf(e.aspect).let {
 /** “全部”：按类别分组（[LedgerKind] 的顺序），组名是类别，组下写说明；人物状态再按人物分开。 */
 private fun LazyListScope.allEntries(entries: List<LedgerEntry>, person: String?, onOpen: ((LedgerEntry) -> Unit)?) {
     val shown = if (person == null) entries else entries.filter { it.subject == person }
+    // 改定稿后核对标了“待复核”的先单列在最上面：变更登记点“去看账本”就落在这里，几百条里不用一条条找。历史版本里只看不改，不单列。
+    if (onOpen != null) ledgerGroup("recheck", "待复核", "定稿后又改了正文，这些条目的原句在正文里找不到了：点开核对，改好了点保存就不再标待复核。",
+        shown.filter { it.recheck }.sortedBy { it.from ?: -1 }, onOpen)
     LedgerKind.entries.forEach { kind ->
         val list = shown.filter { it.kind == kind }
         if (kind == LedgerKind.STATE) {
@@ -468,6 +584,7 @@ private fun LazyListScope.snapshotEntries(entries: List<LedgerEntry>, chapter: L
     }
     ledgerGroup("time", "时间", null, s.time, onOpen)
     ledgerGroup("states", "人物状态", "同一人物同一方面只列最新的一条。", s.states, onOpen)
+    ledgerGroup("holds", "数值与持有", "同一人同一项只列最新的一条；物品只列还在手里的。", s.holds, onOpen)
     ledgerGroup("due", "该收的伏笔", "计划在这一章收。", s.due, onOpen)
     ledgerGroup("overdue", "过期没收的伏笔", "计划收的章已经过了，还开着。", s.overdue, onOpen)
     ledgerGroup("events", "发生的事", null, s.events, onOpen)
@@ -486,20 +603,32 @@ private fun LedgerRow(e: LedgerEntry, onClick: (() -> Unit)?) {
     val c = LocalGroupedColors.current
     val subtitle = listOf(
         e.subject,
-        e.aspect.takeIf { e.kind == LedgerKind.STATE }.orEmpty(),
+        e.aspect.takeIf { e.kind == LedgerKind.STATE || e.kind == LedgerKind.HOLD }.orEmpty(),
+        // 数值与持有：期初 → 变化 → 期末连成一句（以前写成“三十两 → 付船钱 → · 第 2 章起”，箭头悬在半空）。
+        listOf(e.before, e.delta, e.text).filter { it.isNotBlank() }.takeIf { e.kind == LedgerKind.HOLD && it.size > 1 }?.joinToString(" → ").orEmpty(),
         e.whenLabel,
+        e.lastAdvanced?.takeIf { e.kind == LedgerKind.PROMISE && !e.done }?.let { "最近推进：第 $it 章" }.orEmpty(),
         e.via.takeIf { e.kind == LedgerKind.KNOW && it.isNotBlank() }?.let { "消息来自$it" }.orEmpty(),
     ).filter { it.isNotBlank() }.joinToString(" · ")
     GroupedRow(onClick = onClick) {
+        // 状态标签（待复核、只有作者知道、伏笔状态）放在说明下面换行排，不和内容抢一行：360dp 宽、挂着两三枚时内容也不被挤成一两个字一行。
+        // 右边只留一枚两个字的来源标签，大多数条目照旧两行高。
+        val recheck = e.recheck
+        val state = Foreshadows.state(e).takeIf { e.kind == LedgerKind.PROMISE && it != PromiseState.PLANTED }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(e.text, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
+            Text(e.text, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2,
+                overflow = TextOverflow.Ellipsis)
+            if (recheck || e.secret || state != null) {
+                FlowRow(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // 待复核是“看一眼、核对一下”，不是出错：用提醒色，红色只留给放不下、出错。
+                    if (recheck) Tag("待复核", c.warning)
+                    if (e.secret) Tag("只有作者知道", c.warning)
+                    if (state != null) Tag(state.label, promiseStateColor(state, c))
+                }
+            }
         }
-        Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (e.secret) Tag("只有作者知道", c.warning)
-            if (e.kind == LedgerKind.PROMISE && e.done) Tag("已收", c.success)
-            Tag(e.origin.short, c.secondary)
-        }
+        Tag(e.origin.short, c.secondary, Modifier.padding(start = 8.dp))
         if (onClick != null) {
             Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
         }
@@ -541,7 +670,7 @@ private fun ChapterPickDialog(chapters: List<LedgerChapter>, selected: String?, 
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = if (chapters.size > CHAPTER_PICK_QUICK) 340.dp else 420.dp), state = state) {
             items(options, key = { it.first ?: "" }) { (id, label) ->
                 val no = chapters.firstOrNull { it.id == id }?.no
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     CheckRow(label, selected = id == selected, subtitle = no?.let { "第 $it 章" } ?: "列出所有条目") { onPick(id) }
                 }
             }
@@ -569,9 +698,13 @@ private fun LedgerEntryDialog(
     subjects: List<String>,
     onDismiss: () -> Unit,
     onDelete: (() -> Unit)?,
+    holdings: Boolean = false,
     onSave: (LedgerEntry) -> Unit,
 ) {
     var kind by remember { mutableStateOf(initial.kind) }
+    var before by remember { mutableStateOf(initial.before) }
+    var delta by remember { mutableStateOf(initial.delta) }
+    var item by remember { mutableStateOf(initial.item) }
     var subject by remember { mutableStateOf(initial.subject) }
     var aspect by remember { mutableStateOf(initial.aspect) }
     var text by remember { mutableStateOf(initial.text) }
@@ -586,11 +719,19 @@ private fun LedgerEntryDialog(
     fun build(): LedgerEntry {
         val promise = kind == LedgerKind.PROMISE
         val ends = kind == LedgerKind.STATE || kind == LedgerKind.EVENT || kind == LedgerKind.KNOW
+        val hold = kind == LedgerKind.HOLD
         return initial.copy(
             kind = kind,
             text = text.trim(),
             subject = if (kind == LedgerKind.TIME) "" else subject.trim(),
-            aspect = if (kind == LedgerKind.STATE) aspect.trim() else "",
+            aspect = if (kind == LedgerKind.STATE || hold) aspect.trim() else "",
+            before = if (hold) before.trim() else "",
+            delta = if (hold) delta.trim() else "",
+            item = hold && item,
+            // 作者改过、看过这一条：不再待复核。伏笔以外的类别不留伏笔的推进和状态。
+            recheck = false,
+            lastAdvanced = if (promise) initial.lastAdvanced else null,
+            state = if (promise) initial.state else null,
             from = from,
             until = if (ends) until else null,
             payoff = if (promise) payoff else null,
@@ -604,23 +745,32 @@ private fun LedgerEntryDialog(
     GlassDialog(show = true, title = if (isNew) "添加一条" else "改一条", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SegmentedControl(KIND_TABS, kind) { kind = it }
-            Text(kind.label + "：" + kind.hint, fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+            SegmentedControl(if (holdings || kind == LedgerKind.HOLD || initial.kind == LedgerKind.HOLD) KIND_TABS + HOLD_TAB else KIND_TABS, kind) { kind = it }
+            Text(kind.label + "：" + kind.hint, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             if (kind != LedgerKind.TIME) {
-                val needed = kind == LedgerKind.STATE || kind == LedgerKind.KNOW
-                TextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                val needed = kind == LedgerKind.STATE || kind == LedgerKind.KNOW || kind == LedgerKind.HOLD
+                GroupedTextField(value = subject, onValueChange = { subject = it }, label = if (needed) "谁" else "谁（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(subjects.filter { it != subject.trim() }) { subject = it }
             }
+            if (kind == LedgerKind.HOLD) {
+                GroupedTextField(value = aspect, onValueChange = { aspect = it }, label = "哪一项（境界、灵石、某件法宝）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
+                    ToggleRow("这是一件物品", item, subtitle = "同一时间只能在一个人手里；期末写“持有”或“没有了”。") { item = it }
+                }
+                GroupedTextField(value = before, onValueChange = { before = it }, label = "期初（这一章开始时）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = delta, onValueChange = { delta = it }, label = "变化（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
             if (kind == LedgerKind.STATE) {
-                TextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = aspect, onValueChange = { aspect = it }, label = "哪方面（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
                 Choices(LEDGER_ASPECTS.filter { it != aspect.trim() }) { aspect = it }
             }
-            TextField(value = text, onValueChange = { text = it }, label = "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
+            GroupedTextField(value = text, onValueChange = { text = it }, label = if (kind == LedgerKind.HOLD) "期末（这一章结束时）" else "内容", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 160.dp))
+            if (initial.recheck) Text("这一章定稿后改过，这一条的原句在正文里找不到了：核对过、改好了点保存，就不再标待复核。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.warning)
             // 章号用步进器：－ ＋ 一章章调，点数字直接输入；空着是“不填”。计划收章、写到哪章止可以超过现有的章。
             Column {
                 val fromTitle = when (kind) {
                     LedgerKind.PROMISE -> "第几章埋"
-                    LedgerKind.TIME -> "第几章"
+                    LedgerKind.TIME, LedgerKind.HOLD -> "第几章"
                     else -> "从第几章起"
                 }
                 ChapterStepperRow(fromTitle, from, chapters = emptyList()) { from = it }
@@ -629,30 +779,30 @@ private fun LedgerEntryDialog(
                         ChapterStepperRow("到第几章止", until, chapters = emptyList(), start = from ?: 1) { until = it }
                     LedgerKind.PROMISE ->
                         ChapterStepperRow("计划第几章收", payoff, chapters = emptyList(), start = (from ?: 0) + 1) { payoff = it }
-                    LedgerKind.TIME -> Unit
+                    LedgerKind.TIME, LedgerKind.HOLD -> Unit
                 }
             }
             if (initial.from == null && initial.volume != null && from == null) {
-                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = 13.sp, lineHeight = 18.sp, color = c.secondary)
+                Text("导入时只知道是第 ${initial.volume} 卷起；填了章号就按章算。", fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.secondary)
             }
             if (kind == LedgerKind.PROMISE) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ToggleRow("已经收了", done) { done = it } }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ToggleRow("已经收了", done) { done = it } }
                 if (done) ChapterStepperRow("第几章收的", closed, chapters = emptyList(), start = payoff ?: from ?: 1) { closed = it }
             }
             if (kind == LedgerKind.KNOW) {
-                TextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = via, onValueChange = { via = it }, label = "消息从哪来（偷听、谁告诉的……）", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
             if (kind != LedgerKind.TIME) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow("只有作者知道", secret, subtitle = "结局、对手的底牌这类：只给 AI 把握方向，不写进正文。") { secret = it }
                 }
             }
             if (initial.quote.isNotBlank()) {
-                Text("依据原文", fontSize = 13.sp, color = c.secondary)
-                Text(initial.quote, fontSize = 14.sp, lineHeight = 21.sp, color = c.label)
+                Text("依据原文", fontSize = TypeScale.Caption, color = c.secondary)
+                Text(initial.quote, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, color = c.label)
             }
             if (onDelete != null) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) { ActionRow("删除这一条", destructive = true, centered = true, onClick = onDelete) }
             }
         }
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(build()) }, confirmText = if (isNew) "添加" else "保存", confirmEnabled = text.isNotBlank())
@@ -674,11 +824,11 @@ private fun LedgerImport(layer: LedgerLayer.Import, padding: PaddingValues, onCh
                 val toggle = { onChange(layer.copy(picked = if (on) layer.picked - e.id else layer.picked + e.id)) }
                 GroupedListCell(i == 0, i == list.lastIndex) {
                     GroupedRow(onClick = toggle) {
-                        Checkbox(state = ToggleableState(on), onClick = toggle)
+                        LingYueCheckbox(on, onClick = toggle)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                            Text(e.text, color = if (on) c.label else c.tertiary, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
                             val sub = listOf(e.subject, e.aspect, e.whenLabel).filter { it.isNotBlank() }.joinToString(" · ")
-                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = 13.sp)
+                            if (sub.isNotEmpty()) Text(sub, color = c.secondary, fontSize = TypeScale.Caption)
                         }
                     }
                 }

@@ -126,16 +126,16 @@ class AiUsageUiTest {
         waitFor { vm.aiUsage.value.days[LocalDate.now()].orEmpty().any { it.work == workId && it.feature == AiFeature.INLINE.name } }
         compose.onNodeWithText("撤回").performClick()
 
-        // 写作 AI 设置 → 高级设置：最近一次发给 AI 的内容里有用量；设置页“用量”一行写着今天约多少。
+        // 写作 AI 设置 → 高级设置：最近一次发给 AI 的内容里有用量；设置页“AI 用量”一行写着今天约多少。
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
+        waitForText("这部书的口味")
         compose.onNodeWithText("高级设置").performScrollTo().performClick()
         waitForText("最近一次发给 AI 的内容")
         compose.onNodeWithText("最近一次发给 AI 的内容").performScrollTo().performClick()
         waitForText("输入 1.2 万 token（缓存命中 1.1 万）")
         compose.onNodeWithText("好").performClick()
-        // “用量”和它在同一页（高级设置的“记录”里）。
-        compose.onNodeWithText("用量").performScrollTo().performClick()
+        // “AI 用量”和它在同一页（高级设置的“记录”里）。
+        compose.onNodeWithText("AI 用量").performScrollTo().performClick()
 
         // 用量页：先只看这部作品，按功能；切到全部再看按作品。
         waitForText("按功能")
@@ -145,7 +145,7 @@ class AiUsageUiTest {
         // 分段控件上一个，按作品里一个。
         waitFor { compose.onAllNodesWithText("《长夜》").fetchSemanticsNodes().size >= 2 }
 
-        // 我的 → AI 助手：价格与用量。
+        // 我的 → AI 服务：价格与用量。
         compose.runOnUiThread { vm.open(Screen.Ai) }
         waitForText("价格与用量")
         compose.onNodeWithText("单价（你填的）").performScrollTo()
@@ -162,7 +162,7 @@ class AiUsageUiTest {
     fun styleSamplesSettingsListAndSkip() {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
+        waitForText("这部书的口味")
         // 首屏没有挑了哪几段；开关和挑了哪几段都在高级设置里。
         assertTrue(compose.onAllNodesWithText("看看挑了哪几段").fetchSemanticsNodes().isEmpty())
         compose.onNodeWithText("高级设置").performScrollTo().performClick()

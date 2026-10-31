@@ -2,7 +2,6 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.layout.Row
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -42,60 +41,49 @@ fun DetailScreen(vm: AppViewModel, bookId: String) {
     val entry = shelf.firstOrNull { it.id == bookId }
     val dialogs = remember { BookDialogState() }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "书籍详情",
+        onBack = { vm.back() },
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "书籍详情",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(LingYueIcons.Back, contentDescription = "返回")
-                        }
-                    },
-                )
-            },
-        ) { padding ->
-            if (entry == null) return@GlassScaffold
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
-                overscrollEffect = null,
-            ) {
-                item { Header(entry, vm) }
-                entry.description?.let { text ->
-                    item {
-                        GroupedSection(header = "简介") {
-                            row { Text(text, color = c.label, fontSize = 15.sp, lineHeight = 23.sp, modifier = Modifier.padding(16.dp)) }
-                        }
-                    }
-                }
+        if (entry == null) return@SubPageScaffold
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + 24.dp),
+            overscrollEffect = null,
+        ) {
+            item { Header(entry, vm) }
+            entry.description?.let { text ->
                 item {
-                    GroupedSection(header = "信息") {
-                        row { ValueRow("累计阅读", durationLabel(entry.readMillis)) }
-                        row { ValueRow("添加于", dateLabel(entry.addedAt)) }
-                        if (entry.openedAt > 0) row { ValueRow("最近阅读", dateLabel(entry.openedAt)) }
-                        row { ValueRow("来源文件", entry.sources.joinToString("\n") { it.name }) }
-                    }
-                    GroupedSection {
-                        if (entry.sources.any { it.uri != null }) {
-                            row { NavRow("从原文件刷新") { vm.refresh(entry) } }
-                        }
-                        if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
-                            row { NavRow("净化与分章规则") { vm.open(Screen.BookRules(entry.id)) } }
-                        }
-                        row { NavRow("重命名") { dialogs.renaming = true } }
-                    }
-                    GroupedSection(footer = "删除本机副本与阅读进度、书签批注；原文件不受影响。") {
-                        row { ActionRow("移除", destructive = true) { dialogs.removing = true } }
+                    GroupedSection(header = "简介") {
+                        row { Text(text, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(16.dp)) }
                     }
                 }
             }
-            BookDialogs(entry, vm, dialogs, onRemoved = { vm.back() })
+            item {
+                GroupedSection(header = "信息") {
+                    row { ValueRow("累计阅读", durationLabel(entry.readMillis)) }
+                    row { ValueRow("添加于", dateLabel(entry.addedAt)) }
+                    if (entry.openedAt > 0) row { ValueRow("最近阅读", dateLabel(entry.openedAt)) }
+                    row { ValueRow("来源文件", entry.sources.joinToString("\n") { it.name }) }
+                }
+                // 跳页的用带“›”的行（净化与分章），就地做事、弹对话框的用动作行（刷新、分组、重命名）。
+                GroupedSection {
+                    if (entry.format in setOf(BookFormat.TXT, BookFormat.MARKDOWN, BookFormat.MIXED)) {
+                        row { NavRow("净化与分章") { vm.open(Screen.BookRules(entry.id)) } }
+                    }
+                    if (entry.sources.any { it.uri != null }) {
+                        row { ActionRow("从原文件刷新") { vm.refresh(entry) } }
+                    }
+                    row { ActionRow("分组…") { dialogs.grouping = true } }
+                    row { ActionRow("重命名") { dialogs.renaming = true } }
+                }
+                GroupedSection(footer = "删除本机副本与阅读进度、书签批注；原文件不受影响。") {
+                    row { ActionRow("移除", destructive = true) { dialogs.removing = true } }
+                }
+            }
         }
+        BookDialogs(entry, vm, dialogs, onRemoved = { vm.back() })
     }
 }
 
@@ -104,23 +92,24 @@ private fun Header(entry: BookEntry, vm: AppViewModel) {
     val c = LocalGroupedColors.current
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 20.dp)) {
         // 封面在左、书名作者进度在右：一眼看全，不用把一张大封面摆在正中占掉半屏。
-        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        // 封面左缘和下面的主按钮、卡片对齐（都离屏幕边 12dp），不再多缩进 4dp。
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(96.dp)) {
                 BookCover(entry.title, entry.author.orEmpty(), cover = entry.cover?.let { vm.bookFile(entry.id, it) })
             }
             Column(Modifier.weight(1f).padding(start = 16.dp)) {
-                Text(entry.title, color = c.label, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                entry.author?.let { Text(it, color = c.secondary, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp)) }
+                Text(entry.title, color = c.label, fontSize = TypeScale.Title, lineHeight = TypeScale.TitleLine, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                entry.author?.let { Text(it, color = c.secondary, fontSize = TypeScale.Body, modifier = Modifier.padding(top = 4.dp)) }
                 Text(
                     "${entry.format.label} · ${entry.chapterCount} 章 · 约 ${wordCount(entry.charCount)}",
                     color = c.secondary,
-                    fontSize = 13.sp,
+                    fontSize = TypeScale.Caption,
                     modifier = Modifier.padding(top = 10.dp),
                 )
                 Text(
                     entry.progress?.let { "${progressLabel(entry)} · ${it.chapterTitle}" } ?: "还没开始读",
                     color = if (entry.progress != null) c.tint else c.secondary,
-                    fontSize = 13.sp,
+                    fontSize = TypeScale.Caption,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),

@@ -151,7 +151,7 @@ sealed interface Screen {
     data object LibrarySearch : Screen
     data class Detail(val bookId: String) : Screen
     data object Dictionaries : Screen
-    /** AI 助手设置：服务商、模型、密钥。 */
+    /** AI 服务（全局）：服务商、模型、密钥。这部书怎么写在 [WorkAi]。 */
     data object Ai : Screen
     /** 离线语音：下载模型、选声音。 */
     data object OfflineVoice : Screen
@@ -174,14 +174,28 @@ sealed interface Screen {
     data class WorkHistory(val workId: String, val chapterId: String, val docId: String? = null) : Screen
     /** 一部作品的 AI 设置：首屏只放最常用的几项（服务商、温度、口味、黑名单、文风……）。 */
     data class WorkAi(val workId: String) : Screen
-    /** 作品 AI 设置的“高级设置”：设定包、写作范本、上限、文风范例、查 AI 腔、写作建议、学你的改法、AI 记录与用量、最近一次发给 AI 的内容。 */
+    /** 作品 AI 设置的“高级设置”：上限、文风范例、查 AI 腔、写作建议、学你的改法、AI 用量、最近一次发给 AI 的内容。 */
     data class WorkAiAdvanced(val workId: String) : Screen
     /** 一部作品的设定包：总纲、细纲、人物档案、规范等分类文档。 */
     data class WorkPack(val workId: String) : Screen
-    /** 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。 */
-    data class WorkLedger(val workId: String, val chapterId: String? = null) : Screen
-    /** 设定包里的一份文档。 */
-    data class PackDoc(val workId: String, val docId: String) : Screen
+    /**
+     * 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。[promises] 为真时打开“伏笔”标签
+     * （原来单独的“伏笔”页并进了这里：该回收了、还没回收、已回收、来源文档）。
+     * [tab] 是指定打开哪个标签（LedgerVisualTab 的名字），[person] 是“只看谁”：离开账本去别的页时把当时的标签和筛选写回来
+     * （[keepState]），返回时照着恢复，不回到入口的默认。
+     */
+    data class WorkLedger(
+        val workId: String,
+        val chapterId: String? = null,
+        val promises: Boolean = false,
+        val tab: String? = null,
+        val person: String? = null,
+    ) : Screen
+    /**
+     * 设定包里的一份文档。[draft] 不为空时打开就让 AI 按这句要求起草（新建对话框里勾了“让 AI 起草”）；
+     * [condense] 为真时打开就弹“精简”（设定包首页放不下的文档旁边的“精简”）。
+     */
+    data class PackDoc(val workId: String, val docId: String, val draft: String? = null, val condense: Boolean = false) : Screen
     /** 一章的细纲卡。 */
     data class ChapterCard(val workId: String, val chapterId: String) : Screen
     /** 一部作品的变更登记。 */
@@ -192,8 +206,6 @@ sealed interface Screen {
     data class ChapterBrief(val workId: String, val chapterId: String) : Screen
 
     data class ChapterReview(val workId: String, val chapterId: String) : Screen
-
-    data class Foreshadows(val workId: String) : Screen
 
     data class ChapterDraft(val workId: String, val chapterId: String) : Screen
 
@@ -3142,6 +3154,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         _stack.update { stack ->
             stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex, char = charOffset, highlight = true)
+        }
+    }
+
+    /**
+     * 一页上面又压了一页、这一页的界面被收掉时，把它当时的状态写回栈里的那一项（[old] 换成 [now]），返回时照着重建。
+     * 只换不在栈顶的那一项：已经返回（弹出栈）的不再写回；还在栈顶（比如转屏）时界面自己存着，不用换。
+     */
+    fun keepState(old: Screen, now: Screen) {
+        if (old == now) return
+        _stack.update { stack ->
+            val i = stack.lastIndexOf(old)
+            if (i in 0 until stack.lastIndex) stack.toMutableList().also { it[i] = now } else stack
         }
     }
 

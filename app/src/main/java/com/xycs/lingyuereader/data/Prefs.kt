@@ -69,8 +69,16 @@ data class ReaderSettings(
     /** 0..1；为负表示跟随系统亮度。 */
     val brightness: Float = -1f,
     val fullscreen: Boolean = false,
-    /** 系统处于深色模式时自动改用夜间背景。 */
+    /**
+     * 深色模式时自动改用夜间背景：应用是深色（手动选了深色，或跟随系统、系统是深色）就换墨夜，
+     * 以前只认系统深色，应用里手动选了深色，打开书还是亮的纸白。
+     */
     val autoNight: Boolean = true,
+    /**
+     * 老版本升级上来的设置：[autoNight] 照旧只认系统深色，免得升级后书页忽然变了；自己动一次那个开关就改成新的认法。
+     * 新安装没有这一项（见 [Prefs] 的迁移）。
+     */
+    val autoNightSystemOnly: Boolean = false,
     /** 听书语速，1 为正常。 */
     val ttsRate: Float = 1f,
     /** 按光线传感器测到的环境亮度调整背景：昏暗时压暗背景，很暗时换夜间。 */
@@ -205,14 +213,35 @@ data class ShelfPrefs(
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("reader", Context.MODE_PRIVATE)
 
+    init {
+        migrate()
+    }
+
+    /**
+     * 设置的版本迁移，每个版本只做一次（记在 [VERSION_KEY]）。
+     * 1：“深色模式时用夜间背景”改成认应用的深色。已经有设置的老用户（升级上来的）记下 autoNightSystemOnly，
+     *    行为和以前一样只认系统深色；新安装（还什么都没存过）直接用新的认法。
+     */
+    private fun migrate() {
+        val version = sp.getInt(VERSION_KEY, 0)
+        if (version >= SETTINGS_VERSION) return
+        val upgraded = sp.all.isNotEmpty()
+        sp.edit {
+            if (version < 1 && upgraded && !sp.contains("autoNightSystemOnly")) putBoolean("autoNightSystemOnly", true)
+            putInt(VERSION_KEY, SETTINGS_VERSION)
+        }
+    }
+
     private companion object {
+        const val VERSION_KEY = "prefs.version"
+        const val SETTINGS_VERSION = 1
         // 备份可以来自旧版本或另一台设备；只导入当前版本认识且类型正确的键。
         val FLOAT_KEYS = setOf(
             "fontSize", "lineHeight", "paragraphSpacing", "brightness", "ttsRate", "autoScrollLines",
             "margin", "letterSpacing", "ui.scale",
         )
         val BOOLEAN_KEYS = setOf(
-            "serif", "keepScreenOn", "tapToTurn", "volumeKeys", "fullscreen", "autoNight",
+            "serif", "keepScreenOn", "tapToTurn", "volumeKeys", "fullscreen", "autoNight", "autoNightSystemOnly",
             "ambientLight", "eveningWarmth", "breakReminder", "indent", "justify", "eInk",
             "goalReminder", "pinyin", "twoPage", "pageEdges", "boldText", "ui.monet", "ui.blur",
             "ui.liquidGlass", "ui.floatingBar", "shelf.list",
@@ -239,6 +268,7 @@ class Prefs(context: Context) {
             brightness = sp.getFloat("brightness", d.brightness),
             fullscreen = sp.getBoolean("fullscreen", d.fullscreen),
             autoNight = sp.getBoolean("autoNight", d.autoNight),
+            autoNightSystemOnly = sp.getBoolean("autoNightSystemOnly", d.autoNightSystemOnly),
             ttsRate = sp.getFloat("ttsRate", d.ttsRate),
             ambientLight = sp.getBoolean("ambientLight", d.ambientLight),
             eveningWarmth = sp.getBoolean("eveningWarmth", d.eveningWarmth),
@@ -279,6 +309,7 @@ class Prefs(context: Context) {
             putFloat("brightness", s.brightness)
             putBoolean("fullscreen", s.fullscreen)
             putBoolean("autoNight", s.autoNight)
+            putBoolean("autoNightSystemOnly", s.autoNightSystemOnly)
             putBoolean("ambientLight", s.ambientLight)
             putBoolean("eveningWarmth", s.eveningWarmth)
             putBoolean("breakReminder", s.breakReminder)
@@ -387,6 +418,10 @@ class Prefs(context: Context) {
                 else -> wrapped.getString(tag)
             }
         }
+        // 旧版本的备份（没记设置版本）带着“深色模式时用夜间背景”：那时它的意思是只认系统深色，和升级上来的老用户一样补上
+        // autoNightSystemOnly，行为不变。备份里没有这个开关的，本机的开关和它的认法照旧，不动。
+        val backupVersion = o.optJSONObject(VERSION_KEY)?.optInt("i", 0) ?: 0
+        if (backupVersion < 1 && "autoNight" in values && "autoNightSystemOnly" !in values) values["autoNightSystemOnly"] = true
         sp.edit {
             values.forEach { (key, value) ->
                 when (value) {

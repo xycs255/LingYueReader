@@ -7,6 +7,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -222,13 +223,16 @@ class WritingClicheUiTest {
         waitFor { !store.assist(workId).aiCliche }
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         compose.onNodeWithText("我的黑名单").performScrollTo().performClick()
+        // 列表在上；右上“+”弹对话框加一条。
+        waitForText("黑名单还是空的")
+        compose.onNodeWithContentDescription("加进黑名单").performClick()
         waitForText("不想再看到的说法")
-        compose.onAllNodes(hasSetTextAction())[0].performTextInput("说来话长")
-        compose.onNodeWithText("加入黑名单").performClick()
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("说来话长")
+        compose.onAllNodesWithText("加入黑名单").onLast().performClick()
         waitFor { store.assist(workId).banned == listOf("说来话长") }
         waitForText("1 条")
         compose.onNodeWithContentDescription("从黑名单删去「说来话长」").performClick()
         waitFor { store.assist(workId).banned.isEmpty() }
-        waitForText("还没有。")
+        waitForText("黑名单还是空的")
     }
 }

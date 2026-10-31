@@ -2,7 +2,6 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -72,93 +71,80 @@ fun DictionariesScreen(vm: AppViewModel) {
     }
     if (settings.dicts.isEmpty()) editing = false
 
-    ProvideGroupedColors {
-        val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "词典",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(LingYueIcons.Back, contentDescription = "返回")
-                        }
-                    },
-                    actions = {
-                        if (settings.dicts.isNotEmpty()) {
-                            Text(
-                                if (editing) "完成" else "编辑",
-                                color = c.tint,
-                                fontSize = 17.sp,
-                                fontWeight = if (editing) FontWeight.SemiBold else FontWeight.Normal,
-                                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { editing = !editing }.padding(horizontal = 10.dp, vertical = 12.dp),
-                            )
-                        }
-                        IconButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy, modifier = Modifier.padding(end = 12.dp)) {
-                            Icon(LingYueIcons.Add, contentDescription = "导入词典")
-                        }
-                    },
+    SubPageScaffold(
+        title = "词典",
+        onBack = { vm.back() },
+        actions = {
+            if (settings.dicts.isNotEmpty()) {
+                Text(
+                    if (editing) "完成" else "编辑",
+                    color = LocalGroupedColors.current.tint,
+                    fontSize = TypeScale.Headline,
+                    fontWeight = if (editing) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.Medium)).clickable { editing = !editing }.padding(horizontal = 10.dp, vertical = 12.dp),
                 )
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-        ) { padding ->
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 24.dp),
-                overscrollEffect = null,
-            ) {
-                item {
-                    GroupedSection(header = "内置", footer = "Unihan 字典（读音、部首、笔画）与 CC-CEDICT 词典（英文释义），离线可用。") {
-                        row { ToggleRow("基础字典与词典", settings.builtinEnabled, onChange = vm::setBuiltinDictEnabled) }
-                    }
-                    GroupedSection(
-                        header = "导入的词典",
-                        footer = if (settings.dicts.isEmpty()) {
-                            "导入 MDict 词典（.mdx）。词典带的 .mdd（图片、发音）和 .css 样式请一起选上。"
-                        } else {
-                            "查词结果按这里的顺序排列，点“编辑”可以调整顺序或删除。在线查询会打开浏览器。"
-                        },
-                    ) {
-                        if (busy) row { LoadingRow("正在导入并建立索引……") }
-                        settings.dicts.forEachIndexed { i, d ->
-                            row {
-                                val detail = buildString {
-                                    append("${d.entries} 个词条")
-                                    if (d.mdds.isNotEmpty()) append(" · 含资源")
-                                }
-                                if (editing) {
-                                    EditingDictRow(
-                                        title = d.title,
-                                        detail = detail,
-                                        canMoveUp = i > 0,
-                                        canMoveDown = i < settings.dicts.lastIndex,
-                                        onMove = { up -> vm.moveDict(d.id, up) },
-                                        onDelete = { removing = d },
-                                    )
-                                } else {
-                                    ToggleRow(d.title, d.enabled, subtitle = detail) { vm.setDictEnabled(d.id, it) }
-                                }
+            }
+            IconButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy, modifier = Modifier.padding(end = 12.dp)) {
+                Icon(LingYueIcons.Add, contentDescription = "导入词典")
+            }
+        },
+        snackbar = snackbar,
+    ) { padding ->
+        val c = LocalGroupedColors.current
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 24.dp),
+            overscrollEffect = null,
+        ) {
+            item {
+                GroupedSection(header = "内置", footer = "Unihan 字典（读音、部首、笔画）与 CC-CEDICT 词典（英文释义），离线可用。") {
+                    row { ToggleRow("基础字典与词典", settings.builtinEnabled, onChange = vm::setBuiltinDictEnabled) }
+                }
+                GroupedSection(
+                    header = "导入的词典",
+                    footer = if (settings.dicts.isEmpty()) {
+                        "导入 MDict 词典（.mdx）。词典带的 .mdd（图片、发音）和 .css 样式请一起选上。"
+                    } else {
+                        "查词结果按这里的顺序排列，点“编辑”可以调整顺序或删除。在线查询会打开浏览器。"
+                    },
+                ) {
+                    if (busy) row { LoadingRow("正在导入并建立索引……") }
+                    settings.dicts.forEachIndexed { i, d ->
+                        row {
+                            val detail = buildString {
+                                append("${d.entries} 个词条")
+                                if (d.mdds.isNotEmpty()) append(" · 含资源")
+                            }
+                            if (editing) {
+                                EditingDictRow(
+                                    title = d.title,
+                                    detail = detail,
+                                    canMoveUp = i > 0,
+                                    canMoveDown = i < settings.dicts.lastIndex,
+                                    onMove = { up -> vm.moveDict(d.id, up) },
+                                    onDelete = { removing = d },
+                                )
+                            } else {
+                                ToggleRow(d.title, d.enabled, subtitle = detail) { vm.setDictEnabled(d.id, it) }
                             }
                         }
-                        if (settings.dicts.isEmpty()) row { ActionRow("导入词典…", enabled = !busy) { picker.launch(arrayOf("*/*")) } }
                     }
+                    if (settings.dicts.isEmpty()) row { ActionRow("导入词典…", enabled = !busy) { picker.launch(arrayOf("*/*")) } }
                 }
             }
-            // 弹窗要放在 Scaffold 里面才显示得出来。
-            removing?.let { d ->
-                GlassDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
-                    DialogButtons(
-                        onDismiss = { removing = null },
-                        onConfirm = {
-                            vm.removeDict(d.id)
-                            removing = null
-                        },
-                        confirmText = "删除",
-                        destructive = true,
-                    )
-                }
+        }
+        // 弹窗要放在 Scaffold 里面才显示得出来。
+        removing?.let { d ->
+            GlassDialog(show = true, title = "删除词典", summary = "删除《${d.title}》及其索引？", onDismissRequest = { removing = null }) {
+                DialogButtons(
+                    onDismiss = { removing = null },
+                    onConfirm = {
+                        vm.removeDict(d.id)
+                        removing = null
+                    },
+                    confirmText = "删除",
+                    destructive = true,
+                )
             }
         }
     }
@@ -189,8 +175,8 @@ private fun EditingDictRow(
             }
         }
         Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-            Text(detail, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp)
+            Text(title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
+            Text(detail, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         }
         listOf(true to canMoveUp, false to canMoveDown).forEach { (up, enabled) ->
             Box(

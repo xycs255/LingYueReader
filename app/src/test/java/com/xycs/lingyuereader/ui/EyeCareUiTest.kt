@@ -158,7 +158,7 @@ class EyeCareUiTest {
         shadowOf(sensors).sendSensorEventToListeners(event)
         compose.mainClock.advanceTimeBy(2_000)
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
+        compose.onNodeWithText("更多").performClick()
         // 设置面板画在最外层，也要拿到阅读页的光线读数；读数写在“护眼”页。
         compose.onAllNodesWithText("护眼").onLast().performScrollTo().performClick()
         waitForText("当前环境光约")

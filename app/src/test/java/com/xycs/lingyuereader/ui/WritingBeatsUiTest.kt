@@ -210,8 +210,8 @@ class WritingBeatsUiTest {
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.ChapterDraft(workId, chapterId)) }
-        // 节拍只读地列出来，带“去改节拍”。
-        waitForText("去改节拍")
+        // 节拍只读地列出来；改节拍走“你的构思”里的“编辑细纲卡”（本页唯一一处）。
+        waitForText("编辑细纲卡")
         waitForText("3. 老周的信")
         // 按钮要等本章任务编好才可点：在慢机器上先出现、后可点，点早了会被忽略。
         waitFor { compose.onAllNodes(hasText("写本章") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }

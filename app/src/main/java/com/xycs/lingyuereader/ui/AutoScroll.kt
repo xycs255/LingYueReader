@@ -17,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -50,7 +49,7 @@ internal fun AutoScrollBar(
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(start = 16.dp, end = 16.dp, bottom = 36.dp)
             .fillMaxWidth()
-            .readerGlass(RoundedCornerShape(20.dp), palette, LocalGlassBackdrop.current)
+            .readerGlass(RoundedCornerShape(Radius.XLarge), palette, LocalGlassBackdrop.current)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -58,8 +57,8 @@ internal fun AutoScrollBar(
             Icon(if (paused) LingYueIcons.Play else LingYueIcons.Pause, contentDescription = if (paused) "继续自动滚动" else "暂停自动滚动", tint = palette.accent)
         }
         Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-            Text(if (paused) "已暂停" else if (paged) "自动翻页" else "自动滚动", color = palette.text, fontSize = 13.sp)
-            Text("每分钟 ${lines.toInt()} 行 · 点正文暂停", color = palette.secondary, fontSize = 11.sp)
+            Text(if (paused) "已暂停" else if (paged) "自动翻页" else "自动滚动", color = palette.text, fontSize = TypeScale.Caption)
+            Text("每分钟 ${lines.toInt()} 行 · 点正文暂停", color = palette.secondary, fontSize = TypeScale.Micro)
         }
         IconButton(onClick = { onSpeed((lines - 2f).coerceAtLeast(AUTO_MIN_LINES)) }) {
             Icon(LingYueIcons.Remove, contentDescription = "慢一点", tint = palette.text)

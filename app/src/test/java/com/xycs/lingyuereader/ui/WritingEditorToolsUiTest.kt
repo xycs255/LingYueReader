@@ -250,6 +250,44 @@ class WritingEditorToolsUiTest {
         EditorToolGroup.entries.forEach { g -> assertTrue(g.label, editorTabEntries(g, locked = false, lastChapter = true).size in 3..5) }
     }
 
+    /** 状态行放不下时：先省“写作建议已开”，再省字数、保存状态、章节状态。问题数不在这一行（挂在“查”的角标上）。 */
+    @Test fun statusLineDropsTheTailThenWordsThenSaving() {
+        val all = EditorStatusPart.entries
+        assertEquals(listOf(EditorStatusPart.STATE, EditorStatusPart.WORDS, EditorStatusPart.SAVING, EditorStatusPart.TAIL), all)
+        val widths = mapOf(EditorStatusPart.STATE to 2, EditorStatusPart.WORDS to 5, EditorStatusPart.SAVING to 3, EditorStatusPart.TAIL to 6)
+        fun fitsIn(n: Int): (List<EditorStatusPart>) -> Boolean = { l -> l.sumOf { widths.getValue(it) } <= n }
+        assertEquals(all, editorStatusShown(all, fitsIn(100)))
+        assertEquals(all - EditorStatusPart.TAIL, editorStatusShown(all, fitsIn(10)))
+        assertEquals(listOf(EditorStatusPart.STATE, EditorStatusPart.SAVING), editorStatusShown(all, fitsIn(9)))
+        assertEquals(listOf(EditorStatusPart.STATE), editorStatusShown(all, fitsIn(4)))
+        assertEquals(emptyList<EditorStatusPart>(), editorStatusShown(all, fitsIn(1)))
+        // 写作建议没开时照样按顺序省。
+        val calm = all - EditorStatusPart.TAIL
+        assertEquals(listOf(EditorStatusPart.STATE, EditorStatusPart.SAVING), editorStatusShown(calm, fitsIn(6)))
+    }
+
+    /** 360dp 宽的屏 ✦ 只显示标题、不显示理由；411dp 照旧带理由。 */
+    @Test fun sparkReasonOnlyOnWiderScreens() {
+        assertFalse(sparkShowsReason(360))
+        assertFalse(sparkShowsReason(393))
+        assertTrue(sparkShowsReason(411))
+        assertTrue(sparkShowsReason(600))
+    }
+
+    /**
+     * 右上“⋯”：三道审稿不再重复（底栏“查”里有），加了这部书的“写作 AI 设置”；新叫法照 docs/design.md 的“入口与叫法”表，
+     * 旧叫法留在 [EditorEntry.legacy] 里兜底。没设 AI 时 ✦ 叫“设置 AI 服务”（全局那页），和“写作 AI 设置”（这部书）分开。
+     */
+    @Test fun overflowKeepsTheRareOnesWithTheNewNames() {
+        assertFalse(EditorEntry.REVIEW in EDITOR_OVERFLOW)
+        assertTrue(EditorEntry.REVIEW in editorTabEntries(EditorToolGroup.CHECK, locked = false, lastChapter = false))
+        assertEquals(listOf("整理进设定包", "写作范本…", "设定包", "写作 AI 设置"), EDITOR_OVERFLOW.map { it.label })
+        listOf("整理本章进设定包", "整理入账").forEach { assertTrue(it, it in EditorEntry.SYNC.legacy) }
+        listOf("从范本找写法", "范本写法", "AI 写作范本").forEach { assertTrue(it, it in EditorEntry.REFERENCE.legacy) }
+        assertTrue("书灵" in EditorEntry.IDEAS.legacy)
+        assertEquals("设置 AI 服务", editorRecommendation("主角推开门。", TextRange(6), ChapterStatus.DRAFT, false).label)
+    }
+
     @Test fun lockedAndLastChapterChangeOnlyWhatTheyShould() {
         assertFalse(EditorEntry.FINISH in editorTabEntries(EditorToolGroup.ORGANIZE, locked = true, lastChapter = false))
         assertEquals("解锁修改", entryLabel(EditorEntry.STATUS, locked = true))

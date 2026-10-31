@@ -24,7 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
@@ -45,7 +44,6 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 一章的统计，一行说完。 */
@@ -100,22 +98,14 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
         }
     }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "检查规则",
+        onBack = { vm.back() },
+        snackbar = snackbar,
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "检查规则",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) { Icon(LingYueIcons.Back, contentDescription = "返回") }
-                    },
-                )
-            },
-            snackbarHost = { SnackbarHost(snackbar) },
-        ) { padding ->
+        // 正文照原来的缩进留着（包一层，免得整段重排）。
+        run {
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -126,8 +116,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     // 组名只是标签，不写条数（规范：组名不写状态）；每份规则文档读懂几条写在“编辑规则”那行右边。
                     GroupedSection(
                         header = "规则",
-                        footer = "规则写在设定包的“检查规则”文档里，每行一条，比如“字数：3000-6000”“至多 1：点了点头、顿了顿／一顿”“禁用：您”“句式：不是……而是……”“短段：12 字以内至多 5 处”。" +
-                            "灵阅在本机检查，不联网。",
+                        footer = "规则写在设定包的“检查规则”文档里，一行一条，比如“字数：3000-6000”“禁用：您”。在本机检查，不联网。",
                     ) {
                         if (set != null && set.isEmpty && set.unknown.isEmpty()) {
                             row { EmptyRow("还没有规则。") }
@@ -136,8 +125,8 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                             row {
                                 GroupedRow {
                                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Text(CheckRules.describe(r), color = c.label, fontSize = 15.sp, lineHeight = 21.sp)
-                                        Text("${r.source.doc} · 第 ${r.source.line} 行", color = c.secondary, fontSize = 12.sp)
+                                        Text(CheckRules.describe(r), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                                        Text("${r.source.doc} · 第 ${r.source.line} 行", color = c.secondary, fontSize = TypeScale.Footnote)
                                     }
                                 }
                             }
@@ -168,9 +157,9 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     }
                     if (!aiConfig.ready || !hasStyle) {
                         Text(
-                            if (!aiConfig.ready) "用 AI 整理要先在“我的 → AI 助手”里设置服务商。" else "用 AI 整理要先在设定包里放写作规范或称谓与语气文档。",
+                            if (!aiConfig.ready) "用 AI 整理要先在“我的 → AI 服务”里设置服务商。" else "用 AI 整理要先在设定包里放写作规范或称谓与语气文档。",
                             color = c.secondary,
-                            fontSize = 13.sp,
+                            fontSize = TypeScale.Caption,
                             modifier = Modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
                         )
                     }
@@ -180,8 +169,8 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                                 row {
                                     GroupedRow {
                                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            Text(u.text, color = c.destructive, fontSize = 15.sp, lineHeight = 21.sp)
-                                            Text("${u.doc} · 第 ${u.line} 行", color = c.secondary, fontSize = 12.sp)
+                                            Text(u.text, color = c.destructive, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
+                                            Text("${u.doc} · 第 ${u.line} 行", color = c.secondary, fontSize = TypeScale.Footnote)
                                         }
                                     }
                                 }
@@ -244,18 +233,18 @@ private fun RulesDraftDialog(text: String, replacing: Boolean, onDismiss: () -> 
             if (replacing) "。存了会替换现在的检查规则，原来的进历史版本。" else "。",
         onDismissRequest = onDismiss,
     ) {
-        TextField(value = value, onValueChange = { value = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp))
+        GroupedTextField(value = value, onValueChange = { value = it }, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp))
         if (parsed.unknown.isNotEmpty()) {
             Text(
                 "没看懂：" + parsed.unknown.take(3).joinToString("；") { it.text },
                 color = c.destructive,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
                 maxLines = 3,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
-        if (parsed.rules.isEmpty()) Text("没有读懂的规则，先改一改。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        if (parsed.rules.isEmpty()) Text("没有读懂的规则，先改一改。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 6.dp))
         DialogButtons(onDismiss = onDismiss, onConfirm = { onSave(value.trimEnd() + "\n") }, confirmText = "存为检查规则", confirmEnabled = parsed.rules.isNotEmpty())
     }
 }

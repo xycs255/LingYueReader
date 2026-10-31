@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -133,7 +134,7 @@ internal fun editorRecommendation(
         return EditorRecommendation(EditorRecommendationKind.PENDING_AI, label, reason, enabled = false)
     }
     if (status == ChapterStatus.FINAL) return EditorRecommendation(EditorRecommendationKind.UNLOCK, "解锁修改", "定稿正文已锁定")
-    if (!aiReady) return EditorRecommendation(EditorRecommendationKind.CONFIGURE_AI, "设置写作 AI", "连接后才会发送请求")
+    if (!aiReady) return EditorRecommendation(EditorRecommendationKind.CONFIGURE_AI, "设置 AI 服务", "连接后才会发送请求")
     val start = selection.min.coerceIn(0, text.length)
     val end = selection.max.coerceIn(start, text.length)
     if (start < end && text.subSequence(start, end).isNotBlank()) {
@@ -185,9 +186,11 @@ internal enum class EditorEntry(val label: String, val legacy: List<String> = li
     PREVIEW("预览本章"),
     LISTEN("听本章"),
     NEW_CHAPTER("写下一章"),
-    SYNC("整理本章进设定包", listOf("整理本章进设定包", "整理入账")),
-    REFERENCE("从范本找写法", listOf("从范本找写法", "范本写法")),
+    SYNC("整理进设定包", listOf("整理进设定包", "整理本章进设定包", "整理入账")),
+    REFERENCE("写作范本…", listOf("写作范本…", "写作范本", "从范本找写法", "范本写法", "AI 写作范本")),
     PACK("设定包"),
+    /** 这部书的写作 AI 设置（作品级：写作建议开关、温度、口味……）；全局的服务商、密钥在“我的 → AI 服务”。 */
+    WORK_AI("写作 AI 设置"),
     PREV_CHAPTER("上一章"),
     NEXT_CHAPTER("下一章"),
 }
@@ -203,8 +206,11 @@ internal fun editorTabEntries(group: EditorToolGroup, locked: Boolean, lastChapt
     EditorToolGroup.MORE -> listOfNotNull(EditorEntry.STATUS, EditorEntry.RENAME, EditorEntry.PREVIEW, EditorEntry.LISTEN, EditorEntry.NEW_CHAPTER.takeIf { lastChapter })
 }
 
-/** 右上“⋯”里只留不常用的几样（三道审稿“查”里也有：收尾页、问题面板也能去审稿，这里留一项给习惯从菜单找的）。 */
-internal val EDITOR_OVERFLOW = listOf(EditorEntry.REVIEW, EditorEntry.SYNC, EditorEntry.REFERENCE, EditorEntry.PACK)
+/**
+ * 右上“⋯”里只留不常用的几样。三道审稿不在这里：“查”标签、问题面板、✦ 推荐、收尾页都能去；
+ * “写作 AI 设置”进的是这部书的设置，不用先退回作品页。
+ */
+internal val EDITOR_OVERFLOW = listOf(EditorEntry.SYNC, EditorEntry.REFERENCE, EditorEntry.PACK, EditorEntry.WORK_AI)
 
 /** 顶栏章名左右的箭头。 */
 internal val EDITOR_TOP_BAR = listOf(EditorEntry.PREV_CHAPTER, EditorEntry.NEXT_CHAPTER)
@@ -334,6 +340,7 @@ internal fun entryIcon(entry: EditorEntry): ImageVector = when (entry) {
     EditorEntry.SYNC -> LingYueIcons.Download
     EditorEntry.REFERENCE -> LingYueIcons.Notes
     EditorEntry.PACK -> LingYueIcons.Folder
+    EditorEntry.WORK_AI -> LingYueIcons.Tune
     EditorEntry.PREV_CHAPTER -> LingYueIcons.ChevronBackward
     EditorEntry.NEXT_CHAPTER -> LingYueIcons.ChevronForward
 }
@@ -451,6 +458,11 @@ internal fun EditorBottomBar(
     }
 }
 
+/** 屏宽不到这么多（dp）时 ✦ 只显示标题、不显示理由：360dp 的屏上底栏右边只剩 140dp 左右。 */
+internal const val SPARK_REASON_MIN_SCREEN = 400
+
+internal fun sparkShowsReason(screenWidthDp: Int): Boolean = screenWidthDp >= SPARK_REASON_MIN_SCREEN
+
 /** ✦ 至少留这么宽（字号放大时标签先让）。 */
 private val SPARK_MIN_WIDTH = 88.dp
 
@@ -486,7 +498,7 @@ private fun rowTitle(r: EditorRow): String = when (r) {
 }
 
 /**
- * ✦ 推荐：淡强调色底、强调色字（“✦ 名字”，下面一行灰色理由），不铺整条实心色；还没设置写作 AI 时是一枚描边的次要按钮、不带理由。
+ * ✦ 推荐：淡强调色底、强调色字（“✦ 名字”，下面一行灰色理由，窄屏不写理由），不铺整条实心色；还没设置写作 AI 时是一枚描边的次要按钮、不带理由。
  * AI 在写、等采纳时灰底，只显示状态、不能点。
  */
 @Composable
@@ -494,7 +506,9 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
     val c = LocalGroupedColors.current
     val label = if (loading) "载入中" else rec.label
     val setup = enabled && rec.kind == EditorRecommendationKind.CONFIGURE_AI
-    val shape = RoundedCornerShape(12.dp)
+    // 窄屏（360dp）只露标题：理由挤在 140dp 宽里只剩“老周拒绝夜里开…”半句，读屏照旧念理由。
+    val reason = sparkShowsReason(LocalConfiguration.current.screenWidthDp)
+    val shape = RoundedCornerShape(Radius.Medium)
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     Box(
@@ -519,11 +533,11 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
         contentAlignment = Alignment.Center,
     ) {
         if (setup) {
-            Text(label, color = c.label, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("✦ $label", color = if (enabled) c.tint else c.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            Text("✦ $label", color = if (enabled) c.tint else c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!loading) Text(rec.reason, color = c.secondary, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!loading && reason) Text(rec.reason, color = c.secondary, fontSize = TypeScale.Micro, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -537,13 +551,13 @@ private fun MoreSparkButton(more: Int, open: Boolean, onClick: () -> Unit) {
         Modifier
             .widthIn(min = 44.dp)
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(pressHighlight(source.collectIsPressedAsState().value))
             .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = if (open) "收起推荐" else "还有 $more 项推荐" },
         contentAlignment = Alignment.Center,
     ) {
-        Text(if (open) "收起" else "+$more", color = c.tint, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        Text(if (open) "收起" else "+$more", color = c.tint, fontSize = TypeScale.Caption, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -555,7 +569,7 @@ internal fun EditorChipRow(backDescription: String, onBack: () -> Unit, content:
         Box(
             Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(Radius.Medium))
                 .clickable(role = Role.Button, onClick = onBack)
                 .semantics { contentDescription = backDescription },
             contentAlignment = Alignment.Center,
@@ -584,7 +598,7 @@ internal fun EditorChip(text: String, description: String? = null, fontSize: Int
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.heightIn(min = 40.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(10.dp)).background(c.fill).padding(horizontal = 12.dp),
+            Modifier.heightIn(min = 40.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(Radius.Medium)).background(c.fill).padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) { Text(text, color = c.label, fontSize = fontSize.sp, maxLines = 1) }
     }
@@ -594,7 +608,7 @@ internal fun EditorChip(text: String, description: String? = null, fontSize: Int
 @Composable
 internal fun EditorTip(text: String, onDismiss: () -> Unit) {
     val c = LocalGroupedColors.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(Radius.Medium)
     Row(
         Modifier
             .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -606,7 +620,7 @@ internal fun EditorTip(text: String, onDismiss: () -> Unit) {
             .padding(start = 14.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, color = c.label, fontSize = 14.sp, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
+        Text(text, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
         TextButton(text = "知道了", onClick = onDismiss)
     }
 }

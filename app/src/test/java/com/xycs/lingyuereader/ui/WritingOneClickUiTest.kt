@@ -22,6 +22,7 @@ import com.xycs.lingyuereader.data.WorkStore
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -137,7 +138,9 @@ class WritingOneClickUiTest {
 
         // 进度依次出现：拟细纲 → 拆节拍 → 写第 1 / 3 拍。
         waitForText("正在拟细纲")
-        waitFor { kinds.toList() == listOf("拟细纲") }
+        // 先等请求到（满载时本机准备资料可能慢），再断言第一条正是拟细纲；失败时报出实际收到的请求。
+        waitFor(30_000) { kinds.isNotEmpty() }
+        assertEquals("收到的请求：$kinds", listOf("拟细纲"), kinds.toList())
         holds.getValue("拟细纲").countDown()
         waitForText("正在拆节拍")
         holds.getValue("拆节拍").countDown()
@@ -152,8 +155,10 @@ class WritingOneClickUiTest {
         waitForText("林月在渡口等到沈默")
         waitForText("3. 老周的灯灭了")
         waitFor { shown("AI 拟的", substring = false) && shown("AI 拆的", substring = false) }
-        assertTrue(shown("改细纲 / 节拍"))
+        // 去细纲卡的入口本页只留一处：“你的构思”里的“编辑细纲卡”（依据这一组只留“按改过的重写”）。
         assertTrue(shown("按改过的重写"))
+        assertFalse(shown("改细纲 / 节拍"))
+        assertEquals(1, compose.onAllNodesWithText("编辑细纲卡").fetchSemanticsNodes().size)
         val card = store.card(workId, chapterId)
         assertTrue(card.aiOutline && card.aiBeats)
     }
@@ -170,7 +175,7 @@ class WritingOneClickUiTest {
         waitFor { shown("AI 拟的", substring = false) && shown("AI 拆的", substring = false) }
 
         // 去细纲卡：同样挂着标签；改一项事实，AI 拟的就没了；节拍点确认。
-        compose.onNodeWithText("改细纲 / 节拍").performScrollTo().performClick()
+        compose.onNodeWithText("编辑细纲卡").performScrollTo().performClick()
         waitForText("确认这份细纲")
         // 细纲卡的几项是小卡片：先点开“本章事实与结果”那张，下面才有文本框。
         compose.onNodeWithText("本章事实与结果").performScrollTo().performClick()

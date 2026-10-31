@@ -64,7 +64,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 写作细节页的实测截图：编辑器四组工具、底栏、故事账本四个标签与对话框、规划树调整顺序、
- * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、书灵、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页、
+ * 细纲卡、AI 写整章草稿、三道审稿、设定包、生词本，以及“AI 写”面板、灵感、作品 AI 设置与高级设置、排版设置、“这章写完了”收尾页、
  * 编辑器的“问题”面板（状态行的“N 处问题”、全部和各个筛选）。只截图供设计复核，不做像素断言；
  * 每张截图前都断言关键文字，确认真的点到了那个状态。
  */
@@ -317,8 +317,8 @@ class WritingDetailSnapshotTest {
     @Test
     fun editorToolsBottomCardAndPack() {
         openChapterThree()
-        // 没配置写作 AI：底栏是描边的“设置写作 AI”次要按钮。
-        waitForText("设置写作 AI")
+        // 没配置写作 AI：底栏是描边的“设置 AI 服务”次要按钮。
+        waitForText("设置 AI 服务")
         capture("detail-editor-bottom")
 
         openTools()
@@ -358,7 +358,7 @@ class WritingDetailSnapshotTest {
         openChapterThree()
         // 配好写作 AI、正文不空、没有选字：推荐“AI 接着写”。
         waitForText("AI 接着写")
-        waitForGone("设置写作 AI")
+        waitForGone("设置 AI 服务")
         capture("detail-editor-bottom-ai")
 
         // AI 写整章草稿：没有候选稿。
@@ -393,7 +393,7 @@ class WritingDetailSnapshotTest {
         capture("detail-ledger-people")
 
         compose.onNodeWithText("伏笔").performClick()
-        waitForText("账本伏笔 · 拖动计划收章")
+        waitForText("还没回收 · 拖动计划收章")
         waitForText("老周藏起的半张船票")
         capture("detail-ledger-foreshadow")
 
@@ -407,7 +407,7 @@ class WritingDetailSnapshotTest {
         capture("detail-ledger-all")
 
         // 看到第几章：章节选择对话框。
-        compose.onNodeWithText("看到第几章").performClick()
+        compose.onNodeWithContentDescription("看到第几章", substring = true).performClick()
         waitForText("列出所有条目")
         waitForText("第3章 夜渡")
         capture("detail-ledger-chapter-pick")
@@ -437,10 +437,16 @@ class WritingDetailSnapshotTest {
     fun workTreeReorder() {
         openWork()
         // 滚到“调整章节顺序”，让它和前几章同在画面里。
-        scrollWorkListTo(hasText("调整章节顺序"))
-        compose.onNodeWithText("调整章节顺序").performClick()
-        waitForText("完成调整")
+        scrollWorkListTo(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
+        waitForDescription("完成调整")
+        // 怎么调的说明在树下面（以前写在调整那一行里）：滚过去看一眼，再滚回标题拍图。
+        // 说明是列表最后一项：滚得到它就是有（找不到这一项 performScrollToNode 会报错），再滚回标题。
+        val id = compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(androidx.compose.ui.test.hasContentDescription("完成调整"))).fetchSemanticsNode().id
+        val list = compose.onNode(SemanticsMatcher("作品页列表") { it.id == id })
+        list.performScrollToNode(hasText("用每章右侧的箭头上移、下移", substring = true))
         waitForText("用每章右侧的箭头上移、下移")
+        list.performScrollToNode(androidx.compose.ui.test.hasContentDescription("完成调整"))
         waitForDescription("下移第1章 雪夜")
         capture("detail-work-tree-reorder")
     }
@@ -449,12 +455,12 @@ class WritingDetailSnapshotTest {
     @Test
     fun inkLedgerTreeReviewAndVocabulary() {
         openWork()
-        scrollWorkListTo(hasText("调整章节顺序"))
-        compose.onNodeWithText("调整章节顺序").performClick()
+        scrollWorkListTo(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
         waitForDescription("下移第1章 雪夜")
         capture("ink-detail-work-tree-reorder")
-        compose.onNodeWithText("完成调整").performClick()
-        waitForText("调整章节顺序")
+        compose.onNodeWithContentDescription("完成调整").performClick()
+        waitForDescription("调整章节顺序")
 
         compose.runOnUiThread { vm.open(Screen.WorkLedger(workId)) }
         waitForText("人物状态 · 点方面直接调整")
@@ -479,7 +485,7 @@ class WritingDetailSnapshotTest {
         // 一层层返回：审稿 → 账本 → 作品页 → 写作首页，再点底栏的生词本。
         compose.onNodeWithContentDescription("返回").performClick()
         waitForGone("依次审三关")
-        waitForText("看到第几章")
+        waitForDescription("看到第几章")
         compose.onNodeWithContentDescription("返回").performClick()
         waitForText("作品进度")
         compose.onNodeWithContentDescription("返回").performClick()
@@ -509,7 +515,7 @@ class WritingDetailSnapshotTest {
             beats = "林月求老周夜里渡河\n沈默出现，替她付了船钱\n船行到河心，沈默问起玉佩", beatsDone = listOf(1)))
     }
 
-    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、书灵（问主意、选范本）。 */
+    /** 写作流程精简：“AI 写”面板（节拍、写多少、3 个方向）、推荐“写第 N 拍”、更多菜单、灵感（问主意、选范本）。 */
     private fun aiWriteAndCompanion(prefix: String) {
         seedBeats()
         openChapterThree()
@@ -550,7 +556,7 @@ class WritingDetailSnapshotTest {
     fun simplifyAiSettingsAndFormat() {
         openWork()
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
-        waitForText("写作范本")
+        waitForText("这部书的口味")
         capture("simplify-work-ai-top")
         compose.onNodeWithText("高级设置").performScrollTo()
         capture("simplify-work-ai-bottom")
@@ -580,8 +586,8 @@ class WritingDetailSnapshotTest {
         waitForText("收尾要做的")
         waitForText("条不合规则")
         capture("$prefix-finish-setup")
-        compose.onNodeWithText("开始").performClick()
-        waitForDescription("整理入账：在做")
+        compose.onNodeWithText("开始收尾").performClick()
+        waitForDescription("整理进设定包和账本：在做")
         waitForDescription("写本章摘要：在做")
         capture("$prefix-finish-running")
         finishGate.countDown()

@@ -83,15 +83,15 @@ import top.yukonga.miuix.kmp.basic.Text
 
 /*
  * 阅读设置面板，照 Apple Books 的“主题与设置”来做（样稿见 docs/design.md）：
- * - 菜单里的“外观”打开首页：字号、亮度、书页配色、字体、排版预设，最常调的几样一屏放下；
- * - 菜单里的“设置”打开“阅读设置”：其余按用途分成几页（字体、排版、翻页、点按与按键、护眼、屏幕、繁简），
- *   从列表点进去，左上角返回。每页都是分组列表，一行一个短名字，解释写在组下面的小字里。
+ * - 菜单里的“外观”打开首页：字号、亮度、书页配色、字体、排版预设、翻页方式，最常调的几样一屏放下；
+ * - 菜单里的“更多”（和首页最后一行“更多设置”）打开“更多设置”：其余按用途分成几页（排版细调、繁简、点按与按键、护眼、屏幕），
+ *   字体、翻页方式只在首页，不在这里再列一次。从列表点进去，左上角返回。每页都是分组列表，一行一个短名字，解释写在组下面的小字里。
  */
 
 /** 面板里的各页。 */
 private enum class SettingsPage(val title: String) {
     MAIN("外观"),
-    MORE("阅读设置"),
+    MORE("更多设置"),
     FONT("字体"),
     LAYOUT("排版"),
     PAGING("翻页方式"),
@@ -113,14 +113,15 @@ internal fun SettingsSheet(
     ambient: AmbientLight? = null,
     /** 强调色。面板画在最外层，拿不到应用主题，由阅读页取好传进来。 */
     tint: Color = palette.accent,
-    /** 从“阅读设置”那页开始（菜单里的“设置”），否则从“外观”开始。 */
+    /** 从“更多设置”那页开始（菜单里的“更多”），否则从“外观”开始。 */
     startWithMore: Boolean = false,
     /** 首页右上角“完成”。 */
     onDone: () -> Unit = {},
 ) {
     ProvideReaderColors(palette, tint) {
         // 导航栈：点进去压一页，返回弹一页，回到起始页后再返回就关面板。
-        var stack by rememberSaveable { mutableStateOf(listOf(if (startWithMore) SettingsPage.MORE else SettingsPage.MAIN)) }
+        // 从“更多”进来时栈底仍是“外观”：左上角有“‹ 外观”、返回键先回外观，字体、翻页方式（只在外观首页）都还够得着。
+        var stack by rememberSaveable { mutableStateOf(if (startWithMore) listOf(SettingsPage.MAIN, SettingsPage.MORE) else listOf(SettingsPage.MAIN)) }
         val page = stack.last()
         fun open(p: SettingsPage) { stack = stack + p }
         fun back() { stack = stack.dropLast(1) }
@@ -159,7 +160,7 @@ internal fun SettingsSheet(
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(top = 4.dp, bottom = 12.dp)) {
                     when (st.last()) {
                         SettingsPage.MAIN -> MainPage(settings, update, fonts, ::open)
-                        SettingsPage.MORE -> MorePage(settings, fonts, ::open)
+                        SettingsPage.MORE -> MorePage(settings, ::open)
                         SettingsPage.FONT -> FontPage(settings, fonts, update, onImportFonts, onDeleteFont)
                         SettingsPage.LAYOUT -> LayoutPage(settings, update)
                         SettingsPage.PAGING -> PagingPage(settings, update)
@@ -198,13 +199,11 @@ private fun MainPage(settings: ReaderSettings, update: ((ReaderSettings) -> Read
     }
 }
 
-/** 菜单里的“设置”：其余各项按用途分组，点进去。 */
+/** 菜单里的“更多”：外观首页以外的各项按用途分组，点进去（字体、翻页方式在首页）。 */
 @Composable
-private fun MorePage(settings: ReaderSettings, fonts: List<String>, open: (SettingsPage) -> Unit) {
+private fun MorePage(settings: ReaderSettings, open: (SettingsPage) -> Unit) {
     GroupedSection {
-        row { NavRow("字体", fontLabel(settings, fonts)) { open(SettingsPage.FONT) } }
         row { NavRow("排版", LayoutPreset.entries.firstOrNull { it.matches(settings) }?.label ?: "手动调整") { open(SettingsPage.LAYOUT) } }
-        row { NavRow("翻页方式", settings.pageMode.label) { open(SettingsPage.PAGING) } }
         row {
             NavRow("繁简与注音", listOfNotNull(settings.chineseConvert.label, "注音".takeIf { settings.pinyin }).joinToString(" · ")) {
                 open(SettingsPage.TEXT)
@@ -247,7 +246,7 @@ private fun FontSizeRow(size: Float, onChange: (Float) -> Unit) {
             Text(
                 "${size.toInt()}",
                 color = c.label,
-                fontSize = 16.sp,
+                fontSize = TypeScale.Body,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.width(44.dp),
@@ -285,9 +284,9 @@ private fun BrightnessRow(brightness: Float, onChange: (Float) -> Unit) {
             Text(
                 "自动",
                 color = if (auto) c.tint else c.secondary,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 fontWeight = if (auto) FontWeight.Medium else FontWeight.Normal,
-                modifier = Modifier.clip(RoundedCornerShape(50))
+                modifier = Modifier.clip(Radius.Full)
                     .background(if (auto) c.tint.copy(alpha = 0.12f) else c.fill)
                     .padding(horizontal = 12.dp, vertical = 7.dp),
             )
@@ -308,7 +307,7 @@ private fun ThemeCircles(settings: ReaderSettings, onPick: (ReaderTheme) -> Unit
             val labelColor by animateColorAsState(if (on) c.label else c.secondary, Motion.standard(Motion.SHORT), label = "themeLabel")
             Column(
                 Modifier
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(Radius.Medium))
                     .selectable(selected = on, role = Role.RadioButton, interactionSource = source, indication = null) { onPick(theme) }
                     .semantics { contentDescription = "${theme.label}背景" }
                     .padding(vertical = 2.dp),
@@ -335,10 +334,10 @@ private fun ThemeCircles(settings: ReaderSettings, onPick: (ReaderTheme) -> Unit
                             .border(0.5.dp, c.separator, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(if (theme == ReaderTheme.CUSTOM) "＋" else "文", color = p.text, fontFamily = FontFamily.Serif, fontSize = 17.sp)
+                        Text(if (theme == ReaderTheme.CUSTOM) "＋" else "文", color = p.text, fontFamily = FontFamily.Serif, fontSize = TypeScale.Headline)
                     }
                 }
-                Text(theme.label, color = labelColor, fontSize = 12.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, modifier = Modifier.padding(top = 4.dp))
+                Text(theme.label, color = labelColor, fontSize = TypeScale.Footnote, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal, modifier = Modifier.padding(top = 4.dp))
             }
         }
     }
@@ -392,7 +391,7 @@ private fun FontPage(
         Text(
             "取消",
             color = c.tint,
-            fontSize = 15.sp,
+            fontSize = TypeScale.Body,
             modifier = Modifier.padding(horizontal = 32.dp).clickable { deleting = null }.padding(vertical = 8.dp),
         )
     }
@@ -494,7 +493,7 @@ internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
     }
     val vertical = mode == PageMode.VERTICAL
     val page = if (mode == PageMode.NONE && replay % 2 == 1) 0 else 1
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(Radius.Large)
     Box(
         modifier
             .fillMaxWidth()
@@ -511,7 +510,7 @@ internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
     ) {
         val paper = if (c.cell.luminance() < 0.4f) Color(0xFF39342E) else Color(0xFFF6F0E5)
         val ink = if (c.cell.luminance() < 0.4f) Color(0xFFE9DFD0) else Color(0xFF524A40)
-        BoxWithConstraints(Modifier.width(220.dp).height(130.dp).clip(RoundedCornerShape(10.dp)).clipToBounds()) {
+        BoxWithConstraints(Modifier.width(220.dp).height(130.dp).clip(RoundedCornerShape(Radius.Medium)).clipToBounds()) {
             val widthPx = with(LocalDensity.current) { maxWidth.toPx() }
             val heightPx = with(LocalDensity.current) { maxHeight.toPx() }
             val amount = turn.value
@@ -554,7 +553,7 @@ internal fun PageModePreview(mode: PageMode, modifier: Modifier = Modifier) {
 private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color, modifier: Modifier = Modifier) {
     Box(
         Modifier.fillMaxSize().then(modifier).background(paper)
-            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+            .border(1.dp, ink.copy(alpha = 0.12f), RoundedCornerShape(Radius.Medium))
             .clearAndSetSemantics { },
     ) {
         if (vertical) {
@@ -563,14 +562,15 @@ private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color,
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 listOf("春\n风\n起", "山\n河\n新", if (page == 0) "开\n卷\n时" else "续\n读\n时").forEach { column ->
+                    // 迷你书页的字按缩小的书页比例画，不用界面字号档。
                     Text(column, color = ink, fontSize = 12.sp, lineHeight = 19.sp)
                 }
             }
         } else {
             Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
-                Text(if (page == 0) "第一章" else "第二页", color = ink.copy(alpha = 0.6f), fontSize = 10.sp)
+                Text(if (page == 0) "第一章" else "第二页", color = ink.copy(alpha = 0.6f), fontSize = 10.sp)  // 迷你书页的字
                 Spacer(Modifier.height(9.dp))
-                Text(if (page == 0) "翻开故事" else "接着读下去", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(if (page == 0) "翻开故事" else "接着读下去", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)  // 迷你书页的字
                 Spacer(Modifier.height(10.dp))
                 listOf(0.95f, 0.83f, 0.89f).forEach { width ->
                     Box(Modifier.fillMaxWidth(width).height(3.dp).clip(CircleShape).background(ink.copy(alpha = 0.22f)))
@@ -578,7 +578,7 @@ private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color,
                 }
             }
         }
-        Text("0${page + 1}", color = ink.copy(alpha = 0.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp))
+        Text("0${page + 1}", color = ink.copy(alpha = 0.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp))  // 迷你书页的页码
     }
 }
 
@@ -590,16 +590,16 @@ private fun PageModeChoice(mode: PageMode, selected: Boolean, modifier: Modifier
     Row(
         modifier
             .heightIn(min = 52.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(fill)
-            .border(1.dp, border, RoundedCornerShape(14.dp))
+            .border(1.dp, border, RoundedCornerShape(Radius.Medium))
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
             .semantics { contentDescription = "${mode.label}：${mode.previewMeaning()}" },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.padding(start = 13.dp).size(7.dp).clip(CircleShape).background(if (selected) c.tint else c.secondary.copy(alpha = 0.45f)))
-        Text(mode.label, color = if (selected) c.tint else c.label, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
+        Text(mode.label, color = if (selected) c.tint else c.label, fontSize = TypeScale.Caption, fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal)
     }
 }
 
@@ -642,8 +642,8 @@ private fun TapZoneGrid(zones: List<TapAction>, onChange: (List<TapAction>) -> U
         Column(
             Modifier
                 .width(180.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .border(1.dp, c.separator, RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(Radius.Large))
+                .border(1.dp, c.separator, RoundedCornerShape(Radius.Large))
                 .padding(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -656,7 +656,7 @@ private fun TapZoneGrid(zones: List<TapAction>, onChange: (List<TapAction>) -> U
                             Modifier
                                 .weight(1f)
                                 .height(64.dp)
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(Radius.Medium))
                                 .background(
                                     when (action) {
                                         TapAction.MENU -> c.tint.copy(alpha = 0.16f)
@@ -671,7 +671,7 @@ private fun TapZoneGrid(zones: List<TapAction>, onChange: (List<TapAction>) -> U
                                 .semantics { contentDescription = "点击区域第${row + 1}行第${col + 1}格：${action.label}" },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(action.label, color = if (action == TapAction.MENU) c.tint else if (action == TapAction.NONE) c.secondary else c.label, fontSize = 12.sp)
+                            Text(action.label, color = if (action == TapAction.MENU) c.tint else if (action == TapAction.NONE) c.secondary else c.label, fontSize = TypeScale.Footnote)
                         }
                     }
                 }
@@ -698,7 +698,8 @@ private fun EyePage(settings: ReaderSettings, ambient: AmbientLight?, update: ((
         },
     ) {
         row { ToggleRow("跟随环境光", settings.ambientLight) { v -> update { it.copy(ambientLight = v) } } }
-        row { ToggleRow("系统深色时用夜间背景", settings.autoNight) { v -> update { it.copy(autoNight = v) } } }
+        // 自己动过一次就按新的认法（应用是深色就换夜间），不再只认系统深色。
+        row { ToggleRow("深色模式时用夜间背景", settings.autoNight) { v -> update { it.copy(autoNight = v, autoNightSystemOnly = false) } } }
     }
     GroupedSection(footer = "日落后书页慢慢偏暖，只为看着柔和，不宣称护眼或助眠。") {
         row { ToggleRow("日落后逐渐变暖", settings.eveningWarmth) { v -> update { it.copy(eveningWarmth = v) } } }
@@ -781,12 +782,12 @@ private fun ColorsPage(settings: ReaderSettings, update: ((ReaderSettings) -> Re
         Modifier
             .fillMaxWidth()
             .padding(start = 16.dp, end = 16.dp, bottom = 26.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(Color(settings.customBackground))
-            .border(0.5.dp, c.separator, RoundedCornerShape(12.dp))
+            .border(0.5.dp, c.separator, RoundedCornerShape(Radius.Medium))
             .padding(vertical = 18.dp, horizontal = 16.dp),
     ) {
-        Text("　　城门口排着长队，人人手里拿着一张纸。", color = Color(settings.customText), fontFamily = FontFamily.Serif, fontSize = 17.sp)
+        Text("　　城门口排着长队，人人手里拿着一张纸。", color = Color(settings.customText), fontFamily = FontFamily.Serif, fontSize = TypeScale.Headline)
     }
     GroupedSection(header = "底色") {
         row { Swatches("底色", CUSTOM_BACKGROUNDS, settings.customBackground) { v -> update { it.copy(customBackground = v) } } }

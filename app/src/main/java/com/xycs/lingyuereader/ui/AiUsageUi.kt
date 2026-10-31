@@ -37,7 +37,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ai.AiConfig
@@ -47,7 +46,6 @@ import com.xycs.lingyuereader.ai.UsageBook
 import com.xycs.lingyuereader.ai.UsageRow
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import java.time.LocalDate
 
@@ -82,7 +80,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
     val all = UsageBook.total(allRows)
     val measure = UsageMeasure(all.cost.cny > 0 || all.cost.usd > 0, config.usdRate)
 
-    SubPageScaffold("用量", onBack = { vm.back() }) { padding ->
+    SubPageScaffold("AI 用量", onBack = { vm.back() }) { padding ->
         val c = LocalGroupedColors.current
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
@@ -97,7 +95,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 }
                 val notes = buildList {
                     if (all.cost.usd > 0) add("美元按 1 美元 = ${AiPricing.plain(config.usdRate)} 元折算。")
-                    if (all.cost.unpriced > 0) add("有 ${all.cost.unpriced} 次请求没有单价，没算钱（在“我的 → AI 助手 → 价格”里填）。")
+                    if (all.cost.unpriced > 0) add("有 ${all.cost.unpriced} 次请求没有单价，没算钱（在“我的 → AI 服务 → 价格”里填）。")
                     if (all.usage.estimated) add("有 ${all.usage.estimatedRequests} 次服务商没返回用量，按字数估算。")
                 }
                 GroupedSection(
@@ -105,16 +103,16 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 ) {
                     row {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                            Text("今天", fontSize = 13.sp, color = c.secondary)
+                            Text("今天", fontSize = TypeScale.Caption, color = c.secondary)
                             val shown = animateFromZero(measure.value(todayRow).toFloat())
                             Text(
                                 if (measure.money) "约 ¥" + AiPricing.amount(shown.toDouble()) else AiPricing.tokens(shown.toLong()) + " token",
                                 color = c.label,
-                                fontSize = 34.sp,
+                                fontSize = TypeScale.Display,
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.padding(top = 2.dp),
                             )
-                            Text(summaryLine(todayRow), fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
+                            Text(summaryLine(todayRow), fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
                             Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(0.5.dp).background(c.separator))
                             Row(Modifier.fillMaxWidth()) {
                                 UsageFigure("本月", measure.label(monthRow), Modifier.weight(1f))
@@ -133,9 +131,9 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                             }
                             DailyBars(values, measure.money)
                             Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                                Text("30 天前", fontSize = 12.sp, color = c.secondary)
+                                Text("30 天前", fontSize = TypeScale.Footnote, color = c.secondary)
                                 Spacer(Modifier.weight(1f))
-                                Text("今天", fontSize = 12.sp, color = c.secondary)
+                                Text("今天", fontSize = TypeScale.Footnote, color = c.secondary)
                             }
                         }
                     }
@@ -159,8 +157,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 }
                 GroupedSection(
                     header = "提醒与换算",
-                    footer = "今天的花费超过提醒线时提示一次，不会自动停。用量只存在这台手机上（只有数字，不存发了什么），不进灵阅的备份；" +
-                        "最近 ${UsageBook.KEEP_DAYS} 天按天记，更早的并成按月的汇总。向量检索、AI 朗读和本机模型不计。",
+                    footer = "花费超过提醒线时提示一次，不会自动停。用量只存在这台手机上、不进备份；向量检索、朗读、本机模型不计。",
                 ) {
                     row {
                         PickerRow("每天花费提醒", DAILY_ALERTS.map { it to if (it == 0.0) "不提醒" else "超过 ¥${AiPricing.plain(it)}" }, config.dailyAlert.takeIf { it in DAILY_ALERTS } ?: 0.0) { v ->
@@ -199,8 +196,8 @@ private fun summaryLine(r: UsageRow): String =
 private fun UsageFigure(label: String, value: String, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Column(modifier) {
-        Text(value, color = c.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(label, fontSize = 13.sp, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
+        Text(value, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -216,12 +213,12 @@ private fun UsageBarsSection(header: String, items: List<Pair<String, UsageRow>>
             row {
                 Column(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.Center) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(name, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(measure.label(r) + " · ${r.usage.requests} 次", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+                        Text(name, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(measure.label(r) + " · ${r.usage.requests} 次", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 12.dp))
                     }
                     val grown = animateFromZero((measure.value(r) / top).toFloat())
-                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
-                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                    Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(6.dp).clip(Radius.Full).background(c.fill)) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(grown.coerceIn(0f, 1f)).clip(Radius.Full).background(c.tint))
                     }
                 }
             }
@@ -273,7 +270,7 @@ private fun RateDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (Double)
     var text by remember { mutableStateOf(AiPricing.plain(config.usdRate)) }
     val rate = text.trim().toDoubleOrNull()?.takeIf { it > 0 && it < 100 }
     GlassDialog(show = true, title = "美元汇率", summary = "Claude 按美元计价；用量页把美元折成人民币加总时用。只是换算，不影响扣费。", onDismissRequest = onDismiss) {
-        TextField(
+        GroupedTextField(
             value = text,
             onValueChange = { text = it },
             label = "1 美元 = 多少元",
@@ -327,7 +324,7 @@ internal fun PriceSection(vm: AppViewModel, config: AiConfig) {
         }
         row {
             NavRow(
-                "用量",
+                "AI 用量",
                 value = if (today.usage.isEmpty) "今天还没用" else "今天 " + (AiPricing.money(today.cost)?.let { "约 $it" } ?: "${AiPricing.tokens(today.usage.input + today.usage.output)} token"),
             ) { vm.open(com.xycs.lingyuereader.Screen.AiUsage(null)) }
         }
@@ -362,7 +359,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SegmentedControl(listOf(false to "人民币 ¥", true to "美元 $"), usd) { usd = it }
             listOf(Triple("输入", input) { v: String -> input = v }, Triple("缓存命中", cached) { v: String -> cached = v }, Triple("输出", output) { v: String -> output = v }).forEach { (label, value, set) ->
-                TextField(
+                GroupedTextField(
                     value = value,
                     onValueChange = set,
                     label = label,
@@ -372,7 +369,7 @@ private fun PriceDialog(config: AiConfig, onDismiss: () -> Unit, onSave: (com.xy
                 )
             }
             if (AiPricing.choose(config)?.kind.let { it == AiPricing.PriceKind.MODEL || it == AiPricing.PriceKind.PROVIDER }) {
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ActionRow(if (AiPricing.reference(config) != null) "不用自己填的，用参考价" else "清除填的单价", destructive = true) { onSave(null) }
                 }
             }

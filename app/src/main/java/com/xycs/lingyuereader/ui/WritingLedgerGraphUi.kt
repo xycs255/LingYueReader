@@ -29,18 +29,21 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.LedgerChapter
+import com.xycs.lingyuereader.data.ChapterBrief
+import com.xycs.lingyuereader.data.Foreshadow
 import com.xycs.lingyuereader.data.LEDGER_ASPECTS
 import com.xycs.lingyuereader.data.LedgerEntry
 import com.xycs.lingyuereader.data.LedgerKind
 import com.xycs.lingyuereader.data.LedgerOp
 import com.xycs.lingyuereader.data.LedgerOrigin
+import com.xycs.lingyuereader.data.Foreshadows
+import com.xycs.lingyuereader.data.PromiseState
 import com.xycs.lingyuereader.data.StoryLedger
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TextButton
 
 internal enum class LedgerVisualTab(val title: String) {
     PEOPLE("人物"), PROMISES("伏笔"), KNOWLEDGE("知情"), RECORDS("全部记录")
@@ -120,7 +123,7 @@ private fun LedgerGraphCard(content: @Composable () -> Unit) {
     val c = LocalGroupedColors.current
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(16.dp)).background(c.cell).padding(14.dp),
+            .clip(RoundedCornerShape(Radius.Large)).background(c.cell).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) { content() }
 }
@@ -142,28 +145,38 @@ internal fun LazyListScope.ledgerPeopleGraph(
     item(key = "graph:people:intro") { GroupedListHeader("人物状态 · 点方面直接调整") }
     items(people, key = { "graph:person:$it" }) { who ->
         val current = states.filter { it.subject == who }
-        val aspects = (LEDGER_ASPECTS + current.map { it.aspect }.filter { it.isNotBlank() }).distinct()
         val c = LocalGroupedColors.current
+        // 没填的方面合成一枚“+ 添加方面”，点了再挑哪一方面：以前七个“· 添加”的灰胶囊排满一屏，看不出哪几个填了。
+        var picking by remember(who) { mutableStateOf(false) }
+        val (filled, missing) = ledgerPersonAspects(current)
         LedgerGraphCard {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(c.fill), contentAlignment = Alignment.Center) {
-                    Text(who.take(1), color = c.tint, fontSize = 18.sp)
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(Radius.Medium)).background(c.fill), contentAlignment = Alignment.Center) {
+                    Text(who.take(1), color = c.tint, fontSize = TypeScale.Headline)
                 }
                 Column {
-                    Text(who, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Text(current.size.toString() + " 个状态方面", color = c.secondary, fontSize = 12.sp)
+                    Text(who, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
+                    Text(if (filled.isEmpty()) "还没记状态" else "记了 ${filled.size} 个方面", color = c.secondary, fontSize = TypeScale.Footnote)
                 }
             }
             // 方面多时换行，不横着溢出、也不切掉最后一个；胶囊能点的范围 48dp，行与行之间不再另加间距。
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                aspects.forEach { aspect ->
-                    val latest = current.firstOrNull { it.aspect == aspect }
+                filled.forEach { latest ->
+                    val aspect = latest.aspect
                     PillButton(
-                        aspect + " · " + (latest?.text?.let { if (it.length > 8) it.take(8) + "…" else it } ?: "添加"),
+                        aspect + " · " + latest.text.let { if (it.length > 8) it.take(8) + "…" else it },
                         onClick = { onState(LedgerQuickState(who, aspect, latest)) },
                         modifier = Modifier.semantics {
-                            contentDescription = who + "的" + aspect + "，" + (latest?.text ?: "尚未记录") + "，点按修改"
+                            contentDescription = who + "的" + aspect + "，" + latest.text + "，点按修改"
                         },
+                    )
+                }
+                if (missing.isNotEmpty()) {
+                    PillButton(
+                        "+ 添加方面",
+                        onClick = { picking = true },
+                        style = PillStyle.Tinted,
+                        modifier = Modifier.semantics { contentDescription = "给" + who + "添加状态方面，还没记的有" + missing.joinToString("、") },
                     )
                 }
             }
@@ -171,8 +184,17 @@ internal fun LazyListScope.ledgerPeopleGraph(
                 Text(
                     listOf(e.whenLabel, e.origin.label, e.quote.takeIf { it.isNotBlank() }?.let { "有原文依据" })
                         .filterNotNull().filter { it.isNotBlank() }.joinToString(" · "),
-                    color = c.secondary, fontSize = 12.sp,
+                    color = c.secondary, fontSize = TypeScale.Footnote,
                 )
+            }
+        }
+        if (picking) {
+            GlassDialog(show = true, title = "给${who}添加", summary = "挑一个方面，再按章登记这一方面的状态。", onDismissRequest = { picking = false }) {
+                DialogOptionList(missing.map { it to it }, onPick = { aspect ->
+                    picking = false
+                    onState(LedgerQuickState(who, aspect, null))
+                })
+                TextButton(text = "取消", onClick = { picking = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         }
     }
@@ -183,6 +205,32 @@ internal fun LazyListScope.ledgerPeopleGraph(
     }
 }
 
+/**
+ * 一个人的状态方面分两份：记了的（按 [LEDGER_ASPECTS] 的顺序，自己写的方面排在后面）和常用方面里还没记的（合成“+ 添加方面”）。
+ */
+internal fun ledgerPersonAspects(current: List<LedgerEntry>): Pair<List<LedgerEntry>, List<String>> {
+    val byAspect = current.filter { it.aspect.isNotBlank() }.associateBy { it.aspect }
+    val order = (LEDGER_ASPECTS + byAspect.keys).distinct()
+    return order.mapNotNull { byAspect[it] } to LEDGER_ASPECTS.filter { it !in byAspect }
+}
+
+/**
+ * 伏笔标签上从原来“伏笔”页并过来的几样：设定包伏笔表里的条目（[legacy]，还没导入账本的也列出来）、写到了第几章（[latest]，
+ * 算哪些该回收了）、伏笔表文档（[docs]，id 到标题）。
+ */
+internal data class LedgerPromiseSources(
+    val legacy: List<Foreshadow> = emptyList(),
+    val latest: Int = 0,
+    val docs: List<Pair<String, String>> = emptyList(),
+)
+
+/** 计划回收的章已经写到、还没标为已回收。 */
+private fun promiseDue(done: Boolean, payoff: Int?, latest: Int) = !done && payoff != null && payoff <= latest
+
+/**
+ * 账本的“伏笔”标签：该回收了 / 还没回收 / 已回收三组（账本里的一条一张卡片，能拖计划收章、标为已回收；
+ * 伏笔表里还没导入账本的一条一行，点了也能标为已回收），最后是来源文档（伏笔表）。回收状态以账本为准。
+ */
 internal fun LazyListScope.ledgerPromiseGraph(
     entries: List<LedgerEntry>,
     chapter: LedgerChapter?,
@@ -190,16 +238,78 @@ internal fun LazyListScope.ledgerPromiseGraph(
     personFilter: String?,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    sources: LedgerPromiseSources = LedgerPromiseSources(),
+    onClose: (WritingForeshadow) -> Unit = {},
+    onOpenDoc: (String) -> Unit = {},
+    /** 作者手动改伏笔状态（埋下、推进中、暂缓、已收）。 */
+    onState: (LedgerEntry, PromiseState) -> Unit = { _, _ -> },
 ) {
     val promises = ledgerGraphPromises(entries, chapter, personFilter)
-    if (promises.isEmpty()) {
-        item(key = "graph:promise:empty") { GroupedSection { row { EmptyRow("还没有账本伏笔。设定包伏笔表可显式导入。") } } }
-        return
+    val merged = mergeWritingForeshadows(sources.legacy, entries)
+    val byId = merged.mapNotNull { f -> f.ledger?.let { it.id to f } }.toMap()
+    // 伏笔表里还没导入的没有人物，只人物筛选时不列；翻到某一章时只列那一章以前埋下的。
+    val legacyOnly = if (personFilter != null) emptyList()
+    else merged.filter { it.ledger == null && (chapter == null || (it.display.planted ?: 0) <= chapter.no) }
+    val latest = sources.latest
+    val dueCards = promises.filter { promiseDue(it.done, it.payoff, latest) }
+    val dueRows = legacyOnly.filter { promiseDue(it.display.done, it.display.payoff, latest) }
+    val openCards = promises.filter { !it.done } - dueCards.toSet()
+    val openRows = legacyOnly.filter { !it.display.done } - dueRows.toSet()
+    val doneCards = promises.filter { it.done }
+    val doneRows = legacyOnly.filter { it.display.done }
+
+    fun cards(key: String, list: List<LedgerEntry>, due: Boolean) {
+        items(list, key = { "graph:promise:$key:" + it.id }) { e ->
+            LedgerPromiseCard(e, chapters, onPayoff, onOpen, due = due, onClose = byId[e.id]?.let { f -> { onClose(f) } }, onState = onState)
+        }
     }
-    item(key = "graph:promise:intro") { GroupedListHeader("账本伏笔 · 拖动计划收章") }
-    items(promises, key = { "graph:promise:" + it.id }) { e -> LedgerPromiseCard(e, chapters, onPayoff, onOpen) }
-    item(key = "graph:promise:foot") {
-        GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。")
+    fun rows(key: String, list: List<WritingForeshadow>, footer: String?) {
+        if (list.isEmpty()) return
+        item(key = "graph:promise:$key:legacy") {
+            val c = LocalGroupedColors.current
+            GroupedSection(footer = footer) {
+                list.forEach { f ->
+                    val whenText = ChapterBrief.foreshadowWhen(f.display).trim('（', '）')
+                    row {
+                        if (f.display.done) TwoLine(f.display.what, whenText, trailing = { Tag("已回收", c.success) })
+                        else NavRow(f.display.what, subtitle = whenText.ifEmpty { null }, trailing = { Tag(if (promiseDue(false, f.display.payoff, latest)) "该回收" else "未导入", c.warning) }) { onClose(f) }
+                    }
+                }
+            }
+        }
+    }
+
+    if (promises.isEmpty() && legacyOnly.isEmpty()) {
+        item(key = "graph:promise:empty") { GroupedSection { row { EmptyRow("还没有伏笔。右上角“+”加一条，或从右上菜单导入设定包的伏笔表。") } } }
+    }
+    if (dueCards.isNotEmpty() || dueRows.isNotEmpty()) {
+        item(key = "graph:promise:due:head") { GroupedListHeader("该回收了") }
+        cards("due", dueCards, due = true)
+        rows("due", dueRows, null)
+        item(key = "graph:promise:due:foot") { GroupedListFooter("计划回收的章已经写到（写到第 $latest 章），还没标为已回收。") }
+    }
+    if (openCards.isNotEmpty() || openRows.isNotEmpty()) {
+        item(key = "graph:promise:intro") { GroupedListHeader("还没回收 · 拖动计划收章") }
+        cards("open", openCards, due = false)
+        rows("open", openRows, "伏笔表里还没导入账本的；点一条可以标为已回收，从右上菜单“从设定包导入”后才能拖动计划收章。")
+        item(key = "graph:promise:foot") {
+            GroupedListFooter("这里调整按章推进的账本；设定包里的原始伏笔计划不会被静默改写，可从右上菜单显式导出。" +
+                "“最近推进”只算细纲卡伏笔动作里的推进、整理时 AI 附了原句的推进，正文里只提一句不算。")
+        }
+    }
+    if (doneCards.isNotEmpty() || doneRows.isNotEmpty()) {
+        item(key = "graph:promise:done:head") { GroupedListHeader("已回收") }
+        cards("done", doneCards, due = false)
+        rows("done", doneRows, null)
+    }
+    if (sources.docs.isNotEmpty()) {
+        item(key = "graph:promise:docs") {
+            GroupedSection(header = "来源文档", footer = "伏笔表尚未导入的条目也会显示；与账本重复时，账本里的状态优先。") {
+                sources.docs.forEach { (id, title) ->
+                    row { NavRow(if (sources.docs.size == 1) "编辑伏笔表" else "编辑“$title”") { onOpenDoc(id) } }
+                }
+            }
+        }
     }
 }
 
@@ -216,8 +326,14 @@ private fun LedgerPromiseCard(
     chapters: List<LedgerChapter>,
     onPayoff: (LedgerEntry, Int, () -> Unit) -> Unit,
     onOpen: (LedgerEntry) -> Unit,
+    due: Boolean = false,
+    /** 没收的伏笔：“标为已回收”（先确认）。 */
+    onClose: (() -> Unit)? = null,
+    onState: (LedgerEntry, PromiseState) -> Unit = { _, _ -> },
 ) {
     val c = LocalGroupedColors.current
+    var picking by remember(entry.id) { mutableStateOf(false) }
+    val state = Foreshadows.state(entry)
     val start = (entry.from ?: 1).coerceAtLeast(1)
     val end = maxOf(start + 2, chapters.maxOfOrNull { it.no } ?: start + 2, (entry.payoff ?: start) + 2)
     // 拖动途中的值；没拖过是空的，显示账本里的计划。保存失败时复位，卡片不留一个没存下来的计划。
@@ -227,8 +343,8 @@ private fun LedgerPromiseCard(
     val selected = (dragging?.roundToInt() ?: entry.payoff ?: (start + 1)).coerceIn(start, end)
     LedgerGraphCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            Tag(if (entry.done) "已收" else "未收", if (entry.done) c.success else c.warning)
+            Text(entry.text, modifier = Modifier.weight(1f), color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
+            Tag(if (due && !entry.done) "该回收" else state.label, if (due && !entry.done) c.warning else promiseStateColor(state, c))
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(c.tint))
@@ -241,8 +357,9 @@ private fun LedgerPromiseCard(
                 entry.payoff == null && !choosing -> "计划收章未定"
                 else -> "计划第 $selected 章收"
             },
-            color = c.secondary, fontSize = 12.sp,
+            color = c.secondary, fontSize = TypeScale.Footnote,
         )
+        Text(entry.lastAdvanced?.let { "最近推进：第 $it 章" } ?: "最近推进：还没有", color = c.secondary, fontSize = TypeScale.Footnote)
         if (!entry.done && entry.payoff == null && !choosing) {
             PillButton("定计划收章", onClick = { choosing = true })
         } else if (!entry.done) {
@@ -261,11 +378,11 @@ private fun LedgerPromiseCard(
                 },
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("第 $start 章", color = c.tertiary, fontSize = 11.sp)
-                Text("第 $end 章", color = c.tertiary, fontSize = 11.sp)
+                Text("第 $start 章", color = c.tertiary, fontSize = TypeScale.Micro)
+                Text("第 $end 章", color = c.tertiary, fontSize = TypeScale.Micro)
             }
             if (entry.payoff == null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("保存：计划第 $selected 章收", onClick = {
                         onPayoff(entry, selected) {
                             dragging = null
@@ -279,8 +396,41 @@ private fun LedgerPromiseCard(
                 }
             }
         }
-        PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        // 三枚胶囊放不下就换行：360dp 宽时“查看来源与精确编辑”以前被挤出卡片右边。
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!entry.done && onClose != null) PillButton("标为已回收", onClick = onClose, style = PillStyle.Tinted)
+            PillButton("改状态", onClick = { picking = true })
+            PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
+        }
     }
+    if (picking) {
+        GlassDialog(show = true, title = "伏笔状态", summary = entry.text, onDismissRequest = { picking = false }) {
+            DialogOptionList(
+                PromiseState.entries.map { it to it.label },
+                selected = state,
+                description = { s ->
+                    when (s) {
+                        PromiseState.PLANTED -> "埋下了，还没推进过"
+                        PromiseState.ADVANCING -> "有过实质推进；还没收"
+                        PromiseState.PAUSED -> "先放着：线索体检不催，拟细纲也不挑它"
+                        PromiseState.CLOSED -> "已经收了"
+                    }
+                },
+                onPick = { s ->
+                    picking = false
+                    if (s != state) onState(entry, s)
+                },
+            )
+        }
+    }
+}
+
+/** 伏笔状态标签的颜色：已收成功色，暂缓次要色，推进中主题色，埋下（还没动过）提醒色。 */
+internal fun promiseStateColor(state: PromiseState, c: GroupedColors) = when (state) {
+    PromiseState.CLOSED -> c.success
+    PromiseState.PAUSED -> c.secondary
+    PromiseState.ADVANCING -> c.tint
+    PromiseState.PLANTED -> c.warning
 }
 
 internal fun LazyListScope.ledgerKnowledgeGraph(
@@ -303,12 +453,12 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
         item(key = "graph:knowledge:$fact") {
             val c = LocalGroupedColors.current
             LedgerGraphCard {
-                Text(fact, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(fact, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold)
                 // 只有作者知道的真相：单独标出来，不当成谁已经知道。
                 f.truth.firstOrNull()?.let { t ->
                     Text(
                         "真相（作者）" + if (t.subject.isNotBlank()) "：${t.subject}还不知道" else "：只有作者知道",
-                        color = c.secondary, fontSize = 12.sp,
+                        color = c.secondary, fontSize = TypeScale.Footnote,
                     )
                 }
                 // 一人一格、对齐成一行；人多放不下时左右滑，还有没露出来的那一边渐隐。
@@ -322,7 +472,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                             else -> "该章未生效"
                         }
                         Column(Modifier.width(100.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(who, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+                            Text(who, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
                             PillButton(
                                 cellLabel,
                                 onClick = {
@@ -341,7 +491,7 @@ internal fun LazyListScope.ledgerKnowledgeGraph(
                         }
                     }
                 }
-                Text("已知格可查看来源；登记未知格须填写获知章和消息来源。", color = c.secondary, fontSize = 12.sp)
+                Text("已知格可查看来源；登记未知格须填写获知章和消息来源。", color = c.secondary, fontSize = TypeScale.Footnote)
             }
         }
     }
@@ -392,11 +542,11 @@ internal fun LedgerQuickStateDialog(
     GlassDialog(show = true, title = target.subject + " · " + target.aspect, summary = "按章登记新状态；之前章节保留原来的状态。", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = value, onValueChange = { value = it }, label = "本章状态", modifier = Modifier.fillMaxWidth())
             ChapterStepperRow("从第几章生效", number, chapters, optional = false) { number = it }
-            TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
-            Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = 12.sp)
-            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)
+            GroupedTextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
+            Text("来源：作者手工登记。未填原文依据时不会冒充有正文证据。", color = c.secondary, fontSize = TypeScale.Footnote)
+            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
         DialogButtons(
             onDismiss = onDismiss,
@@ -429,9 +579,9 @@ internal fun LedgerQuickKnowledgeDialog(
         val c = LocalGroupedColors.current
         Column(Modifier.heightIn(max = 430.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             ChapterStepperRow("从第几章得知", number, chapters, optional = false) { number = it }
-            TextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
-            TextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
-            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = 12.sp)
+            GroupedTextField(value = via, onValueChange = { via = it }, label = "消息来源（谁告诉、偷听等）", modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = quote, onValueChange = { quote = it }, label = "原文依据（可选）", modifier = Modifier.fillMaxWidth())
+            if (!validChapter) Text("请填作品中已有的章号。", color = c.warning, fontSize = TypeScale.Footnote)
         }
         DialogButtons(
             onDismiss = onDismiss,

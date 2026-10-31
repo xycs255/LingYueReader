@@ -21,13 +21,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
-/** The user's creative decisions, AI's prose, and human acceptance are visibly separate steps. */
+/**
+ * The user's creative decisions, AI's prose, and human acceptance are visibly separate steps.
+ * 步骤名用 12sp（[TypeScale.Footnote]），当前这一步强调色半粗：以前 11sp 灰字，几乎看不出走到哪一步。
+ */
 @Composable
 internal fun DraftWorkflowStrip(active: Int) {
     val c = LocalGroupedColors.current
@@ -63,9 +65,9 @@ private fun DraftStep(label: String, icon: ImageVector, done: Boolean, current: 
         }
         Text(
             label,
-            color = if (current) c.label else c.secondary,
-            fontSize = 11.sp,
-            lineHeight = 14.sp,
+            color = if (current) c.tint else c.secondary,
+            fontSize = TypeScale.Footnote,
+            lineHeight = TypeScale.FootnoteLine,
             fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -86,7 +88,7 @@ internal fun DraftReferenceChoiceDialog(
     val c = LocalGroupedColors.current
     GlassDialog(
         show = true,
-        title = "AI 写作范本",
+        title = "写作范本",
         summary = "范本只提供叙事和对白技法，人物、事件与句子不进入本书正文。",
         onDismissRequest = onDismiss,
     ) {
@@ -100,7 +102,7 @@ internal fun DraftReferenceChoiceDialog(
                 ) { onSelect(analysis.id) }
             }
         }
-        if (analyses.isEmpty()) Text("本章还没有范本分析。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+        if (analyses.isEmpty()) Text("本章还没有范本分析。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp))
         ActionRow("新增或分析范本", onClick = onCreate)
         DialogOkButton("关闭", primary = false, onClick = onDismiss)
     }

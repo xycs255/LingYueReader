@@ -7,6 +7,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -146,7 +147,8 @@ class WritingReviewUiTest {
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         // 这一章计划回收的伏笔，编辑器上方提醒。
         waitForText("这一章计划回收的伏笔：半块玉佩")
-        compose.onNodeWithContentDescription("更多").performClick()
+        // 三道审稿在底栏“查”里（右上“⋯”不再重复）。
+        compose.onNodeWithText("查").performClick()
         compose.onNodeWithText("三道审稿").performClick()
         waitForText("还没有审过")
         compose.onNodeWithText("开始审稿").performClick()
@@ -188,7 +190,8 @@ class WritingReviewUiTest {
         waitForText("还不该知道的")
         waitForText("计划这一章回收")
 
-        compose.runOnUiThread { vm.open(Screen.Foreshadows(workId)) }
+        // 原来的“伏笔”页并进了故事账本的“伏笔”标签：账本还空着，设定包伏笔表里的那条照样列出来、能标为已回收。
+        compose.runOnUiThread { vm.open(Screen.WorkLedger(workId, promises = true)) }
         waitForText("该回收了")
         compose.onNodeWithText("半块玉佩").performClick()
         compose.onNodeWithText("标为已回收").performClick()
@@ -215,11 +218,14 @@ class WritingReviewUiTest {
             "合成样本",
         )
         val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
-        compose.runOnUiThread { vm.open(Screen.Foreshadows(workId)) }
+        compose.runOnUiThread { vm.open(Screen.WorkLedger(workId, promises = true)) }
         waitForText("合成样本：未送出的纸鹤")
         assertEquals(1, compose.onAllNodesWithText("半块玉佩").fetchSemanticsNodes().size)
-        compose.onNodeWithText("合成样本：未送出的纸鹤").performClick()
-        compose.onNodeWithText("标为已回收").performClick()
+        // 已收的那条没有“标为已回收”；没收的卡片上点它，再在对话框里确认。
+        assertEquals(1, compose.onAllNodesWithText("标为已回收").fetchSemanticsNodes().size)
+        compose.onNodeWithText("标为已回收").performScrollTo().performClick()
+        waitFor { compose.onAllNodesWithText("标为已回收").fetchSemanticsNodes().size == 2 }
+        compose.onAllNodesWithText("标为已回收").onLast().performClick()
         waitFor { store.ledger(workId).all { it.kind != LedgerKind.PROMISE || it.done } }
         assertTrue(store.brief(workId, chapterId)!!.ledger?.open.orEmpty().isEmpty())
     }
@@ -230,7 +236,8 @@ class WritingReviewUiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         waitForText("这一章计划回收的伏笔")
-        compose.onNodeWithContentDescription("更多").performClick()
+        // 三道审稿在底栏“查”里（右上“⋯”不再重复）。
+        compose.onNodeWithText("查").performClick()
         compose.onNodeWithText("三道审稿").performClick()
         waitForText("还没有审过")
         compose.onNodeWithText("开始审稿").performClick()

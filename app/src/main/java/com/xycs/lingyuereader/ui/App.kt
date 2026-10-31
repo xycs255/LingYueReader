@@ -18,9 +18,7 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassMenu
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
-import top.yukonga.miuix.kmp.basic.Checkbox
 import com.xycs.lingyuereader.data.ShelfPrefs
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.graphicsLayer
@@ -68,6 +66,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -114,7 +113,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHost
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
@@ -223,14 +221,13 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WorkAi -> WorkAiScreen(vm, screen.workId)
             is Screen.WorkAiAdvanced -> WorkAiAdvancedScreen(vm, screen.workId)
             is Screen.WorkPack -> WorkPackScreen(vm, screen.workId)
-            is Screen.WorkLedger -> WorkLedgerScreen(vm, screen.workId, screen.chapterId)
-            is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId)
+            is Screen.WorkLedger -> WorkLedgerScreen(vm, screen)
+            is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId, screen.draft, screen.condense)
             is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
             is Screen.WorkRules -> WorkRulesScreen(vm, screen.workId)
             is Screen.ChapterBrief -> ChapterBriefScreen(vm, screen.workId, screen.chapterId)
             is Screen.ChapterReview -> ChapterReviewScreen(vm, screen.workId, screen.chapterId)
-            is Screen.Foreshadows -> ForeshadowScreen(vm, screen.workId)
             is Screen.ChapterDraft -> ChapterDraftScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkAiLog -> WorkAiLogScreen(vm, screen.workId)
             is Screen.WorkStyleSamples -> WorkStyleSamplesScreen(vm, screen.workId)
@@ -346,7 +343,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
                     Column {
                         GroupChips(vm, groups, shelfPrefs.group, hasUngrouped = all.any { it.groups.isEmpty() })
                         if (searching) {
-                            TextField(
+                            GroupedTextField(
                                 value = query,
                                 onValueChange = vm::setShelfQuery,
                                 label = "搜索书名或作者",
@@ -362,7 +359,7 @@ internal fun ShelfScreen(vm: AppViewModel) {
                                     modifier = Modifier
                                         .padding(horizontal = 20.dp)
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(Radius.Medium))
                                         .clickable { vm.openLibrarySearch(query) }
                                         .padding(horizontal = 8.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -522,7 +519,7 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
                             .padding(horizontal = 16.dp, vertical = 7.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(label, color = text, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        Text(label, color = text, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
             }
@@ -534,7 +531,7 @@ private fun GroupChips(vm: AppViewModel, groups: List<String>, selected: String?
     editing?.let { g ->
         var name by remember(g) { mutableStateOf(g) }
         GlassDialog(show = true, title = "分组“$g”", summary = "改名，或删除这个分组（书不会被删除）。", onDismissRequest = { editing = null }) {
-            TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(
                     text = "删除分组",
@@ -674,23 +671,31 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                 menu = true
             },
         )
-        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Text(entry.title, style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(
-                    shelfProgress(entry),
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = if (entry.progress != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    maxLines = 1,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-            Box {
-                // 看着是 18dp 的小“⋯”，能点的范围是整整 48dp（测试里量过），不用对准那几个点。
+        // 书名占满整格宽（最多两行），“⋯”挪到下面进度那一行的右边：以前和书名同排，长书名被挤成“长安的荔 / 枝”这样的断行。
+        Text(
+            entry.title,
+            style = MiuixTheme.textStyles.body2,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Box(Modifier.fillMaxWidth().height(20.dp)) {
+            Text(
+                shelfProgress(entry),
+                style = MiuixTheme.textStyles.footnote2,
+                color = if (entry.progress != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.CenterStart).padding(end = 28.dp),
+            )
+            // 看着是 18dp 的小“⋯”，能点的范围是整整 48dp（测试里量过），不用对准那几个点；
+            // 比这一行高的部分伸到上下的留白里，不把格子撑高。
+            Box(Modifier.align(Alignment.CenterEnd).offset(x = 15.dp).requiredSize(48.dp)) {
                 Box(
                     Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(50))
+                        .fillMaxSize()
+                        .clip(Radius.Full)
                         .clickable(role = Role.Button) { menu = true }
                         .semantics { contentDescription = "操作" },
                     contentAlignment = Alignment.Center,
@@ -770,13 +775,12 @@ internal class BookDialogState {
 
 @Composable
 private fun BookMenu(entry: BookEntry, vm: AppViewModel, show: Boolean, dialogs: BookDialogState, onDismiss: () -> Unit) {
-    val actions = buildList {
-        add("详情" to { vm.open(Screen.Detail(entry.id)) })
-        if (entry.sources.any { it.uri != null }) add("从原文件刷新" to { vm.refresh(entry) })
-        add("分组…" to { dialogs.grouping = true })
-        add("重命名" to { dialogs.renaming = true })
-        add("移除" to { dialogs.removing = true })
-    }
+    // 只留三样：详情 / 分组… / 移除。从原文件刷新、重命名、净化与分章在详情页里。
+    val actions = listOf<Pair<String, () -> Unit>>(
+        "详情" to { vm.open(Screen.Detail(entry.id)) },
+        "分组…" to { dialogs.grouping = true },
+        "移除" to { dialogs.removing = true },
+    )
     OverlayListPopup(show = show, onDismissRequest = onDismiss) {
         GlassMenu {
             ListPopupColumn {
@@ -802,20 +806,17 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                 (all + extra).distinct().forEach { g ->
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { chosen = if (g in chosen) chosen - g else chosen + g }
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).clickable { chosen = if (g in chosen) chosen - g else chosen + g }
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(
-                            state = ToggleableState(g in chosen),
-                            onClick = { chosen = if (g in chosen) chosen - g else chosen + g },
-                        )
+                        LingYueCheckbox(g in chosen, onClick = { chosen = if (g in chosen) chosen - g else chosen + g })
                         Text(g, modifier = Modifier.padding(start = 12.dp))
                     }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                TextField(
+                GroupedTextField(
                     value = newName,
                     onValueChange = { newName = it },
                     label = "新建分组",
@@ -847,7 +848,7 @@ internal fun BookDialogs(entry: BookEntry, vm: AppViewModel, dialogs: BookDialog
     if (dialogs.renaming) {
         var title by remember { mutableStateOf(entry.title) }
         GlassDialog(show = true, title = "重命名", onDismissRequest = { dialogs.renaming = false }) {
-            TextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            GroupedTextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
             DialogButtons(
                 onDismiss = { dialogs.renaming = false },
                 onConfirm = {
@@ -903,6 +904,7 @@ fun BookCover(
     val ink = Color(0xFFF6EEDF)
     Card(
         modifier = modifier.fillMaxWidth().aspectRatio(0.7f),
+        // 生成的封面照实物书的圆角，比界面的圆角档小。
         cornerRadius = if (compact) 4.dp else 6.dp,
         insideMargin = PaddingValues(0.dp),
         onClick = onClick,
@@ -922,7 +924,7 @@ fun BookCover(
                     color = ink,
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
+                    fontSize = TypeScale.Title,
                     modifier = Modifier.align(Alignment.Center),
                 )
             } else {
@@ -934,14 +936,15 @@ fun BookCover(
                         color = ink,
                         fontFamily = FontFamily.Serif,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        lineHeight = 20.sp,
+                        fontSize = TypeScale.Body,
+                        lineHeight = TypeScale.BodyLine,
                         maxLines = 4,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Box(Modifier.padding(top = 8.dp).width(18.dp).height(1.5.dp).background(ink.copy(alpha = 0.6f)))
                     Spacer(Modifier.weight(1f))
                     if (author.isNotBlank()) {
+                        // 封面上的作者名按封面大小定，比界面最小的字还小一号。
                         Text(author, color = ink.copy(alpha = 0.75f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
@@ -973,7 +976,7 @@ private fun ImportDialog(files: List<Library.Picked>, vm: AppViewModel) {
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 10.dp),
             )
-            TextField(
+            GroupedTextField(
                 value = title,
                 onValueChange = { title = it },
                 label = "书名",
@@ -1027,7 +1030,7 @@ private fun ImportModeChoice(
         Motion.standard(Motion.SHORT), label = "importModeFill")
     val outline by animateColorAsState(if (selected) accent else MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
         Motion.standard(Motion.SHORT), label = "importModeOutline")
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(Radius.Large)
     Column(
         modifier
             .heightIn(min = 112.dp)
@@ -1042,7 +1045,7 @@ private fun ImportModeChoice(
     ) {
         ImportPaperPreview(combine, selected, replay)
         Text(label, color = if (selected) accent else MiuixTheme.colorScheme.onSurface,
-            fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -1067,6 +1070,7 @@ private fun ImportPaperPreview(combine: Boolean, selected: Boolean, replay: Int)
             Box(
                 Modifier.offset(x = x.dp, y = (i - 1).dp)
                     .width(29.dp).height(43.dp)
+                    // 实物封面图的圆角，同生成的封面。
                     .clip(RoundedCornerShape(3.dp))
                     .background(paper)
                     .border(0.5.dp, ink.copy(alpha = 0.28f), RoundedCornerShape(3.dp))

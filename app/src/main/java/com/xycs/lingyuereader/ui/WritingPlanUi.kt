@@ -34,15 +34,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.data.Beats
 import com.xycs.lingyuereader.data.ChangeEntry
+import com.xycs.lingyuereader.data.ChangeKind
 import com.xycs.lingyuereader.data.ChapterBriefs
 import com.xycs.lingyuereader.data.ChapterCard
 import com.xycs.lingyuereader.data.ChapterStatus
+import com.xycs.lingyuereader.data.ForeshadowMoves
 import com.xycs.lingyuereader.data.PlannedCard
 import com.xycs.lingyuereader.data.outlineHash
 import com.xycs.lingyuereader.data.withOutline
@@ -57,7 +58,7 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
@@ -110,17 +111,17 @@ internal fun StatusDialog(chapter: WorkChapter, ruleHits: Int? = null, onDismiss
                     else -> "细纲：只有细纲卡；草稿：在写；修订：改稿中；定稿：锁定。"
                 },
                 color = c.secondary,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
+                fontSize = TypeScale.Caption,
+                lineHeight = TypeScale.CaptionLine,
             )
             // 定稿前提醒一句检查规则的结果，不拦着。
             if (status == ChapterStatus.FINAL && !chapter.locked && (ruleHits ?: 0) > 0) {
-                Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = c.warning, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("按检查规则，这一章还有 $ruleHits 条不合。仍然可以定稿。", color = c.warning, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
             }
             if (unlocking) {
-                TextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
+                GroupedTextField(value = reason, onValueChange = { reason = it }, label = "为什么要改（必填）", modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp, max = 140.dp))
                 // 只改写法 / 涉及设定：一个开关（关着就是只改写法）。
-                Box(Modifier.clip(RoundedCornerShape(12.dp))) {
+                Box(Modifier.clip(RoundedCornerShape(Radius.Medium))) {
                     ToggleRow(
                         "涉及设定，要同步设定包",
                         checked = canon,
@@ -145,8 +146,14 @@ private val CARD_FIELDS: List<Triple<String, String, (ChapterCard) -> String>> =
     Triple("倒计时", "章首交代：离某件事还有多久", { it.countdown }),
     Triple("章末钩子", "一个动作、一句没说完的话、一点异样", { it.hook }),
     Triple("推进的线", "比如：明线、暗线、主角线，或某个配角的弧线", { it.threads }),
+    Triple(CHANGE, "一两句：人物关系、处境、知道的事变了什么", { it.change }),
+    Triple(MOVES, "一行一条：埋 / 推进 / 回收 / 暂缓：哪条伏笔", { ForeshadowMoves.format(it.moves) }),
     Triple("细纲章号", "发布章号顺延时填（比如拆成上下章）", { it.plan }),
 )
+
+/** 细纲卡新加的两张：本章改变了什么、伏笔动作。 */
+internal const val CHANGE = "本章改变了什么"
+internal const val MOVES = "伏笔动作"
 
 /** 改一项。作者动了前六项，这份细纲就是作者认过的了：不再标“AI 拟的”。细纲章号不是 AI 拟的，改它不算。 */
 private fun ChapterCard.with(field: String, value: String) = when (field) {
@@ -156,6 +163,8 @@ private fun ChapterCard.with(field: String, value: String) = when (field) {
     "倒计时" -> copy(countdown = value, aiOutline = false)
     "章末钩子" -> copy(hook = value, aiOutline = false)
     "细纲章号" -> copy(plan = value)
+    CHANGE -> copy(change = value, aiOutline = false)
+    MOVES -> copy(moves = ForeshadowMoves.parse(value, moves), aiOutline = false)
     else -> copy(threads = value, aiOutline = false)
 }
 
@@ -186,6 +195,12 @@ internal fun mergeCard(base: ChapterCard, edited: ChapterCard, latest: ChapterCa
         threads = pick { it.threads },
         summary = pick { it.summary },
         plan = pick { it.plan },
+        change = pick { it.change },
+        moves = when {
+            edited.moves != base.moves -> edited.moves
+            latest.moves != storedAtOpen.moves -> latest.moves
+            else -> base.moves
+        },
         beats = beats,
         beatsDone = if (Beats.parse(doneFrom.beats).size == Beats.parse(beats).size) doneFrom.beatsDone else emptyList(),
         auto = when {
@@ -245,6 +260,12 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var replacing by remember { mutableStateOf(false) }
     var planning by remember { mutableStateOf(false) }
     var proposal by remember { mutableStateOf<ChapterCard?>(null) }
+    // 先给 3 个走向（作品开着这一项时）：在想、想好了等作者挑。
+    var optioning by remember { mutableStateOf(false) }
+    var options by remember { mutableStateOf<List<com.xycs.lingyuereader.ai.WritePrompts.PlanOption>?>(null) }
+    val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
+    LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
+    val optionsOn = assists[workId]?.planOptions == true
     var statusDialog by remember { mutableStateOf(false) }
     var summarizing by remember { mutableStateOf(false) }
     var splitting by remember { mutableStateOf(false) }
@@ -252,8 +273,25 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var beatsProposal by remember { mutableStateOf<String?>(null) }
     // 就地展开改的那一张小卡片（项名；节拍卡是 [BEATS]），同时只开一张。
     var expandedField by remember(chapterId) { mutableStateOf<String?>(null) }
+    // 伏笔动作的文本框原样留着作者正在打的字（存的是拆好的几条，拆完再拼回去，换行、半行字会被吞掉）。
+    var movesDraft by remember(chapterId) { mutableStateOf<String?>(null) }
     val aiConfig by vm.aiConfig.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    // AI 拟细纲：[direction] 是作者挑的走向（先给 3 个走向时），空着照原来拟。拟好的先给作者看，用了才进卡片。
+    fun plan(direction: String = "") {
+        planning = true
+        scope.launch {
+            try {
+                proposal = vm.writingAi.planCard(workId, chapterId, direction)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                vm.showMessage(e.message ?: "拟细纲失败")
+            } finally {
+                planning = false
+            }
+        }
+    }
     // AI 拆节拍：按这一页上现在的细纲卡（可能还没存）拆；拆好的先给作者看、改，用了才进卡片。
     fun splitBeats() {
         val now = card ?: return
@@ -376,7 +414,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         val outline = planned?.outline?.takeIf { it.outlineHash() != now.outlineHash() }
                         GroupedSection(
                             header = "本章",
-                            footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、审稿时都会带上它，以及上一章的钩子和承接边界。",
+                            footer = "细纲只划事实边界，不管怎么写；写正文、给灵感、审稿时都带上它和上一章的钩子、承接边界。",
                         ) {
                             val note = when {
                                 fromOutline -> "从${planned?.source}自动提取。细纲文档改了，这里跟着变；在这里改过以后就按你改的来。"
@@ -384,7 +422,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 planned?.missing != null -> "设定包的卷纲细纲里没找到这一章（${planned.missing}）。章号对不上时填下面的“细纲章号”。"
                                 else -> null
                             }
-                            if (note != null) row { Text(note, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            if (note != null) row { Text(note, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
                             // 一键写本章时 AI 拟的：挂个小标签，看过没问题点一下确认；直接改哪一项也算确认。
                             if (now.aiOutline) {
                                 row { AiDraftedNote("AI 拟的", "写本章时 AI 按本章及以前的资料拟的，下面挂着“待确认”的几张就是。改哪一项都算确认。") }
@@ -394,17 +432,21 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             // 细纲里没写到的章（往后要写的），或者想要另一种走法：让 AI 按总纲、前后几章拟一份，看过再用。
                             row {
                                 // 在拟的时候换成转圈的一行，拟完淡回按钮。
-                                BusyActionRow(planning, busyText = "AI 正在拟细纲……", title = "AI 拟这一章的细纲", enabled = aiConfig.ready) {
-                                    planning = true
+                                BusyActionRow(planning, busyText = "AI 正在拟细纲……", title = "AI 拟这一章的细纲", enabled = aiConfig.ready && !optioning) { plan() }
+                            }
+                            // 先给 3 个走向：一次小请求，挑一个再按它拟细纲。
+                            if (optionsOn) row {
+                                BusyActionRow(optioning, busyText = "AI 正在想 3 个走向……", title = "先给 3 个走向", enabled = aiConfig.ready && !planning) {
+                                    optioning = true
                                     scope.launch {
                                         try {
-                                            proposal = vm.writingAi.planCard(workId, chapterId)
+                                            options = vm.writingAi.planOptions(workId, chapterId)
                                         } catch (e: CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
-                                            vm.showMessage(e.message ?: "拟细纲失败")
+                                            vm.showMessage(e.message ?: "没想出走向")
                                         } finally {
-                                            planning = false
+                                            optioning = false
                                         }
                                     }
                                 }
@@ -417,7 +459,12 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             expanded = expandedField,
                             aiDrafted = now.aiOutline,
                             onToggle = { label -> expandedField = if (expandedField == label) null else label },
-                        ) { label, v -> card = now.with(label, v) }
+                            // 卡片被别处换掉了（用了 AI 拟的、换成细纲里的），文本框跟着换成卡片上的。
+                            movesText = movesDraft?.takeIf { ForeshadowMoves.parse(it, now.moves) == now.moves },
+                        ) { label, v ->
+                            if (label == MOVES) movesDraft = v
+                            card = now.with(label, v)
+                        }
                         // 节拍单独一张卡：各拍一直列着，已写的打勾；点卡片头改节拍原文。
                         val done = now.beatsDone.toSet()
                         val list = beats(now)
@@ -445,7 +492,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                     }
                                 },
                             ) {
-                                TextField(
+                                GroupedTextField(
                                     value = now.beats,
                                     onValueChange = { v -> card = now.withBeats(v) },
                                     label = "节拍 · 比如：沈默赶到渡口，发现船不见了（800字）",
@@ -457,14 +504,16 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                             "一行一拍，可以在行尾写篇幅，比如“（800字）”。AI 写整章草稿会一拍一拍写；编辑器里“AI 写…”面板可以从光标处只写其中一拍，采纳后在这里勾成已写。",
                             Modifier.padding(top = 8.dp),
                         )
+                        if (now.summaryStale && now.summary.isNotBlank()) {
+                            GroupedListFooter("这一章定稿以后又改过，下面的摘要可能过期了：下次收尾时重新写，也可以点“AI 概括正文”再概括一次。", Modifier.padding(top = 8.dp))
+                        }
                         GroupedSection(
                             header = "写完以后",
-                            footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章），AI 就知道前面写了什么。" +
-                                "可以自己写，也可以让 AI 概括正文再改。",
+                            footer = "写后面的章时当前情带给 AI，收尾时也汇总进卷摘要和“故事至今”。可以自己写，也可以让 AI 概括正文再改。",
                         ) {
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                    TextField(
+                                    GroupedTextField(
                                         value = now.summary,
                                         onValueChange = { v -> card = now.copy(summary = v) },
                                         label = "本章摘要 · 发生了什么、结果、留下什么",
@@ -493,14 +542,25 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                 }
             }
+            options?.let { list ->
+                GlassDialog(show = true, title = "挑一个走向", summary = "挑好了按它拟细纲卡，拟好的照样先给你看", onDismissRequest = { options = null }) {
+                    Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                        DirectionOptions(list) { picked ->
+                            options = null
+                            plan(picked.text())
+                        }
+                    }
+                    TextButton(text = "都不要", onClick = { options = null }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                }
+            }
             proposal?.let { p ->
                 GlassDialog(show = true, title = "AI 拟的细纲", summary = "按本章及以前的资料、本章细纲和上一章结尾拟的，看过再用", onDismissRequest = { proposal = null }) {
                     Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         CARD_FIELDS.dropLast(1).forEach { (label, _, get) ->
                             val v = get(p)
                             if (v.isNotBlank()) {
-                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = 13.sp)
-                                Text(v, color = LocalGroupedColors.current.label, fontSize = 15.sp, lineHeight = 22.sp)
+                                Text(label, color = LocalGroupedColors.current.secondary, fontSize = TypeScale.Caption)
+                                Text(v, color = LocalGroupedColors.current.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                             }
                         }
                     }
@@ -508,7 +568,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         onDismiss = { proposal = null },
                         onConfirm = {
                             proposal = null
-                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads, auto = 0, aiOutline = false)
+                            card = card?.copy(facts = p.facts, boundary = p.boundary, pov = p.pov, countdown = p.countdown, hook = p.hook, threads = p.threads,
+                                change = p.change.ifBlank { card?.change.orEmpty() }, moves = p.moves.ifEmpty { card?.moves.orEmpty() }, auto = 0, aiOutline = false)
                             info = info?.copy(source = null)
                         },
                         confirmText = "用这份",
@@ -521,8 +582,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     Text(
                         "AI 拆好以后先给你看，用了才会换掉现在写的节拍；已写的勾会按新的条数重新算。",
                         color = LocalGroupedColors.current.secondary,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                     )
                     DialogButtons(
                         onDismiss = { askOverwriteBeats = false },
@@ -537,7 +598,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
             beatsProposal?.let { proposed ->
                 var edited by remember(proposed) { mutableStateOf(proposed) }
                 GlassDialog(show = true, title = "AI 拆的节拍", summary = "按细纲卡和本章资料拆的，可以先改，用了才放进细纲卡", onDismissRequest = { beatsProposal = null }) {
-                    TextField(
+                    GroupedTextField(
                         value = edited,
                         onValueChange = { edited = it },
                         label = "一行一拍，行尾可写篇幅",
@@ -561,8 +622,8 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     Text(
                         "前六项换成细纲文档里这一章现在写的，你在这里改的会被覆盖。以后细纲再改，这里跟着变。摘要和细纲章号不动。",
                         color = LocalGroupedColors.current.secondary,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
+                        fontSize = TypeScale.Caption,
+                        lineHeight = TypeScale.CaptionLine,
                     )
                     DialogButtons(
                         onDismiss = { replacing = false },
@@ -594,6 +655,8 @@ private val CARD_LOOK: Map<String, Pair<ImageVector, CategoryTone>> = mapOf(
     "倒计时" to (LingYueIcons.Timer to CategoryTone.CYAN),
     "章末钩子" to (LingYueIcons.Hook to CategoryTone.BLUE),
     "推进的线" to (LingYueIcons.Threads to CategoryTone.SUCCESS),
+    CHANGE to (LingYueIcons.Bulb to CategoryTone.TINT),
+    MOVES to (LingYueIcons.Flag to CategoryTone.CYAN),
     "细纲章号" to (LingYueIcons.ListView to CategoryTone.NEUTRAL),
 )
 
@@ -609,7 +672,15 @@ internal const val AI_PENDING_BEATS = "AI 拆的·待确认"
  * [aiDrafted] 为真时前六项里填了的挂“AI 拟的·待确认”（细纲章号不是 AI 拟的，不挂）。
  */
 @Composable
-private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boolean, onToggle: (String) -> Unit, onChange: (String, String) -> Unit) {
+private fun CardFieldGrid(
+    card: ChapterCard,
+    expanded: String?,
+    aiDrafted: Boolean,
+    onToggle: (String) -> Unit,
+    /** 伏笔动作文本框里作者正在打的原文；为空时按卡片上存的几条拼出来。 */
+    movesText: String? = null,
+    onChange: (String, String) -> Unit,
+) {
     val c = LocalGroupedColors.current
     BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         val columns = if (maxWidth >= 600.dp) 3 else 2
@@ -637,7 +708,7 @@ private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boole
                     r.forEach { i ->
                         val (label, hint, get) = CARD_FIELDS[i]
                         val (icon, tone) = CARD_LOOK.getValue(label)
-                        val value = get(card)
+                        val value = if (label == MOVES) movesText ?: get(card) else get(card)
                         FieldCard(
                             label,
                             icon,
@@ -648,7 +719,7 @@ private fun CardFieldGrid(card: ChapterCard, expanded: String?, aiDrafted: Boole
                             modifier = if (single) Modifier else Modifier.weight(1f).fillMaxHeight(),
                             tag = if (aiDrafted && value.isNotBlank() && label != "细纲章号") AI_PENDING to c.warning else null,
                         ) {
-                            TextField(
+                            GroupedTextField(
                                 value = value,
                                 onValueChange = { v -> onChange(label, v) },
                                 label = if (hint.isNotEmpty()) "$label · $hint" else label,
@@ -669,7 +740,7 @@ private fun AiDraftedNote(tag: String, text: String) {
     val c = LocalGroupedColors.current
     GroupedRow {
         Tag(tag, c.warning)
-        Text(text, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.weight(1f).padding(start = 8.dp))
+        Text(text, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.weight(1f).padding(start = 8.dp))
     }
 }
 
@@ -719,7 +790,7 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                     else -> {
                         val pending = list.filter { it.pending }
                         if (pending.isNotEmpty()) {
-                            GroupedSection(header = "待同步设定", footer = "这些改动涉及设定：把设定包里的不变量、细纲、人物档案、察觉表改好后，点开标为已同步。") {
+                            GroupedSection(header = "待同步设定", footer = "改好设定包（或核过账本里“待复核”的条目）后，点开标为已同步。") {
                                 pending.forEach { e -> row { ChangeRow(e) { open = e } } }
                             }
                         }
@@ -740,11 +811,17 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                 summary = whenLabel(e.at) + (if (e.canon) if (e.synced) " · 涉及设定，已同步" else " · 涉及设定，待同步" else ""),
                 onDismissRequest = { open = null },
             ) {
-                if (e.reason.isNotBlank()) Text(e.reason, color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                if (e.reason.isNotBlank()) Text(e.reason, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 if (e.canon) {
+                    // 改定稿后核对挂上来的：要看的是账本里的条目，不是设定包。
+                    val cascade = e.kind == ChangeKind.CASCADE
                     DialogButtons(
-                        onDismiss = { open = null; vm.open(Screen.WorkPack(workId)) },
-                        dismissText = "去改设定包",
+                        onDismiss = {
+                            open = null
+                            // 待复核只在“全部记录”的条目上标着（最上面单列一组），直接落在那里；人物、伏笔卡片上看不到。
+                            vm.open(if (cascade) Screen.WorkLedger(workId, tab = LedgerVisualTab.RECORDS.name) else Screen.WorkPack(workId))
+                        },
+                        dismissText = if (cascade) "去看账本" else "去改设定包",
                         onConfirm = { open = null; vm.writing.markSynced(workId, e.id, !e.synced) },
                         confirmText = if (e.synced) "标为未同步" else "标为已同步",
                     )
@@ -762,7 +839,10 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
     }
 }
 
-/** 一条登记：种类和章名，下面时间和原因；涉及设定还没同步的右边挂“待同步”。 */
+/**
+ * 一条登记：种类和章名，下面时间和原因；涉及设定还没同步的右边挂“待同步”，改定稿后核对挂上来的挂“待复核”
+ * （要看的是账本里的条目，和账本里那一条的标签同名同色）。
+ */
 @Composable
 private fun ChangeRow(e: ChangeEntry, onClick: () -> Unit) {
     val c = LocalGroupedColors.current
@@ -770,7 +850,29 @@ private fun ChangeRow(e: ChangeEntry, onClick: () -> Unit) {
         e.kind.label + if (e.chapterTitle.isNotBlank()) " · ${e.chapterTitle}" else "",
         subtitle = listOf(whenLabel(e.at), e.reason.take(40)).filter { it.isNotBlank() }.joinToString(" · "),
         subtitleMaxLines = 2,
-        trailing = if (e.pending) ({ Tag("待同步", c.warning) }) else null,
+        trailing = if (e.pending) ({ Tag(if (e.kind == ChangeKind.CASCADE) "待复核" else "待同步", c.warning) }) else null,
         onClick = onClick,
     )
+}
+
+/**
+ * 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）一个一张选择卡（[ChoiceCard]）：序号、发生什么，下面“看点 / 本章改变 / 章末停在”几行小字，
+ * 整张能点，点了就选；三张竖着排，360dp 宽也不挤。细纲卡页的对话框、草稿页一键写本章停下来等挑的时候共用。
+ */
+@Composable
+internal fun DirectionOptions(options: List<com.xycs.lingyuereader.ai.WritePrompts.PlanOption>, onPick: (com.xycs.lingyuereader.ai.WritePrompts.PlanOption) -> Unit) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEachIndexed { i, o ->
+            ChoiceCard(
+                i + 1,
+                o.what,
+                listOfNotNull(
+                    o.hook.takeIf { it.isNotBlank() }?.let { "看点" to it },
+                    o.change.takeIf { it.isNotBlank() }?.let { "本章改变" to it },
+                    o.end.takeIf { it.isNotBlank() }?.let { "章末停在" to it },
+                ),
+                onClick = { onPick(o) },
+            )
+        }
+    }
 }

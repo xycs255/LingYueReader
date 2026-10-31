@@ -103,6 +103,8 @@ enum class AiFeature(val label: String) {
     SYNC("整理进设定包"),
     PLAN("细纲与摘要"),
     PACK("整理人物与规则"),
+    /** 设定包里一份文档的起草、按要求改、精简（首页“用 AI 整理人物”还记在 [PACK]）。 */
+    SETTING("设定文档"),
     REFERENCE("范本分析"),
     COMPANION("范本陪写"),
     ASK("问 AI"),

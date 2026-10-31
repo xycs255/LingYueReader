@@ -226,10 +226,10 @@ class WritingAiUiTest {
     @Test
     fun ideasAreShownButNeverChangeTheDraft() {
         openEditor()
-        // 问主意在书灵里（AI 条上不再有“灵感…”）。
+        // 问主意在灵感面板里（AI 条上不再有“灵感…”）。
         compose.onNodeWithContentDescription("AI 写作").performClick()
         assertTrue(compose.onAllNodesWithText("灵感…").fetchSemanticsNodes().isEmpty())
-        // 书灵（问主意、范本）在“写”里叫“灵感”。
+        // 灵感面板（问主意、范本）在“写”里，入口和面板同名。
         compose.onNodeWithText("灵感").performClick()
         waitForText("问主意")
         listOf("细节和描写", "起名", "卡文了", "随便问").forEach { waitForText(it) }
@@ -444,11 +444,12 @@ class WritingAiUiTest {
         compose.onNodeWithContentDescription("正文").performTextInput("又")
         Thread.sleep(4_000)
         ShadowLooper.idleMainLooper()
-        assertTrue("打字、移动光标和打开书灵都不能自动发请求", prompts.isEmpty())
+        assertTrue("打字、移动光标和打开灵感面板都不能自动发请求", prompts.isEmpty())
 
         compose.onNodeWithText("选择范本").performClick()
         compose.onNodeWithText("新增/分析范本").performClick()
-        waitForText("写作范本")
+        // 等换页动画走完、编辑器离开画面：回来时编辑器重新读范本分析，才看得到下面新存的那一份。
+        waitFor { vm.stack.value.last() is Screen.WritingReference && compose.onAllNodesWithContentDescription("正文").fetchSemanticsNodes().isEmpty() }
         val store = WorkStore(writingDir)
         val reference = store.importReference(workId, "合成范本.txt", "第一章 模拟范本\n门外有人叩门。她先问身份，再把信封压在桌角。")
         val chapter = reference.chapters.single()
@@ -469,7 +470,7 @@ class WritingAiUiTest {
         assertTrue("选中范本也不能自动发请求", prompts.isEmpty())
 
         // 写正文从“AI 写…”面板进：选了范本时多一行“照范本写法”，默认开着。
-        compose.onNodeWithContentDescription("关闭书灵").performClick()
+        compose.onNodeWithContentDescription("关闭灵感").performClick()
         compose.onNodeWithContentDescription("AI 写作").performClick()
         compose.onNodeWithText("AI 写…").performClick()
         val referenceRow = "照范本写法：《${reference.title}》·${chapter.title}"
@@ -518,7 +519,7 @@ class WritingAiUiTest {
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         waitFor { vm.writingAi.assists.value[workId] != null }
         compose.onNodeWithText("这部书的口味").performScrollTo()
-        compose.onNodeWithText(FLAVOR_EXAMPLE).assertExists()
+        compose.onNodeWithText(FLAVOR_EXAMPLE, substring = true).assertExists()
         val flavor = "合成样本：轻松带吐槽，主角爱算计，叙述者偶尔玩梗。"
         compose.onAllNodes(hasSetTextAction())[0].performSemanticsAction(SemanticsActions.SetText) { set ->
             set(AnnotatedString(flavor))
