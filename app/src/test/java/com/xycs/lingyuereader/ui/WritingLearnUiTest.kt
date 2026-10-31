@@ -211,7 +211,10 @@ class WritingLearnUiTest {
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         press("从改稿学到的")
         waitFor { has("长句拆短。") }
-        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("对白说完就收住。")
+        // 列表在上；右上“+”弹对话框加一条。
+        compose.onNodeWithContentDescription("加一条写法").performClick()
+        waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("对白说完就收住。")
         press("加进去")
         waitFor { "对白说完就收住。" in store.assist(workId).learned }
         waitFor { has("对白说完就收住。") && has("2 条") }

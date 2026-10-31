@@ -38,8 +38,8 @@ import org.robolectric.shadows.ShadowLooper
 import java.io.File
 
 /**
- * 作品页规划树上的分层前情和线索体检（真页面、真存盘，文字自造、人名虚构）：故事至今能看、能改，改了标“你改过的”；
- * 卷菜单里的卷摘要能看、能改；体检表能打开，冷了的线点“带进下一章”写进下一章的作者要求。
+ * 作品页上的分层前情和线索体检（真页面、真存盘，文字自造、人名虚构）：故事至今在“更多功能”里，能看、能改，改了标“你改过的”；
+ * 卷菜单里的卷摘要能看、能改；体检表在“更多功能”里能打开，有冷了的线时进度卡上也有一枚胶囊；冷了的线点“带进下一章”写进下一章的作者要求。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
@@ -100,9 +100,16 @@ class WritingDigestUiTest {
         return WorkStore(writingDir)
     }
 
+    /** 故事至今、体检收在“更多功能”里：滚到它、点开。 */
+    private fun openMore() {
+        scrollTo("更多功能")
+        compose.onNodeWithText("更多功能").performClick()
+    }
+
     @Test
     fun theStorySoFarCanBeReadAndEditedNextToTheOutline() {
         val store = openWork()
+        openMore()
         scrollTo("故事至今")
         waitForText("2 句 · 写到第 12 章")
         compose.onNodeWithText("故事至今").performClick()
@@ -146,6 +153,14 @@ class WritingDigestUiTest {
     @Test
     fun thePulseTableOpensAndCarriesAColdThreadIntoTheNextChapter() {
         val store = openWork()
+        // 进度卡上一枚提醒胶囊，点了就是体检表。
+        waitForText("1 条线索冷了 ›")
+        compose.onNodeWithText("1 条线索冷了 ›").performClick()
+        waitForText("暗线")
+        compose.onNodeWithText("知道了").performClick()
+        waitFor { compose.onAllNodesWithText("最近推进：第 1 章", substring = true).fetchSemanticsNodes().isEmpty() }
+        // “更多功能”里的那一行也写着结果。
+        openMore()
         scrollTo("线索与节奏体检")
         waitForText("1 条冷了")
         compose.onNodeWithText("线索与节奏体检").performClick()

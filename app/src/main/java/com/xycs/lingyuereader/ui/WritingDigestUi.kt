@@ -31,10 +31,10 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
-// ---------- 分层前情、线索体检：规划树上的入口和对话框 ----------
+// ---------- 分层前情、线索体检：作品页上的入口和对话框 ----------
 
 /**
- * 规划树下面的“故事至今”一行：写着写到第几章、作者改过没有，没有时说收尾时会自动整理。点了看、改。
+ * 作品页“更多功能”里的“故事至今”一行：写着写到第几章、作者改过没有，没有时说收尾时会自动整理。点了看、改。
  */
 @Composable
 internal fun TreeStoryRow(story: StoryDigest?, onClick: () -> Unit) {
@@ -56,7 +56,7 @@ internal fun TreeStoryRow(story: StoryDigest?, onClick: () -> Unit) {
     }
 }
 
-/** 规划树下面的“线索与节奏体检”一行：[note] 是一句结果（“2 条冷了”），还没算时为空。 */
+/** 作品页“更多功能”里的“线索与节奏体检”一行：[note] 是一句结果（“2 条冷了”），还没算时为空。 */
 @Composable
 internal fun TreePulseRow(note: String?, warn: Boolean, onClick: () -> Unit) {
     val c = LocalGroupedColors.current
@@ -143,7 +143,8 @@ internal fun PulseDialog(rows: List<PulseRow>?, onDismiss: () -> Unit, onCarry: 
                 else -> rows.forEach { r -> PulseLine(r, onCarry) }
             }
         }
-        DialogButtons(onDismiss = onDismiss, onConfirm = onDismiss, confirmText = "知道了", dismissText = "关闭")
+        // 只是看：一个“知道了”就够，不放两个都是关掉的键。
+        DialogOkButton("知道了", onClick = onDismiss)
     }
 }
 

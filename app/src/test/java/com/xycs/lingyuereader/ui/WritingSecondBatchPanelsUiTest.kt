@@ -2,6 +2,7 @@ package com.xycs.lingyuereader.ui
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -115,10 +116,11 @@ class WritingSecondBatchPanelsUiTest {
         compose.setContent {
             LingYueTheme(Appearance(mode = ThemeMode.LIGHT)) { ProvideGroupedColors { DirectionOptions(options) { picked += it } } }
         }
-        compose.onNodeWithText("1. 林月在渡口等沈默").assertExists()
-        compose.onNodeWithText("看点：谁替沈默送的信", substring = true).assertExists()
-        compose.onNodeWithText("章末停在：杜娘递来一封信", substring = true).assertExists()
-        compose.onNodeWithText("2. 林月独自过河去找老周").performClick()
+        // 一个走向一张选择卡（ChoiceCard）：读屏把序号、走向和各行连成一句念。
+        compose.onNodeWithContentDescription("第 1 个：林月在渡口等沈默", substring = true).assertExists()
+        compose.onNodeWithContentDescription("看点：谁替沈默送的信", substring = true).assertExists()
+        compose.onNodeWithContentDescription("章末停在：杜娘递来一封信", substring = true).assertExists()
+        compose.onNodeWithContentDescription("第 2 个：林月独自过河去找老周", substring = true).performClick()
         assertEquals(listOf(options[1]), picked)
     }
 }

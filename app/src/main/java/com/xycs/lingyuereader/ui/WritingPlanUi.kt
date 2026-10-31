@@ -414,7 +414,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         val outline = planned?.outline?.takeIf { it.outlineHash() != now.outlineHash() }
                         GroupedSection(
                             header = "本章",
-                            footer = "细纲只划事实边界，不管怎么写。写作 AI 改这一章、给灵感、审稿时都会带上它，以及上一章的钩子和承接边界。",
+                            footer = "细纲只划事实边界，不管怎么写；写正文、给灵感、审稿时都带上它和上一章的钩子、承接边界。",
                         ) {
                             val note = when {
                                 fromOutline -> "从${planned?.source}自动提取。细纲文档改了，这里跟着变；在这里改过以后就按你改的来。"
@@ -790,8 +790,7 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                     else -> {
                         val pending = list.filter { it.pending }
                         if (pending.isNotEmpty()) {
-                            GroupedSection(header = "待同步设定", footer = "这些改动涉及设定：把设定包里的不变量、细纲、人物档案、察觉表改好后，点开标为已同步。" +
-                                "“改定稿后核对”是定稿章改过以后本机查出来的：后面几章可能要跟着改的账本条目，看过、改好也标为已同步。") {
+                            GroupedSection(header = "待同步设定", footer = "改好设定包（或核过账本里“待复核”的条目）后，点开标为已同步。") {
                                 pending.forEach { e -> row { ChangeRow(e) { open = e } } }
                             }
                         }
@@ -836,7 +835,10 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
     }
 }
 
-/** 一条登记：种类和章名，下面时间和原因；涉及设定还没同步的右边挂“待同步”。 */
+/**
+ * 一条登记：种类和章名，下面时间和原因；涉及设定还没同步的右边挂“待同步”，改定稿后核对挂上来的挂“待复核”
+ * （要看的是账本里的条目，和账本里那一条的标签同名同色）。
+ */
 @Composable
 private fun ChangeRow(e: ChangeEntry, onClick: () -> Unit) {
     val c = LocalGroupedColors.current
@@ -844,23 +846,29 @@ private fun ChangeRow(e: ChangeEntry, onClick: () -> Unit) {
         e.kind.label + if (e.chapterTitle.isNotBlank()) " · ${e.chapterTitle}" else "",
         subtitle = listOf(whenLabel(e.at), e.reason.take(40)).filter { it.isNotBlank() }.joinToString(" · "),
         subtitleMaxLines = 2,
-        trailing = if (e.pending) ({ Tag("待同步", c.warning) }) else null,
+        trailing = if (e.pending) ({ Tag(if (e.kind == ChangeKind.CASCADE) "待复核" else "待同步", c.warning) }) else null,
         onClick = onClick,
     )
 }
 
 /**
- * 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）一个一行：发生什么，下面灰色的看点、本章改变、章末停在哪，点了就选。
- * 细纲卡页的对话框、草稿页一键写本章停下来等挑的时候共用。
+ * 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）一个一张选择卡（[ChoiceCard]）：序号、发生什么，下面“看点 / 本章改变 / 章末停在”几行小字，
+ * 整张能点，点了就选；三张竖着排，360dp 宽也不挤。细纲卡页的对话框、草稿页一键写本章停下来等挑的时候共用。
  */
 @Composable
 internal fun DirectionOptions(options: List<com.xycs.lingyuereader.ai.WritePrompts.PlanOption>, onPick: (com.xycs.lingyuereader.ai.WritePrompts.PlanOption) -> Unit) {
-    DialogOptionList(
-        options.mapIndexed { i, o -> o to "${i + 1}. ${o.what}" },
-        onPick = onPick,
-        description = { o ->
-            listOfNotNull(o.hook.takeIf { it.isNotBlank() }?.let { "看点：$it" }, o.change.takeIf { it.isNotBlank() }?.let { "本章改变：$it" },
-                o.end.takeIf { it.isNotBlank() }?.let { "章末停在：$it" }).joinToString("\n").ifEmpty { null }
-        },
-    )
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEachIndexed { i, o ->
+            ChoiceCard(
+                i + 1,
+                o.what,
+                listOfNotNull(
+                    o.hook.takeIf { it.isNotBlank() }?.let { "看点" to it },
+                    o.change.takeIf { it.isNotBlank() }?.let { "本章改变" to it },
+                    o.end.takeIf { it.isNotBlank() }?.let { "章末停在" to it },
+                ),
+                onClick = { onPick(o) },
+            )
+        }
+    }
 }

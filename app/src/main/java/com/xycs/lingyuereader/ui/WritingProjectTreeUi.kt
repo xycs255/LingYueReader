@@ -110,7 +110,7 @@ internal data class WritingTreeActions(
     val onOpenLedger: (WorkChapter) -> Unit = {},
     /** 拖动松手：把这一章移到某卷的第几个（从 0 数，按去掉这一章后的那一卷算）。 */
     val onDropChapter: (WorkChapter, String, Int) -> Unit = { _, _, _ -> },
-    /** 总纲上面的“故事至今”、卷菜单里的“卷摘要”、“线索与节奏体检”：看、改。 */
+    /** 作品页“更多功能”里的“故事至今”“线索与节奏体检”、卷菜单里的“卷摘要”：看、改。 */
     val onOpenStory: () -> Unit = {},
     val onVolumeDigest: (Volume) -> Unit = {},
     val onOpenPulse: () -> Unit = {},
@@ -322,21 +322,18 @@ internal fun LazyListScope.writingPlanningTreeItems(
     marks: Map<String, ChapterTreeMarks> = emptyMap(),
     length: CheckRule.Length? = null,
     drag: TreeDragController? = null,
-    /** 分层前情（为空时不显示“故事至今”一行，卷菜单里也没有“卷摘要”）。 */
+    /** 分层前情（为空时卷菜单里没有“卷摘要”；故事至今和线索体检在作品页的“更多功能”里）。 */
     digests: Digests? = null,
-    /** 线索体检的一句结果（为空时不显示体检那一行）；[pulseWarn] 为真时用提醒色。 */
-    pulse: String? = null,
-    pulseWarn: Boolean = false,
 ) {
     val chapters = work.chapters
     val positions = chapters.withIndex().associate { it.value.id to it.index }
     val dragOn = drag != null && !reorderMode
+    // 标题右边一个小“排序”钮：调整顺序不常用，以前是总纲上面带图标、带说明的一整行，比总纲还显眼。
     item(key = "tree:heading", contentType = "tree-heading") {
-        GroupedListHeader("规划树")
+        GroupedHeaderRow("规划树") { TreeReorderButton(reorderMode, actions.onToggleReorder) }
     }
     item(key = "tree:outline", contentType = "tree-outline") {
         GroupedListCell(first = true, last = work.volumes.isEmpty(), gap = 12.dp, modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
-            TreeReorderRow(reorderMode, actions.onToggleReorder)
             TreeOutlineRow(work, hasChildren = work.volumes.isNotEmpty(), onClick = actions.onOpenOutline)
         }
     }
@@ -385,19 +382,10 @@ internal fun LazyListScope.writingPlanningTreeItems(
             }
         }
     }
-    // 故事至今、线索体检单独一张卡片接在树下面：放在总纲上面会把前几章挤出首屏，作者最常点的是章。
-    if (digests != null || pulse != null) item(key = "tree:digest", contentType = "tree-digest") {
-        GroupedListCell(first = true, last = true, gap = 12.dp, modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
-            if (digests != null) TreeStoryRow(digests.story, actions.onOpenStory)
-            if (pulse != null) TreePulseRow(pulse, pulseWarn, actions.onOpenPulse)
-        }
-    }
     item(key = "tree:hint", contentType = "tree-hint") {
-        Text(
-            "点章写正文，点右侧卡片看细纲；长按章节弹出菜单（改名、改状态、删除），长按后拖动可以直接调整顺序。",
-            color = LocalGroupedColors.current.secondary,
-            fontSize = TypeScale.Caption,
-            modifier = Modifier.padding(horizontal = 28.dp),
+        GroupedListFooter(
+            if (reorderMode) "用每章右侧的箭头上移、下移，调好了点标题右边的“完成”。"
+            else "点章写正文，点右侧卡片看细纲；长按章节弹出菜单，长按后拖动可以直接调整顺序。",
         )
     }
 }
@@ -443,26 +431,18 @@ private fun TreeOutlineRow(work: Work, hasChildren: Boolean, onClick: () -> Unit
 }
 
 /**
- * 进出调整模式的一行：和下面的总纲一样带行首图标、名字下面一行说明，看得出能点；
- * 调整中换成强调色的“完成调整”，右边挂“调整中”标签，再点一下收起。拖不动（读屏、手不方便）时用它逐章上移、下移。
+ * 规划树标题右边的“排序”小钮：进调整模式（拖不动的时候——读屏、手不方便——逐章上移、下移）；调整中换成淡强调色的“完成”，再点一下收起。
+ * 读屏念“调整章节顺序”“完成调整”。
  */
 @Composable
-private fun TreeReorderRow(active: Boolean, onToggle: () -> Unit) {
-    val c = LocalGroupedColors.current
-    GroupedRow(onClick = onToggle) {
-        RowIcon(if (active) LingYueIcons.Check else LingYueIcons.Sort, c.tint)
-        Column(Modifier.weight(1f)) {
-            Text(
-                if (active) "完成调整" else "调整章节顺序",
-                color = if (active) c.tint else c.label,
-                fontSize = TypeScale.Body,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(if (active) "用每章右侧的箭头上移、下移" else "逐章上移、下移；也可以长按章节直接拖", color = c.secondary, fontSize = TypeScale.Footnote)
-        }
-        if (active) Tag("调整中", c.tint)
-        else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
-    }
+private fun TreeReorderButton(active: Boolean, onToggle: () -> Unit) {
+    HeaderButton(
+        if (active) "完成" else "排序",
+        onToggle,
+        description = if (active) "完成调整" else "调整章节顺序",
+        icon = if (active) LingYueIcons.Check else LingYueIcons.Sort,
+        active = active,
+    )
 }
 
 @Composable

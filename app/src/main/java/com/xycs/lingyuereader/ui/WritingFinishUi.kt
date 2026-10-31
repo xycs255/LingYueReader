@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
@@ -155,7 +157,7 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
     Column {
         GroupedSection(
             header = "收尾要做的",
-            footer = "整理进设定包和账本、写摘要合成一次请求。写进去之前，都在这一页上给你看过、改过；点“完成收尾”才写。",
+            footer = "整理和写摘要合成一次请求；写进去之前都在这一页给你看过、改过，点“完成收尾”才写。",
         ) {
             row { CheckboxRow("定稿", checked = true, subtitle = "固定要做：存一个历史版本，正文锁定", enabled = false, dimChecked = false) {} }
             row {
@@ -211,10 +213,17 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
         if (rules > 0 || cliche > 0) {
             GroupedSection(footer = "只是提醒，不拦着：定稿后正文锁定，要改先回去改。") {
                 row {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val parts = listOfNotNull(rules.takeIf { it > 0 }?.let { "$it 条不合规则" }, cliche.takeIf { it > 0 }?.let { "$it 处 AI 腔" })
-                        Text("还有 " + parts.joinToString("、"), color = c.warning, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
-                        PillButton("回去看看", onClick = onBack, style = PillStyle.Tinted)
+                    // 提醒是提醒色的标签，按钮是普通的灰底胶囊：以前提醒色字配淡强调色底的胶囊，一行里两种颜色混着。
+                    val parts = listOfNotNull(rules.takeIf { it > 0 }?.let { "$it 条不合规则" }, cliche.takeIf { it > 0 }?.let { "$it 处 AI 腔" })
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 8.dp).semantics(mergeDescendants = true) {},
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("还有", color = c.label, fontSize = TypeScale.Body)
+                            parts.forEach { Tag(it, c.warning, Modifier.align(Alignment.CenterVertically)) }
+                        }
+                        PillButton("回去看看", onClick = onBack)
                     }
                 }
             }

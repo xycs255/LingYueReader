@@ -95,6 +95,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -103,7 +104,11 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -994,13 +999,17 @@ internal fun LingYueSlider(
     )
 }
 
-/** 分段控件（miuix 的带轮廓标签栏样子）：浅灰底槽，选中的那格是白块（深色是亮一档的深块）、强调色字；两到五个选项。 */
+/**
+ * 分段控件（miuix 的带轮廓标签栏样子）：浅灰底槽，选中的那格是白块（深色是亮一档的深块）、强调色字；两到五个选项。
+ * [fontFamily] 给要用书页字体才认得出的格子（排版设置的“中文引号 “””：界面字体里弯引号小得像两点）。
+ */
 @Composable
 internal fun <T> SegmentedControl(
     options: List<Pair<T, String>>,
     selected: T?,
     modifier: Modifier = Modifier,
     height: Dp = 36.dp,
+    fontFamily: FontFamily? = null,
     onSelect: (T) -> Unit,
 ) {
     val c = LocalGroupedColors.current
@@ -1037,6 +1046,7 @@ internal fun <T> SegmentedControl(
                         color = color,
                         fontSize = TypeScale.Caption,
                         fontWeight = if (i == index) FontWeight.Medium else FontWeight.Normal,
+                        fontFamily = fontFamily,
                         maxLines = 1,
                     )
                 }
@@ -1047,9 +1057,9 @@ internal fun <T> SegmentedControl(
 
 /** 卡片里单独一行的分段控件。 */
 @Composable
-internal fun <T> SegmentedRow(options: List<Pair<T, String>>, selected: T?, onSelect: (T) -> Unit) {
+internal fun <T> SegmentedRow(options: List<Pair<T, String>>, selected: T?, fontFamily: FontFamily? = null, onSelect: (T) -> Unit) {
     Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        SegmentedControl(options, selected, onSelect = onSelect)
+        SegmentedControl(options, selected, fontFamily = fontFamily, onSelect = onSelect)
     }
 }
 
@@ -1551,6 +1561,173 @@ internal fun buttonColors(c: GroupedColors, filled: Boolean = true, enabled: Boo
 internal fun Tag(text: String, color: Color, modifier: Modifier = Modifier) {
     Box(modifier.clip(RoundedCornerShape(Radius.Small)).background(color.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 1.dp)) {
         Text(text, color = color, fontSize = TypeScale.Footnote, maxLines = 1)
+    }
+}
+
+/**
+ * 组名一行右边带一个小按钮（规划树标题右边的“排序”）：左边和 [GroupedListHeader] 一样的灰色组名，右边 [HeaderButton]。
+ * 按钮能点 48dp，这一行比只有组名时高一点。
+ */
+@Composable
+internal fun GroupedHeaderRow(text: String, modifier: Modifier = Modifier, action: @Composable () -> Unit) {
+    val c = LocalGroupedColors.current
+    Row(modifier.fillMaxWidth().padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        SmallTitle(text, modifier = Modifier.weight(1f), textColor = c.secondary)
+        action()
+    }
+}
+
+/**
+ * 组名旁的小按钮：看着 28dp 高、两头全圆，灰底次要色字（[active] 时淡强调色底、强调色字），左边可带一个 14dp 图标；能点 48dp。
+ * 字短（“排序”“完成”）时读屏念 [description]。
+ */
+@Composable
+internal fun HeaderButton(
+    label: String,
+    onClick: () -> Unit,
+    description: String = label,
+    icon: ImageVector? = null,
+    active: Boolean = false,
+) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val ink = if (active) c.tint else c.secondary
+    Box(
+        Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+                onClick(label = description) { onClick(); true }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier
+                .pressScale(source, 0.95f)
+                .heightIn(min = 28.dp)
+                .clip(Radius.Full)
+                .background(if (active) c.tint.copy(alpha = 0.12f) else c.fill)
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(label, color = ink, fontSize = TypeScale.Footnote, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * 下拉胶囊（筛选条上的“第 3 章 ⌄”“全部人物 ⌄”）：和灰底 [PillButton] 一样看着 36dp 高、能点 48dp，字后面一个朝下的小箭头。
+ * 只管样子和点按，点了弹什么由调用处定（弹对话框，或者用 [DropdownChipPicker] 弹菜单）。读屏念 [description]。
+ */
+@Composable
+internal fun DropdownChip(text: String, onClick: () -> Unit, description: String = text, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    Box(
+        modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+                onClick { onClick(); true }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            Modifier
+                .pressScale(source, 0.95f)
+                .heightIn(min = 36.dp)
+                .clip(Radius.Full)
+                .background(c.fill)
+                .padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 160.dp))
+            Spacer(Modifier.width(2.dp))
+            Icon(LingYueIcons.ChevronDown, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/** 点了弹出菜单的 [DropdownChip]：选项不多（人物这类）时用，选中的打勾，同 [PickerRow]。 */
+@Composable
+internal fun <T> DropdownChipPicker(
+    options: List<Pair<T, String>>,
+    selected: T,
+    description: String,
+    onSelect: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        DropdownChip(options.firstOrNull { it.first == selected }?.second.orEmpty(), { expanded = true }, description)
+        OverlayListPopup(show = expanded, alignment = PopupPositionProvider.Align.Start, onDismissRequest = { expanded = false }) {
+            GlassMenu {
+                ListPopupColumn {
+                    options.forEach { (value, label) ->
+                        LingYueMenuItem(label, selected = value == selected) {
+                            expanded = false
+                            onSelect(value)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 选择卡：几个方案里挑一个（“先挑一个走向”的 3 张）。底槽色、`Radius.Medium` 圆角的一张卡，左上一个强调色小圆写序号，
+ * 右边方案名（15sp 半粗，最多三行），下面几行“看点 ……”（次要色小字，名目用正文色），整张能点、按下有灰底；一张一张竖着排，360dp 宽也不挤。
+ * 读屏把序号、方案名和各行连成一句念。
+ */
+@Composable
+internal fun ChoiceCard(index: Int, title: String, details: List<Pair<String, String>>, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = LocalGroupedColors.current
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val shape = RoundedCornerShape(Radius.Medium)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .clip(shape)
+            .background(c.fill)
+            .background(pressHighlight(pressed))
+            .clickable(interactionSource = source, indication = null, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = "第 $index 个：$title" + details.joinToString("") { (k, v) -> "；$k：$v" }
+                role = Role.Button
+                onClick { onClick(); true }
+            }
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(Modifier.size(24.dp).clip(CircleShape).background(c.tint.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+            Text("$index", color = c.tint, fontSize = TypeScale.Footnote, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+        Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, fontWeight = FontWeight.SemiBold,
+                maxLines = 3, overflow = TextOverflow.Ellipsis)
+            details.forEach { (k, v) ->
+                Text(
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Medium, color = c.label)) { append(k) }
+                        append("　")
+                        append(v)
+                    },
+                    color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine,
+                )
+            }
+        }
+        Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 6.dp, top = 4.dp).size(16.dp))
     }
 }
 
@@ -2301,21 +2478,22 @@ internal fun rowIconTone(tone: CategoryTone): Color = categoryColor(tone, LocalG
 internal fun categoryFill(color: Color, c: GroupedColors): Color = lerp(c.cell, color, if (c.dark) 0.16f else 0.08f)
 
 /**
- * 按宽度排的格子：每格不窄于 [minTileWidth]，至少 [minColumns] 列、至多 [maxColumns] 列（手机竖屏三列，宽屏多几列），
+ * 按宽度排的格子：每格不窄于 [minTileWidth]，至少 [minColumns] 列、至多 [maxColumns] 列（411dp 宽的手机三列，360dp 两列，宽屏多几列），
  * 格子等宽铺满，同一行一样高；最后一行不满时左对齐、右边留空。[tile] 画第几格。
+ * [minColumns] 默认 2：以前默认 3 列压过了最小宽度，360dp 宽的屏上每格只剩 106dp，“称谓与语气”放大一档字号就截断。
  */
 @Composable
 internal fun AdaptiveTileGrid(
     count: Int,
     modifier: Modifier = Modifier,
-    minColumns: Int = 3,
+    minColumns: Int = 2,
     maxColumns: Int = 6,
     minTileWidth: Dp = 112.dp,
     spacing: Dp = 8.dp,
     tile: @Composable (index: Int, modifier: Modifier) -> Unit,
 ) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        val columns = ((maxWidth + spacing) / (minTileWidth + spacing)).toInt().coerceIn(minColumns, maxColumns)
+        val columns = adaptiveColumns(maxWidth, minTileWidth, spacing, minColumns, maxColumns)
         Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
             (0 until count).chunked(columns).forEach { line ->
                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(spacing)) {
@@ -2326,6 +2504,10 @@ internal fun AdaptiveTileGrid(
         }
     }
 }
+
+/** [AdaptiveTileGrid] 在 [width] 宽里排几列：放得下几格不窄于 [minTileWidth] 的就排几列，再夹在 [minColumns]..[maxColumns] 里。 */
+internal fun adaptiveColumns(width: Dp, minTileWidth: Dp, spacing: Dp, minColumns: Int = 2, maxColumns: Int = 6): Int =
+    ((width + spacing) / (minTileWidth + spacing)).toInt().coerceIn(minColumns, maxColumns)
 
 /**
  * 彩色统计小卡片（设定包的分类格）：左上分类色淡底的图标，右上一个小标记（[badge]，“常用”“按需”），

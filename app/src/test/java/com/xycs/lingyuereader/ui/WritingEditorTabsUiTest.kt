@@ -219,18 +219,25 @@ class WritingEditorTabsUiTest {
         waitFor { top() == Screen.WorkAi(workId) }
     }
 
-    /** 360dp 宽：状态行放不下时先省字数、再省“已保存”，“N 处问题”（问题面板的入口）一直露着；读屏照旧念整行。 */
+    /**
+     * 360dp 宽：问题数不再挤在状态行里（以前和别的字一起被截成“已保存 ·”），挂在底栏“查”的角标上，读屏念“查，N 处问题”；
+     * 状态行照旧露着章节状态，读屏照旧念整行（带着问题数），点它照旧打开问题面板。
+     */
     @Test
     @Config(qualifiers = "w360dp-h740dp")
-    fun statusLineKeepsTheProblemCountOnASmallPhone() {
+    fun theProblemCountLivesOnTheCheckTabOnASmallPhone() {
         openEditor()
+        waitFor { hasDescription("处问题", substring = true) }
+        val tab = compose.onNodeWithContentDescription("查，", substring = true).fetchSemanticsNode()
+        val count = Regex("查，(\\d+) 处问题").find(tab.config[SemanticsProperties.ContentDescription].single())!!.groupValues[1]
+        // 角标上就是这个数。
+        assertTrue(compose.onAllNodesWithText(count).fetchSemanticsNodes().isNotEmpty())
         val line = androidx.compose.ui.test.SemanticsMatcher.keyIsDefined(EditorStatusShown)
-        waitFor { compose.onAllNodes(line).fetchSemanticsNodes().singleOrNull()?.config?.get(EditorStatusShown)?.contains(EditorStatusPart.ISSUES) == true }
         val node = compose.onNode(line).fetchSemanticsNode()
         val shown = node.config[EditorStatusShown]
-        assertFalse("小屏先省字数：$shown", EditorStatusPart.WORDS in shown)
+        assertTrue("章节状态一直露着：$shown", EditorStatusPart.STATE in shown)
         val spoken = node.config[SemanticsProperties.Text].joinToString { it.text }
-        assertTrue(spoken, "处问题" in spoken && "字" in spoken)
+        assertTrue(spoken, "$count 处问题" in spoken && "字" in spoken)
         compose.onNode(line).performClick()
         waitFor { hasDescription("收起") }
     }

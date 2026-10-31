@@ -86,25 +86,56 @@ internal fun packWords(words: Int): String = when {
 }
 
 /**
- * 设定包的分类格：十三类一类一张彩色小卡片（[StatTile]），写着几份、多少字，右上“常用 / 按需”。
- * 点有文档的一类只看这一类（再点一次看全部），点空的一类新建这一类的文档。
+ * 设定包的分类格：有文档的类一类一张彩色小卡片（[StatTile]），写着几份、多少字，右上“常用 / 按需”；最后一格“新建”。
+ * 还空着的类收进下面的“其余 N 类”（[othersOpen] 时展开成同样的格子，空的不挂“常用 / 按需”）：
+ * 以前十三格全排出来，空格也挂着小标签，一屏十几个“常用”，看不出哪几类真有东西。
+ * 点有文档的一类只看这一类（再点一次看全部），点空的一类新建这一类的文档，点“新建”先选类。
  */
 @Composable
-internal fun PackKindGrid(stats: List<PackKindStat>, selected: PackKind?, onPick: (PackKindStat) -> Unit) {
+internal fun PackKindGrid(
+    stats: List<PackKindStat>,
+    selected: PackKind?,
+    othersOpen: Boolean,
+    onToggleOthers: () -> Unit,
+    onNew: () -> Unit,
+    onPick: (PackKindStat) -> Unit,
+) {
     val c = LocalGroupedColors.current
-    AdaptiveTileGrid(stats.size, Modifier.padding(horizontal = 12.dp)) { i, modifier ->
-        val s = stats[i]
-        StatTile(
-            title = s.kind.label,
-            icon = packKindIcon(s.kind),
-            color = packKindColor(s.kind, c),
-            lines = if (s.empty) listOf("空 · 点了新建") else listOf("${s.docs} 份 · ${packWords(s.words)}"),
-            badge = s.mode,
-            selected = s.kind == selected,
-            dimmed = s.empty,
-            description = packKindDescription(s),
-            modifier = modifier,
-        ) { onPick(s) }
+    val filled = stats.filter { !it.empty }
+    val empty = stats.filter { it.empty }
+    @Composable
+    fun KindTile(s: PackKindStat, modifier: Modifier) = StatTile(
+        title = s.kind.label,
+        icon = packKindIcon(s.kind),
+        color = packKindColor(s.kind, c),
+        lines = if (s.empty) listOf("空 · 点了新建") else listOf("${s.docs} 份 · ${packWords(s.words)}"),
+        badge = packKindBadge(s),
+        selected = s.kind == selected,
+        dimmed = s.empty,
+        description = packKindDescription(s),
+        modifier = modifier,
+    ) { onPick(s) }
+    Column {
+        AdaptiveTileGrid(filled.size + 1, Modifier.padding(horizontal = 12.dp)) { i, modifier ->
+            if (i < filled.size) KindTile(filled[i], modifier)
+            else StatTile(
+                title = "新建",
+                icon = LingYueIcons.Add,
+                color = c.tint,
+                lines = listOf("先选一类"),
+                description = "新建文档，先选一类",
+                modifier = modifier,
+                onClick = onNew,
+            )
+        }
+        if (empty.isNotEmpty()) {
+            GroupedSection(Modifier.padding(top = 10.dp)) {
+                row { ExpandRow("其余 ${empty.size} 类", othersOpen, value = if (othersOpen) null else "还空着") { onToggleOthers() } }
+            }
+            if (othersOpen) {
+                AdaptiveTileGrid(empty.size, Modifier.padding(horizontal = 12.dp)) { i, modifier -> KindTile(empty[i], modifier) }
+            }
+        }
     }
 }
 
@@ -255,6 +286,9 @@ internal fun missTags(budget: PackBudget?): Map<String, String> = budget?.misses
 
 /** 图例最多列几类，其余并成“其余”。 */
 private const val LEGEND = 5
+
+/** 分类格右上的小标记：有文档的类写“常用 / 按需”；空的类不挂（以前一屏十几个空格子都挂着“常用”）。 */
+internal fun packKindBadge(s: PackKindStat): String? = s.mode.takeIf { !s.empty }
 
 /** 一类卡片的读屏文字：名字、几份、多少字、常用还是按需；空的说点了新建。 */
 internal fun packKindDescription(s: PackKindStat): String =

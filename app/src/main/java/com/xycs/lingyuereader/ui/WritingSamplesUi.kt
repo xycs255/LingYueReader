@@ -129,8 +129,8 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                     else -> Column {
                         val source = if (pick.fallback) "还没有定稿章，先从字数最多的 ${pick.sources} 章里挑。" else "从 ${pick.sources} 章定稿里挑。"
                         GroupedSection(
-                            footer = source + "这里按写下一章时的样子列出；写前面的章时只从那章之前挑，可能少几段。" +
-                                "共 ${pick.chars} 字，上限 ${assist.sampleLimit} 字。“不用这段”会记住，以后不再挑它。",
+                            // 说明压到两行以内：写前面的章时只从那章之前挑这一层放在页面最上面的注释里，不再写进说明。
+                            footer = source + "共 ${pick.chars} 字、上限 ${assist.sampleLimit} 字；“不用这段”会记住，以后不再挑它。",
                         ) {
                             pick.samples.forEach { s ->
                                 row {
@@ -171,25 +171,26 @@ fun WorkStyleSamplesScreen(vm: AppViewModel, workId: String) {
                         row { ActionRow("恢复成自动挑的") { vm.writingAi.resetSamples(workId) } }
                     }
                 }
-                Text(
-                    "范例只用来学写法，AI 被要求不照抄、不接着这些段落的情节写。“最近一次发给 AI 的内容”里能看到实际带上的范例。",
-                    color = c.secondary,
-                    fontSize = TypeScale.Caption,
-                    lineHeight = TypeScale.CaptionLine,
-                    fontWeight = FontWeight.Normal,
-                    modifier = Modifier.padding(horizontal = 28.dp),
+                FooterText(
+                    "范例只用来学写法，AI 不照抄、不接着它的情节写；实际带上的在“最近一次发给 AI 的内容”里看。",
+                    Modifier.padding(horizontal = 28.dp),
                 )
             }
         }
     }
 }
 
-/** 各类范例的标签色：叙述用强调色，对白用成功色，动作用提醒色（都是语义色，深色、Monet 下也读得清）。 */
-private fun sampleColor(kind: SampleKind, c: GroupedColors) = when (kind) {
-    SampleKind.NARRATION -> c.tint
-    SampleKind.DIALOGUE -> c.success
-    SampleKind.ACTION -> c.warning
-}.readableOn(listOf(c.cell, c.background))
+/**
+ * 各类范例的标签色，用分类色（[CategoryTone]）：叙述蓝、对白紫（和人物、称谓语气同一色系）、动作青。
+ * 以前叙述用强调色（朱砂），看着像出错；提醒色、成功色也各有意思，不拿来分类。
+ */
+internal fun sampleTone(kind: SampleKind): CategoryTone = when (kind) {
+    SampleKind.NARRATION -> CategoryTone.BLUE
+    SampleKind.DIALOGUE -> CategoryTone.PURPLE
+    SampleKind.ACTION -> CategoryTone.CYAN
+}
+
+private fun sampleColor(kind: SampleKind, c: GroupedColors) = categoryColor(sampleTone(kind), c)
 
 /** 列表里每段先显示多少字。 */
 private const val PREVIEW_CHARS = 48

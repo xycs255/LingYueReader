@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -457,6 +458,11 @@ internal fun EditorBottomBar(
     }
 }
 
+/** 屏宽不到这么多（dp）时 ✦ 只显示标题、不显示理由：360dp 的屏上底栏右边只剩 140dp 左右。 */
+internal const val SPARK_REASON_MIN_SCREEN = 400
+
+internal fun sparkShowsReason(screenWidthDp: Int): Boolean = screenWidthDp >= SPARK_REASON_MIN_SCREEN
+
 /** ✦ 至少留这么宽（字号放大时标签先让）。 */
 private val SPARK_MIN_WIDTH = 88.dp
 
@@ -492,7 +498,7 @@ private fun rowTitle(r: EditorRow): String = when (r) {
 }
 
 /**
- * ✦ 推荐：淡强调色底、强调色字（“✦ 名字”，下面一行灰色理由），不铺整条实心色；还没设置写作 AI 时是一枚描边的次要按钮、不带理由。
+ * ✦ 推荐：淡强调色底、强调色字（“✦ 名字”，下面一行灰色理由，窄屏不写理由），不铺整条实心色；还没设置写作 AI 时是一枚描边的次要按钮、不带理由。
  * AI 在写、等采纳时灰底，只显示状态、不能点。
  */
 @Composable
@@ -500,6 +506,8 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
     val c = LocalGroupedColors.current
     val label = if (loading) "载入中" else rec.label
     val setup = enabled && rec.kind == EditorRecommendationKind.CONFIGURE_AI
+    // 窄屏（360dp）只露标题：理由挤在 140dp 宽里只剩“老周拒绝夜里开…”半句，读屏照旧念理由。
+    val reason = sparkShowsReason(LocalConfiguration.current.screenWidthDp)
     val shape = RoundedCornerShape(Radius.Medium)
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
@@ -529,7 +537,7 @@ private fun SparkChip(rec: EditorRecommendation, enabled: Boolean, loading: Bool
         } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("✦ $label", color = if (enabled) c.tint else c.label, fontSize = TypeScale.Caption, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!loading) Text(rec.reason, color = c.secondary, fontSize = TypeScale.Micro, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!loading && reason) Text(rec.reason, color = c.secondary, fontSize = TypeScale.Micro, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

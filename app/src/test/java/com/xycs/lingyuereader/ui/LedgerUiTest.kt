@@ -7,6 +7,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onLast
@@ -187,14 +188,14 @@ class LedgerUiTest {
         assertEquals(1, count("在渡口，左臂伤未愈"))
 
         // 翻到第 15 章：知道了，不再是“还不知道”。
-        compose.onNodeWithText("看到第几章").performClick()
+        compose.onNodeWithContentDescription("看到第几章", substring = true).performClick()
         waitForText("第15章 偷听")
         compose.onNodeWithText("第15章 偷听").performClick()
         waitFor { count("还不知道的事") == 0 && count("知情") == 2 }
         waitForOne("杜娘是卧底")
 
         // 回到“全部”。
-        compose.onNodeWithText("看到第几章").performClick()
+        compose.onNodeWithContentDescription("看到第几章", substring = true).performClick()
         waitForText("列出所有条目")
         compose.onNodeWithText("列出所有条目").performClick()
         waitFor { count("知情") == 2 && count("伏笔") == 2 && count("过期没收的伏笔") == 0 }
@@ -357,12 +358,51 @@ class LedgerUiTest {
             "手动添加",
         )
         open(Screen.WorkLedger(workId))
-        waitForText("人物")
-        compose.onAllNodesWithText("人物").onFirst().performClick()
+        // 分段标签在最上面，下面一枚“全部人物 ⌄”胶囊弹出人物菜单。
+        waitFor { compose.onAllNodesWithContentDescription("只看谁", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("只看谁", substring = true).performClick()
         waitForText("林月")
         compose.onAllNodesWithText("林月").onLast().performClick()
         compose.onNodeWithText("伏笔").performClick()
         waitForText("林月要交信")
         waitFor { count("顾长风说三日后再来") == 0 }
+    }
+
+    /** 先切类、再筛：分段标签在最上面，下面一行是“看到第几章”“只看谁”两枚下拉胶囊，同在一行。 */
+    @Test
+    fun theTabsSitAboveTheFiltersAndBothFiltersShareOneRow() {
+        seedLedger()
+        open(Screen.WorkLedger(workId))
+        waitFor { compose.onAllNodesWithContentDescription("只看谁", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        val tab = compose.onAllNodesWithText("人物").onFirst().fetchSemanticsNode().boundsInRoot
+        val chapter = compose.onNodeWithContentDescription("看到第几章", substring = true).fetchSemanticsNode().boundsInRoot
+        val person = compose.onNodeWithContentDescription("只看谁", substring = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("分段标签在筛选上面：$tab / $chapter", tab.bottom <= chapter.top)
+        assertTrue("两枚筛选同一行：$chapter / $person", kotlin.math.abs(chapter.center.y - person.center.y) < 1f && person.left > chapter.right - 1f)
+        // 读屏念出现在筛的是什么。
+        compose.onNodeWithContentDescription("看到第几章：全部章节").assertExists()
+        compose.onNodeWithContentDescription("只看谁：全部人物").assertExists()
+    }
+
+    /** 人物卡只列记了的方面；没记的合成一枚“+ 添加方面”，点了挑一个方面，接着按章登记。 */
+    @Test
+    fun unfilledAspectsFoldIntoOneAddButton() {
+        seedLedger()
+        open(Screen.WorkLedger(workId))
+        waitForText("在渡口，左臂伤未…")
+        // 林月记了“位置”，其余常用方面没有一枚枚“· 添加”。
+        assertEquals(0, count("· 添加", substring = true))
+        assertEquals(1, count("位置 · 在渡口，左臂伤未…"))
+        compose.onNodeWithContentDescription("给林月添加状态方面", substring = true).performClick()
+        waitForText("给林月添加")
+        // 记了的“位置”不在里面。
+        assertEquals(0, count("位置"))
+        compose.onNodeWithText("身体").performClick()
+        waitForText("林月 · 身体")
+        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("左臂伤未愈")
+        // “全部章节”时章号空着：先点一下＋定到最早的一章。
+        compose.onNodeWithContentDescription("从第几章生效加一").performClick()
+        compose.onNodeWithText("保存状态").performClick()
+        waitFor { store.ledger(workId).any { it.subject == "林月" && it.aspect == "身体" && it.text == "左臂伤未愈" } }
     }
 }

@@ -43,6 +43,7 @@ import com.xycs.lingyuereader.data.StoryLedger
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 
 internal enum class LedgerVisualTab(val title: String) {
     PEOPLE("人物"), PROMISES("伏笔"), KNOWLEDGE("知情"), RECORDS("全部记录")
@@ -144,8 +145,10 @@ internal fun LazyListScope.ledgerPeopleGraph(
     item(key = "graph:people:intro") { GroupedListHeader("人物状态 · 点方面直接调整") }
     items(people, key = { "graph:person:$it" }) { who ->
         val current = states.filter { it.subject == who }
-        val aspects = (LEDGER_ASPECTS + current.map { it.aspect }.filter { it.isNotBlank() }).distinct()
         val c = LocalGroupedColors.current
+        // 没填的方面合成一枚“+ 添加方面”，点了再挑哪一方面：以前七个“· 添加”的灰胶囊排满一屏，看不出哪几个填了。
+        var picking by remember(who) { mutableStateOf(false) }
+        val (filled, missing) = ledgerPersonAspects(current)
         LedgerGraphCard {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(Radius.Medium)).background(c.fill), contentAlignment = Alignment.Center) {
@@ -153,19 +156,27 @@ internal fun LazyListScope.ledgerPeopleGraph(
                 }
                 Column {
                     Text(who, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
-                    Text(current.size.toString() + " 个状态方面", color = c.secondary, fontSize = TypeScale.Footnote)
+                    Text(if (filled.isEmpty()) "还没记状态" else "记了 ${filled.size} 个方面", color = c.secondary, fontSize = TypeScale.Footnote)
                 }
             }
             // 方面多时换行，不横着溢出、也不切掉最后一个；胶囊能点的范围 48dp，行与行之间不再另加间距。
             FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                aspects.forEach { aspect ->
-                    val latest = current.firstOrNull { it.aspect == aspect }
+                filled.forEach { latest ->
+                    val aspect = latest.aspect
                     PillButton(
-                        aspect + " · " + (latest?.text?.let { if (it.length > 8) it.take(8) + "…" else it } ?: "添加"),
+                        aspect + " · " + latest.text.let { if (it.length > 8) it.take(8) + "…" else it },
                         onClick = { onState(LedgerQuickState(who, aspect, latest)) },
                         modifier = Modifier.semantics {
-                            contentDescription = who + "的" + aspect + "，" + (latest?.text ?: "尚未记录") + "，点按修改"
+                            contentDescription = who + "的" + aspect + "，" + latest.text + "，点按修改"
                         },
+                    )
+                }
+                if (missing.isNotEmpty()) {
+                    PillButton(
+                        "+ 添加方面",
+                        onClick = { picking = true },
+                        style = PillStyle.Tinted,
+                        modifier = Modifier.semantics { contentDescription = "给" + who + "添加状态方面，还没记的有" + missing.joinToString("、") },
                     )
                 }
             }
@@ -177,12 +188,30 @@ internal fun LazyListScope.ledgerPeopleGraph(
                 )
             }
         }
+        if (picking) {
+            GlassDialog(show = true, title = "给${who}添加", summary = "挑一个方面，再按章登记这一方面的状态。", onDismissRequest = { picking = false }) {
+                DialogOptionList(missing.map { it to it }, onPick = { aspect ->
+                    picking = false
+                    onState(LedgerQuickState(who, aspect, null))
+                })
+                TextButton(text = "取消", onClick = { picking = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            }
+        }
     }
     item(key = "graph:people:all") {
         GroupedSection(footer = "不同章的旧状态仍在全部记录里；新状态不会覆盖已发生的前文。") {
             row { ActionRow("查看全部人物记录", onClick = onRecords) }
         }
     }
+}
+
+/**
+ * 一个人的状态方面分两份：记了的（按 [LEDGER_ASPECTS] 的顺序，自己写的方面排在后面）和常用方面里还没记的（合成“+ 添加方面”）。
+ */
+internal fun ledgerPersonAspects(current: List<LedgerEntry>): Pair<List<LedgerEntry>, List<String>> {
+    val byAspect = current.filter { it.aspect.isNotBlank() }.associateBy { it.aspect }
+    val order = (LEDGER_ASPECTS + byAspect.keys).distinct()
+    return order.mapNotNull { byAspect[it] } to LEDGER_ASPECTS.filter { it !in byAspect }
 }
 
 /**
@@ -353,7 +382,7 @@ private fun LedgerPromiseCard(
                 Text("第 $end 章", color = c.tertiary, fontSize = TypeScale.Micro)
             }
             if (entry.payoff == null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("保存：计划第 $selected 章收", onClick = {
                         onPayoff(entry, selected) {
                             dragging = null
@@ -367,7 +396,8 @@ private fun LedgerPromiseCard(
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 三枚胶囊放不下就换行：360dp 宽时“查看来源与精确编辑”以前被挤出卡片右边。
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!entry.done && onClose != null) PillButton("标为已回收", onClick = onClose, style = PillStyle.Tinted)
             PillButton("改状态", onClick = { picking = true })
             PillButton("查看来源与精确编辑", onClick = { onOpen(entry) })
