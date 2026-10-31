@@ -437,6 +437,20 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         vm.writing.loadLedger(workId)
     }
     val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
+    // 故事账本卡片上的伏笔提醒：账本和设定包伏笔表合起来算（没导入账本的也算），设定包、账本变了重算。账本还没读出来时不算。
+    var promises by remember { mutableStateOf<PromiseCounts?>(null) }
+    LaunchedEffect(workId, pack, ledgers[workId]) {
+        val ledger = ledgers[workId] ?: return@LaunchedEffect
+        promises = try {
+            val (legacy, latest) = vm.writing.foreshadows(workId)
+            promiseCounts(mergeWritingForeshadows(legacy, ledger), latest)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            null
+        }
+    }
     val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
     var editingInfo by remember { mutableStateOf(false) }
@@ -663,7 +677,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         ruleCount = ruleCount,
                         busy = busy,
                         unsyncedIds = if (pack?.isNotEmpty() == true) unsynced else emptySet(),
-                        openPromises = ledgers[workId]?.count { it.kind == com.xycs.lingyuereader.data.LedgerKind.PROMISE && !it.done },
+                        promises = promises,
                         aiProvider = aiConfig.takeIf { it.ready }?.providerLabel,
                         todayWords = stats.on(LocalDate.now()),
                         dailyGoal = stats.goal,
@@ -681,7 +695,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 }
                             },
                             openPack = { vm.open(Screen.WorkPack(workId)) },
-                            openLedger = { vm.open(Screen.WorkLedger(workId)) },
+                            // 有该回收的伏笔时卡片上写着“N 条该回收”：点进去直接是“伏笔”标签，不落在人物上再自己找。
+                            openLedger = { vm.open(Screen.WorkLedger(workId, promises = (promises?.due ?: 0) > 0)) },
                             openAi = { vm.open(Screen.WorkAi(workId)) },
                             preview = { vm.previewWork(workId, null) },
                             openChanges = { vm.open(Screen.WorkChanges(workId)) },

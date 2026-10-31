@@ -816,7 +816,11 @@ fun WorkChangesScreen(vm: AppViewModel, workId: String) {
                     // 改定稿后核对挂上来的：要看的是账本里的条目，不是设定包。
                     val cascade = e.kind == ChangeKind.CASCADE
                     DialogButtons(
-                        onDismiss = { open = null; vm.open(if (cascade) Screen.WorkLedger(workId) else Screen.WorkPack(workId)) },
+                        onDismiss = {
+                            open = null
+                            // 待复核只在“全部记录”的条目上标着（最上面单列一组），直接落在那里；人物、伏笔卡片上看不到。
+                            vm.open(if (cascade) Screen.WorkLedger(workId, tab = LedgerVisualTab.RECORDS.name) else Screen.WorkPack(workId))
+                        },
                         dismissText = if (cascade) "去看账本" else "去改设定包",
                         onConfirm = { open = null; vm.writing.markSynced(workId, e.id, !e.synced) },
                         confirmText = if (e.synced) "标为未同步" else "标为已同步",

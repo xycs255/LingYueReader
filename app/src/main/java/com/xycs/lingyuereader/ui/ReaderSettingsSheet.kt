@@ -120,7 +120,8 @@ internal fun SettingsSheet(
 ) {
     ProvideReaderColors(palette, tint) {
         // 导航栈：点进去压一页，返回弹一页，回到起始页后再返回就关面板。
-        var stack by rememberSaveable { mutableStateOf(listOf(if (startWithMore) SettingsPage.MORE else SettingsPage.MAIN)) }
+        // 从“更多”进来时栈底仍是“外观”：左上角有“‹ 外观”、返回键先回外观，字体、翻页方式（只在外观首页）都还够得着。
+        var stack by rememberSaveable { mutableStateOf(if (startWithMore) listOf(SettingsPage.MAIN, SettingsPage.MORE) else listOf(SettingsPage.MAIN)) }
         val page = stack.last()
         fun open(p: SettingsPage) { stack = stack + p }
         fun back() { stack = stack.dropLast(1) }

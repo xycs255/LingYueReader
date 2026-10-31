@@ -64,6 +64,7 @@ internal const val CHAPTER_MAP_MIN = 10
  * 不常用的收在“更多功能”里（在本页展开）：故事至今、线索与节奏体检、当书预览、变更登记、检查规则。
  * 进度卡上的“N 章待整理”“N 条待同步设定”“体检：N 条冷了”能点；点标题区改作品信息。[chapterMenu] 是色块长按弹出的菜单（和规划树同一份，见 [ChapterMenuPopup]）。
  * [story] 是故事至今（还没有为空），[pulse] 是体检的一句结果（还没算完为空），[pulseWarn] 为真时有冷了、原地踏步的（[pulseAlerts] 条）。
+ * [promises] 是账本和伏笔表合起来的伏笔数（还没算完为空），故事账本卡片上优先写“N 条该回收”。
  */
 @Composable
 internal fun WritingWorkOverview(
@@ -77,7 +78,7 @@ internal fun WritingWorkOverview(
     busy: Boolean,
     actions: WritingWorkOverviewActions,
     unsyncedIds: Set<String> = emptySet(),
-    openPromises: Int? = null,
+    promises: PromiseCounts? = null,
     aiProvider: String? = null,
     todayWords: Int = 0,
     dailyGoal: Int = 0,
@@ -146,7 +147,7 @@ internal fun WritingWorkOverview(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             EntryCard(
                 "故事账本",
-                value = ledgerValue(ledgerCount, openPromises),
+                value = ledgerValue(ledgerCount, promises),
                 icon = LingYueIcons.ListView,
                 modifier = Modifier.weight(1f),
             ) { actions.openLedger() }
@@ -184,11 +185,27 @@ internal fun WritingWorkOverview(
     }
 }
 
-/** 故事账本卡片上的一句：没收的伏笔有几条；还没读出伏笔数时退回总条数。 */
-internal fun ledgerValue(ledgerCount: Int?, openPromises: Int?): String? = when {
+/** 伏笔有几条（[total]）、没回收的几条（[open]）、其中计划回收的章已经写到了的几条（[due]）。 */
+internal data class PromiseCounts(val total: Int, val open: Int, val due: Int)
+
+/**
+ * 伏笔数：账本和设定包伏笔表合起来算（[mergeWritingForeshadows]，伏笔表里没导入账本的也算），口径同原来的伏笔页：
+ * 没标已回收的算没收，其中计划回收的章不晚于写到的章（[latest]，有字的章里最大的章号）算该回收。
+ */
+internal fun promiseCounts(merged: List<WritingForeshadow>, latest: Int): PromiseCounts {
+    val open = merged.map { it.display }.filter { !it.done }
+    return PromiseCounts(merged.size, open.size, open.count { it.payoff != null && it.payoff <= latest })
+}
+
+/**
+ * 故事账本卡片上的一句：有该回收的伏笔先说（以前单独的“伏笔”入口上的提醒），再说没收的有几条；
+ * 账本空、伏笔表也没有伏笔时才说“还没有记录”；伏笔数还没算出来时退回总条数。
+ */
+internal fun ledgerValue(ledgerCount: Int?, promises: PromiseCounts?): String? = when {
+    promises != null && promises.due > 0 -> "${promises.due} 条该回收"
+    promises != null && promises.open > 0 -> "${promises.open} 条伏笔没收"
+    promises != null && promises.total > 0 -> "伏笔都收了"
     ledgerCount == 0 -> "还没有记录"
-    openPromises != null && openPromises > 0 -> "$openPromises 条伏笔没收"
-    openPromises == 0 -> "伏笔都收了"
     ledgerCount != null -> "$ledgerCount 条"
     else -> null
 }

@@ -29,12 +29,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -115,12 +117,14 @@ private data class LedgerView(val chapter: LedgerChapter?, val person: String?)
 
 /**
  * 故事账本：随章推进、会变的东西——人物状态、发生的事、知情、伏笔、时间线。
- * 伏笔标签合并了原来的“伏笔”页：该回收了 / 还没回收 / 已回收、设定包伏笔表里还没导入的、来源文档（[promises] 为真时直接翻到这一标签）。
+ * 伏笔标签合并了原来的“伏笔”页：该回收了 / 还没回收 / 已回收、设定包伏笔表里还没导入的、来源文档（[Screen.WorkLedger.promises] 为真时直接翻到这一标签）。
  * 默认按类别列出全部条目（人物状态再按人物归在一起）；“看到第几章”选了某一章，就只看到这一章为止的状态（[StoryLedger.snapshot]），
  * 写前对照、改旧章时用。点一条改，右上角加一条；菜单里从设定包导入、导出到设定包、历史版本。
  */
 @Composable
-fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null, promises: Boolean = false) {
+fun WorkLedgerScreen(vm: AppViewModel, screen: Screen.WorkLedger) {
+    val workId = screen.workId
+    val chapterId = screen.chapterId
     val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
     val works by vm.writing.works.collectAsStateWithLifecycle()
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
@@ -137,14 +141,24 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     val entries = ledgers[workId]
     // 伏笔标签：设定包伏笔表里的条目（还没导入的也列）和写到了第几章（算哪些该回收了）；设定包、账本变了重读。
     var foreshadowSource by remember { mutableStateOf<Pair<List<Foreshadow>, Int>?>(null) }
-    LaunchedEffect(workId, pack, entries) { foreshadowSource = vm.writing.foreshadows(workId) }
+    // 读不出来时按没有伏笔表算：没读完（null）时页面按加载中显示，不能一直卡在加载中。
+    LaunchedEffect(workId, pack, entries) {
+        foreshadowSource = try {
+            vm.writing.foreshadows(workId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList<Foreshadow>() to 0
+        }
+    }
     var closing by remember { mutableStateOf<WritingForeshadow?>(null) }
     // 能翻到的章（章号要读细纲卡，在后台算）；章节改了重算。
     var chapters by remember { mutableStateOf<List<LedgerChapter>?>(null) }
     LaunchedEffect(workId, work) { chapters = vm.writing.ledgerChapters(workId) }
     // 看到哪一章：空是全部。从编辑器进来时直接翻到那一章。
     var at by rememberSaveable { mutableStateOf(chapterId) }
-    var person by rememberSaveable { mutableStateOf<String?>(null) }
+    var person by rememberSaveable { mutableStateOf(screen.person) }
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     // 正在改的一条（新加的也在这里，[adding] 为真）；要删的一条。
@@ -154,11 +168,18 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     var visualTab by rememberSaveable {
         mutableStateOf(
             when {
-                promises -> LedgerVisualTab.PROMISES
+                screen.tab != null -> LedgerVisualTab.entries.firstOrNull { it.name == screen.tab } ?: LedgerVisualTab.PEOPLE
+                screen.promises -> LedgerVisualTab.PROMISES
                 chapterId == null -> LedgerVisualTab.PEOPLE
                 else -> LedgerVisualTab.RECORDS
             },
         )
+    }
+    // 去别的页（编辑伏笔表、打开一章……）时这一页的界面被收掉，rememberSaveable 也跟着没了：
+    // 把标签、看到第几章、只看谁写回栈里这一项，返回时照着重建，不回到入口的默认。
+    val entry by rememberUpdatedState(screen)
+    DisposableEffect(Unit) {
+        onDispose { vm.keepState(entry, entry.copy(chapterId = at, tab = visualTab.name, person = person)) }
     }
     var quickState by remember { mutableStateOf<LedgerQuickState?>(null) }
     var quickKnowledge by remember { mutableStateOf<LedgerQuickKnowledge?>(null) }
@@ -301,11 +322,9 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                 }
                 null -> {
                     val list = entries
-                    when {
-                        list == null || (at != null && chapters == null) ->
-                            Box(Modifier.fillMaxSize().padding(contentPadding)) { LoadingState("正在读故事账本……") }
-                        // 账本空、但设定包伏笔表里有条目时照常显示分段标签：伏笔标签里列着它们，能标为已回收。
-                        list.isEmpty() && foreshadowSource?.first.isNullOrEmpty() -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
+                    when (ledgerBody(list, at != null && chapters == null, foreshadowSource?.first)) {
+                        LedgerBody.LOADING -> Box(Modifier.fillMaxSize().padding(contentPadding)) { LoadingState("正在读故事账本……") }
+                        LedgerBody.EMPTY -> LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
                             item(key = "empty") {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     EmptyState(
@@ -319,7 +338,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                 }
                             }
                         }
-                        else -> {
+                        LedgerBody.TABS -> if (list != null) {
                             // 换章、换人物时整块淡出淡入（过渡时新旧两份同时在）；减少动效时直接换。
                             AnimatedContent(
                                 LedgerView(chapter, person?.takeIf { it in subjects }),
@@ -332,7 +351,7 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                         LedgerVisualTabs(visualTab) { visualTab = it }
                                     }
                                     item(key = "head") {
-                                        LedgerHead(view, list.size, subjects, onPick = { picking = true }, onPerson = { person = it })
+                                        LedgerHead(view, visualTab, list, subjects, onPick = { picking = true }, onPerson = { person = it })
                                     }
                                     graphUndo?.let { change ->
                                         item(key = "graph:undo") {
@@ -467,12 +486,9 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LedgerHead(view: LedgerView, count: Int, subjects: List<String>, onPick: () -> Unit, onPerson: (String?) -> Unit) {
+private fun LedgerHead(view: LedgerView, tab: LedgerVisualTab, entries: List<LedgerEntry>, subjects: List<String>, onPick: () -> Unit, onPerson: (String?) -> Unit) {
     val ch = view.chapter
-    GroupedSection(
-        footer = if (ch == null) "共 $count 条，按类别列出。点一条可以改。"
-        else "到「${ch.title}」为止：每个人在哪、知道什么、还欠着哪些伏笔。写这一章时 AI 拿到的就是这一份。",
-    ) {
+    GroupedSection(footer = ledgerHeadFooter(ch, tab, entries, view.person)) {
         row {
             FlowRow(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val chapterText = ch?.let { "第 ${it.no} 章" } ?: "全部章节"
@@ -486,6 +502,33 @@ private fun LedgerHead(view: LedgerView, count: Int, subjects: List<String>, onP
             }
         }
     }
+}
+
+/** 账本页正文显示哪一种：加载中、整页空状态、分段标签。 */
+internal enum class LedgerBody { LOADING, EMPTY, TABS }
+
+/**
+ * [entries] 是账本（没读出来为空），[waitingChapters] 为真时翻到了某一章、章节列表还没算出来，[foreshadows] 是设定包伏笔表里的伏笔（没读完为空）。
+ * 账本空时还要等伏笔表读完才知道是整页空状态还是分段标签：没读完先按加载中，不闪一下“账本还是空的”。
+ * 账本空、但伏笔表里有条目时照常显示分段标签：伏笔标签里列着它们，能标为已回收。
+ */
+internal fun ledgerBody(entries: List<LedgerEntry>?, waitingChapters: Boolean, foreshadows: List<Foreshadow>?): LedgerBody = when {
+    entries == null || waitingChapters -> LedgerBody.LOADING
+    entries.isNotEmpty() -> LedgerBody.TABS
+    foreshadows == null -> LedgerBody.LOADING
+    foreshadows.isEmpty() -> LedgerBody.EMPTY
+    else -> LedgerBody.TABS
+}
+
+/**
+ * 筛选行下面的一句：翻到某一章时说这一份是什么；“全部记录”下说筛完还有几条（按“只看谁”过滤后的数，和下面列出来的对得上）；
+ * 人物、伏笔、知情三个标签各有自己的组名和说明，这里不再说“按类别列出”。
+ */
+internal fun ledgerHeadFooter(chapter: LedgerChapter?, tab: LedgerVisualTab, entries: List<LedgerEntry>, person: String?): String? = when {
+    chapter != null -> "到「${chapter.title}」为止：每个人在哪、知道什么、还欠着哪些伏笔。写这一章时 AI 拿到的就是这一份。"
+    tab != LedgerVisualTab.RECORDS -> null
+    person == null -> "共 ${entries.size} 条，按类别列出。点一条可以改。"
+    else -> "${person}的 ${entries.count { it.subject == person }} 条（共 ${entries.size} 条），按类别列出。点一条可以改。"
 }
 
 /** 一组条目：组名、连成一张卡片的各条、卡片下的说明。空的不出。键带上 [key]，同一条在别的组里也不重。 */
@@ -507,6 +550,9 @@ private fun aspectOrder(e: LedgerEntry) = LEDGER_ASPECTS.indexOf(e.aspect).let {
 /** “全部”：按类别分组（[LedgerKind] 的顺序），组名是类别，组下写说明；人物状态再按人物分开。 */
 private fun LazyListScope.allEntries(entries: List<LedgerEntry>, person: String?, onOpen: ((LedgerEntry) -> Unit)?) {
     val shown = if (person == null) entries else entries.filter { it.subject == person }
+    // 改定稿后核对标了“待复核”的先单列在最上面：变更登记点“去看账本”就落在这里，几百条里不用一条条找。历史版本里只看不改，不单列。
+    if (onOpen != null) ledgerGroup("recheck", "待复核", "定稿后又改了正文，这些条目的原句在正文里找不到了：点开核对，改好了点保存就不再标待复核。",
+        shown.filter { it.recheck }.sortedBy { it.from ?: -1 }, onOpen)
     LedgerKind.entries.forEach { kind ->
         val list = shown.filter { it.kind == kind }
         if (kind == LedgerKind.STATE) {

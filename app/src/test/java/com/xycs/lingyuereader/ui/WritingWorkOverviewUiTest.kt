@@ -123,7 +123,7 @@ class WritingWorkOverviewUiTest {
                             ruleCount = 0,
                             busy = false,
                             unsyncedIds = setOf("c3", "c4"),
-                            openPromises = 4,
+                            promises = PromiseCounts(total = 6, open = 4, due = 0),
                             aiProvider = "DeepSeek",
                             todayWords = 1200,
                             dailyGoal = 3000,

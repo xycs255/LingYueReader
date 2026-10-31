@@ -76,7 +76,10 @@ class ReaderEntriesUiTest {
         waitForText("目录")
     }
 
-    /** 底栏四格“目录 / 听书 / 外观 / 更多”：字体、翻页方式只在“外观”；“更多”直接进“更多设置”，返回键一下就关。 */
+    /**
+     * 底栏四格“目录 / 听书 / 外观 / 更多”：字体、翻页方式只在“外观”；“更多”直接进“更多设置”，
+     * 但栈底仍是“外观”：左上角“‹ 外观”、返回键都先回外观（字体、翻页方式够得着），再返回才关面板。
+     */
     @Test
     fun appearanceAndMoreSplitTheReadingSettingsWithoutRepeats() {
         openReaderMenu()
@@ -101,8 +104,29 @@ class ReaderEntriesUiTest {
         waitForText("点按与按键")
         compose.waitForIdle()
         assertFalse(has("字体"))
+        // 返回键：先回外观首页，再关面板。
         compose.activity.onBackPressedDispatcher.onBackPressed()
-        waitForGone("点按与按键")
+        waitForText("翻页方式")
+        assertTrue(has("字体"))
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        waitForGone("翻页方式")
+    }
+
+    /** 从“更多”打开的设置面板，左上角有“‹ 外观”：点了回外观首页，字体、翻页方式就在那里。 */
+    @Test
+    fun settingsOpenedFromMoreCanGoBackToAppearance() {
+        openReaderMenu()
+        compose.onNodeWithText("更多").performClick()
+        waitForText("点按与按键")
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("返回外观").performClick()
+        waitForText("翻页方式")
+        compose.waitForIdle()
+        assertTrue(has("字体"))
+        assertFalse("回到外观首页，“更多设置”那页收起", has("点按与按键"))
+        // 外观首页是栈底：没有返回钮，右上角是“完成”。
+        assertTrue(compose.onAllNodes(androidx.compose.ui.test.hasContentDescription("返回外观")).fetchSemanticsNodes().isEmpty())
+        assertTrue(has("完成"))
     }
 
     /** 净化与分章：阅读“⋯”里两下就到（原来只能从详情页进）。 */

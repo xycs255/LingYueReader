@@ -86,6 +86,11 @@ class WritingDigestUiTest {
 
     private fun waitForText(t: String) = waitFor { compose.onAllNodesWithText(t, substring = true).fetchSemanticsNodes().isNotEmpty() }
 
+    /** 体检表一行的名字和标签合成一句读屏说明（“线暗线，冷了，……”），按说明找。 */
+    private fun waitForPulse(name: String) = waitFor {
+        compose.onAllNodes(androidx.compose.ui.test.hasContentDescription("线$name，", substring = true)).fetchSemanticsNodes().isNotEmpty()
+    }
+
     /** 规划树懒加载：先滚到那一行（找有大小的那个列表，标题栏下面还有别的空列表）。 */
     private fun scrollTo(t: String) {
         val list = hasScrollToIndexAction() and SemanticsMatcher("non-empty scroll viewport") { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
@@ -156,7 +161,7 @@ class WritingDigestUiTest {
         // 进度卡上一枚提醒胶囊，点了就是体检表。
         waitForText("1 条线索冷了 ›")
         compose.onNodeWithText("1 条线索冷了 ›").performClick()
-        waitForText("暗线")
+        waitForPulse("暗线")
         compose.onNodeWithText("知道了").performClick()
         waitFor { compose.onAllNodesWithText("最近推进：第 1 章", substring = true).fetchSemanticsNodes().isEmpty() }
         // “更多功能”里的那一行也写着结果。
@@ -164,7 +169,7 @@ class WritingDigestUiTest {
         scrollTo("线索与节奏体检")
         waitForText("1 条冷了")
         compose.onNodeWithText("线索与节奏体检").performClick()
-        waitForText("暗线")
+        waitForPulse("暗线")
         waitForText("最近推进：第 1 章")
         compose.onNodeWithText("带进下一章").performClick()
         waitFor { store.draftIntent(workId, ids[12])?.instruction?.contains("推进「暗线」这条线") == true }
@@ -175,5 +180,29 @@ class WritingDigestUiTest {
         ShadowLooper.idleMainLooper()
         assertEquals(1, store.draftIntent(workId, ids[12])!!.instruction.split("推进「暗线」").size - 1)
         assertFalse(store.draftIntent(workId, ids[12])!!.instruction.contains("明线"))
+    }
+
+    /** 收尾页“前情”一组的说明照着实际的位置写：故事至今在作品页的“更多功能”里，不在规划树下面。 */
+    @Test
+    fun theFinishPagePointsToWhereTheStorySoFarActuallyLives() {
+        val vm = ViewModelProvider(compose.activity)[AppViewModel::class.java]
+        // 直接摆出“整理前情”做完、等确认的那一步（不跑 AI）。
+        val field = vm.writingAi.javaClass.getDeclaredField("_finish").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val finish = field.get(vm.writingAi) as kotlinx.coroutines.flow.MutableStateFlow<com.xycs.lingyuereader.FinishRun?>
+        finish.value = com.xycs.lingyuereader.FinishRun(
+            workId, ids[11],
+            stage = com.xycs.lingyuereader.FinishStage.CONFIRM,
+            review = com.xycs.lingyuereader.StepState.SKIPPED,
+            sync = com.xycs.lingyuereader.StepState.SKIPPED,
+            summary = com.xycs.lingyuereader.StepState.SKIPPED,
+            digest = com.xycs.lingyuereader.StepState.DONE,
+            digestNote = "故事至今已按第 12 章更新",
+        )
+        compose.runOnUiThread { vm.open(Screen.ChapterFinish(workId, ids[11])) }
+        waitForText("收尾")
+        scrollTo("故事至今已按第 12 章更新")
+        waitForText("故事至今在作品页的“更多功能”里")
+        assertEquals(0, compose.onAllNodesWithText("规划树下面", substring = true).fetchSemanticsNodes().size)
     }
 }

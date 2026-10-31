@@ -181,8 +181,16 @@ sealed interface Screen {
     /**
      * 一部作品的故事账本；从编辑器进来时带着 [chapterId]，直接翻到这一章。[promises] 为真时打开“伏笔”标签
      * （原来单独的“伏笔”页并进了这里：该回收了、还没回收、已回收、来源文档）。
+     * [tab] 是指定打开哪个标签（LedgerVisualTab 的名字），[person] 是“只看谁”：离开账本去别的页时把当时的标签和筛选写回来
+     * （[keepState]），返回时照着恢复，不回到入口的默认。
      */
-    data class WorkLedger(val workId: String, val chapterId: String? = null, val promises: Boolean = false) : Screen
+    data class WorkLedger(
+        val workId: String,
+        val chapterId: String? = null,
+        val promises: Boolean = false,
+        val tab: String? = null,
+        val person: String? = null,
+    ) : Screen
     /** 设定包里的一份文档。 */
     data class PackDoc(val workId: String, val docId: String) : Screen
     /** 一章的细纲卡。 */
@@ -3143,6 +3151,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         _stack.update { stack ->
             stack.dropLastWhile { it !is Screen.Reader }.dropLast(1) + Screen.Reader(bookId, chapterIndex, blockIndex, char = charOffset, highlight = true)
+        }
+    }
+
+    /**
+     * 一页上面又压了一页、这一页的界面被收掉时，把它当时的状态写回栈里的那一项（[old] 换成 [now]），返回时照着重建。
+     * 只换不在栈顶的那一项：已经返回（弹出栈）的不再写回；还在栈顶（比如转屏）时界面自己存着，不用换。
+     */
+    fun keepState(old: Screen, now: Screen) {
+        if (old == now) return
+        _stack.update { stack ->
+            val i = stack.lastIndexOf(old)
+            if (i in 0 until stack.lastIndex) stack.toMutableList().also { it[i] = now } else stack
         }
     }
 

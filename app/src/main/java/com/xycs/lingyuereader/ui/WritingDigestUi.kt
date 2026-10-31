@@ -16,8 +16,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -97,14 +97,27 @@ internal fun DigestEditDialog(
     onSave: (String) -> Unit,
     onResume: (() -> Unit)? = null,
 ) {
-    var text by remember(initial) { mutableStateOf(initial) }
+    // 对话框开着时后台收尾可能刚整理完前情、[initial] 变了。作者没动过（[typed] 为空）就跟着显示新的；
+    // 动过了不盖掉正在打的字，只提示一句，让作者自己选用哪一份。[base] 是作者开始改时看到的那一份。
+    var typed by remember { mutableStateOf<String?>(null) }
+    var base by remember { mutableStateOf(initial) }
+    val text = typed ?: initial
+    val c = LocalGroupedColors.current
     GlassDialog(show = true, title = title, summary = summary, onDismissRequest = onDismiss) {
-        GroupedTextField(value = text, onValueChange = { text = it }, label = label,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 360.dp))
+        GroupedTextField(value = text, onValueChange = {
+            if (typed == null) base = initial
+            typed = it
+        }, label = label, modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 360.dp))
+        if (typed != null && initial != base) {
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("前情刚被自动更新过。存下会用你改的这一份。", color = c.warning, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
+                PillButton("换成新的", { typed = null })
+            }
+        }
         if (edited && onResume != null) {
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Tag(TAG_EDITED, LocalGroupedColors.current.warning)
-                Text("收尾时不会盖掉", color = LocalGroupedColors.current.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
+                Tag(TAG_EDITED, c.warning)
+                Text("收尾时不会盖掉", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
                 PillButton("改回自动", { onResume(); onDismiss() })
             }
         }
@@ -156,10 +169,12 @@ private fun PulseLine(r: PulseRow, onCarry: (PulseRow) -> Unit) {
         PulseState.DEFERRED -> c.secondary
         PulseState.OK -> c.success
     }
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).semantics(mergeDescendants = false) {
-        contentDescription = "${r.kind.label}${r.name}，${r.state.label}" + (r.lastNo?.let { "，最近推进在第 $it 章" } ?: "")
-    }) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // 读屏：名字和两枚标签那一行念成一句（“线索林月，冷了，最近推进在第 3 章”），里面的零碎不再各念一遍；
+    // 说明和“带进下一章”按钮仍各是一个节点，按钮不被夹在一串碎片中间。
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(Modifier.clearAndSetSemantics {
+            contentDescription = "${r.kind.label}${r.name}，${r.state.label}" + (r.lastNo?.let { "，最近推进在第 $it 章" } ?: "")
+        }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Tag(r.kind.label, categoryColor(if (r.kind == PulseKind.FORESHADOW) CategoryTone.CYAN else if (r.kind == PulseKind.PERSON) CategoryTone.PURPLE else CategoryTone.SUCCESS, c))
             Text(r.name, color = c.label, fontSize = TypeScale.Body, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Tag(r.state.label, color)

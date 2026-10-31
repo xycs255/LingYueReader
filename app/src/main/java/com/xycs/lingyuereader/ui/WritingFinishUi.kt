@@ -374,7 +374,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
     // 前情（故事至今、卷摘要）整理好就存下了：这里只说一句结果，没成的原因照实说，不拦收尾。
     if (run.digest != StepState.SKIPPED && (run.digestError ?: run.digestNote) != null) item(key = "digest") {
         val c = LocalGroupedColors.current
-        GroupedSection(header = "前情", footer = "故事至今在规划树下面，卷摘要在卷的菜单里，都能看、能改。") {
+        GroupedSection(header = "前情", footer = "故事至今在作品页的“更多功能”里，卷摘要在卷的菜单里，都能看、能改。") {
             row {
                 val error = run.digestError
                 if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))

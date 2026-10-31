@@ -307,7 +307,8 @@ class WritingTreeDragUiTest {
 
     private fun shootWorkPage(prefix: String) {
         openWork()
-        waitForText("条伏笔没收")
+        // 写到的章已经过了计划收章：卡片先说该回收的。
+        waitForText("条该回收")
         waitForText("定稿 17 / 共 60 章")
         waitForText("3 章待整理")
         capture("$prefix-work")
