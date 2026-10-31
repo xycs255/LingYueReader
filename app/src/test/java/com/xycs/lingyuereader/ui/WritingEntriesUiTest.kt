@@ -40,7 +40,8 @@ import java.io.File
 /**
  * 写作侧入口精简以后的盘点：删掉的每一处入口，功能都还有一个自然的去处，点得到、进对地方。
  * 对照 docs/design.md 的“入口与叫法”：作品页“⋯”、更多功能、进度卡、规划树的总纲和伏笔记号、故事账本的“伏笔”标签、
- * 写作 AI 首屏和高级设置、编辑器的“⋯”和“查”。
+ * 写作 AI 首屏和高级设置、编辑器的“⋯”和“查”。逐页打磨时挪过的：规划树标题右边的“排序”、进度卡标题区的作品信息、
+ * “更多功能”里的故事至今和线索体检、账本顶上的两枚筛选、黑名单和学到的右上“+”。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [36], qualifiers = "w411dp-h891dp")
@@ -227,5 +228,52 @@ class WritingEntriesUiTest {
         compose.onNodeWithText("查").performClick()
         compose.onNodeWithText("三道审稿").performClick()
         waitFor { top() == Screen.ChapterReview(workId, chapterId) }
+    }
+
+    /** 逐页打磨挪过的入口：每一处都还点得到、进对地方。 */
+    @Test
+    fun movedEntriesAreStillReachable() {
+        openWork()
+        // 调整章节顺序：规划树标题右边的小“排序”钮（总纲上面那一整行没了）。
+        list().performScrollToNode(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
+        waitFor { compose.onAllNodesWithContentDescription("完成调整").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("完成调整").performClick()
+        waitFor { compose.onAllNodesWithContentDescription("调整章节顺序").fetchSemanticsNodes().isNotEmpty() }
+
+        // 作品信息：点进度卡的标题区（“⋯”里也还有）。
+        list().performScrollToNode(hasText("定稿 0 / 共 2 章"))
+        compose.onNodeWithText("定稿 0 / 共 2 章").performClick()
+        waitFor { compose.onAllNodesWithText("作品信息").fetchSemanticsNodes().isNotEmpty() && has("保存") }
+        compose.onNodeWithText("取消").performClick()
+        compose.waitForIdle()
+
+        // 故事至今、线索与节奏体检：“更多功能”里（以前接在规划树最下面）。
+        list().performScrollToNode(hasText("更多功能"))
+        compose.onNodeWithText("更多功能").performClick()
+        waitForText("故事至今")
+        compose.onNodeWithText("故事至今").performClick()
+        waitForText("不超过")
+        compose.onNodeWithText("取消").performClick()
+        compose.waitForIdle()
+        list().performScrollToNode(hasText("线索与节奏体检"))
+        compose.onNodeWithText("线索与节奏体检").performClick()
+        waitForText("知道了")
+        compose.onNodeWithText("知道了").performClick()
+        compose.waitForIdle()
+
+        // 账本：分段标签在上，“看到第几章”“只看谁”是下面一行的两枚胶囊。
+        compose.runOnUiThread { vm.open(Screen.WorkLedger(workId)) }
+        waitFor { compose.onAllNodesWithContentDescription("看到第几章", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("看到第几章", substring = true).performClick()
+        waitForText("列出所有条目")
+        compose.onNodeWithText("列出所有条目").performClick()
+        waitFor { top() is Screen.WorkLedger }
+
+        // 黑名单、学到的：右上“+”。
+        compose.runOnUiThread { vm.open(Screen.WorkBanned(workId)) }
+        waitFor { compose.onAllNodesWithContentDescription("加进黑名单").fetchSemanticsNodes().isNotEmpty() }
+        compose.runOnUiThread { vm.open(Screen.WorkLearned(workId)) }
+        waitFor { compose.onAllNodesWithContentDescription("加一条写法").fetchSemanticsNodes().isNotEmpty() }
     }
 }

@@ -118,8 +118,8 @@ class WritingProjectTreeUiTest {
         compose.onNodeWithText("第一卷").performClick()
         compose.onNodeWithText(first.title).assertExists()
 
-        compose.onNodeWithText("调整章节顺序").performClick()
-        compose.onNodeWithText("完成调整").assertExists()
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
+        compose.onNodeWithContentDescription("完成调整").assertExists()
         val down = compose.onNodeWithContentDescription("下移${first.title}")
         val bounds = down.getUnclippedBoundsInRoot()
         assertTrue(bounds.right - bounds.left >= 48.dp && bounds.bottom - bounds.top >= 48.dp)
@@ -135,7 +135,7 @@ class WritingProjectTreeUiTest {
         assertEquals(second.id to -1, move)
         // 调整模式里不显示细纲卡按钮，完成后回来。
         compose.onNodeWithContentDescription("打开${first.title}细纲卡").assertDoesNotExist()
-        compose.onNodeWithText("完成调整").performClick()
+        compose.onNodeWithContentDescription("完成调整").performClick()
         compose.onNodeWithContentDescription("打开${first.title}细纲卡").assertExists()
         compose.onNodeWithContentDescription("下移${first.title}").assertDoesNotExist()
     }

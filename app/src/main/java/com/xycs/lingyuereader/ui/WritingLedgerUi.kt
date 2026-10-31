@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
@@ -325,11 +327,12 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
                                 label = "ledgerView",
                             ) { view ->
                                 LazyColumn(Modifier.fillMaxSize().overScrollVertical(), contentPadding = contentPadding, overscrollEffect = null) {
-                                    item(key = "head") {
-                                        LedgerHead(view, list.size, subjects, onPick = { picking = true }, onPerson = { person = it })
-                                    }
+                                    // 先切类、再筛：分段标签在最上面，下面一行两枚下拉胶囊（看到第几章、只看谁）。
                                     item(key = "graph:tabs") {
                                         LedgerVisualTabs(visualTab) { visualTab = it }
+                                    }
+                                    item(key = "head") {
+                                        LedgerHead(view, list.size, subjects, onPick = { picking = true }, onPerson = { person = it })
                                     }
                                     graphUndo?.let { change ->
                                         item(key = "graph:undo") {
@@ -458,7 +461,11 @@ fun WorkLedgerScreen(vm: AppViewModel, workId: String, chapterId: String? = null
     }
 }
 
-/** 顶上一组：看到第几章、只看谁。 */
+/**
+ * 分段标签下面的筛选：一行两枚下拉胶囊，“第 N 章 ⌄”（点了选看到第几章）和“全部人物 ⌄”（点了弹菜单）。
+ * 以前是两整行，压在分段标签上面，先筛后选类。读屏念“看到第几章：第 12 章”“只看谁：全部人物”。
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LedgerHead(view: LedgerView, count: Int, subjects: List<String>, onPick: () -> Unit, onPerson: (String?) -> Unit) {
     val ch = view.chapter
@@ -466,10 +473,16 @@ private fun LedgerHead(view: LedgerView, count: Int, subjects: List<String>, onP
         footer = if (ch == null) "共 $count 条，按类别列出。点一条可以改。"
         else "到「${ch.title}」为止：每个人在哪、知道什么、还欠着哪些伏笔。写这一章时 AI 拿到的就是这一份。",
     ) {
-        row { NavRow("看到第几章", value = ch?.let { "第 ${it.no} 章" } ?: "全部") { onPick() } }
-        if (subjects.isNotEmpty()) {
-            row {
-                PickerRow("人物", listOf("" to "全部") + subjects.map { it to it }, view.person.orEmpty()) { onPerson(it.ifEmpty { null }) }
+        row {
+            FlowRow(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                val chapterText = ch?.let { "第 ${it.no} 章" } ?: "全部章节"
+                DropdownChip(chapterText, onPick, description = "看到第几章：$chapterText")
+                if (subjects.isNotEmpty()) {
+                    val who = view.person ?: "全部人物"
+                    DropdownChipPicker(listOf("" to "全部人物") + subjects.map { it to it }, view.person.orEmpty(), description = "只看谁：$who") {
+                        onPerson(it.ifEmpty { null })
+                    }
+                }
             }
         }
     }
@@ -545,23 +558,31 @@ private fun LedgerRow(e: LedgerEntry, onClick: (() -> Unit)?) {
     val subtitle = listOf(
         e.subject,
         e.aspect.takeIf { e.kind == LedgerKind.STATE || e.kind == LedgerKind.HOLD }.orEmpty(),
-        // 数值与持有：期初 → 变化（期末就是上面那一行）。
-        listOf(e.before, e.delta).filter { it.isNotBlank() }.takeIf { e.kind == LedgerKind.HOLD && it.isNotEmpty() }?.joinToString(" → ", postfix = " →").orEmpty(),
+        // 数值与持有：期初 → 变化 → 期末连成一句（以前写成“三十两 → 付船钱 → · 第 2 章起”，箭头悬在半空）。
+        listOf(e.before, e.delta, e.text).filter { it.isNotBlank() }.takeIf { e.kind == LedgerKind.HOLD && it.size > 1 }?.joinToString(" → ").orEmpty(),
         e.whenLabel,
         e.lastAdvanced?.takeIf { e.kind == LedgerKind.PROMISE && !e.done }?.let { "最近推进：第 $it 章" }.orEmpty(),
         e.via.takeIf { e.kind == LedgerKind.KNOW && it.isNotBlank() }?.let { "消息来自$it" }.orEmpty(),
     ).filter { it.isNotBlank() }.joinToString(" · ")
     GroupedRow(onClick = onClick) {
+        // 状态标签（待复核、只有作者知道、伏笔状态）放在说明下面换行排，不和内容抢一行：360dp 宽、挂着两三枚时内容也不被挤成一两个字一行。
+        // 右边只留一枚两个字的来源标签，大多数条目照旧两行高。
+        val recheck = e.recheck
+        val state = Foreshadows.state(e).takeIf { e.kind == LedgerKind.PROMISE && it != PromiseState.PLANTED }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(e.text, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2)
+            if (subtitle.isNotEmpty()) Text(subtitle, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 2,
+                overflow = TextOverflow.Ellipsis)
+            if (recheck || e.secret || state != null) {
+                FlowRow(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // 待复核是“看一眼、核对一下”，不是出错：用提醒色，红色只留给放不下、出错。
+                    if (recheck) Tag("待复核", c.warning)
+                    if (e.secret) Tag("只有作者知道", c.warning)
+                    if (state != null) Tag(state.label, promiseStateColor(state, c))
+                }
+            }
         }
-        Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (e.recheck) Tag("待复核", c.destructive)
-            if (e.secret) Tag("只有作者知道", c.warning)
-            if (e.kind == LedgerKind.PROMISE) Foreshadows.state(e).takeIf { it != PromiseState.PLANTED }?.let { Tag(it.label, promiseStateColor(it, c)) }
-            Tag(e.origin.short, c.secondary)
-        }
+        Tag(e.origin.short, c.secondary, Modifier.padding(start = 8.dp))
         if (onClick != null) {
             Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
         }

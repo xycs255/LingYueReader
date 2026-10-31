@@ -510,6 +510,8 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         }
     }
 
+    val pulseAlerts = pulseRows.orEmpty().count { it.state == com.xycs.lingyuereader.data.PulseState.COLD || it.state == com.xycs.lingyuereader.data.PulseState.STALLED }
+
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
     if (work == null) return
@@ -667,6 +669,10 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         dailyGoal = stats.goal,
                         mapMenuId = mapMenu,
                         chapterMenu = { ch -> ChapterMenuPopup(true, ch, treeActions, onDismiss = { mapMenu = null }) },
+                        story = allDigests[workId]?.story,
+                        pulse = pulseRows?.let(::pulseNote) ?: "正在体检……",
+                        pulseWarn = pulseAlerts > 0,
+                        pulseAlerts = pulseAlerts,
                         actions = WritingWorkOverviewActions(
                             openChapter = { ch -> vm.open(Screen.Editor(workId, ch.id)) },
                             newChapter = {
@@ -689,6 +695,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 }
                             },
                             openChapterMenu = { mapMenu = it.id },
+                            editInfo = { editingInfo = true },
+                            openStory = { editingStory = true },
+                            openPulse = { pulseOpen = true },
                         ),
                     )
                 }
@@ -705,8 +714,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     length = lengthRule,
                     drag = drag,
                     digests = allDigests[workId] ?: com.xycs.lingyuereader.data.Digests(),
-                    pulse = pulseRows?.let(::pulseNote) ?: "正在体检……",
-                    pulseWarn = pulseRows.orEmpty().any { it.state == com.xycs.lingyuereader.data.PulseState.COLD || it.state == com.xycs.lingyuereader.data.PulseState.STALLED },
                 )
             }
             // 规划树拖着的那一章浮在列表上面跟手。
@@ -1559,17 +1566,16 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
                         val state = chapter?.status?.label.orEmpty()
                         val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
-                        // 规则、AI 腔、写作建议、审稿没处理的合成一个数；分类在问题面板里看。写作建议开着留一个短标识。
+                        // 规则、AI 腔、写作建议、审稿没处理的合成一个数，挂在底栏“查”的角标上，这一行不再写（小屏上会和别的字一起被截掉）；
+                        // 读屏照旧念一整行，带着问题数，点这一行也照旧打开问题面板。写作建议开着留一个短标识。
                         val issues = if (problems.isNotEmpty()) "${problems.size} 处问题" else ""
                         val tail = if (realtimeOn) "写作建议已开" else ""
                         val whole = listOf(state, "$count 字", saving, issues, tail).filter { it.isNotEmpty() }.joinToString(" · ")
-                        // 小屏放不下时先省字数、再省保存状态，“N 处问题”始终露着（它是问题面板的入口）；读屏照旧念一整行。
                         EditorStatusLine(
                             mapOf(
                                 EditorStatusPart.STATE to state,
                                 EditorStatusPart.WORDS to "$count 字",
                                 EditorStatusPart.SAVING to saving,
-                                EditorStatusPart.ISSUES to issues,
                                 EditorStatusPart.TAIL to tail,
                             ),
                             Modifier

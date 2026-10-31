@@ -407,7 +407,7 @@ class WritingDetailSnapshotTest {
         capture("detail-ledger-all")
 
         // 看到第几章：章节选择对话框。
-        compose.onNodeWithText("看到第几章").performClick()
+        compose.onNodeWithContentDescription("看到第几章", substring = true).performClick()
         waitForText("列出所有条目")
         waitForText("第3章 夜渡")
         capture("detail-ledger-chapter-pick")
@@ -437,10 +437,16 @@ class WritingDetailSnapshotTest {
     fun workTreeReorder() {
         openWork()
         // 滚到“调整章节顺序”，让它和前几章同在画面里。
-        scrollWorkListTo(hasText("调整章节顺序"))
-        compose.onNodeWithText("调整章节顺序").performClick()
-        waitForText("完成调整")
+        scrollWorkListTo(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
+        waitForDescription("完成调整")
+        // 怎么调的说明在树下面（以前写在调整那一行里）：滚过去看一眼，再滚回标题拍图。
+        // 说明是列表最后一项：滚得到它就是有（找不到这一项 performScrollToNode 会报错），再滚回标题。
+        val id = compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(androidx.compose.ui.test.hasContentDescription("完成调整"))).fetchSemanticsNode().id
+        val list = compose.onNode(SemanticsMatcher("作品页列表") { it.id == id })
+        list.performScrollToNode(hasText("用每章右侧的箭头上移、下移", substring = true))
         waitForText("用每章右侧的箭头上移、下移")
+        list.performScrollToNode(androidx.compose.ui.test.hasContentDescription("完成调整"))
         waitForDescription("下移第1章 雪夜")
         capture("detail-work-tree-reorder")
     }
@@ -449,12 +455,12 @@ class WritingDetailSnapshotTest {
     @Test
     fun inkLedgerTreeReviewAndVocabulary() {
         openWork()
-        scrollWorkListTo(hasText("调整章节顺序"))
-        compose.onNodeWithText("调整章节顺序").performClick()
+        scrollWorkListTo(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performClick()
         waitForDescription("下移第1章 雪夜")
         capture("ink-detail-work-tree-reorder")
-        compose.onNodeWithText("完成调整").performClick()
-        waitForText("调整章节顺序")
+        compose.onNodeWithContentDescription("完成调整").performClick()
+        waitForDescription("调整章节顺序")
 
         compose.runOnUiThread { vm.open(Screen.WorkLedger(workId)) }
         waitForText("人物状态 · 点方面直接调整")
@@ -479,7 +485,7 @@ class WritingDetailSnapshotTest {
         // 一层层返回：审稿 → 账本 → 作品页 → 写作首页，再点底栏的生词本。
         compose.onNodeWithContentDescription("返回").performClick()
         waitForGone("依次审三关")
-        waitForText("看到第几章")
+        waitForDescription("看到第几章")
         compose.onNodeWithContentDescription("返回").performClick()
         waitForText("作品进度")
         compose.onNodeWithContentDescription("返回").performClick()

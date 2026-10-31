@@ -119,6 +119,8 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
     var notice by remember { mutableStateOf<Pair<String, String>?>(null) }
     // 分类格：点一类只看这一类（null 是全部）；点空的一类新建这一类（[newKind]）。
     var filter by rememberSaveable(workId) { mutableStateOf<PackKind?>(null) }
+    // 分类格下面“其余 N 类”（还空着的类）展开没有。
+    var othersOpen by rememberSaveable(workId) { mutableStateOf(false) }
     var newKind by remember { mutableStateOf<PackKind?>(null) }
     val stats = remember(docs) { PackBudgets.stats(docs.orEmpty()) }
     // AI 每次带多少：在后台算（几十万字的设定包挑一次资料要几百毫秒），设定包一变就重算；算的时候先留着上一次的。
@@ -236,9 +238,10 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             row { PackBudgetRow(budget, budgetError) { budgetOpen = true } }
                         }
                     }
-                    if (docs != null) {
+                    // 设定包还空着时上面的空状态已经有“新建文档”，不再排一屏空格子。
+                    if (!docs.isNullOrEmpty()) {
                         GroupedListHeader("文档分类")
-                        PackKindGrid(stats, filter) { s ->
+                        PackKindGrid(stats, filter, othersOpen, onToggleOthers = { othersOpen = !othersOpen }, onNew = { creating = true }) { s ->
                             when {
                                 s.empty -> newKind = s.kind
                                 filter == s.kind -> filter = null
@@ -246,8 +249,8 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                             }
                         }
                         GroupedListFooter(
-                            if (filter == null) "点一类只看这一类；灰的还空着，点了新建这一类的文档。" else "再点一次“${filter!!.label}”看全部。",
-                            Modifier.padding(top = 8.dp),
+                            if (filter == null) "点一类只看这一类；还空着的类在“其余”里，点了新建。" else "再点一次“${filter!!.label}”看全部。",
+                            Modifier.padding(top = if (othersOpen) 8.dp else 0.dp),
                         )
                     }
                     GroupedSection(

@@ -18,18 +18,21 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import top.yukonga.miuix.kmp.basic.Text
 
-/** 编辑器顶栏章名下面那一行的几段：章节状态、字数、保存状态、问题数、“写作建议已开”。 */
-internal enum class EditorStatusPart { STATE, WORDS, SAVING, ISSUES, TAIL }
+/**
+ * 编辑器顶栏章名下面那一行的几段：章节状态、字数、保存状态、“写作建议已开”。
+ * 问题数不在这一行：挂在底栏“查”的角标上（360dp 宽时这一行连着问题数一起被截，问题面板的入口跟着没了）。
+ */
+internal enum class EditorStatusPart { STATE, WORDS, SAVING, TAIL }
 
 /** 这一行实际露出了哪几段（给测试核对：读屏念的是完整的一句，不跟着省）。 */
 internal val EditorStatusShown = SemanticsPropertyKey<List<EditorStatusPart>>("EditorStatusShown")
 
-/** 放不下时先省的在前：“写作建议已开”、字数、保存状态、章节状态。问题数不在里面：它是问题面板的入口，始终显示。 */
+/** 放不下时先省的在前：“写作建议已开”、字数、保存状态、章节状态。 */
 private val DROP_ORDER = listOf(EditorStatusPart.TAIL, EditorStatusPart.WORDS, EditorStatusPart.SAVING, EditorStatusPart.STATE)
 
 /**
  * 状态行这次露哪几段：整行放得下就全露；放不下按 [DROP_ORDER] 一段一段省，直到放得下（[fits] 量的是省过以后的那一行）。
- * 360dp 宽的屏上“草稿 · 740 字 · 已保存 · 21 处问题”放不下时，先省字数、再省“已保存”，“21 处问题”一直在。
+ * 字号放大、屏又窄时“草稿 · 740 字 · 已保存 · 写作建议已开”放不下：先省“写作建议已开”，再省字数、“已保存”。
  */
 internal fun editorStatusShown(parts: List<EditorStatusPart>, fits: (List<EditorStatusPart>) -> Boolean): List<EditorStatusPart> {
     var shown = parts
@@ -41,8 +44,8 @@ internal fun editorStatusShown(parts: List<EditorStatusPart>, fits: (List<Editor
 }
 
 /**
- * 编辑器顶栏的状态行：各段用“ · ”连起来，12sp 次要色，问题数用提醒色（看得出能点）。
- * 保存状态“编辑中 / 已保存”只淡入淡出，不挪动别的字（几种状态都是三个字宽）。读屏照旧念一整行（[semantics] 里给）。
+ * 编辑器顶栏的状态行：各段用“ · ”连起来，12sp 次要色。
+ * 保存状态“编辑中 / 已保存”只淡入淡出，不挪动别的字（几种状态都是三个字宽）。读屏照旧念一整行（[semantics] 里给，带着问题数）。
  */
 @Composable
 internal fun EditorStatusLine(
@@ -81,7 +84,6 @@ internal fun EditorStatusLine(
                             label = "saveState",
                         ) { Text(it, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1) }
                     }
-                    EditorStatusPart.ISSUES -> Text(dot + text, color = c.warning, fontSize = TypeScale.Footnote, maxLines = 1)
                     EditorStatusPart.TAIL -> Text(
                         dot + text, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),

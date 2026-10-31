@@ -406,7 +406,13 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         else -> "按本章资料写一版候选稿。篇幅依本章细纲或这次明确要求；参考样章、规划和未定稿正文不能当成已定前文。"
                     },
                 ) {
-                    row { DraftIdeaSummary(card) }
+                    // 细纲卡全空：2×2 四格“未填写”合成一行入口（这时它就是本页去细纲卡的那一处）。
+                    val ideaEmpty = draftIdeaEmpty(card)
+                    if (ideaEmpty) row {
+                        NavRow("先写细纲卡", subtitle = "核心事件、视角人物、承接边界、章末钩子都空着") {
+                            vm.open(Screen.ChapterCard(workId, chapterId))
+                        }
+                    } else row { DraftIdeaSummary(card) }
                     row {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                             GroupedTextField(
@@ -438,16 +444,15 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     }
                     task?.let { currentTask ->
                         row {
+                            // 篇幅和材料各占一行、不截断：以前篇幅挤在右边的值里，两头都被截成“依本章细纲；未规定时写足关…”。
                             NavRow(
                                 "本章写作任务",
-                                value = currentTask.targetLength,
-                                subtitle = "${currentTask.sourceNames.size} 份材料 · ${currentTask.previousLabel}",
-                                subtitleMaxLines = 1,
+                                subtitle = "篇幅：${currentTask.targetLength}\n${currentTask.sourceNames.size} 份材料 · ${currentTask.previousLabel}",
                             ) { showTask = true }
                         }
                     }
-                    // 本页唯一一处去细纲卡的入口（上面“你的构思”就是细纲卡里的几项；节拍也在细纲卡里改）。
-                    row { NavRow(if (card?.isEmpty == true) "先写细纲卡" else "编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
+                    // 本页唯一一处去细纲卡的入口（上面“你的构思”就是细纲卡里的几项；节拍也在细纲卡里改）。四项都空时在上面那一行。
+                    if (!ideaEmpty) row { NavRow("编辑细纲卡") { vm.open(Screen.ChapterCard(workId, chapterId)) } }
                 }
                 if (beatList.isNotEmpty()) {
                     val written = draft?.beats?.takeIf { it.total == beatList.size && text.isNotBlank() }?.written ?: 0
@@ -648,9 +653,9 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         // 一键写本章停在“挑走向”：挑一个接着往下拟细纲、拆节拍、写；不想要就点上面的“停止”。
                         draft?.directions?.takeIf { loading && draft.prep == com.xycs.lingyuereader.DraftPrep.CHOOSE }?.let { list ->
                             row {
-                                Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp)) {
+                                Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp)) {
                                     Text("先挑一个走向：挑好了按它拟细纲，接着往下写。都不想要就点上面的“停止”。", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                                        modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 8.dp))
                                     DirectionOptions(list) { o -> vm.writingAi.pickDirection(workId, chapterId, list.indexOf(o)) }
                                 }
                             }
@@ -950,6 +955,9 @@ private fun DraftBasisSection(card: ChapterCard?, beatList: List<Beat>, showBasi
         extra()
     }
 }
+
+/** 细纲卡全空（六项、节拍都没写）：“你的构思”不排四格“未填写”，合成一行“先写细纲卡”。还没读出来（空）时照常排四格，不闪一下。 */
+internal fun draftIdeaEmpty(card: ChapterCard?): Boolean = card?.isEmpty == true
 
 /** Only the author's actual chapter-card fields appear here; no AI-invented plot nodes. */
 @Composable

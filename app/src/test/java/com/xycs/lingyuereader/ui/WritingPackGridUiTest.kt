@@ -96,6 +96,10 @@ class WritingPackGridUiTest {
         // 读屏：每张卡念名字、几份、多少字、常用还是按需；空的念“点了新建”。
         compose.onNodeWithContentDescription("人物档案，2 份，", substring = true).assertExists()
         assertTrue(described("人物档案，2 份，") && described("，常用 1"))
+        // 只排有文档的三类和一格“新建”；空的十类收在“其余 10 类”里，展开才有。
+        assertFalse(described("硬性设定，还没有文档"))
+        compose.onNodeWithContentDescription("新建文档，先选一类").assertExists()
+        compose.onNodeWithText("其余 10 类").performScrollTo().performClick()
         compose.onNodeWithContentDescription("硬性设定，还没有文档，点了新建").assertExists()
         // 一开始全部列着。
         assertTrue(shown("渡口地图说明", substring = false))

@@ -167,6 +167,7 @@ class WritingTreeDragUiTest {
     }
 
     private fun waitForText(text: String) = waitFor { compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty() }
+    private fun waitForDescription(text: String) = waitFor { compose.onAllNodesWithContentDescription(text).fetchSemanticsNodes().isNotEmpty() }
 
     private fun chapterRow(title: String) = compose.onNode(hasText(title) and SemanticsMatcher.keyIsDefined(SemanticsActions.OnLongClick))
 
@@ -280,8 +281,8 @@ class WritingTreeDragUiTest {
     @Test
     fun arrowsStillWorkAsTheFallback() {
         openWork()
-        scrollListTo(hasText("调整章节顺序"))
-        compose.onNodeWithText("调整章节顺序").performSemanticsAction(SemanticsActions.OnClick)
+        scrollListTo(androidx.compose.ui.test.hasContentDescription("调整章节顺序"))
+        compose.onNodeWithContentDescription("调整章节顺序").performSemanticsAction(SemanticsActions.OnClick)
         waitFor { compose.onAllNodesWithContentDescription("下移雪夜").fetchSemanticsNodes().isNotEmpty() }
         scrollTreeTo("雪夜")
         compose.onNodeWithContentDescription("下移雪夜").performClick()
@@ -289,8 +290,8 @@ class WritingTreeDragUiTest {
         scrollTreeTo("雪夜")
         compose.onNodeWithContentDescription("上移雪夜").performClick()
         waitFor { titles() == listOf("雪夜", "渡口", "夜渡", "客栈", "旧账") }
-        compose.onNodeWithText("完成调整").performClick()
-        waitForText("调整章节顺序")
+        compose.onNodeWithContentDescription("完成调整").performClick()
+        waitForDescription("调整章节顺序")
     }
 
     // ---------- 截图 ----------

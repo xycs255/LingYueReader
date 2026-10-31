@@ -80,6 +80,7 @@ import com.xycs.lingyuereader.data.beats
 import com.xycs.lingyuereader.data.BibleKind
 import com.xycs.lingyuereader.data.WorkAssist
 import com.xycs.lingyuereader.data.WorkStore
+import androidx.compose.ui.graphics.vector.ImageVector
 import com.xycs.lingyuereader.ui.glass.GlassDialog
 import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
@@ -1095,57 +1096,20 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
     val banned = assists[workId]?.banned.orEmpty()
-    var input by remember(workId) { mutableStateOf("") }
-    val phrase = input.trim()
-    val canAdd = phrase.isNotEmpty() && phrase !in banned
-    fun add() {
-        if (!canAdd) return
-        vm.writingAi.updateAssist(workId) { it.ban(phrase) }
-        input = ""
-    }
-    SubPageScaffold("我的黑名单", onBack = { vm.back() }) { padding ->
-        val c = LocalGroupedColors.current
-        LazyColumn(
-            Modifier.fillMaxSize().overScrollVertical(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
-            overscrollEffect = null,
-        ) {
-            item(key = "add") {
-                GroupedSection(
-                    header = "加一条",
-                    footer = "正文里出现就标出来，AI 写正文、改稿时一个都不用。最多记 ${WorkAssist.KEEP_BANNED} 条；编辑器里点 AI 腔的“以后都不要”也能加。",
-                ) {
-                    row {
-                        GroupedTextField(
-                            value = input,
-                            // 一条说法不跨段：换行去掉。
-                            onValueChange = { input = it.replace("\n", "") },
-                            label = "不想再看到的说法",
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        )
-                    }
-                    row { ActionRow("加入黑名单", enabled = canAdd, disabledHint = if (input.isBlank()) "先在上面填一个说法" else "这个说法已经在黑名单里了") { add() } }
-                }
-            }
-            item(key = "list") {
-                // 一条都没有时整块用空状态，不在卡片里只放一行“还没有”。
-                if (banned.isEmpty()) EmptyState(LingYueIcons.Warning, "黑名单还是空的", "不想在正文里再看到的说法，加进来以后会标出来。")
-                GroupedSection(header = if (banned.isEmpty()) null else "${banned.size} 条") {
-                    banned.asReversed().forEach { b ->
-                        row {
-                            GroupedRow {
-                                Text(b, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
-                                IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unban(b) } }) {
-                                    Icon(LingYueIcons.Delete, contentDescription = "从黑名单删去「$b」", tint = c.destructive)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    PhraseListScreen(
+        vm,
+        title = "我的黑名单",
+        items = banned,
+        addTitle = "加进黑名单",
+        addLabel = "不想再看到的说法",
+        addConfirm = "加入黑名单",
+        duplicateHint = "这个说法已经在黑名单里了",
+        footer = "正文里出现就标出来，AI 一个都不用；最多记 ${WorkAssist.KEEP_BANNED} 条，编辑器里点 AI 腔的“以后都不要”也能加。",
+        empty = Triple(LingYueIcons.Warning, "黑名单还是空的", "不想在正文里再看到的说法，点右上角“+”加进来，以后会标出来。"),
+        deleteDescription = { "从黑名单删去「$it」" },
+        onAdd = { phrase -> vm.writingAi.updateAssist(workId) { it.ban(phrase) } },
+        onDelete = { b -> vm.writingAi.updateAssist(workId) { it.unban(b) } },
+    )
 }
 
 /**
@@ -1157,53 +1121,102 @@ fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
     val assists by vm.writingAi.assists.collectAsStateWithLifecycle()
     LaunchedEffect(workId) { vm.writingAi.loadAssist(workId) }
     val learned = assists[workId]?.learned.orEmpty()
-    var input by remember(workId) { mutableStateOf("") }
-    val rule = input.trim()
-    val canAdd = rule.isNotEmpty() && rule !in learned
-    fun add() {
-        if (!canAdd) return
-        vm.writingAi.updateAssist(workId) { it.learn(rule) }
-        input = ""
-    }
-    SubPageScaffold("从改稿学到的", onBack = { vm.back() }) { padding ->
+    PhraseListScreen(
+        vm,
+        title = "从改稿学到的",
+        items = learned,
+        addTitle = "加一条写法",
+        addLabel = "一条写法规则",
+        addConfirm = "加进去",
+        duplicateHint = "这一条已经有了",
+        footer = "AI 写正文、改稿时照着写，带最近 ${WorkAssist.PROMPT_LEARNED} 条、最多记 ${WorkAssist.KEEP_LEARNED} 条；收尾时学到的你勾了也记在这里。",
+        empty = Triple(LingYueIcons.Bulb, "还没有学到的写法", "比如“对白后面不要再解释人物的心思”，点右上角“+”加进来以后 AI 照着写。"),
+        deleteDescription = { "删去「$it」" },
+        onAdd = { rule -> vm.writingAi.updateAssist(workId) { it.learn(rule) } },
+        onDelete = { r -> vm.writingAi.updateAssist(workId) { it.unlearn(r) } },
+    )
+}
+
+/**
+ * 黑名单、学到的写法共用的一页：列表在上（最近加的在最上面，一行一条、右边红色删除），右上“+”弹对话框加一条。
+ * 作者来这页多半是看已有的：以前“加一条”的输入框压在最上面，列表要往下翻。空着时整页一个空状态。
+ * 对话框里空着或已经有了时确认键不能点，下面一行说为什么。
+ */
+@Composable
+private fun PhraseListScreen(
+    vm: AppViewModel,
+    title: String,
+    items: List<String>,
+    addTitle: String,
+    addLabel: String,
+    addConfirm: String,
+    duplicateHint: String,
+    footer: String,
+    empty: Triple<ImageVector, String, String>,
+    deleteDescription: (String) -> String,
+    onAdd: (String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    var adding by remember { mutableStateOf(false) }
+    SubPageScaffold(
+        title,
+        onBack = { vm.back() },
+        actions = {
+            IconButton(onClick = { adding = true }, modifier = Modifier.padding(end = 12.dp)) { Icon(LingYueIcons.Add, contentDescription = addTitle) }
+        },
+    ) { padding ->
         val c = LocalGroupedColors.current
         LazyColumn(
             Modifier.fillMaxSize().overScrollVertical(),
             contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
             overscrollEffect = null,
         ) {
-            item(key = "add") {
-                GroupedSection(
-                    header = "加一条",
-                    footer = "AI 写正文、改稿时照着写，带最近的 ${WorkAssist.PROMPT_LEARNED} 条、最多记 ${WorkAssist.KEEP_LEARNED} 条。“这章写完了”时学到的你勾了也记在这里。",
-                ) {
-                    row {
-                        GroupedTextField(
-                            value = input,
-                            // 一条规则不跨段：换行去掉。
-                            onValueChange = { input = it.replace("\n", "") },
-                            label = "一条写法规则",
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        )
-                    }
-                    row { ActionRow("加进去", enabled = canAdd, disabledHint = if (input.isBlank()) "先在上面写一条规则" else "这一条已经有了") { add() } }
-                }
-            }
             item(key = "list") {
-                if (learned.isEmpty()) EmptyState(LingYueIcons.Bulb, "还没有学到的写法", "比如“对白后面不要再解释人物的心思”，加进来以后 AI 照着写。")
-                GroupedSection(header = if (learned.isEmpty()) null else "${learned.size} 条") {
-                    learned.asReversed().forEach { r ->
-                        row {
-                            GroupedRow {
-                                Text(r, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
-                                IconButton(onClick = { vm.writingAi.updateAssist(workId) { it.unlearn(r) } }) {
-                                    Icon(LingYueIcons.Delete, contentDescription = "删去「$r」", tint = c.destructive)
+                // 一条都没有时整块用空状态，不在卡片里只放一行“还没有”。
+                if (items.isEmpty()) {
+                    EmptyState(empty.first, empty.second, empty.third, action = addConfirm to { adding = true })
+                    FooterText(footer, Modifier.padding(horizontal = 28.dp))
+                } else {
+                    GroupedSection(header = "${items.size} 条", footer = footer) {
+                        items.asReversed().forEach { b ->
+                            row {
+                                GroupedRow {
+                                    Text(b, color = c.label, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { onDelete(b) }) {
+                                        Icon(LingYueIcons.Delete, contentDescription = deleteDescription(b), tint = c.destructive)
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+        if (adding) {
+            var input by remember { mutableStateOf("") }
+            val phrase = input.trim()
+            val canAdd = phrase.isNotEmpty() && phrase !in items
+            GlassDialog(show = true, title = addTitle, onDismissRequest = { adding = false }) {
+                GroupedTextField(
+                    value = input,
+                    // 一条不跨段：换行去掉。
+                    onValueChange = { input = it.replace("\n", "") },
+                    label = addLabel,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (phrase.isNotEmpty() && !canAdd) {
+                    Text(duplicateHint, color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+                }
+                DialogButtons(
+                    onDismiss = { adding = false },
+                    onConfirm = {
+                        adding = false
+                        onAdd(phrase)
+                    },
+                    confirmText = addConfirm,
+                    confirmEnabled = canAdd,
+                )
             }
         }
     }

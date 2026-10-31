@@ -26,7 +26,10 @@ import com.xycs.lingyuereader.ui.glass.GlassDialog
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
-/** The user's creative decisions, AI's prose, and human acceptance are visibly separate steps. */
+/**
+ * The user's creative decisions, AI's prose, and human acceptance are visibly separate steps.
+ * 步骤名用 12sp（[TypeScale.Footnote]），当前这一步强调色半粗：以前 11sp 灰字，几乎看不出走到哪一步。
+ */
 @Composable
 internal fun DraftWorkflowStrip(active: Int) {
     val c = LocalGroupedColors.current
@@ -62,9 +65,9 @@ private fun DraftStep(label: String, icon: ImageVector, done: Boolean, current: 
         }
         Text(
             label,
-            color = if (current) c.label else c.secondary,
-            fontSize = TypeScale.Micro,
-            lineHeight = TypeScale.MicroLine,
+            color = if (current) c.tint else c.secondary,
+            fontSize = TypeScale.Footnote,
+            lineHeight = TypeScale.FootnoteLine,
             fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,

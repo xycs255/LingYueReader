@@ -33,6 +33,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -288,8 +289,13 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
             }
             // 常用的只露两样：输入时自动排版（上面）和引号风格；一键排版的其余规则收进“更多排版规则”，值都不变。
             item(key = "quoteStyle") {
-                GroupedSection(header = "引号风格", footer = "输入时自动排版和一键排版都按这个风格换引号。") {
-                    row { SegmentedRow(QuoteStyle.entries.map { it to it.label }, f.quoteStyle) { v -> update { it.copy(quoteStyle = v) } } }
+                // 分段格写“中文引号 “””“直角引号 「」”，用书页的衬线字显示：界面字体里弯引号小得像两个点，看不出是哪种。
+                GroupedSection(header = "引号风格", footer = "对白外层用前一对，里面再引用用后一对；输入时自动排版、一键排版都照这个换。") {
+                    row {
+                        SegmentedRow(QuoteStyle.entries.map { it to quoteStyleName(it) }, f.quoteStyle, fontFamily = FontFamily.Serif) { v ->
+                            update { it.copy(quoteStyle = v) }
+                        }
+                    }
                 }
             }
             item(key = "more") {
@@ -474,4 +480,10 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
             }
         }
     }
+}
+
+/** 排版设置里引号风格的叫法：名字加一对外层引号（“中文引号 “””“直角引号 「」”）。 */
+internal fun quoteStyleName(style: QuoteStyle): String = when (style) {
+    QuoteStyle.CURLY -> "中文引号 ${style.open}${style.close}"
+    QuoteStyle.CORNER -> "直角引号 ${style.open}${style.close}"
 }
