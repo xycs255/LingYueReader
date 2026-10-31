@@ -17,6 +17,8 @@ import com.xycs.lingyuereader.ai.AiTruncatedException
 import com.xycs.lingyuereader.ai.AiUsage
 import com.xycs.lingyuereader.ai.AiWire
 import com.xycs.lingyuereader.ai.BibleProposal
+import com.xycs.lingyuereader.ai.DocAiKind
+import com.xycs.lingyuereader.ai.PackDocAi
 import com.xycs.lingyuereader.ai.IdeaKind
 import com.xycs.lingyuereader.ai.ProseCut
 import com.xycs.lingyuereader.ai.ProseCutoff
@@ -51,6 +53,7 @@ import com.xycs.lingyuereader.data.AiPack
 import com.xycs.lingyuereader.data.PackBudget
 import com.xycs.lingyuereader.data.PackBudgets
 import com.xycs.lingyuereader.data.PackKnowledge
+import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.ProseBudget
 import com.xycs.lingyuereader.data.ProseLengths
 import com.xycs.lingyuereader.data.ProsePack
@@ -1193,6 +1196,116 @@ class WritingAi(
         return WritePrompts.cleanRules(answer)
     }
 
+    // ---------- 设定文档：起草、按要求改、精简 ----------
+
+    /** 写一份设定文档时带给 AI 的资料（[docMaterial]）。 */
+    internal class DocMaterial(
+        val doc: com.xycs.lingyuereader.data.PackDoc,
+        val system: String,
+        val sameKind: String,
+        val plan: String,
+        /** 人物档案里的人名（精简后核对专名用）。 */
+        val names: List<String>,
+    )
+
+    /**
+     * 起草、改一份设定文档要带的资料：作品信息；按知识库上限挑的常用设定（和审稿、整理同一个预算，见 [PackKnowledge]），
+     * 不含这份文档自己；同类的其余文档（知识库里没整份放进去的，按 [DOC_SAME_KIND_CHARS] 截）；规划树和已写章节的摘要。
+     * 设定是全书范围的，不按章防剧透；正文全文一概不带。[related] 为假时（精简）只要作品信息。
+     */
+    private suspend fun docMaterial(workId: String, docId: String, related: Boolean): DocMaterial {
+        val budget = if (localModel) LOCAL_BRIEF_LIMIT else knowledgeBudget(workId)
+        return withContext(Dispatchers.IO) {
+            val work = store.get(workId) ?: throw IllegalStateException("作品不在了")
+            val raw = store.packSources(workId).raw
+            val doc = raw.firstOrNull { it.first.id == docId }?.first ?: throw IllegalStateException("设定文档不在了")
+            val names = raw.filter { it.first.kind == PackKind.CHARACTER }.flatMap { WritePrompts.characterNames(it.second) }.distinct()
+            if (!related) return@withContext DocMaterial(doc, WritePrompts.packSystem(work.title, work.synopsis, ""), "", "", names)
+            val others = raw.filter { it.first.id != docId }
+            val knowledge = PackKnowledge.build(others, budget)
+            val inKnowledge = (knowledge.instructions + knowledge.knowledge).map { it.id }.toSet()
+            val sameKind = StringBuilder()
+            others.filter { it.first.kind == doc.kind && it.first.id !in inKnowledge && it.second.isNotBlank() }.forEach { (d, t) ->
+                val left = DOC_SAME_KIND_CHARS - sameKind.length
+                if (left <= 0) return@forEach
+                val piece = "【${d.title}】\n${t.trim()}"
+                sameKind.append(if (piece.length > left) piece.take(left) + "……（后面省略）" else piece).append("\n\n")
+            }
+            DocMaterial(doc, WritePrompts.packSystem(work.title, work.synopsis, knowledge.prefix), sameKind.toString().trim(), planDigest(work), names)
+        }
+    }
+
+    /**
+     * 规划树和已写章节的摘要：按卷列每一章的章名、写了多少，跟着本章摘要（没有摘要用细纲卡里“发生了什么”）。
+     * 只取细纲卡，不读正文；超过 [DOC_PLAN_CHARS] 时后面的章只列章名。
+     */
+    private fun planDigest(work: Work): String = buildString {
+        work.volumes.forEach { v ->
+            if (work.volumes.size > 1) append("【").append(v.title).append("】\n")
+            v.chapters.forEach { c ->
+                append("- ").append(c.title).append(if (c.words > 0) "（已写 ${c.words} 字）" else "（未写）")
+                if (length < DOC_PLAN_CHARS) {
+                    val card = store.card(work.id, c.id)
+                    val gist = card.summary.ifBlank { card.facts }.replace('\n', ' ').trim()
+                    if (gist.isNotEmpty()) append("：").append(gist.take(DOC_PLAN_LINE))
+                }
+                append('\n')
+            }
+        }
+    }.trim()
+
+    /** 设定文档三种请求的名字（用量记在“设定文档”，见 [featureOf]）。 */
+    private fun docLabel(kind: DocAiKind) = when (kind) {
+        DocAiKind.DRAFT -> "起草设定"
+        DocAiKind.REVISE -> "改设定"
+        DocAiKind.CONDENSE -> "精简设定"
+    }
+
+    /**
+     * 发一次设定文档的请求，结果先清理、过格式检查（[PackDocAi.problem]），不合格的抛出原因，界面上如实报、不写入。
+     * 不带温度；能开关思考的官方 V4 上关掉思考（和整理、摘要一样：要完整的一份文档，思考会吃掉输出上限）。
+     */
+    private suspend fun askDoc(kind: DocAiKind, workId: String, system: String, prompt: String, request: String, onText: (String) -> Unit): String {
+        if (!ready) throw IllegalStateException("先在“我的 → AI 服务”里开启并填好服务商和密钥")
+        val label = docLabel(kind)
+        val meter = AiMeter(featureOf(label), workId)
+        val answer = PackDocAi.clean(ask(label, workId, system, prompt, whole = true, meter = meter, noThinking = true, onText = onText))
+        PackDocAi.problem(answer)?.let { throw AiException(it) }
+        log(workId, "", label, request, answer, meter)
+        return answer
+    }
+
+    /** 起草一份设定文档（新建时、空文档）：返回全文，作者点“用这个”才写入。 */
+    suspend fun draftDoc(workId: String, docId: String, request: String, onText: (String) -> Unit = {}): String {
+        val m = docMaterial(workId, docId, related = true)
+        val current = withContext(Dispatchers.IO) { store.packText(workId, docId) }.takeUnless { PackDocAi.isBlank(it, m.doc.kind) }.orEmpty()
+        val prompt = WritePrompts.packDraft(m.doc.kind, m.doc.title, request, WritePrompts.packFormat(m.doc.kind, PackImport.template(m.doc.kind)), m.sameKind, m.plan, current)
+        return askDoc(DocAiKind.DRAFT, workId, m.system, prompt, request, onText)
+    }
+
+    /**
+     * 按要求改一份设定文档：[text] 是编辑器里现在的全文，[selection] 不为空时只改这一段。返回改好的全文（只改一段时把这一段换掉）。
+     */
+    suspend fun reviseDoc(workId: String, docId: String, text: String, request: String, selection: IntRange? = null, onText: (String) -> Unit = {}): String {
+        val m = docMaterial(workId, docId, related = true)
+        val part = selection?.takeIf { !it.isEmpty() && it.first >= 0 && it.last < text.length }
+        val prompt = WritePrompts.packRevise(m.doc.kind, m.doc.title, text, request, part?.let { text.substring(it) })
+        val answer = askDoc(DocAiKind.REVISE, workId, m.system, prompt, request, onText)
+        return if (part == null) answer else text.replaceRange(part, answer.trim())
+    }
+
+    /** 精简结果：新稿，和核对出来新稿里找不到的专名、数字。 */
+    data class Condensed(val text: String, val missing: List<String>)
+
+    /** 精简一份设定文档到约 [target] 字，精简后在本机核对专名、数字（[PackDocAi.missing]）。 */
+    suspend fun condenseDoc(workId: String, docId: String, text: String, target: Int, onText: (String) -> Unit = {}): Condensed {
+        val m = docMaterial(workId, docId, related = false)
+        val keep = PackDocAi.keyTerms(text, m.names).take(PackDocAi.KEEP_MAX)
+        val prompt = WritePrompts.packCondense(m.doc.kind, m.doc.title, text, target, keep)
+        val answer = askDoc(DocAiKind.CONDENSE, workId, m.system, prompt, "精简到约 $target 字", onText)
+        return Condensed(answer, PackDocAi.missing(text, answer, m.names))
+    }
+
     private fun characterDocs(workId: String) = store.pack(workId).filter { it.kind == PackKind.CHARACTER }
 
     private fun characterNames(workId: String): List<String> =
@@ -1295,6 +1408,7 @@ class WritingAi(
         "重写这段" -> AiFeature.DRAFT
         "拟细纲", "章节摘要", "拆节拍", "给走向" -> AiFeature.PLAN
         "整理人物", "整理检查规则" -> AiFeature.PACK
+        "起草设定", "改设定", "精简设定" -> AiFeature.SETTING
         else -> AiFeature.OTHER
     }
 
@@ -4352,6 +4466,12 @@ class WritingAi(
         /** 太短的段（一两个字、一句短对话）不查。 */
         const val MIN_PARAGRAPH = 8
         const val EXTRACT_CHARS = 15_000
+
+        /** 起草、改设定文档时同类文档最多带多少字（其余的常用设定按知识库上限另算）。 */
+        const val DOC_SAME_KIND_CHARS = 12_000
+        /** 起草、改设定文档时规划树和摘要最多多少字、每章摘要最多多少字。 */
+        const val DOC_PLAN_CHARS = 6_000
+        const val DOC_PLAN_LINE = 120
 
         /** 整理检查规则时最多带多少字的规范。 */
         const val RULE_SOURCE_CHARS = 30_000

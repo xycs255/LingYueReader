@@ -826,6 +826,76 @@ object WritePrompts {
         append("只输出 JSON：{\"entries\":[{\"name\":\"\",\"text\":\"\"}]}")
     }
 
+    // ---------- 设定文档：起草、按要求改、精简 ----------
+
+    /**
+     * 写设定文档时的系统提示：身份、作品信息、输出格式，后面接按预算挑的设定（[knowledge]）。设定是全书范围的资料，
+     * 不按章防剧透；但只给设定和摘要，不给正文全文（起草设定用不着，也太长）。设定文档是 Markdown，空行、标题、表格照常用，
+     * 和写正文“一行一段、不要空行”的规矩不同，所以不用 [system]。
+     */
+    fun packSystem(title: String, synopsis: String, knowledge: String): String = buildString {
+        append("你是写作软件“灵阅”里的设定助手，在帮作者整理长篇小说")
+        if (title.isNotBlank()) append("《").append(title).append("》")
+        append("的设定包。\n")
+        append("- 用简体中文。设定是给作者和写正文的 AI 查的资料：写事实、规则、关系、数字，不写成小说，不抒情，不说教。\n")
+        append("- 和已有设定保持一致；已有设定没说的可以补，但不能推翻；拿不准的写成“待定：……”，不要硬编。\n")
+        append("- 只输出文档正文本身（Markdown），不要解释、不要“好的”、不要用代码块包起来。\n")
+        if (synopsis.isNotBlank()) append("\n作品简介：").append(synopsis.trim()).append('\n')
+        if (knowledge.isNotBlank()) append("\n").append(knowledge.trim()).append('\n')
+    }
+
+    /** 这一类文档该怎么写：类型的说明，加上新建时的模板（有的话）当格式参考。 */
+    fun packFormat(kind: PackKind, template: String): String = buildString {
+        append("文档类型：").append(kind.label).append("（").append(kind.hint).append("）")
+        if (template.isNotBlank()) append("\n格式参考（可以增减小节，照这个样子写）：\n").append(template.trim())
+    }
+
+    /**
+     * 起草一份设定文档。[request] 是作者的一句要求，[sameKind] 是同类的已有文档（系统提示里放不下、整份给的），
+     * [plan] 是规划树和已写章节的摘要，[current] 是这份文档现在的内容（空或只有模板）。
+     */
+    fun packDraft(kind: PackKind, docTitle: String, request: String, format: String, sameKind: String, plan: String, current: String = ""): String = buildString {
+        append("请起草设定包里的一份文档：《").append(docTitle).append("》。\n")
+        append(format).append("\n\n")
+        if (sameKind.isNotBlank()) append("同类的已有文档（新写的不要和它们重复、矛盾）：\n").append(sameKind.trim()).append("\n\n")
+        if (plan.isNotBlank()) append("规划树和已写章节的摘要（只作依据）：\n").append(plan.trim()).append("\n\n")
+        if (current.isNotBlank()) append("这份文档现在的内容（可以照它的结构往里填）：\n").append(current.trim()).append("\n\n")
+        append("作者的要求：").append(request.trim().ifEmpty { "按文档类型写一份完整的初稿" }).append('\n')
+        append("依据上面的设定和摘要来写，能对上的人名、地名、数字照原样用。只输出这份文档的全文。")
+    }
+
+    /**
+     * 按作者的要求改一份设定文档。[selection] 不为空时只改这一段（[text] 是全文，只作语境），否则改全文。
+     */
+    fun packRevise(kind: PackKind, docTitle: String, text: String, request: String, selection: String? = null): String = buildString {
+        append("设定包里的文档《").append(docTitle).append("》（").append(kind.label).append("）")
+        if (selection == null) {
+            append("全文：\n").append(text.trim()).append("\n\n")
+            append("按作者的要求改这份文档：").append(request.trim()).append('\n')
+            append("没提到的部分一字不动，原有的事实不要删；只输出改好的全文。")
+        } else {
+            append("全文（只作语境，不要改）：\n").append(text.trim()).append("\n\n")
+            append("要改的这一段：\n").append(selection.trim()).append("\n\n")
+            append("按作者的要求只改这一段：").append(request.trim()).append('\n')
+            append("和前后接得上，不要重复前后已有的内容；只输出改好的这一段。")
+        }
+    }
+
+    /**
+     * 精简一份设定文档到约 [target] 字。设定事实一个不丢：只删重复和描写性的话。[keep] 是本机从原文认出来的专名和数字，
+     * 明说必须留下（精简完本机还会再核对一遍）。
+     */
+    fun packCondense(kind: PackKind, docTitle: String, text: String, target: Int, keep: List<String>): String = buildString {
+        append("设定包里的文档《").append(docTitle).append("》（").append(kind.label).append("，共 ").append(WordCount.of(text)).append(" 字）：\n")
+        append(text.trim()).append("\n\n")
+        append("把它精简到约 ").append(target).append(" 字。\n")
+        append("- 设定事实一个不丢：人名、地名、组织、数值、年份、关系、规则、谁知道什么，都要留下。\n")
+        append("- 只删重复的说法、描写性和抒情的话、举例和铺垫；长句改短，能合并的条目合并，能做成表格、列表的就做成表格、列表。\n")
+        append("- 不添原文没有的设定，不改原有的事实和数字。标题层级照原文。\n")
+        if (keep.isNotEmpty()) append("下面这些专名和数字必须原样出现在精简稿里：").append(keep.joinToString("、")).append('\n')
+        append("只输出精简后的全文。")
+    }
+
     /** 事实关：对照设定资料（系统提示里）、细纲卡、上一章结尾，只挑事实、因果、视角、承接上的问题。 */
     fun factReview(text: String, title: String, previous: String, card: ChapterCard? = null): String = buildString {
         if (previous.isNotBlank()) append("上一章结尾：\n").append(previous).append("\n\n")

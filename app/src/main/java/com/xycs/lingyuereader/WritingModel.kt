@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader
 
+import com.xycs.lingyuereader.ai.saveDocFromAi
 import com.xycs.lingyuereader.data.ChangeEntry
 import com.xycs.lingyuereader.data.CascadeReport
 import com.xycs.lingyuereader.data.HoldIssue
@@ -790,6 +791,18 @@ class WritingModel(
                 lastSnapshot[key] = now
             }
         }, onSaved)
+    }
+
+    /**
+     * AI 起草、改、精简的结果写进文档（和“撤回”）：写之前把 [before] 存进历史版本（[saveDocFromAi]），改坏了能回退。
+     * 写完把这一刻记成刚存过一版，免得紧跟着的自动保存又存一版一样的。
+     */
+    fun saveDocFromAi(workId: String, docId: String, before: String, after: String, then: () -> Unit = {}) {
+        val key = store.docKey(docId)
+        changePack(workId, "写入失败", {
+            store.saveDocFromAi(workId, docId, before, after)
+            lastSnapshot[key] = System.currentTimeMillis()
+        }, then)
     }
 
     fun docKey(docId: String) = store.docKey(docId)
