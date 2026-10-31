@@ -371,6 +371,9 @@
 ./gradlew :app:testDebugUnitTest :app:assembleRelease
 ```
 
+单元测试的临时文件（Robolectric 每个用例的应用数据目录等）放在内存盘 `/dev/shm` 下，跑完删掉；
+测试写盘频繁（每次存都 fsync），放在磁盘上时，机器上别的构建大量写盘会让界面测试偶发超时。没有 `/dev/shm` 的机器照旧用系统临时目录。
+
 ### 签名
 
 正式版用开发者自己的密钥签名，密钥和密码不进仓库。没有密钥时 release 包用 Android 调试签名，照样能装，
