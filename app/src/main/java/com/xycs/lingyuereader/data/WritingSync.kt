@@ -359,6 +359,7 @@ object PackSync {
 
     /**
      * 同一章分段整理时几段提的同一个人、同一件事并成一条：留前面那条；人物的称呼、身份、关系空着的用后面的补上，本章经历接在后面。
+     * 数值与持有例外：期初用前一段的、期末用后一段的，变化接起来，记的是这一章从头到尾的账。
      */
     fun merge(items: List<SyncItem>): List<SyncItem> {
         val out = mutableListOf<SyncItem>()
@@ -369,6 +370,10 @@ object PackSync {
                 return@forEach
             }
             val first = out[i]
+            if (first.group == SyncGroup.HOLD) {
+                out[i] = holdMerged(first, item)
+                return@forEach
+            }
             if (first.kind != PackKind.CHARACTER || first.group != SyncGroup.NEW) return@forEach
             val names = (first.fields.map { it.first } + item.fields.map { it.first }).distinct()
             out[i] = first.copy(fields = names.map { k ->
@@ -383,6 +388,16 @@ object PackSync {
             })
         }
         return out
+    }
+
+    /** 同一章前后两段记的同一人同一项：期初取前一段，期末（和依据）取后一段，变化按先后接起来。 */
+    private fun holdMerged(first: SyncItem, later: SyncItem): SyncItem {
+        val a = first.entry ?: return later
+        val b = later.entry ?: return first
+        val before = a.before.ifBlank { b.before }
+        val delta = listOf(a.delta, b.delta).map { it.trim() }.filter { it.isNotEmpty() }.joinToString("；")
+        val title = "${b.subject}·${b.aspect}：" + listOf(before, delta, b.text).filter { it.isNotEmpty() }.joinToString(" → ")
+        return later.copy(title = title, entry = b.copy(before = before, delta = delta))
     }
 
     /** 比较用的写法：去掉开头的“知道了”这类字、标点和空白。 */

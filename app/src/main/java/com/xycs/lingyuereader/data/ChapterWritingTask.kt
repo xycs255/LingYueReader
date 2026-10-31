@@ -259,7 +259,7 @@ fun WorkStore.writingTask(
     val volumeOf = work.volumes.flatMap { v -> v.chapters.map { it.id to v.id } }.toMap()
     val confirmedSummaries = work.chapters.take(index).filter { it.status == ChapterStatus.FINAL }.mapNotNull { c ->
         val summary = this.card(workId, c.id).summary
-        if (summary.isBlank()) null else chapterNo(work, c.id)?.let { ChapterSummary(it, c.title, summary, volumeOf[c.id].orEmpty()) }
+        if (summary.isBlank()) null else chapterNo(work, c.id)?.let { ChapterSummary(it, c.title, summary, volumeOf[c.id].orEmpty(), c.id) }
     }
     // 分层前情只认定稿：故事至今写到的那章、卷摘要用到的各章都得是定稿（见 [StoryDigests.layers]）。
     val layers = StoryDigests.layers(work, chapterId, number ?: (index + 1), digests(workId), confirmedOnly = true)

@@ -144,4 +144,25 @@ class PrefsTest {
         restored.importJson(JSONObject().put("fontSize", JSONObject().put("f", 20.0)))
         assertFalse(restored.settings().autoNightSystemOnly)
     }
+
+    /** 新安装以后恢复旧版本的备份（没有设置版本，带着“深色模式时用夜间背景”）：和升级上来的老用户一样，照旧只认系统深色。 */
+    @Test
+    fun restoringAnOldBackupKeepsTheOldSystemOnlyBehaviour() {
+        val fresh = Prefs(context)
+        assertFalse(fresh.settings().autoNightSystemOnly)
+        val old = JSONObject()
+            .put("autoNight", JSONObject().put("b", true))
+            .put("fontSize", JSONObject().put("f", 21.0))
+            .put("ui.mode", JSONObject().put("s", ThemeMode.DARK.name))
+        fresh.importJson(old)
+        assertTrue(fresh.settings().autoNight)
+        assertTrue(fresh.settings().autoNightSystemOnly)
+        // 新版本导出的备份（记着设置版本）：照备份里的，不补。
+        context.getSharedPreferences("reader", Context.MODE_PRIVATE).edit().clear().commit()
+        val again = Prefs(context)
+        val exported = again.exportJson()
+        assertTrue(exported.has("prefs.version"))
+        again.importJson(exported.put("autoNight", JSONObject().put("b", true)))
+        assertFalse(again.settings().autoNightSystemOnly)
+    }
 }

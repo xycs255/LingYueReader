@@ -30,9 +30,9 @@ import java.net.URL
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * “这章写完了”收尾时顺带整理前情（假的官方 DeepSeek V4 服务，文字自造、人名虚构）：写好摘要后另发一次小请求，
+ * “这章写完了”收尾时顺带整理前情（假的官方 DeepSeek V4 服务，文字自造、人名虚构）：确认、定稿以后用细纲卡里最终的摘要另发一次小请求，
  * 不带温度、关思考、只要 JSON，记在“整理”类；整理好就存下故事至今和卷摘要；回的不是约定的 JSON 照常收尾，下次再补；
- * 作者改过的不盖掉。
+ * 作者改过的不盖掉；停下收尾、确认页上改了摘要，都不留草稿整理出的前情；只用定稿章的摘要。
  */
 class DigestFlowTest {
     @get:Rule
@@ -53,6 +53,9 @@ class DigestFlowTest {
     @Volatile
     private var digestAnswer = """{"story":["林月到渡灯镇找铜灯。","沈默替她挡了一刀。","老周交出半本账册。"],"volume":"第一卷里林月查出了铜灯的记号。"}"""
 
+    @Volatile
+    private var summaryAnswer = "林月在旧仓找到第十个记号，沈默受了伤。"
+
     private fun isDigest(user: String) = "请整理这部小说的前情" in user
     private fun isSummary(user: String) = user.trimEnd().endsWith("只输出摘要本身。")
 
@@ -66,7 +69,7 @@ class DigestFlowTest {
                 asked += Asked(user, body)
                 val answer = when {
                     isDigest(user) -> digestAnswer
-                    isSummary(user) -> "林月在旧仓找到第十个记号，沈默受了伤。"
+                    isSummary(user) -> summaryAnswer
                     else -> "好的。"
                 }
                 val reply = JSONObject().put("choices", JSONArray().put(JSONObject()
@@ -88,8 +91,11 @@ class DigestFlowTest {
         ids.forEachIndexed { i, id ->
             store.renameChapter(workId, id, "第${i + 1}章 灯")
             store.saveText(workId, id, "林月在渡灯镇的第${i + 1}天，沈默还在。", count = false)
-            // 最后一章是要收尾的：还没有摘要。
-            if (i < ids.lastIndex) store.saveCard(workId, id, ChapterCard(summary = "第${i + 1}章：林月查到第${i + 1}个记号。"))
+            // 最后一章是要收尾的：还没有摘要。前面各章都收过尾、定了稿。
+            if (i < ids.lastIndex) {
+                store.saveCard(workId, id, ChapterCard(summary = "第${i + 1}章：林月查到第${i + 1}个记号。"))
+                store.setStatus(workId, id, ChapterStatus.FINAL)
+            }
         }
         store.updateAssist(workId) { it.copy(finish = FinishOptions(sync = false, summary = true, review = false, learn = false, handoff = false)) }
         val client = AiClient { _ -> URL("http://127.0.0.1:${server.address.port}/chat/completions").openConnection() as HttpURLConnection }
@@ -114,17 +120,30 @@ class DigestFlowTest {
 
     private val last get() = ids.last()
 
-    private fun finishToConfirm(): FinishRun {
-        writing.openFinish(workId, last)
+    private fun finishToConfirm(chapterId: String = last): FinishRun {
+        writing.openFinish(workId, chapterId)
         waitFor("勾选项读完") { writing.finish.value?.options?.let { it.summary && !it.sync } == true }
         writing.startFinish()
         waitFor("走到确认") { writing.finish.value?.stage == FinishStage.CONFIRM }
         return writing.finish.value!!
     }
 
+    /** 点“完成收尾”，等写完（前情在定稿以后整理）。[finalize] 默认直接改状态。 */
+    private fun apply(finalize: suspend (String, String) -> Unit = { w, c -> store.setStatus(w, c, ChapterStatus.FINAL) }): FinishRun {
+        var done: String? = null
+        writing.applyFinish(finalize) { done = it }
+        waitFor("收尾完成") { done != null }
+        return writing.finish.value!!
+    }
+
+    private fun finishAll(): FinishRun {
+        finishToConfirm()
+        return apply()
+    }
+
     @Test
     fun finishingTidiesTheStoryAndTheVolumeQuietly() {
-        val run = finishToConfirm()
+        val run = finishAll()
         val digest = asked.single { isDigest(it.user) }
         // 不带温度，官方 V4 关思考；只要 JSON；只给章摘要，本章用刚写的摘要。
         assertFalse(digest.body.has("temperature"))
@@ -151,15 +170,13 @@ class DigestFlowTest {
     @Test
     fun aBadAnswerDoesNotBlockFinishing() {
         digestAnswer = "好的，前情如下：林月到了渡灯镇。"
-        val run = finishToConfirm()
+        val run = finishAll()
         assertEquals(StepState.FAILED, run.digest)
         assertTrue(run.digestError!!.contains("前情没整理成"))
         assertTrue(run.digestError!!.contains("下次收尾再补"))
         assertTrue(store.digests(workId).isEmpty)
         // 照常完成收尾：摘要写进细纲卡、定稿。
-        var done: String? = null
-        writing.applyFinish({ w, c -> store.setStatus(w, c, ChapterStatus.FINAL) }) { done = it }
-        waitFor("收尾完成") { done != null }
+        assertEquals(FinishStage.DONE, run.stage)
         assertEquals(ChapterStatus.FINAL, store.get(workId)!!.chapter(last)!!.status)
         assertTrue(store.card(workId, last).summary.isNotBlank())
     }
@@ -169,7 +186,7 @@ class DigestFlowTest {
         val volume = store.get(workId)!!.volumes.single().id
         store.updateDigests(workId) { it.copy(story = StoryDigest("我自己写的梗概。", ids[2], 3, edited = true)) }
         store.updateDigests(workId) { it.copy(volumes = mapOf(volume to com.xycs.lingyuereader.data.VolumeDigest("我写的卷摘要。", edited = true))) }
-        val run = finishToConfirm()
+        val run = finishAll()
         // 两样都是作者改过的：不发整理前情的请求，说一句留着了。
         assertTrue(asked.none { isDigest(it.user) })
         assertEquals(StepState.DONE, run.digest)
@@ -180,7 +197,8 @@ class DigestFlowTest {
         store.updateDigests(workId) { it.copy(story = null) }
         writing.stopFinish()
         asked.clear()
-        val again = finishToConfirm()
+        finishToConfirm()
+        val again = apply()
         val digest = asked.single { isDigest(it.user) }
         assertFalse(digest.user.contains("\"volume\""))
         assertEquals(StepState.DONE, again.digest)
@@ -198,5 +216,80 @@ class DigestFlowTest {
         assertEquals(StepState.SKIPPED, writing.finish.value!!.digest)
         assertTrue(asked.isEmpty())
         assertNull(store.digests(workId).story)
+    }
+
+    @Test
+    fun theDigestWaitsForTheConfirmedSummary() {
+        finishToConfirm()
+        // 确认之前不整理前情：AI 写的摘要还是草稿。
+        assertTrue(asked.none { isDigest(it.user) })
+        assertTrue(store.digests(workId).isEmpty)
+        // 作者在确认页改了摘要：前情按改过的整理。
+        writing.editFinishSummary("林月在河底摸到第十盏灯，沈默没受伤。")
+        val run = apply()
+        assertEquals(StepState.DONE, run.digest)
+        val digest = asked.single { isDigest(it.user) }
+        assertTrue(digest.user.contains("林月在河底摸到第十盏灯"))
+        assertFalse(digest.user.contains("林月在旧仓找到第十个记号"))
+        assertEquals(last, store.digests(workId).story!!.throughId)
+    }
+
+    @Test
+    fun keepingTheOldSummaryOrStoppingLeavesNoDraftInTheDigest() {
+        // 停下收尾：什么都不留。
+        finishToConfirm()
+        writing.stopFinish()
+        assertTrue(asked.none { isDigest(it.user) })
+        assertTrue(store.digests(workId).isEmpty)
+        // 细纲卡里已经有摘要、选了留旧的：前情用旧的，不用 AI 这次的草稿。
+        store.saveCard(workId, last, ChapterCard(summary = "第10章：杜娘把铜灯藏进了茶馆。"))
+        val confirm = finishToConfirm()
+        assertTrue(confirm.keepOld)
+        assertTrue(asked.none { isDigest(it.user) })
+        apply()
+        val digest = asked.single { isDigest(it.user) }
+        assertTrue(digest.user.contains("杜娘把铜灯藏进了茶馆"))
+        assertFalse(digest.user.contains("林月在旧仓找到第十个记号"))
+    }
+
+    @Test
+    fun onlyFinalChaptersGoIntoTheDigest() {
+        // 第 3 章解锁了（草稿），摘要还在：前情不用它，和项目包流程只认定稿一个标准。
+        store.setStatus(workId, ids[2], ChapterStatus.DRAFT, "沈默的台词再改改")
+        finishAll()
+        val digest = asked.single { isDigest(it.user) }
+        assertFalse(digest.user.contains("第3章：林月查到第3个记号"))
+        assertTrue(digest.user.contains("第4章：林月查到第4个记号"))
+    }
+
+    @Test
+    fun refinalizingAnUnlockedChapterKeepsTheNewSummaryAndTidiesItsVolume() {
+        val volume = store.get(workId)!!.volumes.single().id
+        finishAll()
+        assertEquals(10, store.digests(workId).volumes.getValue(volume).chapters.size)
+        // 定稿后解锁、改了正文，再收尾一次：写新摘要，定稿走级联核对。
+        store.setStatus(workId, last, ChapterStatus.DRAFT, "林月改去渡口")
+        store.saveText(workId, last, "林月没去旧仓，转身去了渡口。", count = false)
+        summaryAnswer = "林月改去渡口，沈默没有受伤。"
+        digestAnswer = """{"story":["林月到渡灯镇找铜灯。","林月改去了渡口。"],"volume":"第一卷里林月去了渡口。"}"""
+        asked.clear()
+        val messages = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val model = WritingModel(store, scope) { messages += it }
+        finishToConfirm()
+        writing.keepOldSummary(false)
+        val run = apply { w, c -> model.setStatusNow(w, c, ChapterStatus.FINAL) }
+        assertEquals(FinishStage.DONE, run.stage)
+        // 刚写进去的新摘要不被级联标成过期。
+        val card = store.card(workId, last)
+        assertEquals("林月改去渡口，沈默没有受伤。", card.summary)
+        assertFalse(card.summaryStale)
+        // 级联标了过期的故事至今、卷摘要，定稿以后按新摘要重新整理好，不再过期。
+        val digest = asked.single { isDigest(it.user) }
+        assertTrue(digest.user.contains("林月改去渡口，沈默没有受伤。"))
+        val saved = store.digests(workId)
+        assertFalse(saved.story!!.stale)
+        assertEquals(last, saved.story!!.throughId)
+        assertFalse(saved.volumes.getValue(volume).stale)
+        assertEquals("第一卷里林月去了渡口。", saved.volumes.getValue(volume).text)
     }
 }

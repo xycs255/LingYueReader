@@ -418,6 +418,10 @@ class Prefs(context: Context) {
                 else -> wrapped.getString(tag)
             }
         }
+        // 旧版本的备份（没记设置版本）带着“深色模式时用夜间背景”：那时它的意思是只认系统深色，和升级上来的老用户一样补上
+        // autoNightSystemOnly，行为不变。备份里没有这个开关的，本机的开关和它的认法照旧，不动。
+        val backupVersion = o.optJSONObject(VERSION_KEY)?.optInt("i", 0) ?: 0
+        if (backupVersion < 1 && "autoNight" in values && "autoNightSystemOnly" !in values) values["autoNightSystemOnly"] = true
         sp.edit {
             values.forEach { (key, value) ->
                 when (value) {

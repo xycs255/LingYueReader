@@ -35,6 +35,7 @@ import com.xycs.lingyuereader.data.StoryDigest
 import com.xycs.lingyuereader.data.StoryDigests
 import com.xycs.lingyuereader.data.VolumeDigest
 import com.xycs.lingyuereader.data.ChapterReview
+import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Foreshadows
 import com.xycs.lingyuereader.data.ToneIssue
 import com.xycs.lingyuereader.data.volumeNumber
@@ -3970,7 +3971,8 @@ class WritingAi(
         val o = usable(run.options, run.learnable)
         fun state(on: Boolean) = if (on) StepState.WAITING else StepState.SKIPPED
         val next = FinishRun(run.workId, run.chapterId, o, FinishStage.RUNNING, state(o.review), state(o.sync), state(o.summary),
-            learnable = run.learnable, learn = state(o.learn), handoff = state(o.handoff), digest = state(digestOn(o)))
+            learnable = run.learnable, learn = state(o.learn), handoff = state(o.handoff), digest = state(digestOn(o)),
+            digestNote = DIGEST_LATER.takeIf { digestOn(o) })
         _finish.value = next
         finishJob = scope.launch {
             if (o.review && !finishReview(next.workId, next.chapterId)) return@launch
@@ -4081,9 +4083,7 @@ class WritingAi(
         if (o.learn && run.learn != StepState.DONE) finishLearn(workId, chapterId)
         // 整理交接卡：给下一章接着写。没成不拦收尾，原因写在确认页上。
         if (o.handoff && run.handoff != StepState.DONE) finishHandoff(workId, chapterId)
-        // 整理前情（故事至今、卷摘要）：用刚写好的摘要。没成不拦收尾，下次收尾再补。
-        val digestRun = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId }
-        if (digestOn(o) && digestRun != null && digestRun.digest != StepState.DONE && digestRun.summary == StepState.DONE) finishDigest(workId, chapterId, digestRun.draft)
+        // 整理前情（故事至今、卷摘要）不在这里做：要等作者确认摘要、定稿以后，用写进细纲卡的那份摘要（见 [applyFinish]）。
         val now = _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId } ?: return
         if (now.sync == StepState.FAILED || now.summary == StepState.FAILED) {
             updateFinish(workId, chapterId) { it.copy(stage = FinishStage.AI_FAILED) }
@@ -4161,14 +4161,17 @@ class WritingAi(
      * 收尾里的“整理前情”：按 [StoryDigests.plan] 看这一次要不要更新故事至今、要不要汇总本卷的卷摘要，要的话合成一次小请求。
      * 只给章摘要和旧梗概（[WritePrompts.digest]），不带温度，能关思考的官方 V4 关掉思考，只要 JSON，用量记在“整理”类。
      * 整理好就存下；作者改过的不盖掉（整理途中改了也不盖）。没成只记原因，不拦收尾，下次收尾时没并进去的章一起补上。
+     * 在定稿（连同改定稿后的级联核对）之后做，用细纲卡里最终的摘要：作者在确认页改过的、选了留旧的，都以写进去的为准；
+     * 停下收尾就什么都不写。只用定稿章的摘要（和项目包流程只认定稿的前情一个标准）。
      */
-    private suspend fun finishDigest(workId: String, chapterId: String, summary: String) {
+    private suspend fun finishDigest(workId: String, chapterId: String) {
         updateFinish(workId, chapterId) { it.copy(digest = StepState.RUNNING, digestError = null, digestNote = null) }
         try {
             val (work, job) = withContext(Dispatchers.IO) {
                 val w = store.get(workId) ?: error("作品不在了")
-                val summaries = w.chapters.associate { c -> c.id to store.card(workId, c.id).summary }
-                w to StoryDigests.plan(w, chapterId, summary, summaries, store.digests(workId))
+                val summaries = w.chapters.filter { it.status == ChapterStatus.FINAL }.associate { c -> c.id to store.card(workId, c.id).summary }
+                val summary = summaries[chapterId].orEmpty()
+                w to StoryDigests.plan(w, chapterId, summary, summaries, store.digests(workId), store.chapterNo(w, chapterId))
             }
             if (job.isEmpty) {
                 // 这次不用整理（章还少、旧章重收尾）就不占一行；作者改过的故事至今照实说一句留着了。
@@ -4326,12 +4329,22 @@ class WritingAi(
                 }
                 updateFinish(workId, chapterId) { it.copy(wrote = it.wrote + step) }
             }
+            // 定稿以后整理前情：没成不拦收尾，原因记在收尾结果里。
+            if (digestOn(run.options) && run.digest != StepState.DONE) {
+                finishDigest(workId, chapterId)
+                _finish.value?.takeIf { it.workId == workId && it.chapterId == chapterId }?.let { r ->
+                    (r.digestError ?: r.digestNote)?.let { notes += it }
+                }
+            }
             updateFinish(workId, chapterId) { it.copy(stage = FinishStage.DONE) }
             then((listOf("这一章定稿了") + notes).joinToString("；"))
         }
     }
 
     companion object {
+        /** 收尾进行中“整理前情”这一步的说明：前情要等确认、定稿以后用最终的摘要整理。 */
+        const val DIGEST_LATER = "确认、定稿以后用最终的摘要整理"
+
         /** 写作建议一次最多发几段。 */
         const val REALTIME_BATCH = 6
         /** 去 AI 腔一次最多发几段。 */

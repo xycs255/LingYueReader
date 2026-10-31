@@ -119,6 +119,10 @@ data class ChangeEntry(
     val synced: Boolean = false,
     /** 解锁时正文的指纹（[ChapterSyncs.hash]）：重新定稿时比一比，改过才做级联核对（[FinalCascade]）。旧登记没有，为空。 */
     val textHash: Int? = null,
+    /**
+     * 解锁时细纲卡摘要的指纹：重新定稿时摘要已经换过（收尾写了新摘要）就不再标过期（[FinalCascade]）。旧登记没有，为空。
+     */
+    val summaryHash: Int? = null,
 ) {
     val pending: Boolean get() = canon && !synced
 }
@@ -724,6 +728,7 @@ class WorkStore(
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能删除章节" }
         val text = text(workId, chapterId)
         if (text.isNotBlank()) snapshot(workId, chapterId, text)
+        val before = get(workId)
         val work = update(workId) { w -> w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.filterNot { it.id == chapterId }) }) }
         chapterFile(workId, chapterId).delete()
         cardFile(workId, chapterId).delete()
@@ -737,7 +742,32 @@ class WorkStore(
         runCatching { if (File(dir(workId), LEARN).isFile) updateLearning(workId) { EditLearning.forgetChapter(it, chapterId) } }
         // 这章的交接卡也清掉；清不掉也不挡删章（备份时按现有的章过滤）。
         runCatching { if (File(dir(workId), HANDOFFS).isFile) saveHandoff(workId, chapterId, null) }
+        // 分层前情里这章的内容也要去掉；清不掉也不挡删章。
+        runCatching { if (before != null && work != null && File(dir(workId), DIGESTS).isFile) forgetDigestChapter(workId, before, work, chapterId) }
         return work
+    }
+
+    /**
+     * 删章以后整理分层前情：卷摘要的 [VolumeDigest.chapters] 去掉这一章，卷摘要标过期（里面还有这章的事，下次收尾重新汇总）；
+     * 故事至今盖到了这一章（写到这章或更后面）也标过期；写到的正是这一章，改成写到它前面那一章（章号跟着改），
+     * “写到哪”不丢，回头重收旧章时不动梗概的保护照样成立。作者改过的不标过期（下次也不会自动重整），只改章列表、写到哪。
+     */
+    private fun forgetDigestChapter(workId: String, before: Work, after: Work, chapterId: String) {
+        val index = before.chapters.indexOfFirst { it.id == chapterId }
+        updateDigests(workId) { d ->
+            val volumes = d.volumes.mapValues { (_, v) ->
+                if (chapterId !in v.chapters) v else v.copy(chapters = v.chapters - chapterId, stale = v.stale || !v.edited)
+            }
+            val story = d.story?.let { s ->
+                val at = before.chapters.indexOfFirst { it.id == s.throughId }
+                if (index < 0 || at < index) return@let s
+                // 写到的正是这一章而前面没有章了：梗概只剩这章的事，去掉。
+                val through = if (s.throughId != chapterId) s.throughId else before.chapters.getOrNull(index - 1)?.id ?: return@let null
+                // 后面的章章号往前挪了一位，写到哪的章号跟着改。
+                s.copy(throughId = through, throughNo = chapterNo(after, through) ?: s.throughNo, stale = s.stale || !s.edited)
+            }
+            d.copy(story = story, volumes = volumes)
+        }
     }
 
     // ---------- 状态与变更登记 ----------
@@ -760,7 +790,7 @@ class WorkStore(
         if (c.locked) require(reason.isNotBlank()) { "改定稿的章节要先写原因" }
         when {
             c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon,
-                textHash = ChapterSyncs.hash(text(workId, chapterId))))
+                textHash = ChapterSyncs.hash(text(workId, chapterId)), summaryHash = ChapterSyncs.hash(card(workId, chapterId).summary)))
             status == ChapterStatus.FINAL -> {
                 text(workId, chapterId).takeIf { it.isNotBlank() }?.let { snapshot(workId, chapterId, it) }
                 addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.FINALIZE, c.id, c.title, reason.trim(), canon))
@@ -899,6 +929,10 @@ class WorkStore(
         require(ID.matches(chapterId)) { "章节 id 无效" }
         return File(dir(workId), "$chapterId.card.json")
     }
+
+    /** 细纲卡文件的指纹（修改时间和大小，不读内容）：体检这类只想知道卡变没变的用。没有卡为 0。 */
+    fun cardStamp(workId: String, chapterId: String): Long =
+        cardFile(workId, chapterId).let { f -> if (f.isFile) f.lastModified() * 31 + f.length() else 0L }
 
     @Synchronized
     fun card(workId: String, chapterId: String): ChapterCard {
@@ -2501,12 +2535,14 @@ class WorkStore(
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
             .put("reason", reason).put("canon", canon).put("synced", synced)
             .apply { textHash?.let { put("textHash", it) } }
+            .apply { summaryHash?.let { put("summaryHash", it) } }
 
         private fun JSONObject.toChange(): ChangeEntry? {
             val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
             val kind = runCatching { ChangeKind.valueOf(optString("kind")) }.getOrDefault(ChangeKind.CANON)
             return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"),
-                textHash = if (has("textHash") && !isNull("textHash")) (opt("textHash") as? Number)?.toInt() else null)
+                textHash = if (has("textHash") && !isNull("textHash")) (opt("textHash") as? Number)?.toInt() else null,
+                summaryHash = if (has("summaryHash") && !isNull("summaryHash")) (opt("summaryHash") as? Number)?.toInt() else null)
         }
 
         private fun PackDoc.toJson(): JSONObject = JSONObject()

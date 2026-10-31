@@ -43,6 +43,7 @@ import com.xycs.lingyuereader.data.TextFormat
 import com.xycs.lingyuereader.data.PackDoc
 import com.xycs.lingyuereader.data.PackImport
 import com.xycs.lingyuereader.data.PlannedCard
+import com.xycs.lingyuereader.data.outlineEntries
 import com.xycs.lingyuereader.data.plannedCard
 import com.xycs.lingyuereader.data.PackImportItem
 import com.xycs.lingyuereader.data.PackImportResult
@@ -80,6 +81,7 @@ import com.xycs.lingyuereader.data.unsynced
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -316,23 +318,28 @@ class WritingModel(
 
     private val pulseCache = HashMap<String, Pair<Int, List<PulseRow>>>()
 
+    /** 体检读盘用的队列：只读，和写盘的 [disk] 分开，几百章的细纲卡读一遍也不压住保存、定稿。 */
+    private val pulseDisk = Dispatchers.IO.limitedParallelism(1)
+
     /**
      * 线索与节奏体检（[StoryPulse]）：到现在写到的这一章（有正文的最后一章）为止。在后台算；
-     * 各章细纲卡的修改时间和账本都没变就用上次算的。
+     * 目录、各章细纲卡文件（只看修改时间和大小，不读内容）、细纲和账本都没变就用上次算的。
      */
-    suspend fun pulse(workId: String): List<PulseRow> = withContext(disk) {
+    suspend fun pulse(workId: String): List<PulseRow> = withContext(pulseDisk) {
         val work = store.get(workId) ?: return@withContext emptyList()
         val last = work.chapters.indexOfLast { it.words > 0 }
         if (last < 0) return@withContext emptyList()
         val ledger = runCatching { store.ledger(workId) }.getOrDefault(emptyList())
-        val chapters = work.chapters.take(last + 1).map { c ->
-            ensureActive()
-            val card = store.plannedCard(workId, c.id).card
-            PulseChapter(c.id, work.chapterNo(c.id, card) ?: 0, c.title, card.threads, card.change, card.moves) to card.updatedAt
-        }
-        val stamp = listOf(chapters.map { it.first.id to it.second }, chapters.map { it.first }, ledger).hashCode()
+        val entries = runCatching { store.outlineEntries(workId) }.getOrDefault(emptyList())
+        val shown = work.chapters.take(last + 1)
+        val stamp = listOf(shown.map { listOf(it.id, it.title, store.cardStamp(workId, it.id)) }, entries, ledger).hashCode()
         pulseCache[workId]?.takeIf { it.first == stamp }?.let { return@withContext it.second }
-        val rows = withContext(Dispatchers.Default) { StoryPulse.check(chapters.map { it.first }, ledger) }
+        val chapters = shown.map { c ->
+            ensureActive()
+            val card = store.plannedCard(workId, c.id, entries).card
+            PulseChapter(c.id, work.chapterNo(c.id, card) ?: 0, c.title, card.threads, card.change, card.moves)
+        }
+        val rows = withContext(Dispatchers.Default) { StoryPulse.check(chapters, ledger) }
         pulseCache[workId] = stamp to rows
         rows
     }
@@ -598,14 +605,16 @@ class WritingModel(
         }
         publish(work)
         _stats.value = stats
-        if (refinal) cascade(workId, chapterId)
+        // 等级联核对做完再返回：收尾接着用定稿后的摘要整理前情，要在它标完过期之后做，不然刚整理好的又被标成过期。
+        // 核对本身没成不往外抛（[cascade] 自己报），不挡定稿。
+        if (refinal) cascade(workId, chapterId).join()
     }
 
     /**
      * 定稿章改过、重新定稿以后的级联核对（[cascadeFinal]）：本机做，不发请求，在写盘队列里跑，不挡定稿。
      * 账本、变更登记、前情有人在看就刷新；做完说一句标了什么。[then] 给测试等结果用。
      */
-    fun cascade(workId: String, chapterId: String, then: (CascadeReport) -> Unit = {}) {
+    fun cascade(workId: String, chapterId: String, then: (CascadeReport) -> Unit = {}): Job =
         scope.launch {
             try {
                 val (report, title) = withContext(disk) {
@@ -623,7 +632,6 @@ class WritingModel(
                 message("改定稿后的核对没做成：${e.message ?: "读写出错"}")
             }
         }
-    }
 
     /**
      * 数值与持有的本机对账（[Holdings.check]）：牵涉到 [chapterId] 这一章的那几处（问题面板“事实”一组）。

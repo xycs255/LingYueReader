@@ -87,7 +87,9 @@ object StoryPulse {
         if (chapters.isEmpty()) return emptyList()
         val now = chapters.lastIndex
         val atNo = chapters.withIndex().associate { it.value.number to it.index }
-        fun indexOf(no: Int?): Int? = no?.let { n -> atNo[n] ?: chapters.indexOfLast { it.number <= n }.takeIf { it >= 0 } }
+        // 章号在现在写到的这一章之后的（设定包导入的“第 80 章起”）还没发生：不对到任何一章，不算“刚推进过”。
+        val lastNo = chapters.maxOf { it.number }
+        fun indexOf(no: Int?): Int? = no?.takeIf { it <= lastNo }?.let { n -> atNo[n] ?: chapters.indexOfLast { it.number <= n }.takeIf { it >= 0 } }
         val rows = mutableListOf<PulseRow>()
 
         // 线：按线名归到一起。

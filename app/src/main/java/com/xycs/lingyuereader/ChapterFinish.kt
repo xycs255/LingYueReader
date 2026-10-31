@@ -58,7 +58,7 @@ data class FinishRun(
     val handoffError: String? = null,
     /** 交接卡这一步的说明（比如保留了作者改过的那一份）。 */
     val handoffNote: String? = null,
-    /** 整理前情（故事至今、卷摘要）：跟着写本章摘要走，整理好就存下，没成不拦收尾。 */
+    /** 整理前情（故事至今、卷摘要）：跟着写本章摘要走，确认、定稿以后用最终的摘要整理，整理好就存下，没成不拦收尾。 */
     val digest: StepState = StepState.WAITING,
     val digestError: String? = null,
     val digestNote: String? = null,

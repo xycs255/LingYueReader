@@ -43,7 +43,7 @@ data class Foreshadow(
 )
 
 /** 前面一章的摘要（细纲卡里写完以后的那一栏）。[volumeId] 是它在哪一卷：那一卷有卷摘要时，前情用卷摘要替它。 */
-data class ChapterSummary(val number: Int, val title: String, val summary: String, val volumeId: String = "")
+data class ChapterSummary(val number: Int, val title: String, val summary: String, val volumeId: String = "", val chapterId: String = "")
 
 /** 本章资料里的一项：哪一类、标题、内容、为什么带上它。 */
 data class BriefItem(val group: String, val title: String, val text: String, val reason: String)
@@ -629,7 +629,11 @@ object ChapterBriefs {
 
         // 故事账本：到这一章为止的快照，是最新进展，紧跟前情。最多占剩下的三分之一、不超过 LEDGER_LIMIT。
         // 只有作者知道的条目并进 hidden，放在最前面（账本优先），快照里不再重复。
-        val snapshot = if (ledger.isEmpty()) null else StoryLedger.snapshot(ledger, chapter, volume, present.flatMap { it.names })
+        // 数值与持有取到上一章末为止（和整理时的 [ChapterSyncs.ledgerView] 一个口径）：本章已经整理入账的期末是本章写完的结果，
+        // 当成“以这里为准”的现值给 AI，会把本章里的突破、花销提前写出来。
+        val snapshot = if (ledger.isEmpty()) null else present.flatMap { it.names }.let { names ->
+            StoryLedger.snapshot(ledger, chapter, volume, names).copy(holds = StoryLedger.snapshot(ledger, chapter - 1, volume, names).holds)
+        }
         val ledgerAt = items.size
         val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
@@ -842,20 +846,28 @@ object ChapterBriefs {
     /** 前情里分层的那几项的说明（[BriefItem.reason]），排序、界面上认它们用。 */
     const val STORY_REASON = "全书梗概"
     const val VOLUME_REASON = "往卷摘要"
+    const val GAP_REASON = "卷摘要还没汇总到"
 
     /**
      * 分层前情：按“故事至今 → 往卷的卷摘要 → 本卷最近几章的章摘要 → 更早写到出场人物的章摘要”的顺序放进 [items]，
      * 返回一共用了多少字。总共不超过 [budget]（和只用章摘要时同一个上限：前情只会更省，不会更多）。
      * 字数紧时先保最近几章（接得上），再保故事至今、离得近的卷，最后才是写到出场人物的旧章。
-     * 有卷摘要的卷，它的章摘要不再单列（卷摘要替它们，不叠加）；卷首章仍带上一卷最后 [MIN_RECENT] 章。
+     * 卷摘要盖到的章（[VolumeLayer.chapters]），章摘要不再单列（卷摘要替它们，不叠加）；卷首章仍带上一卷最后 [MIN_RECENT] 章。
+     * 往卷里卷摘要没盖到的章（卷摘要没汇总成、没汇总全，下次收尾再补）照旧带章摘要，排在卷摘要后面，前情不断档。
      */
     private fun layered(items: MutableList<BriefItem>, before: List<ChapterSummary>, layers: PastLayers, presentNames: List<String>, budget: Int): Int {
-        val covered = layers.volumes.map { it.volumeId }.toSet()
-        val open = before.filter { it.volumeId.isEmpty() || it.volumeId !in covered }
+        // 按章算盖没盖到：卷摘要只汇总了这一卷的一部分章时，没汇总进去的章不能跟着整卷去掉。
+        val coveredIds = layers.volumes.flatMap { it.chapters }.toSet()
+        val wholeVolumes = layers.volumes.filter { it.chapters.isEmpty() }.map { it.volumeId }.toSet()
+        val layerVolumes = layers.volumes.map { it.volumeId }.toSet()
+        fun covered(s: ChapterSummary) = if (s.chapterId.isEmpty()) s.volumeId.isNotEmpty() && s.volumeId in layerVolumes
+            else s.chapterId in coveredIds || s.volumeId in wholeVolumes
+        val open = before.filter { !covered(it) }
         // 最近几章只在紧挨着本章的那几章里挑：中间隔着一卷有卷摘要的，更早那卷的章不算“最近”。
         var recent = before.take(RECENT_SUMMARIES).filter { it in open }
         if (recent.size < MIN_RECENT) recent = (recent + before.filter { it !in recent }.take(MIN_RECENT - recent.size)).sortedByDescending { it.number }
-        val older = open.filter { it !in recent && presentNames.any { n -> n in it.summary } }
+        val gap = open.filter { it !in recent && it.volumeId in layers.past }
+        val older = open.filter { it !in recent && it !in gap && presentNames.any { n -> n in it.summary } }
             .sortedByDescending { s -> presentNames.sumOf { n -> s.summary.split(n).size - 1 } }.take(OLDER_MAX)
         var left = budget
         fun take(text: String, max: Int): String? {
@@ -866,10 +878,12 @@ object ChapterBriefs {
         val story = layers.story.takeIf { it.isNotBlank() }?.let { take(it, StoryDigests.STORY_MAX) }?.let { BriefItem("前情", "故事至今", it, STORY_REASON) }
         val volumeItems = layers.volumes.asReversed().mapNotNull { v -> take(v.text, StoryDigests.VOLUME_MAX)?.let { v to it } }
             .asReversed().map { (v, text) -> BriefItem("前情", v.title.trim() + "（卷摘要）", text, VOLUME_REASON) }
+        val gapItems = gap.mapNotNull { s -> take(s.summary, 600)?.let { s to it } }.asReversed()
+            .map { (s, text) -> BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), text, GAP_REASON) }
         val olderItems = older.sortedByDescending { it.number }.mapNotNull { s ->
             take(s.summary, 600)?.let { BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), it, "写到" + presentNames.filter { n -> n in s.summary }.joinToString("、")) }
         }
-        items += listOfNotNull(story) + volumeItems + recentItems + olderItems
+        items += listOfNotNull(story) + volumeItems + gapItems + recentItems + olderItems
         return budget - left
     }
 
@@ -940,9 +954,9 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
         val stored = card(workId, c.id)
         val no = chapterNo(work, c.id) ?: 0
         when {
-            stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary, volumeOf[c.id].orEmpty())
+            stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary, volumeOf[c.id].orEmpty(), c.id)
             !confirmedOnly && i >= before.size - ChapterBriefs.RECENT_SUMMARIES ->
-                plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it", volumeOf[c.id].orEmpty()) }
+                plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it", volumeOf[c.id].orEmpty(), c.id) }
             else -> null
         }
     }

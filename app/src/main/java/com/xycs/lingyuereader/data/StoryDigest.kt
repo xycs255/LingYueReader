@@ -42,13 +42,16 @@ data class Digests(val story: StoryDigest? = null, val volumes: Map<String, Volu
     val isEmpty: Boolean get() = story == null && volumes.isEmpty()
 }
 
-/** 写某一章时用得上的前情层：故事至今（只到本章之前）、往卷的卷摘要（按卷的先后）。 */
-data class PastLayers(val story: String = "", val volumes: List<VolumeLayer> = emptyList()) {
+/**
+ * 写某一章时用得上的前情层：故事至今（只到本章之前）、往卷的卷摘要（按卷的先后）。
+ * [past] 是本章所在卷之前各卷的 id：这些卷里卷摘要没盖到的章（卷摘要没汇总成、没汇总全），前情照旧带章摘要。
+ */
+data class PastLayers(val story: String = "", val volumes: List<VolumeLayer> = emptyList(), val past: Set<String> = emptySet()) {
     val isEmpty: Boolean get() = story.isBlank() && volumes.isEmpty()
 }
 
-/** 往卷的一份卷摘要：哪一卷（id、卷名）、内容。 */
-data class VolumeLayer(val volumeId: String, val title: String, val text: String)
+/** 往卷的一份卷摘要：哪一卷（id、卷名）、内容，汇总时用了哪几章（章 id，见 [VolumeDigest.chapters]）。 */
+data class VolumeLayer(val volumeId: String, val title: String, val text: String, val chapters: List<String> = emptyList())
 
 /** 整理前情这一次请求要做什么：更新故事至今（[story]）、汇总哪一卷（[volumeId]），和要给 AI 的材料。 */
 data class DigestJob(
@@ -121,7 +124,7 @@ object StoryDigests {
      * 写 [chapterId] 时用得上的前情层（只用本章之前的，防剧透）：
      * - 故事至今：写到的那一章在本章之前才用；写到的那章被删了，按记下的章号比；
      * - 往卷（目录里排在本章所在卷前面的卷）的卷摘要；
-     * [confirmedOnly] 为真（项目包流程只认定稿）时，故事至今写到的那章、卷摘要用到的各章都得还是定稿，不然不用。
+     * [confirmedOnly] 为真（项目包流程只认定稿）时，故事至今写到的那章、卷摘要用到的各章都得还是定稿，不然不用（已经删掉的章不算）。
      * 没有可用的层为空，前情照旧只用章摘要。
      */
     fun layers(work: Work, chapterId: String, number: Int, digests: Digests, confirmedOnly: Boolean = false): PastLayers? {
@@ -137,53 +140,80 @@ object StoryDigests {
         val vi = work.volumes.indexOfFirst { v -> v.chapters.any { it.id == chapterId } }
         val volumes = work.volumes.take(maxOf(vi, 0)).mapNotNull { v ->
             val d = digests.volumes[v.id] ?: return@mapNotNull null
-            if (confirmedOnly && d.chapters.any { !final(it) }) return@mapNotNull null
-            VolumeLayer(v.id, v.title, d.text.trim())
+            if (confirmedOnly && d.chapters.any { work.chapter(it) != null && !final(it) }) return@mapNotNull null
+            VolumeLayer(v.id, v.title, d.text.trim(), d.chapters)
         }
-        return PastLayers(story, volumes).takeIf { !it.isEmpty }
+        return PastLayers(story, volumes, work.volumes.take(maxOf(vi, 0)).map { it.id }.toSet()).takeIf { !it.isEmpty }
     }
 
     /**
-     * 收尾时（[chapterId] 刚写好摘要 [summary]）这一次要整理什么：
-     * - 故事至今：作者改过的不动；已经写到本章或更后面（回头重收旧章）的不动，免得梗概倒退；有摘要的章不到 [STORY_MIN] 章时
-     *   还不用；否则把上次写到的那章之后、到本章为止有摘要的各章并进去（上次没成的这次一起补上）。
+     * 收尾定稿以后（[chapterId] 的摘要是 [summary]）这一次要整理什么：
+     * - 故事至今：作者改过的不动；已经写到本章或更后面（回头重收旧章）的不动，免得梗概倒退。写到的那章被删了，按记下的章号比
+     *   （[number] 是本章的章号）：章号不比本章小的同样不动；比本章小的不知道从哪接着并，从头整理。
+     *   有摘要的章不到 [STORY_MIN] 章时还不用；否则把上次写到的那章之后、到本章为止有摘要的各章并进去（上次没成的这次一起补上）。
+     *   从头整理（第一次写、过期了）时范围是本章之前的全书：往卷有卷摘要的，用卷摘要替它盖到的章；章摘要太多截掉的那几章，
+     *   也用它们所在卷的卷摘要盖住。
      * - 卷摘要：本章所在的卷，作者改过的不动；这一卷每章都有摘要（写完了，至少 [VOLUME_MIN] 章）而上次汇总时还没全，或者有摘要的章到了
-     *   [VOLUME_EVERY] 章、比上次汇总多了 [VOLUME_EVERY] 章，就汇总一次。只用写了摘要的章。
+     *   [VOLUME_EVERY] 章、比上次汇总多了 [VOLUME_EVERY] 章，就汇总一次。本卷这次不用汇总时，看本章之前的各卷：过期了、
+     *   没汇总过或者没汇总全的（往卷算写完了），补上最近的那一卷。只用写了摘要的章。
      * [summaries] 是各章细纲卡里的摘要（章 id → 摘要），本章用 [summary]。
      */
-    fun plan(work: Work, chapterId: String, summary: String, summaries: Map<String, String>, digests: Digests): DigestJob {
+    fun plan(work: Work, chapterId: String, summary: String, summaries: Map<String, String>, digests: Digests, number: Int? = null): DigestJob {
         val index = work.chapters.indexOfFirst { it.id == chapterId }
         if (index < 0 || summary.isBlank()) return DigestJob(false, "", emptyList())
+        val no = number ?: (index + 1)
         fun summaryOf(c: WorkChapter) = if (c.id == chapterId) summary.trim() else summaries[c.id].orEmpty().trim()
         val stored = digests.story
         val throughAt = stored?.let { s -> work.chapters.indexOfFirst { it.id == s.throughId } } ?: -1
+        // 写到的那章找不到了（删掉了）：记下的章号比本章小的，不知道梗概并到了哪，从头整理。
+        val lost = stored != null && throughAt < 0
         // 过期了（写到的章定稿后又改过）：从头整理一遍，写到原来写到的和这一章里靠后的那一章，梗概不倒退。
-        val rebuild = stored?.stale == true && !stored.edited
+        val rebuild = stored != null && !stored.edited && (stored.stale || lost && stored.throughNo < no)
         val old = stored.takeIf { !rebuild }
+        // 已经写到本章或更后面：不动。写到的那章删了的，按章号比，保护照样成立。
+        val ahead = old != null && (if (throughAt >= 0) throughAt >= index else old.throughNo >= no)
         val end = if (rebuild) maxOf(index, throughAt) else index
         val summarized = work.chapters.take(end + 1).count { summaryOf(it).isNotEmpty() }
-        val wantStory = stored?.edited != true && !(old != null && throughAt >= index) && (old != null || rebuild || summarized >= STORY_MIN)
+        val wantStory = stored?.edited != true && !ahead && (old != null || rebuild || summarized >= STORY_MIN)
         val start = if (old != null && throughAt >= 0) throughAt + 1 else 0
         val vi = work.volumes.indexOfFirst { v -> v.chapters.any { it.id == chapterId } }
-        val newChapters = if (!wantStory) emptyList() else
-            capped(work.chapters.subList(start, end + 1).map { it.title to summaryOf(it) }.filter { it.second.isNotEmpty() })
-        val pastVolumes = if (!wantStory || old != null) emptyList()
-            else work.volumes.take(maxOf(vi, 0)).mapNotNull { v -> digests.volumes[v.id]?.let { v.title to it.text } }
-        val volume = work.volumes.getOrNull(vi)
-        var volumeJob: Triple<Volume, List<WorkChapter>, Boolean>? = null
-        if (volume != null && digests.volumes[volume.id]?.edited != true) {
+        val volumeOfChapter = work.volumes.flatMap { v -> v.chapters.map { it.id to v } }.toMap()
+        fun usable(v: Volume) = digests.volumes[v.id]?.takeIf { !it.stale }
+        var newChapters = emptyList<Pair<String, String>>()
+        var pastVolumes = emptyList<Pair<String, String>>()
+        if (wantStory) {
+            // 从头写（没有旧梗概）：本章之前的往卷有卷摘要的，卷摘要盖到的章不再逐章给。
+            val endVolume = work.chapters.getOrNull(end)?.let { c -> work.volumes.indexOfFirst { v -> v.chapters.any { it.id == c.id } } } ?: vi
+            val byVolume = if (old != null) emptyList() else work.volumes.take(maxOf(endVolume, 0)).filter { usable(it) != null }
+            val covered = byVolume.flatMap { v -> usable(v)!!.chapters.filter { id -> v.chapters.any { it.id == id } } }.toSet()
+            val candidates = work.chapters.subList(start, end + 1).filter { it.id !in covered && summaryOf(it).isNotEmpty() }
+            val kept = capped(candidates.map { it.title to summaryOf(it) })
+            newChapters = kept
+            // 截掉的那几章：用它们所在卷的卷摘要盖住，不让梗概只剩最近几十章（过期的卷摘要也比什么都没有强）。
+            val dropped = candidates.take(candidates.size - kept.size)
+            val fill = dropped.mapNotNull { volumeOfChapter[it.id] }.filter { digests.volumes[it.id] != null }
+            val used = (byVolume + fill).map { it.id }.toSet()
+            pastVolumes = work.volumes.filter { it.id in used }.map { v -> v.title to digests.volumes.getValue(v.id).text }
+        }
+        fun dueChapters(volume: Volume, past: Boolean): List<WorkChapter>? {
+            val d = digests.volumes[volume.id]
+            if (d?.edited == true) return null
             val with = volume.chapters.filter { summaryOf(it).isNotEmpty() }
-            val complete = volume.chapters.isNotEmpty() && with.size == volume.chapters.size
-            val done = digests.volumes[volume.id]?.chapters.orEmpty()
+            // 往卷算写完了：没写摘要的章补不上，有摘要的都汇总进去就行。
+            val complete = past || volume.chapters.isNotEmpty() && with.size == volume.chapters.size
+            val done = d?.chapters.orEmpty()
             val due = when {
                 with.isEmpty() -> false
-                digests.volumes[volume.id]?.stale == true -> true
+                d?.stale == true -> true
                 complete && with.size >= VOLUME_MIN -> done.toSet() != with.map { it.id }.toSet()
                 with.size < VOLUME_EVERY -> false
                 else -> with.size - done.size >= VOLUME_EVERY
             }
-            if (due) volumeJob = Triple(volume, with, complete)
+            return with.takeIf { due }
         }
+        val current = work.volumes.getOrNull(vi)
+        val volumeJob: Pair<Volume, List<WorkChapter>>? = current?.let { v -> dueChapters(v, past = false)?.let { v to it } }
+            ?: work.volumes.take(maxOf(vi, 0)).asReversed().firstNotNullOfOrNull { v -> dueChapters(v, past = true)?.let { v to it } }
         return DigestJob(
             story = wantStory && newChapters.isNotEmpty(),
             oldStory = if (wantStory) old?.text.orEmpty() else "",

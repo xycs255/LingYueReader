@@ -9,14 +9,17 @@ data class CascadeCheck(val recheck: List<LedgerEntry>, val affected: List<Pair<
 data class CascadeReport(
     val recheck: Int = 0,
     val affected: Int = 0,
+    /** 原句找不到了、却没能在账本里标上待复核的条数（账本写不进去）。 */
+    val recheckFailed: Int = 0,
     val summary: Boolean = false,
     val story: Boolean = false,
     val volume: Boolean = false,
 ) {
-    val isEmpty: Boolean get() = recheck == 0 && affected == 0 && !summary && !story && !volume
+    val isEmpty: Boolean get() = recheck == 0 && recheckFailed == 0 && affected == 0 && !summary && !story && !volume
 
     fun message(title: String): String = buildList {
         if (recheck > 0) add("$recheck 条账本依据找不到了，标了待复核")
+        if (recheckFailed > 0) add("$recheckFailed 条账本依据找不到了，但账本没写进去、没标上待复核，去账本里核一下")
         val stale = listOfNotNull("摘要".takeIf { summary }, "故事至今".takeIf { story }, "卷摘要".takeIf { volume })
         if (stale.isNotEmpty()) add(stale.joinToString("、") + "标了过期，下次收尾时重新整理")
         if (affected > 0) add("后面 $affected 条账本条目可能受影响，挂在变更登记的待同步里")
@@ -40,14 +43,30 @@ object FinalCascade {
     /** 变更登记里最多挂几条：再多也看不过来，多的合成一条说还有几条。 */
     const val MAX_CHANGES = 10
 
-    /** 原句还在不在正文里：规范化后包含，或者和正文里某一句足够像（改了一两个字、换了标点）。 */
+    /**
+     * 原句还在不在正文里：整段原样在（规范化后），或者按句子核对：原句的每一句都在正文里，或者和正文里某一句足够像（改了一两个字、换了标点）。
+     * 像不像只按原句这一句的字算（两个字一组，原句这句的有多少留在正文那句里）：正文里一个短句恰好是原句的一部分，不算原句还在。
+     */
     fun quoteKept(text: String, quote: String): Boolean {
         val q = ChapterSyncs.normalize(quote).trim('"', '\'')
         if (q.isEmpty()) return true
-        val t = ChapterSyncs.normalize(text)
-        if (q in t) return true
-        return text.split(Regex("(?<=[。！？!?…])|\\n")).map { it.trim() }.filter { it.length >= 2 }
-            .any { ForeshadowMoves.similarity(it, quote) >= KEEP }
+        if (q in ChapterSyncs.normalize(text)) return true
+        val t = bare(text)
+        val lines = sentences(text).map(::bare).filter { it.length >= 2 }
+        return sentences(quote).map(::bare).filter { it.length >= 2 }.all { qs ->
+            qs in t || lines.any { coverage(qs, it) >= KEEP }
+        }
+    }
+
+    private fun sentences(s: String) = s.split(Regex("(?<=[。！？!?…])|\\n"))
+
+    /** 比句子用的写法：规范化，去掉标点和引号。 */
+    private fun bare(s: String) = ChapterSyncs.normalize(s).replace(Regex("[\\p{P}\\p{S}]"), "")
+
+    /** 原句的一句 [q] 有多少（两个字一组）留在正文的一句 [line] 里。 */
+    private fun coverage(q: String, line: String): Double {
+        val gq = q.windowed(2).toSet()
+        return (gq intersect line.windowed(2).toSet()).size.toDouble() / gq.size
     }
 
     fun check(text: String, chapterId: String, chapterNo: Int, ledger: List<LedgerEntry>): CascadeCheck {
@@ -110,13 +129,21 @@ fun WorkStore.cascadeFinal(workId: String, chapterId: String): CascadeReport {
     val ledger = runCatching { ledger(workId) }.getOrDefault(emptyList())
     val found = FinalCascade.check(text, chapterId, number, ledger)
     var report = CascadeReport()
-    if (found.recheck.isNotEmpty()) runCatching {
-        applyLedger(workId, found.recheck.map { LedgerOp.Update(it.copy(recheck = true), expected = it) }, "改定稿后核对第 $number 章")
-        report = report.copy(recheck = found.recheck.size)
+    // 真标上了的才算：账本在读和写之间被别处改过（[LedgerConflict]）就重读一遍再标一次；还是写不进去，照实报没标上。
+    var marked = emptyList<LedgerEntry>()
+    if (found.recheck.isNotEmpty()) {
+        fun mark(list: List<LedgerEntry>) = list.also { applyLedger(workId, it.map { e -> LedgerOp.Update(e.copy(recheck = true), expected = e) }, "改定稿后核对第 $number 章") }
+        runCatching { mark(found.recheck) }
+            .recoverCatching { mark(FinalCascade.check(text, chapterId, number, ledger(workId)).recheck) }
+            .onSuccess { marked = it; report = report.copy(recheck = it.size) }
+            .onFailure { report = report.copy(recheckFailed = found.recheck.size) }
     }
     runCatching {
         val card = card(workId, chapterId)
-        if (card.summary.isNotBlank() && !card.summaryStale) {
+        // 解锁以后摘要换过（收尾时写了新摘要）：新摘要按改后的正文写，不标过期。旧登记没记摘要指纹的照旧标。
+        val unlock = changes(workId).filter { it.chapterId == chapterId && it.kind == ChangeKind.UNLOCK }.maxByOrNull { it.at }
+        val rewritten = unlock?.summaryHash != null && unlock.summaryHash != ChapterSyncs.hash(card.summary)
+        if (card.summary.isNotBlank() && !card.summaryStale && !rewritten) {
             updateCard(workId, chapterId) { it.copy(summaryStale = true) }
             report = report.copy(summary = true)
         }
@@ -142,8 +169,12 @@ fun WorkStore.cascadeFinal(workId: String, chapterId: String): CascadeReport {
     }
     val now = System.currentTimeMillis()
     runCatching {
-        if (found.recheck.isNotEmpty()) addChange(workId, ChangeEntry(WorkStore.newId(), now, ChangeKind.CASCADE, chapterId, chapter.title,
-            "第 $number 章定稿后又改过：这一章记进账本的 ${found.recheck.size} 条，原句在正文里找不到了，已在账本里标“待复核”：" +
+        if (marked.isNotEmpty()) addChange(workId, ChangeEntry(WorkStore.newId(), now, ChangeKind.CASCADE, chapterId, chapter.title,
+            "第 $number 章定稿后又改过：这一章记进账本的 ${marked.size} 条，原句在正文里找不到了，已在账本里标“待复核”：" +
+                marked.take(5).joinToString("；") { it.text.take(30) } + if (marked.size > 5) "……" else "",
+            canon = true))
+        else if (report.recheckFailed > 0) addChange(workId, ChangeEntry(WorkStore.newId(), now, ChangeKind.CASCADE, chapterId, chapter.title,
+            "第 $number 章定稿后又改过：这一章记进账本的 ${found.recheck.size} 条，原句在正文里找不到了，但账本没写进去，没能标“待复核”，请到账本里逐条核对：" +
                 found.recheck.take(5).joinToString("；") { it.text.take(30) } + if (found.recheck.size > 5) "……" else "",
             canon = true))
         found.affected.take(FinalCascade.MAX_CHANGES).forEach { (later, own) ->
