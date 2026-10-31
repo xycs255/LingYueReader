@@ -93,8 +93,7 @@ fun AiScreen(vm: AppViewModel) {
         ) {
             item {
                 GroupedSection(
-                    footer = "开启后，划选文字、查词、生词本和阅读菜单里会出现 AI 功能：解释选文、AI 释义、前情提要、问这本书、人物表、读书笔记、整章翻译。" +
-                        "只有你点这些功能时才联网，把选中的文字（前情提要和问这本书是读过部分里的相关原文）发给下面的服务商，不发送后面没读的内容。关闭时灵阅不联网。",
+                    footer = "开启后，选文、查词、生词本和阅读菜单里出现 AI 功能。只在你点这些功能时联网，只发选中的文字和读过的部分；关着不联网。",
                 ) {
                     row {
                         ToggleRow("启用 AI 服务", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
@@ -102,23 +101,24 @@ fun AiScreen(vm: AppViewModel) {
                         }
                     }
                 }
-                GroupedSection(header = "服务商", footer = "用你自己的账号和密钥，费用按服务商的价格计。模型名可以改成同一家的其他模型。") {
-                    AiPresets.ALL.forEach { p ->
-                        row {
-                            CheckRow(
-                                p.label,
-                                config.preset == p.id,
-                                subtitle = when (p.id) {
-                                    AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务"
-                                    AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等"
-                                    AiPresets.DEVICE -> if (DeviceModels.supported) "在这台手机上算，不联网" else "这台手机用不了（要 64 位的手机）"
-                                    else -> if (config.preset == p.id) config.model.ifBlank { "尚未选择模型" } else p.model
-                                },
-                                enabled = p.id != AiPresets.DEVICE || DeviceModels.supported,
-                            ) {
-                                update(config.withPreset(p))
-                                result = null
-                            }
+                // 服务商是一行下拉（以前八个服务商的勾选列表占了大半屏，要往下翻才看得到密钥）；选中的那家怎么用写在组下面。
+                GroupedSection(
+                    header = "服务商",
+                    footer = when (config.preset) {
+                        AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务，用你自己的账号和密钥。"
+                        AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等，不出局域网。"
+                        AiPresets.DEVICE -> "在这台手机上算，不联网、不花钱。"
+                        else -> "用你自己的账号和密钥，费用按服务商的价格计。模型名可以改成同一家的其他模型。"
+                    },
+                ) {
+                    row {
+                        // 这台手机跑不了本机模型时不列出来（已经选着的照旧显示）。
+                        val options = AiPresets.ALL
+                            .filter { it.id != AiPresets.DEVICE || DeviceModels.supported || config.preset == AiPresets.DEVICE }
+                            .map { it.id to it.label }
+                        PickerRow("服务商", options, config.preset) { id ->
+                            update(config.withPreset(AiPresets.of(id)))
+                            result = null
                         }
                     }
                 }
@@ -128,8 +128,7 @@ fun AiScreen(vm: AppViewModel) {
                 if (config.preset == AiPresets.DEEPSEEK) {
                     GroupedSection(
                         header = "DeepSeek V4 系列",
-                        footer = "Pro 适合长篇创作，Flash 适合较快、较省的日常辅助。选择型号会更改下方模型名，费用由 DeepSeek 收取。" +
-                            "模型公布的上下文容量为 1M token；灵阅目前仍按 128K token 估算写作资料预算，不能据此保证整份项目包都已送入模型。",
+                        footer = "Pro 适合长篇创作，Flash 更快更省。写作资料预算仍按 128K token 估算，不保证整份项目包都送进模型。",
                     ) {
                         row {
                             CheckRow("V4 Pro", config.model == AiPresets.DEEPSEEK_V4_PRO,
@@ -184,7 +183,7 @@ fun AiScreen(vm: AppViewModel) {
                                 enabled = editableUrl,
                                 textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
                         row {
@@ -194,7 +193,7 @@ fun AiScreen(vm: AppViewModel) {
                                 label = "模型",
                                 singleLine = true,
                                 textStyle = mono,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
                         row {
@@ -216,7 +215,7 @@ fun AiScreen(vm: AppViewModel) {
                                         )
                                     }
                                 },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
                     }
@@ -262,8 +261,7 @@ fun AiScreen(vm: AppViewModel) {
                 }
                 GroupedSection(
                     header = "问这本书",
-                    footer = "填写后，每次提问最多为关键词前 30 段和最近 10 段生成向量；首次最多发送 40 段（分 4 批）和 1 次问题向量请求，超出的段落不参与本次向量检索。" +
-                        "服务商可能按请求或文字量收费；新段落按书缓存，后续只补缺失的向量。需要 embeddings 接口，例如通义千问 text-embedding-v4、智谱 embedding-3、Ollama 的 nomic-embed-text。留空仅按关键词找。",
+                    footer = "填了就给相关段落生成向量、按意思找原文（要服务商的 embeddings 接口，可能另收费）；留空只按关键词找。",
                 ) {
                     row {
                         GroupedTextField(
@@ -272,7 +270,7 @@ fun AiScreen(vm: AppViewModel) {
                             label = "向量模型（可不填）",
                             singleLine = true,
                             textStyle = mono,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
                 }
@@ -292,11 +290,11 @@ fun AiScreen(vm: AppViewModel) {
             var label by remember(i) { mutableStateOf(q?.label.orEmpty()) }
             var instruction by remember(i) { mutableStateOf(q?.instruction.orEmpty()) }
             GlassDialog(show = true, title = if (q == null) "添加快捷问题" else "修改快捷问题", onDismissRequest = { editing = null }) {
-                GroupedTextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字（如“讲人物”）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字，比如：讲人物", singleLine = true, modifier = Modifier.fillMaxWidth())
                 GroupedTextField(
                     value = instruction,
                     onValueChange = { instruction = it },
-                    label = "对 AI 的要求（如“讲讲这段里的人物关系”）",
+                    label = "对 AI 的要求，比如：讲讲这段里的人物关系",
                     minLines = 3,
                     modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                 )
@@ -374,10 +372,10 @@ private fun SpeechSection(
                 singleLine = true,
                 enabled = editableUrl,
                 textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
-        row { GroupedTextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+        row { GroupedTextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
         row {
             GroupedTextField(
                 value = sp.apiKey,
@@ -397,21 +395,21 @@ private fun SpeechSection(
                         )
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
         if (preset.voices.isNotEmpty()) {
             row { PickerRow("声音", preset.voices, sp.voice) { setSpeech(sp.copy(voice = it)) } }
         } else {
-            row { GroupedTextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+            row { GroupedTextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
         }
         if (preset.instructions) {
             row {
                 GroupedTextField(
                     value = sp.instructions,
                     onValueChange = { setSpeech(sp.copy(instructions = it)) },
-                    label = "朗读风格（可不填，如“像讲故事一样，语气温和”）",
-                    modifier = Modifier.fillMaxWidth(),
+                    label = "朗读风格（可不填），比如：像讲故事一样，语气温和",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
         }

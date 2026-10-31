@@ -9,7 +9,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.PaddingValues
@@ -526,8 +525,8 @@ private fun MiniCover(title: String) {
             title.take(6).toList().joinToString("\n"),
             color = if (c.dark) Color(0xFFE6DCC4) else Color(0xFF2B2620),
             fontFamily = FontFamily.Serif,
-            fontSize = 9.sp,
-            lineHeight = 10.sp,
+            fontSize = 9.sp, // 书脊上的竖排小字
+            lineHeight = 10.sp, // 同上
             textAlign = TextAlign.Center,
             modifier = Modifier.clearAndSetSemantics { },
         )
@@ -556,7 +555,8 @@ private fun SummaryBar(s: SummaryControls) {
                 Text("停止", color = c.tint, fontSize = TypeScale.Caption, modifier = Modifier.clip(RoundedCornerShape(Radius.Small)).clickable(onClick = s.onCancel).padding(8.dp))
             }
         } else {
-            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 放不下时左右滑，露不全的那边边缘渐隐，不再被侧栏右边直接切掉。
+            FadingScrollRow(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("AI 速读", color = c.secondary, fontSize = TypeScale.Caption)
                 com.xycs.lingyuereader.ai.SummaryRange.entries.forEach { r ->
                     val (count, chars) = s.estimate(r)

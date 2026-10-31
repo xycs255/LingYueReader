@@ -379,8 +379,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.LEARN in run.wrote
         GroupedSection(
             header = "从改稿里学到的",
-            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提，" +
-                "AI 归纳的点了“不要”才不再提。都能在作品 AI 设置里看、删。",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，AI 以后照着写；没勾的不再提。都能在写作 AI 里看、删。",
         ) {
             run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
             if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }

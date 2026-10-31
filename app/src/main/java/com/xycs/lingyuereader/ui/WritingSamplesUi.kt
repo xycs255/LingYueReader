@@ -53,10 +53,7 @@ private fun rememberStylePick(vm: AppViewModel, workId: String, assist: WorkAssi
 internal fun StyleSamplesSection(vm: AppViewModel, workId: String, assist: WorkAssist) {
     GroupedSection(
         header = "文风范例",
-        footer = "从你标了“定稿”的章里挑几段——一段叙述描写、一段对白多的、一段动作场面，每段 200–500 字——放进发给 AI 的内容里当范例。" +
-            "AI 写、AI 写整章草稿、润色、更生动、扩写、缩写、按要求改时照着学句式、节奏、用词和对白方式，不照抄内容；挑错、写作建议、审稿不带。" +
-            "写第 N 章时只从它前面的章里挑，不会剧透。本机模型只带三分之一。在本机挑，同样的定稿章挑出同样的几段（开头不变，服务商能缓存）。" +
-            "最多带多少字、挑了哪几段在下面。",
+        footer = "从定稿的章里挑几段叙述、对白、动作当范例，AI 写和改稿时学句式和节奏、不抄内容；写第 N 章只从前面的章挑。",
     ) {
         row {
             ToggleRow("用定稿章当文风范例", assist.sampleLimit > 0) { on ->

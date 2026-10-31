@@ -479,8 +479,7 @@ fun ChapterCardScreen(vm: AppViewModel, workId: String, chapterId: String) {
                         )
                         GroupedSection(
                             header = "写完以后",
-                            footer = "本章摘要：写后面的章时当前情带给 AI（最近 ${ChapterBriefs.RECENT_SUMMARIES} 章，以及更早写到出场人物的章；往卷有卷摘要时用卷摘要），AI 就知道前面写了什么。收尾时还会顺带汇总卷摘要和“故事至今”。" +
-                                "可以自己写，也可以让 AI 概括正文再改。",
+                            footer = "写后面的章时当前情带给 AI，收尾时也汇总进卷摘要和“故事至今”。可以自己写，也可以让 AI 概括正文再改。",
                         ) {
                             row {
                                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {

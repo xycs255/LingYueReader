@@ -104,6 +104,8 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
         snackbar = snackbar,
     ) { padding ->
         val c = LocalGroupedColors.current
+        // 正文照原来的缩进留着（包一层，免得整段重排）。
+        run {
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -114,8 +116,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     // 组名只是标签，不写条数（规范：组名不写状态）；每份规则文档读懂几条写在“编辑规则”那行右边。
                     GroupedSection(
                         header = "规则",
-                        footer = "规则写在设定包的“检查规则”文档里，每行一条，比如“字数：3000-6000”“至多 1：点了点头、顿了顿／一顿”“禁用：您”“句式：不是……而是……”“短段：12 字以内至多 5 处”。" +
-                            "灵阅在本机检查，不联网。",
+                        footer = "规则写在设定包的“检查规则”文档里，一行一条，比如“字数：3000-6000”“禁用：您”。在本机检查，不联网。",
                     ) {
                         if (set != null && set.isEmpty && set.unknown.isEmpty()) {
                             row { EmptyRow("还没有规则。") }
@@ -215,6 +216,7 @@ fun WorkRulesScreen(vm: AppViewModel, workId: String) {
                     vm.writing.saveRules(workId, edited) { vm.showMessage("已存进设定包的“${it.title}”") }
                 }
             }
+        }
     }
 }
 

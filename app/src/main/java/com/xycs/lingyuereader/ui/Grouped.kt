@@ -1016,7 +1016,7 @@ internal fun <T> SegmentedControl(
                     .offset { IntOffset((3.dp + cell * position).roundToPx(), 0) }
                     .width(cell)
                     .height(height - 6.dp)
-                    .clip(RoundedCornerShape(height * 0.35f - 3.dp))
+                    .clip(RoundedCornerShape(height * 0.35f - 3.dp)) // 选中格比底槽每边缩 3dp，圆角跟着少 3dp
                     .background(c.segment),
             )
         }
@@ -1321,7 +1321,8 @@ internal fun GroupedTextField(
     minLines: Int = 1,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
-    val c = LocalGroupedColors.current
+    // 书架的搜索框这类不在设置页配色里的地方也能用：没提供时按主题现算一套。
+    val c = currentGroupedColorsOrTheme()
     val source = remember { MutableInteractionSource() }
     BasicTextField(
         value = value,
@@ -1364,7 +1365,8 @@ internal fun GroupedTextField(
     minLines: Int = 1,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
-    val c = LocalGroupedColors.current
+    // 书架的搜索框这类不在设置页配色里的地方也能用：没提供时按主题现算一套。
+    val c = currentGroupedColorsOrTheme()
     val source = remember { MutableInteractionSource() }
     BasicTextField(
         value = value,
@@ -1403,7 +1405,7 @@ private fun FieldDecoration(
     trailingIcon: (@Composable () -> Unit)?,
     inner: @Composable () -> Unit,
 ) {
-    val c = LocalGroupedColors.current
+    val c = currentGroupedColorsOrTheme()
     val focused by source.collectIsFocusedAsState()
     val border by animateColorAsState(if (focused && enabled) c.tint else c.tint.copy(alpha = 0f), Motion.standard(Motion.SHORT), label = "fieldBorder")
     val shape = RoundedCornerShape(Radius.Medium)

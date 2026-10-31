@@ -156,7 +156,7 @@ fun ChapterSyncScreen(vm: AppViewModel, workId: String) {
 @Composable
 private fun SyncHead(vm: AppViewModel, session: SyncSession?, lookup: String?) {
     if (session == null) {
-        GroupedSection { row { EmptyRow("没有在整理的章节。") } }
+        EmptyState(LingYueIcons.Download, "没有在整理的章节", "定稿以后可以把这一章整理进设定包和账本。")
         return
     }
     val dropped = session.results.sumOf { it.dropped }

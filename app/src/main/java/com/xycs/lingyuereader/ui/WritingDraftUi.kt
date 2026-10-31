@@ -451,8 +451,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     val written = draft?.beats?.takeIf { it.total == beatList.size && text.isNotBlank() }?.written ?: 0
                     GroupedSection(
                         header = "节拍",
-                        footer = "本章有节拍：写本章时一拍一拍地写，每拍写完存一次候选稿。中途停下或出错，“接着写”从下一拍开始；" +
-                            "各拍写完再照常审读。节拍在细纲卡里改（上面“编辑细纲卡”）。",
+                        footer = "本章有节拍：一拍一拍地写，每拍存一次候选稿，中途停下“接着写”从下一拍开始。节拍在细纲卡里改。",
                     ) {
                         beatList.forEach { b ->
                             row {

@@ -805,6 +805,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
         onBack = { vm.back() },
     ) { padding ->
         val c = LocalGroupedColors.current
+        // 正文照原来的缩进留着（包一层，免得整段重排）。
+        run {
             LazyColumn(
                 Modifier.fillMaxSize().overScrollVertical(),
                 contentPadding = PaddingValues(top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 32.dp),
@@ -813,8 +815,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                 item {
                     // 首屏只放最常调的：能不能写（服务商）、怎么写（温度、先思考、口味、文风）、别写什么（黑名单、学到的）、一键写本章的准备。
                     GroupedSection(
-                        footer = "在编辑器底栏“写”里：“AI 写…”从光标处写正文，“改稿”润色、扩写、缩写、挑错、读者点评，问主意在“灵感”里；" +
-                            "前后矛盾在“查”里的“三道审稿”事实关查。结果先给你看，点“采纳”才改稿。按章挑出的本章资料会带给 AI。",
+                        footer = "在编辑器底栏“写”里让 AI 写、改稿，问主意在“灵感”里；结果先给你看，点“采纳”才改稿。",
                     ) {
                         row {
                             if (ai.ready) ValueRow("服务商", "${ai.providerLabel} · ${ai.model}", icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai)
@@ -823,8 +824,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "写正文",
-                        footer = "温度越高越不套路，也越容易跑偏。这两项只影响写正文和改稿（AI 写、AI 写整章草稿、项目包流程的修订、润色扩写这类），审稿、整理不受影响；" +
-                            "推理和思考模式的模型可能不认温度。",
+                        footer = "温度越高越不套路，也越容易跑偏；只影响写正文和改稿，审稿、整理不受影响。",
                     ) {
                         row { NavRow("写正文的温度", value = temperatureLabel(assist.temperature)) { temperatureOpen = true } }
                         row {
@@ -838,7 +838,8 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                             GroupedTextField(
                                 value = flavor,
                                 onValueChange = { flavor = it },
-                                label = FLAVOR_EXAMPLE,
+                                // 示例写成“比如：……”，不像是作者已经填过的一句。
+                                label = "比如：$FLAVOR_EXAMPLE",
                                 useLabelAsPlaceholder = true,
                                 modifier = Modifier.fillMaxWidth().padding(12.dp).heightIn(min = 64.dp, max = 160.dp),
                             )
@@ -846,8 +847,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     }
                     GroupedSection(
                         header = "AI 腔",
-                        footer = "“我的黑名单”里的说法正文里出现就标出（对白里也算），AI 写的时候一个都不用。" +
-                            "“从改稿学到的”是收尾时从你的改稿里学到、你勾过的写法规则，AI 写正文、改稿时照着写。",
+                        footer = "黑名单里的说法正文里出现就标出、AI 不用；“从改稿学到的”是收尾时学到的写法，AI 照着写。",
                     ) {
                         row {
                             NavRow("我的黑名单", value = if (assist.banned.isEmpty()) "空" else "${assist.banned.size} 条") {
@@ -901,6 +901,7 @@ fun WorkAiScreen(vm: AppViewModel, workId: String) {
                     TextButton(text = "取消", onClick = { temperatureOpen = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 }
             }
+        }
     }
 }
 
@@ -927,10 +928,7 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
             item {
                 GroupedSection(
                     header = "带多少资料",
-                    footer = "知识库（设定包里标了“常用”的文档）整份放进每次请求，最多放多少字。按模型：按选的服务商的上下文算" +
-                        "（DeepSeek、通义千问、Kimi 约 10 万字，Claude 约 10 万字）。放不下的从最大的一份起改成 AI 按需查；" +
-                        "放得越多，AI 越不用查，但每次请求越大。DeepSeek 会尝试缓存相同的开头，实际命中以用量记录为准。" +
-                        "本章资料字数上限也影响联网项目写作；本机模型不能自己查，会按章挑着带。设定包页顶上能看到现在每次带多少、哪几份放不下。",
+                    footer = "设定包里“常用”的文档整份带给 AI，这里定最多带多少字；放不下的从最大的一份起改成按需查。设定包页顶上看得到每次带多少。",
                 ) {
                     row {
                         PickerRow(
@@ -959,11 +957,7 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
                 }
                 GroupedSection(
                     header = "写作建议",
-                    footer = "开启后，你停笔几秒，灵阅会把打开这一章以后新写或改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）连同设定包发给上面的 AI 服务商，" +
-                        "按勾选的几类挑问题，在正文里划线标出；光标点到划线处看建议，采纳才改。规范、口吻要设定包里有依据，拿不准的不提；和设定对不上的在“三道审稿”的事实关里查；" +
-                        "只查错字时不带设定包；本机模型只查错字。检查规则不合的地方在本机标出，不花钱。按服务商的价格计费。" +
-                        "开了“写作时给建议”，下面两项才用得上：停笔后两次检查之间至少隔多久、一天最多查几次。" +
-                        "只对《${work?.title.orEmpty()}》生效；关着时不会自动发送任何内容。",
+                    footer = "停笔几秒后，把新写、改过的段落（每次最多 ${com.xycs.lingyuereader.WritingAi.REALTIME_BATCH} 段）发给 AI 挑问题、划线标出，采纳才改。只对《${work?.title.orEmpty()}》生效，关着不发送。",
                 ) {
                     row {
                         // 开了以后下面带出几行“查某类”，都不带图标，这一行也不带。
@@ -993,8 +987,7 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
                 }
                 GroupedSection(
                     header = "学你的改法",
-                    footer = "你采纳过的修改会记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时挑几条给 AI 当例子，改得更像你；" +
-                        "没采纳的改法记下最近 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。只存在这台手机上（随灵阅备份）。",
+                    footer = "采纳过的改法记下最近 ${WorkAssist.KEEP_EXAMPLES} 条，润色时给 AI 当例子；没采纳的记 ${WorkAssist.KEEP_REJECTED} 条，告诉 AI 别这样改。",
                 ) {
                     row { ValueRow("记住的采纳", "${assist.accepted.size} 条") }
                     row { ValueRow("记住的没采纳", "${assist.declined.size} 条") }
@@ -1005,8 +998,7 @@ fun WorkAiAdvancedScreen(vm: AppViewModel, workId: String) {
                 }
                 GroupedSection(
                     header = "记录",
-                    footer = "“AI 用量”按天、按功能记这部作品花了多少（只有数字）。" +
-                        "“发给 AI 的内容”是最近一次请求的原文：系统提示、带上的设定资料和要求，想知道 AI 为什么这样写时看看；也写着这次用了多少 token、约多少钱。",
+                    footer = "“AI 用量”按天、按功能记这部作品花了多少；“发给 AI 的内容”是最近一次请求的原文和用了多少。",
                 ) {
                     // 同一张卡片里的行要么都带图标、要么都不带：这几行都不带。
                     row {
@@ -1102,8 +1094,7 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
             item(key = "add") {
                 GroupedSection(
                     header = "加一条",
-                    footer = "写进来的说法，正文里出现就标出来（对白里也算），AI 写正文、改稿时一个都不用。" +
-                        "最多记 ${WorkAssist.KEEP_BANNED} 条，满了丢最早加的。在编辑器里点到标出的 AI 腔，点“以后都不要”也能加。",
+                    footer = "正文里出现就标出来，AI 写正文、改稿时一个都不用。最多记 ${WorkAssist.KEEP_BANNED} 条；编辑器里点 AI 腔的“以后都不要”也能加。",
                 ) {
                     row {
                         GroupedTextField(
@@ -1115,12 +1106,13 @@ fun WorkBannedScreen(vm: AppViewModel, workId: String) {
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                         )
                     }
-                    row { ActionRow("加入黑名单", enabled = canAdd) { add() } }
+                    row { ActionRow("加入黑名单", enabled = canAdd, disabledHint = if (input.isBlank()) "先在上面填一个说法" else "这个说法已经在黑名单里了") { add() } }
                 }
             }
             item(key = "list") {
+                // 一条都没有时整块用空状态，不在卡片里只放一行“还没有”。
+                if (banned.isEmpty()) EmptyState(LingYueIcons.Warning, "黑名单还是空的", "不想在正文里再看到的说法，加进来以后会标出来。")
                 GroupedSection(header = if (banned.isEmpty()) null else "${banned.size} 条") {
-                    if (banned.isEmpty()) row { EmptyRow("还没有。") }
                     banned.asReversed().forEach { b ->
                         row {
                             GroupedRow {
@@ -1164,9 +1156,7 @@ fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
             item(key = "add") {
                 GroupedSection(
                     header = "加一条",
-                    footer = "写一句写法要求（比如“对白后面不要再解释人物的心思”），AI 写正文、改稿时照着写，审稿、拟细纲、整理不用。" +
-                        "带最近的 ${WorkAssist.PROMPT_LEARNED} 条，最多记 ${WorkAssist.KEEP_LEARNED} 条，满了丢最早的。" +
-                        "“这章写完了”时勾上“从这章的改稿里学”，学到的你勾了也记在这里。",
+                    footer = "AI 写正文、改稿时照着写，带最近的 ${WorkAssist.PROMPT_LEARNED} 条、最多记 ${WorkAssist.KEEP_LEARNED} 条。“这章写完了”时学到的你勾了也记在这里。",
                 ) {
                     row {
                         GroupedTextField(
@@ -1178,12 +1168,12 @@ fun WorkLearnedScreen(vm: AppViewModel, workId: String) {
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                         )
                     }
-                    row { ActionRow("加进去", enabled = canAdd) { add() } }
+                    row { ActionRow("加进去", enabled = canAdd, disabledHint = if (input.isBlank()) "先在上面写一条规则" else "这一条已经有了") { add() } }
                 }
             }
             item(key = "list") {
+                if (learned.isEmpty()) EmptyState(LingYueIcons.Bulb, "还没有学到的写法", "比如“对白后面不要再解释人物的心思”，加进来以后 AI 照着写。")
                 GroupedSection(header = if (learned.isEmpty()) null else "${learned.size} 条") {
-                    if (learned.isEmpty()) row { EmptyRow("还没有。") }
                     learned.asReversed().forEach { r ->
                         row {
                             GroupedRow {

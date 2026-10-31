@@ -281,8 +281,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
         ) {
             item(key = "typing") {
                 GroupedSection(
-                    footer = "打出 ... 或第三个点变成“……”，-- 变成“——”；汉字后面紧跟着打的半角 , . ? ! : ; 换成全角（数字后面的点不换，好打小数）；" +
-                        "\" ' 按这一段里的配对变成开引号或闭引号。拼音还没上屏时不动；换得不对，点一次撤销就回到换之前。键盘上方的快捷标点照旧。",
+                    footer = "打 ... 变“……”、-- 变“——”，汉字后面的半角标点换成全角，引号按配对变；换得不对点一次撤销。",
                 ) {
                     row { ToggleRow("输入时自动排版", f.onInput, subtitle = "边打边把标点换成中文的样子") { on -> update { it.copy(onInput = on) } } }
                 }
@@ -295,8 +294,7 @@ fun WorkFormatSettingsScreen(vm: AppViewModel, workId: String) {
             }
             item(key = "more") {
                 GroupedSection(
-                    footer = "编辑器“整理 → 自动排版”和作品页“排版…”（全书排版）按这些规则排：先列出改了哪些，可以按类勾掉再排；" +
-                        "排之前存一个历史版本，排版改的不算码字数。“***”“——”这类单独一行的场景分隔原样不动。",
+                    footer = "编辑器“整理 → 自动排版”和全书排版照这些规则排；排之前存一个历史版本，场景分隔行原样不动。",
                 ) {
                     row { ExpandRow("更多排版规则", moreOpen, value = if (moreOpen) null else "$FORMAT_MORE_RULES 项") { moreOpen = !moreOpen } }
                 }
@@ -429,7 +427,7 @@ fun WorkFormatScreen(vm: AppViewModel, workId: String) {
             val todo = p.chapters.filter { ch -> ch.result.changes.any { it.kind !in skip } }
             item(key = "summary") {
                 if (counts.isEmpty()) {
-                    GroupedSection(footer = title?.let { "《$it》按现在的排版设置不用改。" }) { row { EmptyRow("各章都排好了") } }
+                    EmptyState(LingYueIcons.Format, "各章都排好了", title?.let { "《$it》按现在的排版设置不用改。" })
                 } else {
                     GroupedSection(header = "共 $included 处 · ${todo.size} 章", footer = "关掉的这类不排。规则在右上角“设置”里改。") {
                         counts.forEach { (k, n) ->

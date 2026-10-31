@@ -229,6 +229,6 @@ class WritingClicheUiTest {
         waitForText("1 条")
         compose.onNodeWithContentDescription("从黑名单删去「说来话长」").performClick()
         waitFor { store.assist(workId).banned.isEmpty() }
-        waitForText("还没有。")
+        waitForText("黑名单还是空的")
     }
 }

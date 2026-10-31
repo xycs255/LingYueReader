@@ -119,9 +119,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
             if (p != null && (p.instructions.isNotEmpty() || p.knowledge.isNotEmpty() || p.onDemand.isNotEmpty())) {
                 GroupedSection(
                     header = "AI 拿到的设定包",
-                    footer = "照你在设定包里写的工作说明办：工作说明和知识库整份放在每次请求的最前面（文档不改就不变，DeepSeek 这类服务商会缓存，" +
-                        "后面几次便宜很多）；没整份给出的文档，AI 看目录自己读、按关键词搜，已写的章也能读全文。" +
-                        "知识库按模型的上下文最多放约 ${p.budget / 10_000} 万字，放不下时从最大的一份起改成按需查；上限可以在作品的 AI 设置里改。",
+                    footer = "照设定包里的工作说明办：工作说明和知识库（最多约 ${p.budget / 10_000} 万字）放在每次请求的最前面，放不下的 AI 按需查。",
                 ) {
                     p.instructions.forEach { d -> row { TwoLine(d.title, "工作说明 · 放在最前面") } }
                     p.knowledge.forEach { d -> row { TwoLine(d.title, "知识库 · 整份 · ${d.kind.label}") } }
@@ -173,8 +171,7 @@ fun ChapterBriefScreen(vm: AppViewModel, workId: String, chapterId: String) {
                     val rows = ledgerRows(s)
                     GroupedSection(
                         header = "故事账本 · 到第 ${s.chapter} 章为止",
-                        footer = "账本里到这一章为止的进展，放在前情后面带给 AI（约 ${b.ledgerText?.length ?: 0} 字，放不下的按离这一章远近省略）；" +
-                            "和察觉表、伏笔表重复的条目以账本为准，只有作者知道的另列，不进正文。",
+                        footer = "账本里到这一章的进展放在前情后面带给 AI（约 ${b.ledgerText?.length ?: 0} 字，远的先省）；和察觉表、伏笔表重复的以账本为准。",
                     ) {
                         rows.take(LEDGER_ROWS).forEach { r -> row { TwoLine(r.title, r.subtitle, trailing = r.tag?.let { t -> { Tag(t, c.warning) } }) } }
                         if (rows.size > LEDGER_ROWS) row { EmptyRow("还有 ${rows.size - LEDGER_ROWS} 条没列出") }

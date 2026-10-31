@@ -92,7 +92,8 @@ private fun Header(entry: BookEntry, vm: AppViewModel) {
     val c = LocalGroupedColors.current
     Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 20.dp)) {
         // 封面在左、书名作者进度在右：一眼看全，不用把一张大封面摆在正中占掉半屏。
-        Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        // 封面左缘和下面的主按钮、卡片对齐（都离屏幕边 12dp），不再多缩进 4dp。
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(96.dp)) {
                 BookCover(entry.title, entry.author.orEmpty(), cover = entry.cover?.let { vm.bookFile(entry.id, it) })
             }

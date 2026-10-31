@@ -66,6 +66,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -670,22 +671,30 @@ private fun ShelfItem(entry: BookEntry, vm: AppViewModel, modifier: Modifier = M
                 menu = true
             },
         )
-        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Text(entry.title, style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(
-                    shelfProgress(entry),
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = if (entry.progress != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    maxLines = 1,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-            Box {
-                // 看着是 18dp 的小“⋯”，能点的范围是整整 48dp（测试里量过），不用对准那几个点。
+        // 书名占满整格宽（最多两行），“⋯”挪到下面进度那一行的右边：以前和书名同排，长书名被挤成“长安的荔 / 枝”这样的断行。
+        Text(
+            entry.title,
+            style = MiuixTheme.textStyles.body2,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Box(Modifier.fillMaxWidth().height(20.dp)) {
+            Text(
+                shelfProgress(entry),
+                style = MiuixTheme.textStyles.footnote2,
+                color = if (entry.progress != null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.CenterStart).padding(end = 28.dp),
+            )
+            // 看着是 18dp 的小“⋯”，能点的范围是整整 48dp（测试里量过），不用对准那几个点；
+            // 比这一行高的部分伸到上下的留白里，不把格子撑高。
+            Box(Modifier.align(Alignment.CenterEnd).offset(x = 15.dp).requiredSize(48.dp)) {
                 Box(
                     Modifier
-                        .size(48.dp)
+                        .fillMaxSize()
                         .clip(Radius.Full)
                         .clickable(role = Role.Button) { menu = true }
                         .semantics { contentDescription = "操作" },

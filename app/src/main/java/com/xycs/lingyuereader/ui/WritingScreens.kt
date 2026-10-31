@@ -1785,7 +1785,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         },
                                 ) {
                                     if (current.text.isEmpty()) {
-                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp)
+                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp) // 和编辑器正文一样大
                                     }
                                     inner()
                                 }

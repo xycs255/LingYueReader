@@ -567,9 +567,9 @@ private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color,
             }
         } else {
             Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
-                Text(if (page == 0) "第一章" else "第二页", color = ink.copy(alpha = 0.6f), fontSize = 10.sp)
+                Text(if (page == 0) "第一章" else "第二页", color = ink.copy(alpha = 0.6f), fontSize = 10.sp)  // 迷你书页的字
                 Spacer(Modifier.height(9.dp))
-                Text(if (page == 0) "翻开故事" else "接着读下去", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(if (page == 0) "翻开故事" else "接着读下去", color = ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)  // 迷你书页的字
                 Spacer(Modifier.height(10.dp))
                 listOf(0.95f, 0.83f, 0.89f).forEach { width ->
                     Box(Modifier.fillMaxWidth(width).height(3.dp).clip(CircleShape).background(ink.copy(alpha = 0.22f)))
@@ -577,7 +577,7 @@ private fun PreviewPaper(page: Int, vertical: Boolean, paper: Color, ink: Color,
                 }
             }
         }
-        Text("0${page + 1}", color = ink.copy(alpha = 0.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp))
+        Text("0${page + 1}", color = ink.copy(alpha = 0.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp))  // 迷你书页的页码
     }
 }
 

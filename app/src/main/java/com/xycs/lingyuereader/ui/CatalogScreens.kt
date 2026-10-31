@@ -222,7 +222,7 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
                 footer = if (draft.insecure) "这是 http:// 地址，用户名和密码会明文传输，只建议在自己家的局域网里用。" else CatalogPresets.hint(kind),
             ) {
                 row {
-                    GroupedTextField(value = name, onValueChange = { name = it }, label = "名称（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                    GroupedTextField(value = name, onValueChange = { name = it }, label = "名称（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp))
                 }
                 row {
                     GroupedTextField(
@@ -232,13 +232,13 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
                         singleLine = true,
                         textStyle = mono,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                     )
                 }
             }
             GroupedSection(header = "账号", footer = "不需要登录的书目留空。密码只存在这台手机上，不进备份。") {
                 row {
-                    GroupedTextField(value = username, onValueChange = { username = it; result = null }, label = "用户名", singleLine = true, modifier = Modifier.fillMaxWidth())
+                    GroupedTextField(value = username, onValueChange = { username = it; result = null }, label = "用户名", singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp))
                 }
                 row {
                     GroupedTextField(
@@ -258,13 +258,18 @@ fun CatalogEditScreen(vm: AppViewModel, catalogId: String?) {
                                 )
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                     )
                 }
             }
             GroupedSection(footer = result) {
                 row {
-                    ActionRow(if (testing != null) "正在连接……" else "测试连接", enabled = valid && testing == null) {
+                    // 地址还不对时照样是强调色的按钮（淡一些），下面说为什么点不了；保存键同理，见下面的说明。
+                    ActionRow(
+                        if (testing != null) "正在连接……" else "测试连接",
+                        enabled = valid && testing == null,
+                        disabledHint = if (!valid) "先填好以 http:// 或 https:// 开头的地址" else null,
+                    ) {
                         result = null
                         testing = scope.launch {
                             result = try {

@@ -252,8 +252,7 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                     }
                     GroupedSection(
                         header = "整理与导入",
-                        footer = "数字小的优先：资料之间有冲突时，AI 以优先级高的为准，你在“写作 AI → 文风”里写的要求最优先。" +
-                            "“常用”的文档每次请 AI 都会带上（太长会截断），“按需”的先不带。",
+                        footer = "数字小的优先，资料冲突时以它为准；“常用”的每次都带给 AI，“按需”的用到时才带。",
                     ) {
                         row {
                             // 整理的时候右边转圈；整理完弹出建议。
@@ -367,8 +366,7 @@ private fun ImportPreview(items: List<PackImportItem>, existing: Set<String>, on
         .take(2).joinToString(" · ").take(140).ifBlank { "原文为空，请核对后再导入" }
     GroupedSection(
         header = "${items.size} 个文件",
-        footer = "按文件名自动归类，点一行可以改。同名的文档会被替换，旧的内容存进历史版本；这次导入的文件之间重名的加编号，都留着。" +
-            "“正文”会按章名拆开，接在最后一卷后面，重名的章同样加编号。",
+        footer = "按文件名自动归类，点一行可以改；同名的替换掉，旧的存进历史版本。“正文”按章名拆开，接在最后一卷后面。",
     ) {
         items.forEachIndexed { i, item ->
             val blank = item.text.isBlank()
@@ -623,6 +621,8 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
         contentWindowInsets = WindowInsets(0),
     ) { padding ->
         val c = LocalGroupedColors.current
+        // 正文照原来的缩进留着（包一层，免得整段重排）。
+        run {
             Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 if (current != null) {
                     BasicTextField(
@@ -664,5 +664,6 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
                     )
                 }
             }
+        }
     }
 }

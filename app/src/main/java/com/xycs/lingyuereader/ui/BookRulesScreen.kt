@@ -137,7 +137,7 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                             label = "分章正则",
                             singleLine = true,
                             textStyle = mono,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
                 }
@@ -221,8 +221,8 @@ fun BookRulesScreen(vm: AppViewModel, bookId: String) {
                             regex = t.regex
                         }
                     }
-                    row { GroupedTextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
-                    row { GroupedTextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth()) }
+                    row { GroupedTextField(value = pattern, onValueChange = { pattern = it }, label = "查找", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
+                    row { GroupedTextField(value = replacement, onValueChange = { replacement = it }, label = "替换为（留空即删除）", singleLine = true, textStyle = mono.copy(fontFamily = FontFamily.Default), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
                     row { ToggleRow("按正则匹配", regex) { regex = it } }
                     if (draftHeld) row { ActionRow("仍然试一下") { allowed = allowed + pattern } }
                     row {

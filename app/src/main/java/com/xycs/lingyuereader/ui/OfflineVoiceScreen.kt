@@ -115,15 +115,13 @@ fun OfflineVoiceScreen(vm: AppViewModel) {
                     }
                 }
                 GroupedSection(
-                    footer = "下载不了时，可以在电脑上打开 github.com/k2-fsa/sherpa-onnx/releases 的 tts-models，" +
-                        "下载 ${OfflineModels.ALL.joinToString(" 或 ") { it.id + ".tar.bz2" }}，拷到手机上再导入。",
+                    footer = "下载不了时，在电脑上从 github.com/k2-fsa/sherpa-onnx/releases 的 tts-models 下载 ${OfflineModels.ALL.joinToString(" 或 ") { it.id + ".tar.bz2" }}，拷到手机上再导入。",
                 ) {
                     row { ActionRow("从文件导入…", enabled = task == null) { picker.launch(arrayOf("*/*")) } }
                 }
                 GroupedSection(
                     header = "关于",
-                    footer = "引擎：sherpa-onnx（Apache-2.0）。模型：${OfflineModels.ALL.joinToString("、") { it.license }}。" +
-                        "模型占几百 MB 内存，闲置几分钟后自动释放。",
+                    footer = "引擎 sherpa-onnx（Apache-2.0），模型 ${OfflineModels.ALL.joinToString("、") { it.license }}；占几百 MB 内存，闲置几分钟后释放。",
                 ) {}
             }
         }

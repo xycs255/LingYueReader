@@ -196,7 +196,7 @@ fun WritingReferenceScreen(vm: AppViewModel, workId: String, initialChapterId: S
             overscrollEffect = null,
         ) {
             item(key = "source") {
-                GroupedSection(footer = "导入作者选择的 TXT 或 EPUB，分析其叙事与对白，再对照你正在写的章节给建议。范本独立保存，情节和人物不会写入本书设定。") {
+                GroupedSection(footer = "导入 TXT 或 EPUB，分析叙事和对白，对照你在写的章给建议；范本单独存，不写进本书设定。") {
                     row {
                         if (importing) LoadingRow("正在导入范本……")
                         else ActionRow("添加范本", enabled = !running) { pickFile.launch(arrayOf("*/*")) }

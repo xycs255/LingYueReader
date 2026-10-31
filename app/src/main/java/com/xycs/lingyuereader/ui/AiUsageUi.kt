@@ -157,8 +157,7 @@ fun AiUsageScreen(vm: AppViewModel, workId: String?) {
                 }
                 GroupedSection(
                     header = "提醒与换算",
-                    footer = "今天的花费超过提醒线时提示一次，不会自动停。用量只存在这台手机上（只有数字，不存发了什么），不进灵阅的备份；" +
-                        "最近 ${UsageBook.KEEP_DAYS} 天按天记，更早的并成按月的汇总。向量检索、AI 朗读和本机模型不计。",
+                    footer = "花费超过提醒线时提示一次，不会自动停。用量只存在这台手机上、不进备份；向量检索、朗读、本机模型不计。",
                 ) {
                     row {
                         PickerRow("每天花费提醒", DAILY_ALERTS.map { it to if (it == 0.0) "不提醒" else "超过 ¥${AiPricing.plain(it)}" }, config.dailyAlert.takeIf { it in DAILY_ALERTS } ?: 0.0) { v ->
