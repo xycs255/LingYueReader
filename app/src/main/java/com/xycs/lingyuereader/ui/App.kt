@@ -222,7 +222,7 @@ fun App(vm: AppViewModel = viewModel()) {
             is Screen.WorkAiAdvanced -> WorkAiAdvancedScreen(vm, screen.workId)
             is Screen.WorkPack -> WorkPackScreen(vm, screen.workId)
             is Screen.WorkLedger -> WorkLedgerScreen(vm, screen)
-            is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId)
+            is Screen.PackDoc -> PackDocScreen(vm, screen.workId, screen.docId, screen.draft, screen.condense)
             is Screen.ChapterCard -> ChapterCardScreen(vm, screen.workId, screen.chapterId)
             is Screen.WorkChanges -> WorkChangesScreen(vm, screen.workId)
             is Screen.WorkRules -> WorkRulesScreen(vm, screen.workId)

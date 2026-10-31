@@ -1,5 +1,6 @@
 package com.xycs.lingyuereader.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -30,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -59,6 +61,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Screen
 import com.xycs.lingyuereader.ai.BibleProposal
+import com.xycs.lingyuereader.ai.DocAiKind
+import com.xycs.lingyuereader.ai.PackDocAi
 import com.xycs.lingyuereader.data.PackBudget
 import com.xycs.lingyuereader.data.PackBudgets
 import com.xycs.lingyuereader.data.PackDoc
@@ -72,6 +76,7 @@ import com.xycs.lingyuereader.ui.glass.GlassScaffold
 import com.xycs.lingyuereader.ui.glass.glassBar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -80,6 +85,7 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.SnackbarHost
+import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
@@ -298,7 +304,16 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
                                     NavRow(
                                         d.title,
                                         subtitle = "优先级 ${d.priority} · ${if (d.always) "常用" else "按需"} · ${size(d.words)} · ${whenLabel(d.updatedAt)}更新",
-                                        trailing = tag?.let { t -> { Tag(t, LocalGroupedColors.current.destructive) } },
+                                        // 放不下、被截短的：红标旁边给一个“精简”，点了直接进文档弹精简（默认压到预算里放得下的字数）。
+                                        trailing = tag?.let { t ->
+                                            {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Tag(t, LocalGroupedColors.current.destructive)
+                                                    PillButton("精简", { vm.open(Screen.PackDoc(workId, d.id, condense = true)) },
+                                                        modifier = Modifier.semantics { contentDescription = "精简“${d.title}”" })
+                                                }
+                                            }
+                                        },
                                     ) { vm.open(Screen.PackDoc(workId, d.id)) }
                                 }
                             }
@@ -323,10 +338,10 @@ fun WorkPackScreen(vm: AppViewModel, workId: String, initialPreview: List<PackIm
             }
         }
         if (creating || newKind != null) {
-            NewDocDialog(initial = newKind ?: PackKind.CHARACTER, onDismiss = { creating = false; newKind = null }) { kind, title ->
+            NewDocDialog(initial = newKind ?: PackKind.CHARACTER, onDismiss = { creating = false; newKind = null }) { kind, title, draft ->
                 creating = false
                 newKind = null
-                vm.writing.addDoc(workId, kind, title) { vm.open(Screen.PackDoc(workId, it.id)) }
+                vm.writing.addDoc(workId, kind, title) { vm.open(Screen.PackDoc(workId, it.id, draft = draft)) }
             }
         }
         val shownBudget = budget
@@ -510,20 +525,29 @@ private fun ImportItemDialog(item: PackImportItem, onDismiss: () -> Unit, onSave
     }
 }
 
-/** 新建文档：起个标题、选类型（人物档案、写作规范等会带一份模板）。 */
+/**
+ * 新建文档：起个标题、选类型（人物档案、写作规范等会带一份模板）。可以勾“让 AI 起草”、写一句要求：
+ * 建好打开就起草（第三个参数是要求，不勾为空），结果先给看，点“用这个”才写入。
+ */
 @Composable
-private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -> Unit, onCreate: (PackKind, String) -> Unit) {
+private fun NewDocDialog(initial: PackKind = PackKind.CHARACTER, onDismiss: () -> Unit, onCreate: (PackKind, String, String?) -> Unit) {
     var kind by remember { mutableStateOf(initial) }
     var title by remember { mutableStateOf("") }
+    var withAi by remember { mutableStateOf(false) }
+    var request by remember { mutableStateOf("") }
     GlassDialog(show = true, title = "新建文档", onDismissRequest = onDismiss) {
         val c = LocalGroupedColors.current
         GroupedTextField(value = title, onValueChange = { title = it }, label = "标题（不填就叫“${kind.label}”）", singleLine = true, modifier = Modifier.fillMaxWidth())
+        CheckboxRow("让 AI 起草", withAi, subtitle = "按类型的格式，参考已有设定和章节摘要写一份初稿", dimChecked = false) { withAi = it }
+        if (withAi) {
+            GroupedTextField(value = request, onValueChange = { request = it }, label = "要求（可不填），比如：主角的金手指", minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth())
+        }
         Text("类型", fontSize = TypeScale.Caption, color = c.secondary, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-        // 十几种类型各有说明：勾选列表，在框里滚。
-        Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+        // 十几种类型各有说明：勾选列表，在框里滚（勾了 AI 起草多一个输入框，列表矮一点）。
+        Column(Modifier.heightIn(max = if (withAi) 240.dp else 360.dp).verticalScroll(rememberScrollState())) {
             DialogOptionList(KIND_OPTIONS, onPick = { kind = it }, selected = kind, description = { it.hint })
         }
-        DialogButtons(onDismiss = onDismiss, onConfirm = { onCreate(kind, title) }, confirmText = "新建")
+        DialogButtons(onDismiss = onDismiss, onConfirm = { onCreate(kind, title, if (withAi) request.trim() else null) }, confirmText = if (withAi) "新建并起草" else "新建")
     }
 }
 
@@ -545,21 +569,29 @@ private fun DocPropsDialog(doc: PackDoc, onDismiss: () -> Unit, onSave: (PackDoc
 
 /**
  * 改一份设定文档：纯文本（Markdown 也行），停笔自动保存，打开、离开和每写十分钟存一个历史版本。
- * 设定的字数不算进码字统计。
+ * 设定的字数不算进码字统计。标题栏的 AI 钮和“⋯”里有 AI 起草（空文档）、按要求改、精简：结果先给看，采纳才写入，
+ * 写入前存一版历史版本。[draft] 不为空时打开就按它起草，[condense] 为真时打开就弹精简。
  */
 @OptIn(FlowPreview::class)
 @Composable
-fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
+fun PackDocScreen(vm: AppViewModel, workId: String, docId: String, draft: String? = null, condense: Boolean = false) {
     val packs by vm.writing.packs.collectAsStateWithLifecycle()
     LaunchedEffect(workId) { if (packs[workId] == null) vm.writing.loadPack(workId) }
     val doc = packs[workId]?.firstOrNull { it.id == docId }
     val snackbar = rememberWritingMessages(vm)
+    val scope = rememberCoroutineScope()
     var state by remember(docId) { mutableStateOf<TextFieldState?>(null) }
     var savedText by remember(docId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var props by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var deleted by remember { mutableStateOf(false) }
+    // AI 帮手：[asking] 是在填要求的对话框，[aiRun] 是在跑或等作者确认的结果，[aiJob] 用来停。
+    var asking by remember { mutableStateOf<DocAiAsk?>(null) }
+    var aiRun by remember { mutableStateOf<DocAiRun?>(null) }
+    var aiJob by remember { mutableStateOf<Job?>(null) }
+    // 从新建对话框、首页“精简”进来时要做的事只做一次（转屏、回来都不再做）。
+    var started by rememberSaveable(docId) { mutableStateOf(false) }
 
     LaunchedEffect(workId, docId) {
         val text = vm.writing.openDoc(workId, docId)
@@ -586,29 +618,129 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
 
     val text = current?.text
     val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
+    val blank = current != null && doc != null && PackDocAi.isBlank(current.text.toString(), doc.kind)
+
+    fun startAi(ask: DocAiAsk) {
+        val field = current ?: return
+        aiJob?.cancel()
+        val original = field.text.toString()
+        aiRun = DocAiRun(ask, original)
+        aiJob = scope.launch {
+            var streamed = 0
+            val onText: (String) -> Unit = { piece ->
+                streamed += piece.length
+                aiRun = aiRun?.takeIf { it.running && it.ask == ask }?.copy(streamed = streamed) ?: aiRun
+            }
+            try {
+                aiRun = when (ask.kind) {
+                    DocAiKind.DRAFT -> DocAiRun(ask, original, streamed, result = vm.writingAi.draftDoc(workId, docId, ask.request, onText))
+                    DocAiKind.REVISE -> DocAiRun(ask, original, streamed, result = vm.writingAi.reviseDoc(workId, docId, original, ask.request, ask.part, onText))
+                    DocAiKind.CONDENSE -> vm.writingAi.condenseDoc(workId, docId, original, ask.target, onText).let { DocAiRun(ask, original, streamed, it.text, it.missing) }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                aiRun = DocAiRun(ask, original, streamed, error = e.message ?: "AI 出错了")
+            }
+        }
+    }
+
+    fun stopAi() {
+        aiJob?.cancel()
+        aiJob = null
+        aiRun = aiRun?.takeIf { it.running }?.copy(error = "已停止，没有写入。") ?: aiRun
+    }
+
+    fun discardAi() {
+        aiJob?.cancel()
+        aiJob = null
+        aiRun = null
+    }
+
+    /** 采纳：编辑器换成新稿，写盘前把原稿存进历史版本；提示里可以撤回（撤回同样先存一版）。 */
+    fun acceptAi() {
+        val run = aiRun ?: return
+        val field = current ?: return
+        val after = run.result ?: return
+        val before = field.text.toString()
+        field.setTextAndPlaceCursorAtEnd(after)
+        aiRun = null
+        vm.writing.saveDocFromAi(workId, docId, before, after) { savedText = after }
+        scope.launch {
+            val undo = snackbar.showSnackbar("已写入；写入前的一版存进了历史版本", actionLabel = "撤回")
+            if (undo == SnackbarResult.ActionPerformed && field.text.toString() == after) {
+                field.setTextAndPlaceCursorAtEnd(before)
+                vm.writing.saveDocFromAi(workId, docId, after, before) { savedText = before }
+            }
+        }
+    }
+
+    /** 精简的对话框：默认字数按“AI 每次带多少”算（放不下的取预算里能放下的，否则原长一半）。 */
+    fun askCondense() {
+        val d = doc ?: return
+        scope.launch {
+            val budget = try {
+                vm.writingAi.packBudget(workId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            asking = DocAiAsk(DocAiKind.CONDENSE, target = PackDocAi.condenseTarget(d.title, count, budget))
+        }
+    }
+
+    /** 编辑器里选中的那段（没选为空）。 */
+    fun selectedRange(): IntRange? = current?.selection?.takeIf { !it.collapsed }?.let { it.min until it.max }
+
+    // 新建对话框里勾了“让 AI 起草”、首页点了“精简”：文档读出来以后做一次。
+    LaunchedEffect(current, doc != null) {
+        if (started || current == null || doc == null) return@LaunchedEffect
+        started = true
+        when {
+            draft != null -> startAi(DocAiAsk(DocAiKind.DRAFT, draft))
+            condense -> askCondense()
+        }
+    }
+    BackHandler(enabled = aiRun != null) { discardAi() }
+
     // 标题栏和别的二级页一样（SubPageScaffold）：标题是文档名，下面一行类别、优先级、字数和保存状态；改属性在“⋯”里。
     SubPageScaffold(
         title = doc?.title.orEmpty(),
-        onBack = { vm.back() },
-        subtitle = buildString {
+        onBack = { if (aiRun != null) discardAi() else vm.back() },
+        subtitle = aiRun?.let { r -> r.ask.kind.label + if (r.running) " · 生成中" else if (r.result != null) " · 等你确认" else " · 没写入" } ?: buildString {
             if (doc != null) append("${doc.kind.label} · 优先级 ${doc.priority} · ${if (doc.always) "常用" else "按需"} · ")
             append("$count 字 · ")
             append(if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中")
         },
         actions = {
+        if (aiRun == null && current != null) {
+            // AI 钮：空文档起草，有内容按要求改；精简在“⋯”里。
+            IconButton(onClick = { asking = if (blank) DocAiAsk(DocAiKind.DRAFT) else DocAiAsk(DocAiKind.REVISE, selection = selectedRange()) }) {
+                Icon(LingYueIcons.Sparkle, contentDescription = if (blank) "AI 起草" else "AI 改")
+            }
+        }
         Box(Modifier.padding(end = 8.dp)) {
-            IconButton(onClick = { menu = true }) { Icon(LingYueIcons.More, contentDescription = "更多") }
+            IconButton(onClick = { menu = true }, enabled = aiRun == null) { Icon(LingYueIcons.More, contentDescription = "更多") }
             OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
                 GlassMenu {
                     ListPopupColumn {
-                        listOf<Pair<String, () -> Unit>>(
-                            "属性（类型、优先级）" to { props = true },
-                            "历史版本" to {
+                        buildList<Pair<String, () -> Unit>> {
+                            if (current != null) {
+                                if (blank) {
+                                    add("AI 起草" to { asking = DocAiAsk(DocAiKind.DRAFT) })
+                                } else {
+                                    add("AI 按要求改" to { asking = DocAiAsk(DocAiKind.REVISE, selection = selectedRange()) })
+                                    add("AI 精简" to { askCondense() })
+                                }
+                            }
+                            add("属性（类型、优先级）" to { props = true })
+                            add("历史版本" to {
                                 current?.text?.toString()?.let { vm.writing.saveDoc(workId, docId, it, closing = true) }
                                 vm.open(Screen.WorkHistory(workId, "", docId))
-                            },
-                            "删除" to { deleting = true },
-                        ).forEach { (label, action) ->
+                            })
+                            add("删除" to { deleting = true })
+                        }.forEach { (label, action) ->
                             LingYueMenuItem(label, selected = false) {
                                 menu = false
                                 action()
@@ -626,14 +758,37 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
         val c = LocalGroupedColors.current
         // 正文照原来的缩进留着（包一层，免得整段重排）。
         run {
-            Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+            val shownRun = aiRun
+            if (shownRun != null) {
+                Box(Modifier.fillMaxSize().navigationBarsPadding()) {
+                    DocAiPane(
+                        shownRun,
+                        padding,
+                        onStop = { stopAi() },
+                        onAccept = { acceptAi() },
+                        onRetry = { startAi(shownRun.ask) },
+                        onEdit = { asking = shownRun.ask },
+                        onDiscard = { discardAi() },
+                    )
+                }
+            } else Column(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
                 if (current != null) {
+                    // 空文档：最上面给一个“让 AI 起草”（和标题栏的 AI 钮同一个入口）。
+                    if (blank) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = padding.calculateTopPadding() + 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("还是空的，可以先让 AI 起草一份。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f).padding(end = 8.dp))
+                            PillButton("让 AI 起草", { asking = DocAiAsk(DocAiKind.DRAFT) }, style = PillStyle.Tinted)
+                        }
+                    }
                     BasicTextField(
                         state = current,
                         modifier = Modifier
                             .fillMaxSize()
                             .semantics { contentDescription = "文档内容" }
-                            .padding(start = 20.dp, end = 20.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
+                            .padding(start = 20.dp, end = 20.dp, top = if (blank) 12.dp else padding.calculateTopPadding() + 12.dp, bottom = 12.dp),
                         textStyle = TextStyle(color = scheme.onSurface, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine),
                         cursorBrush = SolidColor(scheme.primary),
                         lineLimits = TextFieldLineLimits.MultiLine(),
@@ -644,6 +799,12 @@ fun PackDocScreen(vm: AppViewModel, workId: String, docId: String) {
                             }
                         },
                     )
+                }
+            }
+            asking?.let { a ->
+                DocAiAskDialog(a, words = count, onDismiss = { asking = null }) { go ->
+                    asking = null
+                    startAi(go)
                 }
             }
             if (props && doc != null) {

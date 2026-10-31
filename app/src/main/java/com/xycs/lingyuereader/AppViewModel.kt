@@ -191,8 +191,11 @@ sealed interface Screen {
         val tab: String? = null,
         val person: String? = null,
     ) : Screen
-    /** 设定包里的一份文档。 */
-    data class PackDoc(val workId: String, val docId: String) : Screen
+    /**
+     * 设定包里的一份文档。[draft] 不为空时打开就让 AI 按这句要求起草（新建对话框里勾了“让 AI 起草”）；
+     * [condense] 为真时打开就弹“精简”（设定包首页放不下的文档旁边的“精简”）。
+     */
+    data class PackDoc(val workId: String, val docId: String, val draft: String? = null, val condense: Boolean = false) : Screen
     /** 一章的细纲卡。 */
     data class ChapterCard(val workId: String, val chapterId: String) : Screen
     /** 一部作品的变更登记。 */
