@@ -100,7 +100,9 @@ class ChineseConvertUiTest {
         compose.onNodeWithText("繁简与注音").performScrollTo().performClick()
         compose.onNodeWithText(option).performScrollTo().performClick()
         waitForText(expectedBody)
-        // 第一次返回回到设置首页，第二次关面板。
+        // 从“更多”进来时栈底是“外观”：第一次返回回到更多设置，第二次回外观首页，第三次关面板。
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
         compose.waitForIdle()
         compose.activity.onBackPressedDispatcher.onBackPressed()
