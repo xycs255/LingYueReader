@@ -58,7 +58,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.data.VocabWord
@@ -199,7 +198,7 @@ fun VocabularyScreen(vm: AppViewModel) {
                             Text(
                                 "下次复习：${dueLabel(next, now)}",
                                 color = c.secondary,
-                                fontSize = 13.sp,
+                                fontSize = TypeScale.Caption,
                                 modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 2.dp, bottom = 10.dp),
                             )
                         }
@@ -262,9 +261,9 @@ private fun WordCard(
     val scheme = MiuixTheme.colorScheme
     GlassCard(modifier.padding(horizontal = 12.dp, vertical = 6.dp), insideMargin = PaddingValues(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(w.word, fontSize = 22.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+            Text(w.word, fontSize = TypeScale.Title, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (w.reading.isNotBlank()) {
-                Text(w.reading, color = scheme.primary, fontSize = 14.sp, modifier = Modifier.padding(start = 10.dp))
+                Text(w.reading, color = scheme.primary, fontSize = TypeScale.Body, modifier = Modifier.padding(start = 10.dp))
             }
             Spacer(Modifier.weight(1f))
             if (onAi != null && ai == null) CardAction(LingYueIcons.Sparkle, if (w.example.isBlank()) "AI 例句" else "重新生成例句", onAi)
@@ -273,14 +272,14 @@ private fun WordCard(
         }
         Column(Modifier.padding(end = 8.dp)) {
             val gloss = DictGloss.clean(w.gloss)
-            if (gloss.isNotBlank()) Text(gloss, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+            if (gloss.isNotBlank()) Text(gloss, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(top = 4.dp))
             if (w.context.isNotBlank()) {
                 Row(Modifier.padding(top = 10.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
-                    Box(Modifier.width(2.dp).fillMaxHeight().clip(RoundedCornerShape(1.dp)).background(scheme.primary.copy(alpha = 0.4f)))
+                    Box(Modifier.width(2.dp).fillMaxHeight().clip(Radius.Full).background(scheme.primary.copy(alpha = 0.4f)))
                     Text(
                         highlighted(w.context, w.word),
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
+                        fontSize = TypeScale.Body,
+                        lineHeight = TypeScale.BodyLine,
                         fontFamily = FontFamily.Serif,
                         color = scheme.onSurfaceVariantSummary,
                         maxLines = 4,
@@ -293,13 +292,13 @@ private fun WordCard(
             val example = ai?.answer?.takeIf { it.isNotBlank() } ?: w.example.takeIf { it.isNotBlank() }
             if (example != null || ai != null) {
                 Column(
-                    Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(scheme.primary.copy(alpha = 0.07f)).padding(horizontal = 10.dp, vertical = 8.dp),
+                    Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(scheme.primary.copy(alpha = 0.07f)).padding(horizontal = 10.dp, vertical = 8.dp),
                 ) {
-                    Text("AI 例句", color = scheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text("AI 例句", color = scheme.primary, fontSize = TypeScale.Footnote, fontWeight = FontWeight.Medium)
                     when {
-                        ai?.error != null -> Text(ai.error, color = scheme.error, fontSize = 13.sp)
-                        example != null -> Text(example.trim(), fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 2.dp))
-                        else -> Text("正在生成……", color = scheme.onSurfaceVariantSummary, fontSize = 13.sp)
+                        ai?.error != null -> Text(ai.error, color = scheme.error, fontSize = TypeScale.Caption)
+                        example != null -> Text(example.trim(), fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, modifier = Modifier.padding(top = 2.dp))
+                        else -> Text("正在生成……", color = scheme.onSurfaceVariantSummary, fontSize = TypeScale.Caption)
                     }
                 }
             }
@@ -309,7 +308,7 @@ private fun WordCard(
                     dateFormat.format(Date(w.addedAt)),
                     if (w.mastered) null else "下次复习 " + dueLabel(w.due, System.currentTimeMillis()),
                 ).joinToString(" · "),
-                fontSize = 12.sp,
+                fontSize = TypeScale.Footnote,
                 color = scheme.onSurfaceVariantActions,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -325,7 +324,7 @@ private fun CardAction(icon: androidx.compose.ui.graphics.vector.ImageVector, la
     Box(
         Modifier
             .size(40.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(Radius.XLarge))
             .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
@@ -378,7 +377,7 @@ private fun Review(words: List<VocabWord>, modifier: Modifier, onAnswer: (VocabW
     Column(modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         if (index >= deck.size) {
             Spacer(Modifier.height(80.dp))
-            Text("复习完了", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text("复习完了", fontSize = TypeScale.Title, fontWeight = FontWeight.Bold)
             Text("记得 ${total - forgotten.size} 个，还不熟 ${forgotten.size} 个。", modifier = Modifier.padding(top = 12.dp))
             Text(
                 "记得的会隔几天再出现，越熟隔得越久。",
@@ -446,7 +445,7 @@ private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
                 rotationY = angle
                 cameraDistance = 14f * density
             }
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(Radius.XLarge))
             .background(c.surfaceContainer)
             .clickable(onClick = onFlip)
             .semantics { contentDescription = if (revealed) "复习卡背面" else "复习卡正面" }
@@ -459,24 +458,24 @@ private fun FlipCard(w: VocabWord, revealed: Boolean, onFlip: () -> Unit) {
             Modifier.graphicsLayer { if (back) rotationY = 180f },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(w.word, fontSize = 40.sp, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+            Text(w.word, fontSize = TypeScale.Display, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             if (back) {
-                if (w.reading.isNotBlank()) Text(w.reading, color = c.primary, fontSize = 18.sp, modifier = Modifier.padding(top = 8.dp))
+                if (w.reading.isNotBlank()) Text(w.reading, color = c.primary, fontSize = TypeScale.Headline, modifier = Modifier.padding(top = 8.dp))
                 Text(w.gloss.ifBlank { "（没有记下释义）" }, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
                 if (w.example.isNotBlank()) {
-                    Text(w.example.trim(), color = c.onSurfaceVariantSummary, fontSize = 14.sp, lineHeight = 21.sp, textAlign = TextAlign.Center, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 14.dp))
+                    Text(w.example.trim(), color = c.onSurfaceVariantSummary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, textAlign = TextAlign.Center, maxLines = 6, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 14.dp))
                 }
             } else if (w.context.isNotBlank()) {
                 Text(
                     highlighted(w.context, w.word),
                     fontFamily = FontFamily.Serif,
-                    fontSize = 16.sp,
+                    fontSize = TypeScale.Body,
                     textAlign = TextAlign.Center,
                     color = c.onSurfaceVariantSummary,
                     modifier = Modifier.padding(top = 20.dp),
                 )
             }
-            if (!back) Text("看释义", color = c.primary, fontSize = 15.sp, modifier = Modifier.padding(top = 28.dp))
+            if (!back) Text("看释义", color = c.primary, fontSize = TypeScale.Body, modifier = Modifier.padding(top = 28.dp))
         }
     }
 }

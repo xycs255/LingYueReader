@@ -63,7 +63,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.Lookup
@@ -128,7 +127,7 @@ internal fun LookupSheet(
                     color = c.label,
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 30.sp,
+                    fontSize = TypeScale.Display,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
@@ -200,9 +199,9 @@ internal fun LookupSheet(
                                     Text(
                                         w,
                                         color = c.tint,
-                                        fontSize = 15.sp,
+                                        fontSize = TypeScale.Body,
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(50))
+                                            .clip(Radius.Full)
                                             .background(c.fill)
                                             .clickable(role = Role.Button) { vm.lookupWord(w) }
                                             .padding(horizontal = 14.dp, vertical = 7.dp),
@@ -235,8 +234,8 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
     val definitions = word?.definitions?.take(3) ?: ch?.definition?.takeIf { it.isNotEmpty() }?.let { listOf(it) }.orEmpty()
     Column(Modifier.padding(start = 20.dp, end = 12.dp, top = 6.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(lookup.word, color = c.label, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold, fontSize = 32.sp, lineHeight = 40.sp)
-            if (reading != null) Text(reading, color = c.tint, fontSize = 16.sp, modifier = Modifier.padding(start = 12.dp, bottom = 5.dp))
+            Text(lookup.word, color = c.label, fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold, fontSize = TypeScale.Display, lineHeight = TypeScale.DisplayLine)
+            if (reading != null) Text(reading, color = c.tint, fontSize = TypeScale.Headline, modifier = Modifier.padding(start = 12.dp, bottom = 5.dp))
             Spacer(Modifier.weight(1f))
             if (lookup.range != null) RoundIcon(LingYueIcons.Highlight, "划线·批注", active = false, onClick = onAnnotate)
             RoundIcon(if (inVocab) LingYueIcons.StarFill else LingYueIcons.Star, if (inVocab) "已在生词本" else "收入生词本", active = true) {
@@ -248,30 +247,30 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
             person != null && definitions.isEmpty() -> {}
             result == null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spinner()
-                Text("正在查……", color = c.secondary, fontSize = 15.sp)
+                Text("正在查……", color = c.secondary, fontSize = TypeScale.Body)
             }
             definitions.isNotEmpty() -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 definitions.forEachIndexed { i, d ->
                     Row {
-                        Text("${i + 1}", color = c.tint, fontSize = 13.sp, modifier = Modifier.width(18.dp).padding(top = 2.dp))
-                        Text(d, color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+                        Text("${i + 1}", color = c.tint, fontSize = TypeScale.Caption, modifier = Modifier.width(18.dp).padding(top = 2.dp))
+                        Text(d, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                 }
             }
-            result.imported.isNotEmpty() -> Text("在「${result.imported.first().first.title}」里查到了，点“完整释义”看。", color = c.secondary, fontSize = 14.sp)
-            else -> Text("词典里没有查到“${lookup.word}”。可以用下面的在线查询，或在完整释义里微调选区。", color = c.secondary, fontSize = 14.sp)
+            result.imported.isNotEmpty() -> Text("在「${result.imported.first().first.title}」里查到了，点“完整释义”看。", color = c.secondary, fontSize = TypeScale.Caption)
+            else -> Text("词典里没有查到“${lookup.word}”。可以用下面的在线查询，或在完整释义里微调选区。", color = c.secondary, fontSize = TypeScale.Caption)
         }
         if (ai.turn != null) {
             Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.tint.copy(alpha = 0.07f)).padding(horizontal = 12.dp, vertical = 10.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(c.tint.copy(alpha = 0.07f)).padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text("AI 释义", color = c.tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text("AI 释义", color = c.tint, fontSize = TypeScale.Footnote, fontWeight = FontWeight.Medium)
                 AiGlossText(ai.turn, ai.request)
             }
         }
         if (lookup.context.isNotBlank()) {
-            Text("原句：${lookup.context.trim()}", color = c.secondary, fontSize = 12.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("原句：${lookup.context.trim()}", color = c.secondary, fontSize = TypeScale.Footnote, lineHeight = TypeScale.FootnoteLine, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(c.separator))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -286,10 +285,10 @@ private fun CompactLookup(lookup: Lookup, inVocab: Boolean, vm: AppViewModel, ai
                 if (ai.enabled && ai.turn == null) AiPill(ai.request)
             }
             Row(
-                Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = onExpand).padding(horizontal = 6.dp),
+                Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(Radius.Medium)).clickable(role = Role.Button, onClick = onExpand).padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("完整释义", color = c.tint, fontSize = 14.sp)
+                Text("完整释义", color = c.tint, fontSize = TypeScale.Body)
                 Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tint, modifier = Modifier.size(14.dp))
             }
         }
@@ -304,15 +303,15 @@ internal class AiGlossState(val enabled: Boolean, val turn: com.xycs.lingyueread
 private fun AiGlossText(turn: com.xycs.lingyuereader.ai.AiTurn, retry: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (turn.answer.isNotEmpty()) Text(turn.answer.trim(), color = c.label, fontSize = 15.sp, lineHeight = 22.sp)
+        if (turn.answer.isNotEmpty()) Text(turn.answer.trim(), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
         when {
             turn.error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
                 ErrorText(turn.error, Modifier.weight(1f))
-                Text("重试", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = retry).padding(horizontal = 10.dp, vertical = 8.dp))
+                Text("重试", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.clip(RoundedCornerShape(Radius.Small)).clickable(role = Role.Button, onClick = retry).padding(horizontal = 10.dp, vertical = 8.dp))
             }
             turn.loading && turn.answer.isEmpty() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Spinner()
-                Text("正在问 AI……", color = c.secondary, fontSize = 13.sp)
+                Text("正在问 AI……", color = c.secondary, fontSize = TypeScale.Caption)
             }
         }
     }
@@ -360,14 +359,14 @@ private fun ActionTile(label: String, icon: ImageVector, modifier: Modifier = Mo
     val c = LocalGroupedColors.current
     Column(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(c.cell)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(icon, contentDescription = null, tint = c.tint, modifier = Modifier.size(22.dp))
-        Text(label, color = c.tint, fontSize = 13.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
+        Text(label, color = c.tint, fontSize = TypeScale.Caption, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -376,13 +375,13 @@ private fun WordCell(entry: WordEntry) {
     val c = LocalGroupedColors.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(entry.pinyin, color = c.tint, fontSize = 17.sp)
+            Text(entry.pinyin, color = c.tint, fontSize = TypeScale.Headline)
             if (entry.traditional != entry.simplified) {
-                Text("繁 ${entry.traditional}", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 10.dp))
+                Text("繁 ${entry.traditional}", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 10.dp))
             }
         }
         entry.definitions.forEachIndexed { i, d ->
-            Text("${i + 1}. $d", color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+            Text("${i + 1}. $d", color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
@@ -391,17 +390,17 @@ private fun WordCell(entry: WordEntry) {
 private fun CharCell(ch: CharEntry) {
     val c = LocalGroupedColors.current
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Text(ch.char, color = c.label, fontFamily = FontFamily.Serif, fontSize = 40.sp, modifier = Modifier.padding(end = 14.dp))
+        Text(ch.char, color = c.label, fontFamily = FontFamily.Serif, fontSize = TypeScale.Display, modifier = Modifier.padding(end = 14.dp))
         Column(Modifier.weight(1f)) {
-            Text(ch.readings.joinToString("  "), color = c.tint, fontSize = 17.sp)
+            Text(ch.readings.joinToString("  "), color = c.tint, fontSize = TypeScale.Headline)
             val shape = listOfNotNull(
                 ch.radical.takeIf { it.isNotEmpty() }?.let { "部首 $it" },
                 ch.totalStrokes?.let { "共 $it 画" },
                 ch.traditional.takeIf { it.isNotEmpty() }?.let { "繁体 $it" },
                 ch.simplified.takeIf { it.isNotEmpty() }?.let { "简体 $it" },
             )
-            if (shape.isNotEmpty()) Text(shape.joinToString(" · "), color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
-            if (ch.definition.isNotEmpty()) Text(ch.definition, color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.padding(top = 4.dp))
+            if (shape.isNotEmpty()) Text(shape.joinToString(" · "), color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 2.dp))
+            if (ch.definition.isNotEmpty()) Text(ch.definition, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }

@@ -34,7 +34,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.DeviceModelState
@@ -59,8 +58,6 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /**
@@ -83,264 +80,244 @@ fun AiScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) { vm.refreshDeviceModels() }
     val importModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { vm.importDeviceModel(it) } }
 
-    ProvideGroupedColors {
+    SubPageScaffold(
+        title = "AI 服务",
+        onBack = { vm.back() },
+    ) { padding ->
         val c = LocalGroupedColors.current
-        GlassScaffold(
-            containerColor = c.background,
-            topBar = {
-                SmallTopAppBar(
-                    color = Color.Transparent,
-                    modifier = Modifier.glassBar(),
-                    title = "AI 助手",
-                    navigationIcon = {
-                        IconButton(onClick = { vm.back() }, modifier = Modifier.padding(start = 12.dp)) {
-                            Icon(LingYueIcons.Back, contentDescription = "返回")
+        val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, fontFamily = FontFamily.Monospace)
+        LazyColumn(
+            Modifier.fillMaxSize().overScrollVertical(),
+            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
+            overscrollEffect = null,
+        ) {
+            item {
+                GroupedSection(
+                    footer = "开启后，选文、查词、生词本和阅读菜单里出现 AI 功能。只在你点这些功能时联网，只发选中的文字和读过的部分；关着不联网。",
+                ) {
+                    row {
+                        ToggleRow("启用 AI 服务", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
+                            update(config.copy(enabled = on))
                         }
+                    }
+                }
+                // 服务商是一行下拉（以前八个服务商的勾选列表占了大半屏，要往下翻才看得到密钥）；选中的那家怎么用写在组下面。
+                GroupedSection(
+                    header = "服务商",
+                    footer = when (config.preset) {
+                        AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务，用你自己的账号和密钥。"
+                        AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等，不出局域网。"
+                        AiPresets.DEVICE -> "在这台手机上算，不联网、不花钱。"
+                        else -> "用你自己的账号和密钥，费用按服务商的价格计。模型名可以改成同一家的其他模型。"
                     },
-                )
-            },
-        ) { padding ->
-            val fieldColors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent)
-            val mono = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 15.sp, fontFamily = FontFamily.Monospace)
-            LazyColumn(
-                Modifier.fillMaxSize().overScrollVertical(),
-                contentPadding = PaddingValues(top = padding.calculateTopPadding() + 12.dp, bottom = padding.calculateBottomPadding() + 32.dp),
-                overscrollEffect = null,
-            ) {
-                item {
+                ) {
+                    row {
+                        // 这台手机跑不了本机模型时不列出来（已经选着的照旧显示）。
+                        val options = AiPresets.ALL
+                            .filter { it.id != AiPresets.DEVICE || DeviceModels.supported || config.preset == AiPresets.DEVICE }
+                            .map { it.id to it.label }
+                        PickerRow("服务商", options, config.preset) { id ->
+                            update(config.withPreset(AiPresets.of(id)))
+                            result = null
+                        }
+                    }
+                }
+                val custom = config.preset == AiPresets.CUSTOM
+                val editableUrl = custom || config.preset == AiPresets.LOCAL
+                val preset = AiPresets.of(config.preset)
+                if (config.preset == AiPresets.DEEPSEEK) {
                     GroupedSection(
-                        footer = "开启后，划选文字、查词、生词本和阅读菜单里会出现 AI 功能：解释选文、AI 释义、前情提要、问这本书、人物表、读书笔记、整章翻译。" +
-                            "只有你点这些功能时才联网，把选中的文字（前情提要和问这本书是读过部分里的相关原文）发给下面的服务商，不发送后面没读的内容。关闭时灵阅不联网。",
+                        header = "DeepSeek V4 系列",
+                        footer = "Pro 适合长篇创作，Flash 更快更省。写作资料预算仍按 128K token 估算，不保证整份项目包都送进模型。",
                     ) {
                         row {
-                            ToggleRow("启用 AI 助手", config.enabled, icon = LingYueIcons.Sparkle, iconBackground = RowIconColors.Ai) { on ->
-                                update(config.copy(enabled = on))
-                            }
-                        }
-                    }
-                    GroupedSection(header = "服务商", footer = "用你自己的账号和密钥，费用按服务商的价格计。模型名可以改成同一家的其他模型。") {
-                        AiPresets.ALL.forEach { p ->
-                            row {
-                                CheckRow(
-                                    p.label,
-                                    config.preset == p.id,
-                                    subtitle = when (p.id) {
-                                        AiPresets.CUSTOM -> "任何兼容 OpenAI 或 Anthropic 接口的服务"
-                                        AiPresets.LOCAL -> "家里电脑上的 Ollama、LM Studio 等"
-                                        AiPresets.DEVICE -> if (DeviceModels.supported) "在这台手机上算，不联网" else "这台手机用不了（要 64 位的手机）"
-                                        else -> if (config.preset == p.id) config.model.ifBlank { "尚未选择模型" } else p.model
-                                    },
-                                    enabled = p.id != AiPresets.DEVICE || DeviceModels.supported,
-                                ) {
-                                    update(config.withPreset(p))
-                                    result = null
-                                }
-                            }
-                        }
-                    }
-                    val custom = config.preset == AiPresets.CUSTOM
-                    val editableUrl = custom || config.preset == AiPresets.LOCAL
-                    val preset = AiPresets.of(config.preset)
-                    if (config.preset == AiPresets.DEEPSEEK) {
-                        GroupedSection(
-                            header = "DeepSeek V4 系列",
-                            footer = "Pro 适合长篇创作，Flash 适合较快、较省的日常辅助。选择型号会更改下方模型名，费用由 DeepSeek 收取。" +
-                                "模型公布的上下文容量为 1M token；灵阅目前仍按 128K token 估算写作资料预算，不能据此保证整份项目包都已送入模型。",
-                        ) {
-                            row {
-                                CheckRow("V4 Pro", config.model == AiPresets.DEEPSEEK_V4_PRO,
-                                    subtitle = AiPresets.DEEPSEEK_V4_PRO) {
-                                    update(config.copy(model = AiPresets.DEEPSEEK_V4_PRO))
-                                    result = null
-                                }
-                            }
-                            row {
-                                CheckRow("V4.1 Flash", config.model == AiPresets.DEEPSEEK_FLASH,
-                                    subtitle = AiPresets.DEEPSEEK_FLASH) {
-                                    update(config.copy(model = AiPresets.DEEPSEEK_FLASH))
-                                    result = null
-                                }
-                            }
-                            if (config.retiredOfficialDeepSeek) {
-                                if (config.stoppedOfficialDeepSeek) {
-                                    row { ErrorText("当前保存的 ${config.model} 已停用。灵阅保留原选择和密钥，请手动选 V4 Pro 或 V4.1 Flash；切换后按新型号计费。",
-                                        Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
-                                } else {
-                                    row { Text("旧名 ${config.model} 已退役，官方目前仍暂时转到 V4.1 Flash。建议手动选新型号；灵阅没有自动更改你的模型或密钥。",
-                                        color = c.secondary, fontSize = 13.sp,
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
-                                }
-                            }
-                        }
-                    }
-                    // 选不选本机模型换的是一整组（本机模型 / 接口）：一组收起、一组展开，下面的卡片平滑挪过去，不一下跳开。
-                    AnimatedVisibility(config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
-                        Column { DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) } }
-                    }
-                    AnimatedVisibility(!config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
-                        GroupedSection(
-                            header = "接口",
-                            footer = when {
-                                config.baseUrl.trim().startsWith("http://") && !config.lan -> "公网地址只支持 https://：密钥不能明文传输。局域网地址（192.168.x.x、10.x.x.x、xxx.local 等）可以用 http://。"
-                                config.preset == AiPresets.LOCAL -> "填电脑在局域网里的地址：Ollama 默认 http://电脑IP:11434/v1，LM Studio 默认 http://电脑IP:1234/v1。电脑上要让服务监听局域网（Ollama 设 OLLAMA_HOST=0.0.0.0）。密钥可不填。"
-                                config.lan -> "局域网地址，密钥可不填。"
-                                preset.keySite.isNotEmpty() -> "密钥在 ${preset.keySite} 申请。密钥只存在这台手机上，不进备份、不写日志。"
-                                else -> "密钥只存在这台手机上，不进备份、不写日志。"
-                            },
-                        ) {
-                            if (custom) {
-                                row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
-                            }
-                            row {
-                                TextField(
-                                    value = config.baseUrl,
-                                    onValueChange = { update(config.copy(baseUrl = it.trim())) },
-                                    label = "接口地址",
-                                    singleLine = true,
-                                    enabled = editableUrl,
-                                    colors = fieldColors,
-                                    textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                            row {
-                                TextField(
-                                    value = config.model,
-                                    onValueChange = { update(config.copy(model = it.trim())) },
-                                    label = "模型",
-                                    singleLine = true,
-                                    colors = fieldColors,
-                                    textStyle = mono,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                            row {
-                                TextField(
-                                    value = config.apiKey,
-                                    onValueChange = { update(config.withKey(it.trim())) },
-                                    label = if (config.lan) "API 密钥（可不填）" else "API 密钥",
-                                    singleLine = true,
-                                    colors = fieldColors,
-                                    textStyle = mono,
-                                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                                    trailingIcon = {
-                                        if (config.apiKey.isNotEmpty()) {
-                                            Text(
-                                                if (showKey) "隐藏" else "显示",
-                                                color = c.tint,
-                                                fontSize = 14.sp,
-                                                modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(8.dp)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
-                                            )
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                        }
-                    }
-                    // 连接成功的说明写在卡片下面；失败单独一行红字写在卡片里。
-                    GroupedSection(footer = result?.takeIf { it.first }?.second) {
-                        row {
-                            ActionRow(if (testing != null) "正在测试……" else "测试连接", enabled = config.complete && testing == null) {
+                            CheckRow("V4 Pro", config.model == AiPresets.DEEPSEEK_V4_PRO,
+                                subtitle = AiPresets.DEEPSEEK_V4_PRO) {
+                                update(config.copy(model = AiPresets.DEEPSEEK_V4_PRO))
                                 result = null
-                                testing = scope.launch {
-                                    result = try {
-                                        true to vm.testAi(config)
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: AiException) {
-                                        false to (e.message ?: "连接失败")
-                                    } catch (e: Exception) {
-                                        false to "连接失败：${e.message ?: e.javaClass.simpleName}"
-                                    } finally {
-                                        testing = null
-                                    }
-                                }
                             }
                         }
-                        row { Text("会发送一条真实的短请求，服务商可能收费；仅验证连接，不验证长篇上下文或工具调用。",
-                            color = c.secondary, fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
-                        result?.takeIf { !it.first }?.let { (_, e) -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
-                    }
-                    PriceSection(vm, config)
-                    GroupedSection(header = "回答", footer = "所有 AI 回答的长短；查词的 AI 释义总是简短的。") {
-                        row { SegmentedRow(AnswerLength.entries.map { it to it.label }, config.length) { update(config.copy(length = it)) } }
-                    }
-                    GroupedSection(
-                        header = "划选后的快捷问题",
-                        footer = "显示在“问 AI”面板上的按钮。点一个修改名字和要求，最多 ${QuickAsk.MAX} 个。",
-                    ) {
-                        config.asks.forEachIndexed { i, q ->
-                            row { NavRow(q.label, subtitle = q.instruction) { editing = i } }
-                        }
-                        if (config.asks.size < QuickAsk.MAX) row { ActionRow("添加快捷问题") { editing = config.asks.size } }
-                        if (config.asks != QuickAsk.DEFAULTS) row { ActionRow("恢复默认") { update(config.copy(asks = QuickAsk.DEFAULTS)) } }
-                    }
-                    GroupedSection(
-                        header = "问这本书",
-                        footer = "填写后，每次提问最多为关键词前 30 段和最近 10 段生成向量；首次最多发送 40 段（分 4 批）和 1 次问题向量请求，超出的段落不参与本次向量检索。" +
-                            "服务商可能按请求或文字量收费；新段落按书缓存，后续只补缺失的向量。需要 embeddings 接口，例如通义千问 text-embedding-v4、智谱 embedding-3、Ollama 的 nomic-embed-text。留空仅按关键词找。",
-                    ) {
                         row {
-                            TextField(
-                                value = config.embeddingModel,
-                                onValueChange = { update(config.copy(embeddingModel = it.trim())) },
-                                label = "向量模型（可不填）",
+                            CheckRow("V4.1 Flash", config.model == AiPresets.DEEPSEEK_FLASH,
+                                subtitle = AiPresets.DEEPSEEK_FLASH) {
+                                update(config.copy(model = AiPresets.DEEPSEEK_FLASH))
+                                result = null
+                            }
+                        }
+                        if (config.retiredOfficialDeepSeek) {
+                            if (config.stoppedOfficialDeepSeek) {
+                                row { ErrorText("当前保存的 ${config.model} 已停用。灵阅保留原选择和密钥，请手动选 V4 Pro 或 V4.1 Flash；切换后按新型号计费。",
+                                    Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                            } else {
+                                row { Text("旧名 ${config.model} 已退役，官方目前仍暂时转到 V4.1 Flash。建议手动选新型号；灵阅没有自动更改你的模型或密钥。",
+                                    color = c.secondary, fontSize = TypeScale.Caption,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                            }
+                        }
+                    }
+                }
+                // 选不选本机模型换的是一整组（本机模型 / 接口）：一组收起、一组展开，下面的卡片平滑挪过去，不一下跳开。
+                AnimatedVisibility(config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
+                    Column { DeviceModelSection(config, device, vm, importModel = { importModel.launch(arrayOf("*/*")) }) { update(config.copy(model = it)) } }
+                }
+                AnimatedVisibility(!config.onDevice, enter = sectionEnter(), exit = sectionExit()) {
+                    GroupedSection(
+                        header = "接口",
+                        footer = when {
+                            config.baseUrl.trim().startsWith("http://") && !config.lan -> "公网地址只支持 https://：密钥不能明文传输。局域网地址（192.168.x.x、10.x.x.x、xxx.local 等）可以用 http://。"
+                            config.preset == AiPresets.LOCAL -> "填电脑在局域网里的地址：Ollama 默认 http://电脑IP:11434/v1，LM Studio 默认 http://电脑IP:1234/v1。电脑上要让服务监听局域网（Ollama 设 OLLAMA_HOST=0.0.0.0）。密钥可不填。"
+                            config.lan -> "局域网地址，密钥可不填。"
+                            preset.keySite.isNotEmpty() -> "密钥在 ${preset.keySite} 申请。密钥只存在这台手机上，不进备份、不写日志。"
+                            else -> "密钥只存在这台手机上，不进备份、不写日志。"
+                        },
+                    ) {
+                        if (custom) {
+                            row { SegmentedRow(AiProtocol.entries.filter { it != AiProtocol.DEVICE }.map { it to it.label }, config.protocol) { update(config.copy(protocol = it)) } }
+                        }
+                        row {
+                            GroupedTextField(
+                                value = config.baseUrl,
+                                onValueChange = { update(config.copy(baseUrl = it.trim())) },
+                                label = "接口地址",
                                 singleLine = true,
-                                colors = fieldColors,
+                                enabled = editableUrl,
+                                textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                        row {
+                            GroupedTextField(
+                                value = config.model,
+                                onValueChange = { update(config.copy(model = it.trim())) },
+                                label = "模型",
+                                singleLine = true,
                                 textStyle = mono,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                        row {
+                            GroupedTextField(
+                                value = config.apiKey,
+                                onValueChange = { update(config.withKey(it.trim())) },
+                                label = if (config.lan) "API 密钥（可不填）" else "API 密钥",
+                                singleLine = true,
+                                textStyle = mono,
+                                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                                trailingIcon = {
+                                    if (config.apiKey.isNotEmpty()) {
+                                        Text(
+                                            if (showKey) "隐藏" else "显示",
+                                            color = c.tint,
+                                            fontSize = TypeScale.Body,
+                                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(Radius.Small)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                             )
                         }
                     }
-                    SpeechSection(config, update, fieldColors, mono, vm)
-                    AnimatedVisibility(config.enabled && !config.complete, enter = sectionEnter(), exit = sectionExit()) {
-                        Text(
-                            "填好接口地址、模型和密钥（局域网模型可不填密钥）后，AI 功能才会出现在阅读界面里。",
-                            color = c.destructive,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(horizontal = 28.dp),
+                }
+                // 连接成功的说明写在卡片下面；失败单独一行红字写在卡片里。
+                GroupedSection(footer = result?.takeIf { it.first }?.second) {
+                    row {
+                        ActionRow(if (testing != null) "正在测试……" else "测试连接", enabled = config.complete && testing == null) {
+                            result = null
+                            testing = scope.launch {
+                                result = try {
+                                    true to vm.testAi(config)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: AiException) {
+                                    false to (e.message ?: "连接失败")
+                                } catch (e: Exception) {
+                                    false to "连接失败：${e.message ?: e.javaClass.simpleName}"
+                                } finally {
+                                    testing = null
+                                }
+                            }
+                        }
+                    }
+                    row { Text("会发送一条真实的短请求，服务商可能收费；仅验证连接，不验证长篇上下文或工具调用。",
+                        color = c.secondary, fontSize = TypeScale.Footnote,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+                    result?.takeIf { !it.first }?.let { (_, e) -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) } }
+                }
+                PriceSection(vm, config)
+                GroupedSection(header = "回答", footer = "所有 AI 回答的长短；查词的 AI 释义总是简短的。") {
+                    row { SegmentedRow(AnswerLength.entries.map { it to it.label }, config.length) { update(config.copy(length = it)) } }
+                }
+                GroupedSection(
+                    header = "划选后的快捷问题",
+                    footer = "显示在“问 AI”面板上的按钮。点一个修改名字和要求，最多 ${QuickAsk.MAX} 个。",
+                ) {
+                    config.asks.forEachIndexed { i, q ->
+                        row { NavRow(q.label, subtitle = q.instruction) { editing = i } }
+                    }
+                    if (config.asks.size < QuickAsk.MAX) row { ActionRow("添加快捷问题") { editing = config.asks.size } }
+                    if (config.asks != QuickAsk.DEFAULTS) row { ActionRow("恢复默认") { update(config.copy(asks = QuickAsk.DEFAULTS)) } }
+                }
+                GroupedSection(
+                    header = "问这本书",
+                    footer = "填了就给相关段落生成向量、按意思找原文（要服务商的 embeddings 接口，可能另收费）；留空只按关键词找。",
+                ) {
+                    row {
+                        GroupedTextField(
+                            value = config.embeddingModel,
+                            onValueChange = { update(config.copy(embeddingModel = it.trim())) },
+                            label = "向量模型（可不填）",
+                            singleLine = true,
+                            textStyle = mono,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }
                 }
-            }
-            editing?.let { i ->
-                val q = config.asks.getOrNull(i)
-                var label by remember(i) { mutableStateOf(q?.label.orEmpty()) }
-                var instruction by remember(i) { mutableStateOf(q?.instruction.orEmpty()) }
-                GlassDialog(show = true, title = if (q == null) "添加快捷问题" else "修改快捷问题", onDismissRequest = { editing = null }) {
-                    TextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字（如“讲人物”）", singleLine = true, modifier = Modifier.fillMaxWidth())
-                    TextField(
-                        value = instruction,
-                        onValueChange = { instruction = it },
-                        label = "对 AI 的要求（如“讲讲这段里的人物关系”）",
-                        minLines = 3,
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                SpeechSection(config, update, mono, vm)
+                AnimatedVisibility(config.enabled && !config.complete, enter = sectionEnter(), exit = sectionExit()) {
+                    Text(
+                        "填好接口地址、模型和密钥（局域网模型可不填密钥）后，AI 功能才会出现在阅读界面里。",
+                        color = c.destructive,
+                        fontSize = TypeScale.Caption,
+                        modifier = Modifier.padding(horizontal = 28.dp),
                     )
-                    Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TextButton(
-                            text = if (q == null) "取消" else "删除",
-                            onClick = {
-                                if (q != null) update(config.copy(asks = config.asks.filterIndexed { j, _ -> j != i }))
-                                editing = null
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            text = "保存",
-                            enabled = label.isNotBlank() && instruction.isNotBlank(),
-                            onClick = {
-                                val next = QuickAsk(label.trim(), instruction.trim())
-                                update(config.copy(asks = if (q == null) config.asks + next else config.asks.mapIndexed { j, old -> if (j == i) next else old }))
-                                editing = null
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.textButtonColorsPrimary(),
-                        )
-                    }
+                }
+            }
+        }
+        editing?.let { i ->
+            val q = config.asks.getOrNull(i)
+            var label by remember(i) { mutableStateOf(q?.label.orEmpty()) }
+            var instruction by remember(i) { mutableStateOf(q?.instruction.orEmpty()) }
+            GlassDialog(show = true, title = if (q == null) "添加快捷问题" else "修改快捷问题", onDismissRequest = { editing = null }) {
+                GroupedTextField(value = label, onValueChange = { label = it.take(8) }, label = "按钮上的字，比如：讲人物", singleLine = true, modifier = Modifier.fillMaxWidth())
+                GroupedTextField(
+                    value = instruction,
+                    onValueChange = { instruction = it },
+                    label = "对 AI 的要求，比如：讲讲这段里的人物关系",
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                )
+                Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextButton(
+                        text = if (q == null) "取消" else "删除",
+                        onClick = {
+                            if (q != null) update(config.copy(asks = config.asks.filterIndexed { j, _ -> j != i }))
+                            editing = null
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        text = "保存",
+                        enabled = label.isNotBlank() && instruction.isNotBlank(),
+                        onClick = {
+                            val next = QuickAsk(label.trim(), instruction.trim())
+                            update(config.copy(asks = if (q == null) config.asks + next else config.asks.mapIndexed { j, old -> if (j == i) next else old }))
+                            editing = null
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColorsPrimary(),
+                    )
                 }
             }
         }
@@ -359,7 +336,6 @@ private fun sectionExit() = Effects.exit(shrinkVertically(Motion.standard(), shr
 private fun SpeechSection(
     config: AiConfig,
     update: (AiConfig) -> Unit,
-    fieldColors: top.yukonga.miuix.kmp.basic.TextFieldColors,
     mono: androidx.compose.ui.text.TextStyle,
     vm: AppViewModel,
 ) {
@@ -389,25 +365,23 @@ private fun SpeechSection(
         }
         row { PickerRow("服务商", SpeechPresets.ALL.map { it.id to it.label }, sp.preset) { id -> setSpeech(sp.withPreset(SpeechPresets.of(id))) } }
         row {
-            TextField(
+            GroupedTextField(
                 value = sp.baseUrl,
                 onValueChange = { setSpeech(sp.copy(baseUrl = it.trim())) },
                 label = "接口地址",
                 singleLine = true,
                 enabled = editableUrl,
-                colors = fieldColors,
                 textStyle = mono.copy(color = if (editableUrl) c.label else c.secondary),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
-        row { TextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+        row { GroupedTextField(value = sp.model, onValueChange = { setSpeech(sp.copy(model = it.trim())) }, label = "模型", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
         row {
-            TextField(
+            GroupedTextField(
                 value = sp.apiKey,
                 onValueChange = { setSpeech(sp.withKey(it.trim())) },
                 label = if (sp.lan) "API 密钥（可不填）" else "API 密钥",
                 singleLine = true,
-                colors = fieldColors,
                 textStyle = mono,
                 visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
@@ -416,27 +390,26 @@ private fun SpeechSection(
                         Text(
                             if (showKey) "隐藏" else "显示",
                             color = c.tint,
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(8.dp)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
+                            fontSize = TypeScale.Body,
+                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(Radius.Small)).clickable { showKey = !showKey }.padding(horizontal = 8.dp, vertical = 6.dp),
                         )
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
         if (preset.voices.isNotEmpty()) {
             row { PickerRow("声音", preset.voices, sp.voice) { setSpeech(sp.copy(voice = it)) } }
         } else {
-            row { TextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, colors = fieldColors, textStyle = mono, modifier = Modifier.fillMaxWidth()) }
+            row { GroupedTextField(value = sp.voice, onValueChange = { setSpeech(sp.copy(voice = it.trim())) }, label = "声音", singleLine = true, textStyle = mono, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) }
         }
         if (preset.instructions) {
             row {
-                TextField(
+                GroupedTextField(
                     value = sp.instructions,
                     onValueChange = { setSpeech(sp.copy(instructions = it)) },
-                    label = "朗读风格（可不填，如“像讲故事一样，语气温和”）",
-                    colors = fieldColors,
-                    modifier = Modifier.fillMaxWidth(),
+                    label = "朗读风格（可不填），比如：像讲故事一样，语气温和",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
         }
@@ -520,5 +493,5 @@ private fun DeviceModelSection(config: AiConfig, state: DeviceModelState, vm: Ap
             )
         }
     }
-    if (config.model.isBlank()) Text("先下载或导入一个模型。", color = c.secondary, fontSize = 13.sp, modifier = Modifier.padding(start = 28.dp, bottom = 12.dp))
+    if (config.model.isBlank()) Text("先下载或导入一个模型。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 28.dp, bottom = 12.dp))
 }

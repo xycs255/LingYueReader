@@ -110,9 +110,10 @@ class WritingTreeMapTest {
         assertEquals(1f to false, lengthFraction(3600, CheckRule.Length(3000, null, false, source)))
         assertFalse(lengthFraction(100, CheckRule.Length(null, 4000, false, source))!!.second)
 
-        assertEquals("还没有记录", ledgerValue(0, 0))
-        assertEquals("3 条伏笔没收", ledgerValue(9, 3))
-        assertEquals("伏笔都收了", ledgerValue(9, 0))
+        assertEquals("还没有记录", ledgerValue(0, PromiseCounts(0, 0, 0)))
+        assertEquals("3 条伏笔没收", ledgerValue(9, PromiseCounts(5, 3, 0)))
+        assertEquals("伏笔都收了", ledgerValue(9, PromiseCounts(5, 0, 0)))
+        assertEquals("9 条", ledgerValue(9, PromiseCounts(0, 0, 0)))
         assertEquals("9 条", ledgerValue(9, null))
         assertNull(ledgerValue(null, null))
         assertEquals("12.3" to "万字", wordsParts(123_456))

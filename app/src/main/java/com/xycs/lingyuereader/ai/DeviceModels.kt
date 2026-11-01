@@ -268,7 +268,7 @@ class MediaPipeLlm(private val context: Context, private val files: DeviceModelF
         if (loaded == modelId) engine?.let { return it }
         close()
         val file = files.file(modelId)
-        if (!files.installed(modelId)) throw AiException("本机模型还没下载：到“我的 → AI 助手 → 本机模型”里下载")
+        if (!files.installed(modelId)) throw AiException("本机模型还没下载：到“我的 → AI 服务 → 本机模型”里下载")
         val options = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
             .setModelPath(file.absolutePath)
             .setMaxTokens(DeviceModels.maxTokens(modelId))

@@ -37,7 +37,6 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.Volume
 import com.xycs.lingyuereader.data.Work
@@ -157,12 +156,12 @@ internal fun ChapterMap(
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val finals = volume.chapters.count { it.status == ChapterStatus.FINAL }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(volume.title, color = c.label, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                    Text(volume.title, color = c.label, fontSize = TypeScale.Caption, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
                     Spacer(Modifier.width(6.dp))
                     Text(
                         if (volume.chapters.isEmpty()) "还没有章" else "定稿 $finals / ${volume.chapters.size}",
                         color = c.secondary,
-                        fontSize = 12.sp,
+                        fontSize = TypeScale.Footnote,
                         maxLines = 1,
                     )
                 }
@@ -252,6 +251,6 @@ private fun LegendItem(label: String, draw: DrawScope.() -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Canvas(Modifier.size(12.dp), onDraw = draw)
         Spacer(Modifier.width(4.dp))
-        Text(label, color = c.secondary, fontSize = 12.sp, maxLines = 1)
+        Text(label, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
     }
 }

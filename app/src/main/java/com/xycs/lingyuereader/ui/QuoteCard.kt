@@ -41,7 +41,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -184,9 +183,9 @@ internal fun QuoteCardSheet(
                     modifier = Modifier
                         .padding(horizontal = 32.dp, vertical = 12.dp)
                         .fillMaxWidth()
-                        .shadow(8.dp, RoundedCornerShape(12.dp))
-                        .clip(RoundedCornerShape(12.dp))
-                        .border(0.5.dp, c.separator, RoundedCornerShape(12.dp)),
+                        .shadow(8.dp, RoundedCornerShape(Radius.Medium))
+                        .clip(RoundedCornerShape(Radius.Medium))
+                        .border(0.5.dp, c.separator, RoundedCornerShape(Radius.Medium)),
                 )
             }
             SegmentedControl(CardStyle.entries.map { it to it.label }, style, Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { style = it }

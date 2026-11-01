@@ -42,8 +42,8 @@ data class Foreshadow(
     val closed: Int? = null,
 )
 
-/** 前面一章的摘要（细纲卡里写完以后的那一栏）。 */
-data class ChapterSummary(val number: Int, val title: String, val summary: String)
+/** 前面一章的摘要（细纲卡里写完以后的那一栏）。[volumeId] 是它在哪一卷：那一卷有卷摘要时，前情用卷摘要替它。 */
+data class ChapterSummary(val number: Int, val title: String, val summary: String, val volumeId: String = "", val chapterId: String = "")
 
 /** 本章资料里的一项：哪一类、标题、内容、为什么带上它。 */
 data class BriefItem(val group: String, val title: String, val text: String, val reason: String)
@@ -574,6 +574,8 @@ object ChapterBriefs {
         ahead: Boolean = true,
         /** 只跟设定包这一版有关的中间结果（切块、二元组、人物表），[PackSources.prep] 里记着；为空时现算。 */
         prep: BriefPrep? = null,
+        /** 分层前情：故事至今、往卷的卷摘要（[StoryDigests.layers]，只含本章之前的）。为空时前情照旧只用章摘要。 */
+        layers: PastLayers? = null,
     ): ChapterBrief {
         val items = mutableListOf<BriefItem>()
         val hidden = mutableListOf<String>()
@@ -610,20 +612,28 @@ object ChapterBriefs {
 
         // 二、前情：最近几章的摘要，更早的章里写到出场人物的也带（离这一章近的在前）。
         val before = summaries.filter { it.number < chapter && it.summary.isNotBlank() }.sortedByDescending { it.number }
-        val recent = before.take(RECENT_SUMMARIES)
-        val older = before.drop(RECENT_SUMMARIES).filter { s -> presentNames.any { it in s.summary } }
-        var pastBudget = left / 4
-        (recent + older).forEach { s ->
-            if (pastBudget <= 100) return@forEach
-            val body = cut(s.summary.trim(), minOf(pastBudget, 600))
-            items += BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), body, if (s in recent) "最近几章" else "写到" + presentNames.filter { it in s.summary }.joinToString("、"))
-            pastBudget -= body.length
-            left -= body.length
+        if (layers == null || layers.isEmpty) {
+            val recent = before.take(RECENT_SUMMARIES)
+            val older = before.drop(RECENT_SUMMARIES).filter { s -> presentNames.any { it in s.summary } }
+            var pastBudget = left / 4
+            (recent + older).forEach { s ->
+                if (pastBudget <= 100) return@forEach
+                val body = cut(s.summary.trim(), minOf(pastBudget, 600))
+                items += BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), body, if (s in recent) "最近几章" else "写到" + presentNames.filter { it in s.summary }.joinToString("、"))
+                pastBudget -= body.length
+                left -= body.length
+            }
+        } else {
+            left -= layered(items, before, layers, presentNames, left / 4)
         }
 
         // 故事账本：到这一章为止的快照，是最新进展，紧跟前情。最多占剩下的三分之一、不超过 LEDGER_LIMIT。
         // 只有作者知道的条目并进 hidden，放在最前面（账本优先），快照里不再重复。
-        val snapshot = if (ledger.isEmpty()) null else StoryLedger.snapshot(ledger, chapter, volume, present.flatMap { it.names })
+        // 数值与持有取到上一章末为止（和整理时的 [ChapterSyncs.ledgerView] 一个口径）：本章已经整理入账的期末是本章写完的结果，
+        // 当成“以这里为准”的现值给 AI，会把本章里的突破、花销提前写出来。
+        val snapshot = if (ledger.isEmpty()) null else present.flatMap { it.names }.let { names ->
+            StoryLedger.snapshot(ledger, chapter, volume, names).copy(holds = StoryLedger.snapshot(ledger, chapter - 1, volume, names).holds)
+        }
         val ledgerAt = items.size
         val ledgerLimit = minOf(LEDGER_LIMIT, left / 3)
         val shown = snapshot?.copy(secrets = emptyList())?.takeIf { !it.isEmpty }
@@ -827,6 +837,63 @@ object ChapterBriefs {
     /** 带上的前情摘要：前面这几章的都带。 */
     const val RECENT_SUMMARIES = 5
 
+    /** 分层前情里，卷首几章也至少带紧挨着的这几章摘要（上一卷有卷摘要时，最近几章就只剩卷首这一两章了）。 */
+    const val MIN_RECENT = 2
+
+    /** 分层前情里，更早写到出场人物的章摘要最多带几条：往卷已经有卷摘要、全书有故事至今，只补分量最重的几条。 */
+    const val OLDER_MAX = 3
+
+    /** 前情里分层的那几项的说明（[BriefItem.reason]），排序、界面上认它们用。 */
+    const val STORY_REASON = "全书梗概"
+    const val VOLUME_REASON = "往卷摘要"
+    const val GAP_REASON = "卷摘要还没汇总到"
+
+    /**
+     * 分层前情：按“故事至今 → 往卷的卷摘要 → 本卷最近几章的章摘要 → 更早写到出场人物的章摘要”的顺序放进 [items]，
+     * 返回一共用了多少字。总共不超过 [budget]（和只用章摘要时同一个上限：前情只会更省，不会更多）。
+     * 字数紧时先保最近几章（接得上），再保故事至今、离得近的卷，最后才是写到出场人物的旧章。
+     * 卷摘要盖到的章（[VolumeLayer.chapters]），章摘要不再单列（卷摘要替它们，不叠加）；卷首章仍带上一卷最后 [MIN_RECENT] 章。
+     * 往卷里卷摘要没盖到的章（卷摘要没汇总成、没汇总全，下次收尾再补）照旧带章摘要，排在卷摘要后面，前情不断档。
+     */
+    private fun layered(items: MutableList<BriefItem>, before: List<ChapterSummary>, layers: PastLayers, presentNames: List<String>, budget: Int): Int {
+        // 按章算盖没盖到：卷摘要只汇总了这一卷的一部分章时，没汇总进去的章不能跟着整卷去掉。
+        val coveredIds = layers.volumes.flatMap { it.chapters }.toSet()
+        val wholeVolumes = layers.volumes.filter { it.chapters.isEmpty() }.map { it.volumeId }.toSet()
+        val layerVolumes = layers.volumes.map { it.volumeId }.toSet()
+        fun covered(s: ChapterSummary) = if (s.chapterId.isEmpty()) s.volumeId.isNotEmpty() && s.volumeId in layerVolumes
+            else s.chapterId in coveredIds || s.volumeId in wholeVolumes
+        val open = before.filter { !covered(it) }
+        // 最近几章只在紧挨着本章的那几章里挑：中间隔着一卷有卷摘要的，更早那卷的章不算“最近”。
+        var recent = before.take(RECENT_SUMMARIES).filter { it in open }
+        if (recent.size < MIN_RECENT) recent = (recent + before.filter { it !in recent }.take(MIN_RECENT - recent.size)).sortedByDescending { it.number }
+        val gap = open.filter { it !in recent && it.volumeId in layers.past }
+        val older = open.filter { it !in recent && it !in gap && presentNames.any { n -> n in it.summary } }
+            .sortedByDescending { s -> presentNames.sumOf { n -> s.summary.split(n).size - 1 } }.take(OLDER_MAX)
+        var left = budget
+        fun take(text: String, max: Int): String? {
+            if (left <= 100) return null
+            return cut(text.trim(), minOf(left, max)).also { left -= it.length }
+        }
+        val recentItems = recent.mapNotNull { s -> take(s.summary, 600)?.let { BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), it, "最近几章") } }
+        val story = layers.story.takeIf { it.isNotBlank() }?.let { take(it, StoryDigests.STORY_MAX) }?.let { BriefItem("前情", "故事至今", it, STORY_REASON) }
+        val volumeItems = layers.volumes.asReversed().mapNotNull { v -> take(v.text, StoryDigests.VOLUME_MAX)?.let { v to it } }
+            .asReversed().map { (v, text) -> BriefItem("前情", v.title.trim() + "（卷摘要）", text, VOLUME_REASON) }
+        val gapItems = gap.mapNotNull { s -> take(s.summary, 600)?.let { s to it } }.asReversed()
+            .map { (s, text) -> BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), text, GAP_REASON) }
+        val olderItems = older.sortedByDescending { it.number }.mapNotNull { s ->
+            take(s.summary, 600)?.let { BriefItem("前情", "第 ${s.number} 章 ${s.title}".trim(), it, "写到" + presentNames.filter { n -> n in s.summary }.joinToString("、")) }
+        }
+        items += listOfNotNull(story) + volumeItems + gapItems + recentItems + olderItems
+        return budget - left
+    }
+
+    /** 前情各项怎么排（章目录式的前情列表用）：故事至今、卷摘要在前，章摘要按章号。 */
+    fun pastOrder(item: BriefItem): Int = when (item.reason) {
+        STORY_REASON -> -2
+        VOLUME_REASON -> -1
+        else -> ChapterRefs.number(item.title) ?: 0
+    }
+
     private fun cut(text: String, max: Int): String = if (text.length <= max) text else text.take(maxOf(max, 0)) + "……（后面省略）"
 }
 
@@ -882,16 +949,19 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     // 前情：写了摘要的章用摘要；最近几章没写摘要的，用它的细纲卡（从细纲提取的也算）。
     val index = work.chapters.indexOfFirst { it.id == chapterId }
     val before = work.chapters.take(index).filter { !confirmedOnly || it.status == ChapterStatus.FINAL }
+    val volumeOf = work.volumes.flatMap { v -> v.chapters.map { it.id to v.id } }.toMap()
     val summaries = before.mapIndexedNotNull { i, c ->
         val stored = card(workId, c.id)
         val no = chapterNo(work, c.id) ?: 0
         when {
-            stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary)
+            stored.summary.isNotBlank() -> ChapterSummary(no, c.title, stored.summary, volumeOf[c.id].orEmpty(), c.id)
             !confirmedOnly && i >= before.size - ChapterBriefs.RECENT_SUMMARIES ->
-                plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it") }
+                plannedCard(workId, c.id, entries).card.facts.takeIf { it.isNotBlank() }?.let { ChapterSummary(no, c.title, "（按细纲）$it", volumeOf[c.id].orEmpty(), c.id) }
             else -> null
         }
     }
+    // 分层前情：故事至今、往卷的卷摘要（只用本章之前的）。
+    val layers = StoryDigests.layers(work, chapterId, number, digests(workId), confirmedOnly)
     val body = text ?: text(workId, chapterId)
     val query = listOf(card, summaries.takeLast(2).joinToString("\n") { it.summary }, body.takeLast(1_500)).joinToString("\n")
     val budget = limit ?: assist(workId).briefLimit
@@ -901,8 +971,8 @@ fun WorkStore.brief(workId: String, chapterId: String, text: String? = null, lim
     // 键里不放整章正文：挑资料只用到正文里各出场人物出现几次（排谁在前）和结尾那段（在 query 里），别的字改了结果一样。
     val presence = ChapterBriefs.presence(ChapterBriefs.characterList(ChapterBriefs.sortDocs(docs), sources.prep), card, body)
         .map { (c, n) -> c.name to n }
-    return sources.brief(listOf("brief", prose, style, presence, card, number, volume, budget, summaries, query, skip, ledger)) {
-        ChapterBriefs.build(docs, body, card, number, volume, budget, summaries, query, skip, style && !prose, ledger, ahead = !prose, prep = sources.prep)
+    return sources.brief(listOf("brief", prose, style, presence, card, number, volume, budget, summaries, query, skip, ledger, layers)) {
+        ChapterBriefs.build(docs, body, card, number, volume, budget, summaries, query, skip, style && !prose, ledger, ahead = !prose, prep = sources.prep, layers = layers)
     }
 }
 

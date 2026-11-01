@@ -130,6 +130,21 @@ tasks.withType<Test>().configureEach {
         "--add-opens=java.base/java.io=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
+    // 测试的临时文件放进内存盘：Robolectric 每个用例的应用数据目录、TemporaryFolder 都在 java.io.tmpdir 下。
+    // 写作流程一次要存几十个文件（每个都 fsync、改名，SharedPreferences 提交也 fsync），和别的构建共用一块盘时，
+    // 别人大量写盘会让一次 fsync、改名卡上几百毫秒到几秒，界面测试就在 15 秒的等待上偶发超时（换谁不一定）。
+    // 堆不是原因：全量跑下来 GC 后最多约 700M（上限 2g），GC 停顿只占 2% 以内。没有 /dev/shm 的机器照旧用系统临时目录。
+    val ramDisk = File("/dev/shm")
+    if (ramDisk.isDirectory && ramDisk.canWrite()) {
+        // 每个 worktree、每个测试任务一个目录（同一个工程里测试任务不会同时跑）；开跑前清掉上一次没删干净的。
+        val tmp = File(ramDisk, "lingyue-$name-${projectDir.absolutePath.hashCode().toUInt()}")
+        systemProperty("java.io.tmpdir", tmp.absolutePath)
+        doFirst {
+            tmp.deleteRecursively()
+            tmp.mkdirs()
+        }
+        doLast { tmp.deleteRecursively() }
+    }
     // 测试里会建中文文件名（备份文件“灵阅备份-…”）；没设语言环境的机器上 JVM 会把文件名转成问号。
     environment("LC_ALL", "C.UTF-8")
     // 访问不了 Maven Central 时，可在 ~/.gradle/gradle.properties 里指定镜像。

@@ -9,7 +9,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,8 +68,6 @@ import com.xycs.lingyuereader.data.Note
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 
 // ---------- 目录 / 书签 / 批注 ----------
 
@@ -116,13 +113,13 @@ internal fun CatalogSheet(
             Row(Modifier.padding(start = if (sidebar) 16.dp else 20.dp, end = 8.dp, top = if (sidebar) 12.dp else 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (!sidebar) MiniCover(bookTitle)
                 Column(Modifier.weight(1f).padding(horizontal = if (sidebar) 0.dp else 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(bookTitle.ifBlank { "目录" }, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(bookTitle.ifBlank { "目录" }, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val left = chapters.sumOf { it.charCount.toLong() } * (1f - bookFraction.coerceIn(0f, 1f)) / charsPerMinute
                     Text(
                         listOfNotNull(author?.takeIf { it.isNotBlank() }, "已读 ${(bookFraction * 100).toInt()}%", readingTime(left)?.let { "还剩约 $it" })
                             .joinToString(" · "),
                         color = c.secondary,
-                        fontSize = 12.sp,
+                        fontSize = TypeScale.Footnote,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -137,11 +134,11 @@ internal fun CatalogSheet(
             }
             if (tab == 0) {
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("章节", color = c.secondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text("章节", color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.weight(1f))
                     Row(
                         Modifier
                             .height(48.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(Radius.Medium))
                             .clickable(role = Role.Button, onClick = onSortToggle)
                             .semantics { contentDescription = "目录排序：${if (sortDescending) "倒序" else "正序"}" }
                             .padding(horizontal = 10.dp),
@@ -149,7 +146,7 @@ internal fun CatalogSheet(
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
                         Icon(LingYueIcons.Sort, contentDescription = null, tint = c.secondary, modifier = Modifier.size(16.dp))
-                        Text(if (sortDescending) "倒序" else "正序", color = c.secondary, fontSize = 13.sp)
+                        Text(if (sortDescending) "倒序" else "正序", color = c.secondary, fontSize = TypeScale.Caption)
                     }
                 }
             }
@@ -197,7 +194,7 @@ internal fun CatalogSheet(
                                         Text(
                                             "%02d".format(index + 1),
                                             color = if (now) c.tint else c.secondary,
-                                            fontSize = 13.sp,
+                                            fontSize = TypeScale.Caption,
                                             modifier = Modifier.width(34.dp).clearAndSetSemantics { },
                                         )
                                         Column(Modifier.weight(1f)) {
@@ -206,20 +203,20 @@ internal fun CatalogSheet(
                                                 color = c.label,
                                                 fontFamily = FontFamily.Serif,
                                                 fontWeight = if (now) FontWeight.SemiBold else FontWeight.Normal,
-                                                fontSize = 16.sp,
+                                                fontSize = TypeScale.Headline,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
                                             summaries[index]?.let {
-                                                Text(it, color = c.secondary, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+                                                Text(it, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
                                             }
                                         }
                                         if (now) {
                                             Box(Modifier.padding(start = 8.dp, end = 6.dp).size(6.dp).clip(CircleShape).background(c.tint))
-                                            Text("正在读 · ${(chapterFraction * 100).toInt()}%", color = c.tint, fontSize = 12.sp)
+                                            Text("正在读 · ${(chapterFraction * 100).toInt()}%", color = c.tint, fontSize = TypeScale.Footnote)
                                         } else {
                                             readingTime(chapter.charCount / charsPerMinute)?.let {
-                                                Text(it, color = c.secondary, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+                                                Text(it, color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.padding(start = 8.dp))
                                             }
                                         }
                                     }
@@ -282,7 +279,7 @@ internal fun CatalogSheet(
 private fun EmptyHint(text: String) {
     // 标签页那块是定高的，外面套一层 Box 让卡片按自己的高矮排，不被撑满。
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(LocalGroupedColors.current.cell)) {
+        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(Radius.Large)).background(LocalGroupedColors.current.cell)) {
             EmptyRow(text)
         }
     }
@@ -307,12 +304,12 @@ private fun MarkRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(Modifier.padding(top = 4.dp)) {
                 if (color != null) Box(Modifier.padding(top = 5.dp, end = 8.dp).size(10.dp).clip(CircleShape).background(color))
-                Text(body, color = c.label, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(body, color = c.label, fontSize = TypeScale.Body, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
-            if (note != null) Text(note, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+            if (note != null) Text(note, color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 4.dp))
         }
         IconButton(onClick = onDelete) {
             Icon(LingYueIcons.Delete, contentDescription = "删除", tint = c.destructive)
@@ -354,12 +351,11 @@ private fun MarkColors(selected: MarkColor, onPick: (MarkColor) -> Unit) {
 @Composable
 private fun NoteField(note: String, onChange: (String) -> Unit) {
     val c = LocalGroupedColors.current
-    TextField(
+    GroupedTextField(
         value = note,
         onValueChange = onChange,
         label = "写点批注（可选）",
-        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
-        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 17.sp),
+        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Headline),
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
     )
 }
@@ -403,12 +399,11 @@ internal fun ParagraphSheet(
             GroupedSection(footer = "拖动选中要划线的文字；不选则划整段。") {
                 row {
                     // 只读输入框：能选中文字，选区就是要划线的范围。
-                    TextField(
+                    GroupedTextField(
                         value = selection,
                         onValueChange = { selection = it.copy(text = text) },
                         readOnly = true,
-                        colors = TextFieldDefaults.textFieldColors(backgroundColor = Color.Transparent, labelColor = c.secondary, borderColor = Color.Transparent),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = 16.sp, lineHeight = 26.sp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine),
                         modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
                     )
                 }
@@ -437,8 +432,8 @@ private fun NoteRow(quote: String, note: String?, color: Color, onDelete: () -> 
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(color))
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(quote, color = c.label, fontSize = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (note != null) Text(note, color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(quote, color = c.label, fontSize = TypeScale.Body, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (note != null) Text(note, color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(top = 2.dp))
         }
         IconButton(onClick = onDelete) {
             Icon(LingYueIcons.Delete, contentDescription = "删除", tint = c.destructive)
@@ -461,8 +456,8 @@ internal fun MultiNoteSheet(quote: String, palette: ReaderPalette, tint: Color =
                     Text(
                         quote,
                         color = c.label,
-                        fontSize = 15.sp,
-                        lineHeight = 23.sp,
+                        fontSize = TypeScale.Body,
+                        lineHeight = TypeScale.BodyLine,
                         maxLines = 8,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -490,8 +485,8 @@ internal fun FootnoteSheet(text: String, palette: ReaderPalette, fontFamily: Fon
                     Text(
                         text,
                         color = c.label,
-                        fontSize = 17.sp,
-                        lineHeight = 28.sp,
+                        fontSize = TypeScale.Headline,
+                        lineHeight = TypeScale.HeadlineLine,
                         fontFamily = fontFamily,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
                     )
@@ -519,6 +514,7 @@ private fun MiniCover(title: String) {
     Box(
         Modifier
             .size(44.dp, 62.dp)
+            // 书脊小封面：照实物书的书脊、书口画的圆角和字号，不用界面的档。
             .shadow(3.dp, RoundedCornerShape(topStart = 3.dp, bottomStart = 3.dp, topEnd = 6.dp, bottomEnd = 6.dp))
             .clip(RoundedCornerShape(topStart = 3.dp, bottomStart = 3.dp, topEnd = 6.dp, bottomEnd = 6.dp))
             .background(if (c.dark) Color(0xFF3A342C) else Color(0xFFE9DFCB))
@@ -529,8 +525,8 @@ private fun MiniCover(title: String) {
             title.take(6).toList().joinToString("\n"),
             color = if (c.dark) Color(0xFFE6DCC4) else Color(0xFF2B2620),
             fontFamily = FontFamily.Serif,
-            fontSize = 9.sp,
-            lineHeight = 10.sp,
+            fontSize = 9.sp, // 书脊上的竖排小字
+            lineHeight = 10.sp, // 同上
             textAlign = TextAlign.Center,
             modifier = Modifier.clearAndSetSemantics { },
         )
@@ -555,21 +551,22 @@ private fun SummaryBar(s: SummaryControls) {
         if (s.running) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Spinner()
-                Text("AI 速读生成中 ${s.progress.orEmpty()} 章", color = c.secondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                Text("停止", color = c.tint, fontSize = 14.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = s.onCancel).padding(8.dp))
+                Text("AI 速读生成中 ${s.progress.orEmpty()} 章", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
+                Text("停止", color = c.tint, fontSize = TypeScale.Caption, modifier = Modifier.clip(RoundedCornerShape(Radius.Small)).clickable(onClick = s.onCancel).padding(8.dp))
             }
         } else {
-            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("AI 速读", color = c.secondary, fontSize = 13.sp)
+            // 放不下时左右滑，露不全的那边边缘渐隐，不再被侧栏右边直接切掉。
+            FadingScrollRow(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("AI 速读", color = c.secondary, fontSize = TypeScale.Caption)
                 com.xycs.lingyuereader.ai.SummaryRange.entries.forEach { r ->
                     val (count, chars) = s.estimate(r)
                     val label = if (count == 0) "${r.label} · 已有" else "${r.label} · 约 ${if (chars >= 10_000) "%.1f 万".format(chars / 10_000f) else chars.toString()} 字"
                     Text(
                         label,
                         color = if (count == 0) c.tertiary else c.tint,
-                        fontSize = 13.sp,
+                        fontSize = TypeScale.Caption,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(50))
+                            .clip(Radius.Full)
                             .background(c.tint.copy(alpha = if (count == 0) 0.04f else 0.1f))
                             .clickable(enabled = count > 0) { s.onStart(r) }
                             .padding(horizontal = 12.dp, vertical = 7.dp),

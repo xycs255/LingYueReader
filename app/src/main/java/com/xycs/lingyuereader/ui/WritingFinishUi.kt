@@ -1,6 +1,7 @@
 package com.xycs.lingyuereader.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,8 +18,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.FinishRun
@@ -37,7 +38,6 @@ import com.xycs.lingyuereader.data.SyncItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 /** 整理结果超过这么多条时，确认页先折叠成一行“新设定 N 条、账本 N 条、冲突 N 条”。 */
@@ -135,7 +135,7 @@ private fun FinishBlocked(title: String, other: FinishRun, onOpen: () -> Unit, o
     ) {
         row {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("《$title》正在收尾，等它完成或先停下", color = c.warning, fontSize = 16.sp, lineHeight = 22.sp)
+                Text("《$title》正在收尾，等它完成或先停下", color = c.warning, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("去看看", onClick = onOpen, style = PillStyle.Filled)
                     if (!applying) PillButton("先停下它", onClick = onStop)
@@ -157,12 +157,12 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
     Column {
         GroupedSection(
             header = "收尾要做的",
-            footer = "整理入账和写摘要合成一次请求。写进去之前，都在这一页上给你看过、改过；点“完成收尾”才写。",
+            footer = "整理和写摘要合成一次请求；写进去之前都在这一页给你看过、改过，点“完成收尾”才写。",
         ) {
             row { CheckboxRow("定稿", checked = true, subtitle = "固定要做：存一个历史版本，正文锁定", enabled = false, dimChecked = false) {} }
             row {
                 CheckboxRow(
-                    "整理入账",
+                    "整理进设定包和账本",
                     checked = o.sync && syncBlocked == null,
                     subtitle = syncBlocked ?: "新设定、冲突写进设定包；人物状态、发生的事、伏笔记进故事账本",
                     enabled = syncBlocked == null,
@@ -213,15 +213,22 @@ private fun FinishSetup(vm: AppViewModel, run: FinishRun, local: Pair<Int, Int>?
         if (rules > 0 || cliche > 0) {
             GroupedSection(footer = "只是提醒，不拦着：定稿后正文锁定，要改先回去改。") {
                 row {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val parts = listOfNotNull(rules.takeIf { it > 0 }?.let { "$it 条不合规则" }, cliche.takeIf { it > 0 }?.let { "$it 处 AI 腔" })
-                        Text("还有 " + parts.joinToString("、"), color = c.warning, fontSize = 15.sp, modifier = Modifier.weight(1f))
-                        PillButton("回去看看", onClick = onBack, style = PillStyle.Tinted)
+                    // 提醒是提醒色的标签，按钮是普通的灰底胶囊：以前提醒色字配淡强调色底的胶囊，一行里两种颜色混着。
+                    val parts = listOfNotNull(rules.takeIf { it > 0 }?.let { "$it 条不合规则" }, cliche.takeIf { it > 0 }?.let { "$it 处 AI 腔" })
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 16.dp, end = 8.dp).semantics(mergeDescendants = true) {},
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("还有", color = c.label, fontSize = TypeScale.Body)
+                            parts.forEach { Tag(it, c.warning, Modifier.align(Alignment.CenterVertically)) }
+                        }
+                        PillButton("回去看看", onClick = onBack)
                     }
                 }
             }
         }
-        PrimaryButton("开始", onClick = { vm.writingAi.startFinish() }, modifier = Modifier.padding(horizontal = 12.dp))
+        PrimaryButton("开始收尾", onClick = { vm.writingAi.startFinish() }, modifier = Modifier.padding(horizontal = 12.dp))
     }
 }
 
@@ -245,10 +252,11 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
                 StepRow("三道审稿", run.review.mark(), run.review.label,
                     run.reviewError ?: run.reviewIssues.takeIf { it > 0 }?.let { "审出 $it 条问题" })
             }
-            row { StepRow("整理入账", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
+            row { StepRow("整理进设定包和账本", run.sync.mark(), run.sync.label, run.syncError ?: lookup?.takeIf { run.sync == StepState.RUNNING }) }
             row { StepRow("写本章摘要", run.summary.mark(), run.summary.label, run.summaryError) }
             if (run.options.learn) row { StepRow("从改稿里学", run.learn.mark(), run.learn.label, run.learnError.takeIf { run.learn == StepState.FAILED }) }
             if (run.options.handoff) row { StepRow("整理交接卡", run.handoff.mark(), run.handoff.label, run.handoffError ?: run.handoffNote) }
+            if (run.digest != StepState.SKIPPED) row { StepRow("整理前情", run.digest.mark(), run.digest.label, run.digestError ?: run.digestNote) }
             row { StepRow("定稿", StepMark.WAITING, StepState.WAITING.label, "确认以后再做") }
         }
         when (run.stage) {
@@ -256,7 +264,7 @@ private fun FinishProgress(vm: AppViewModel, run: FinishRun, lookup: String?, on
             FinishStage.REVIEW_FOUND -> GroupedSection(footer = "回去改：进审稿页逐条看，改完回这里接着收尾。不管它也可以，审稿结果留在审稿页上。") {
                 row {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("审出 ${run.reviewIssues} 条问题", color = c.warning, fontSize = 16.sp)
+                        Text("审出 ${run.reviewIssues} 条问题", color = c.warning, fontSize = TypeScale.Body)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PillButton("回去改", onClick = onReview, style = PillStyle.Filled)
                             PillButton("不管，继续收尾", onClick = { vm.writingAi.continueFinish() })
@@ -285,11 +293,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.SUMMARY in run.wrote
         GroupedSection(
             header = "本章摘要",
-            footer = if (run.oldSummary.isNotBlank()) "细纲卡里已经有摘要了：默认留旧的，选“用新的”才换成下面这段。" else "写进细纲卡，写后面的章时带给 AI。",
+            footer = if (run.oldSummary.isNotBlank()) "细纲卡里已经有摘要了：默认留旧的，选“用新的”才换成下面这段（定稿后又改过、摘要过期了的，默认用新的）。" else "写进细纲卡，写后面的章时带给 AI。",
         ) {
             if (run.oldSummary.isNotBlank()) {
                 row {
-                    Text("细纲卡里已有：${run.oldSummary}", color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                    Text("细纲卡里已有：${run.oldSummary}", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                 }
                 row {
@@ -302,7 +310,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             }
             if (!run.keepOld) row {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    TextField(
+                    GroupedTextField(
                         value = run.draft,
                         onValueChange = { if (!busy && !written) vm.writingAi.editFinishSummary(it) },
                         label = "AI 写的摘要（可以改）",
@@ -358,7 +366,19 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
             row {
                 val error = run.handoffError
                 if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
-                else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = 14.sp, lineHeight = 20.sp,
+                else Text(run.handoffNote.orEmpty(), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            }
+        }
+    }
+    // 前情（故事至今、卷摘要）整理好就存下了：这里只说一句结果，没成的原因照实说，不拦收尾。
+    if (run.digest != StepState.SKIPPED && (run.digestError ?: run.digestNote) != null) item(key = "digest") {
+        val c = LocalGroupedColors.current
+        GroupedSection(header = "前情", footer = "故事至今在作品页的“更多功能”里，卷摘要在卷的菜单里，都能看、能改。") {
+            row {
+                val error = run.digestError
+                if (error != null) ErrorText(error, Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                else Text(run.digestNote.orEmpty(), color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }
@@ -368,8 +388,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
         val written = FinishWrite.LEARN in run.wrote
         GroupedSection(
             header = "从改稿里学到的",
-            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，以后 AI 写正文、改稿时照着写；没勾的以后不再提，" +
-                "AI 归纳的点了“不要”才不再提。都能在作品 AI 设置里看、删。",
+            footer = "勾上的记进“我的黑名单”或“从改稿学到的”，AI 以后照着写；没勾的不再提。都能在写作 AI 里看、删。",
         ) {
             run.learnError?.let { e -> row { ErrorText(e, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) } }
             if (run.candidates.isEmpty()) row { EmptyRow("这一章的改稿里还没看出反复的改法。") }
@@ -390,7 +409,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.finishConfirm(
                                 cand.after.isBlank() -> "原来「${cand.before}」→ 你点了“这段不行”"
                                 else -> "原来「${cand.before}」→ 你改成「${cand.after}」"
                             },
-                            color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp,
+                            color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
                             modifier = Modifier.padding(start = 52.dp, end = 16.dp, bottom = 12.dp),
                         )
                         // AI 归纳的默认不勾：没勾不等于不要，作者点了“不要”才记进“不再提”。

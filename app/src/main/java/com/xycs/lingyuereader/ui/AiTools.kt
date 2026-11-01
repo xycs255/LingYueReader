@@ -43,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.xycs.lingyuereader.AppViewModel
 import com.xycs.lingyuereader.ai.AiHistoryItem
@@ -128,8 +127,8 @@ private fun HistorySheet(vm: AppViewModel, onOpen: (String) -> Unit) {
         list.isEmpty() -> Text(
             "这本书里还没有和 AI 的对话。划选文字后点“问 AI”，或在 AI 菜单里“问这本书”，对话会自动存在这里。",
             color = c.secondary,
-            fontSize = 14.sp,
-            lineHeight = 21.sp,
+            fontSize = TypeScale.Caption,
+            lineHeight = TypeScale.CaptionLine,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp).padding(bottom = 24.dp),
         )
         else -> Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
@@ -141,12 +140,12 @@ private fun HistorySheet(vm: AppViewModel, onOpen: (String) -> Unit) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
-                                Text(item.title.ifEmpty { "（无标题）" }, color = c.label, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(item.title.ifEmpty { "（无标题）" }, color = c.label, fontSize = TypeScale.Body, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 Text(
                                     "${if (item.kind == "book") "问这本书" else "问 AI"} · ${item.turns} 问 · " +
                                         java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(item.updatedAt)),
                                     color = c.secondary,
-                                    fontSize = 13.sp,
+                                    fontSize = TypeScale.Caption,
                                 )
                             }
                             IconButton(onClick = {
@@ -185,8 +184,8 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
         when {
             state.running -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spinner()
-                Text(state.progress ?: "正在整理……", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                Text("停止", color = c.tint, fontSize = 15.sp, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelCharacters).padding(8.dp))
+                Text(state.progress ?: "正在整理……", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
+                Text("停止", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelCharacters).padding(8.dp))
             }
             table == null -> {
                 Text(
@@ -194,12 +193,12 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
                         "从书开头整理到你读到的地方：约 ${wan(state.pendingChars)}字，分 ${state.pendingChunks} 次发给 ${config.providerLabel}。" +
                             "只看读过的部分，不会剧透；整理好存在本机，以后读到新内容再补。",
                     color = c.secondary,
-                    fontSize = 14.sp,
-                    lineHeight = 21.sp,
+                    fontSize = TypeScale.Caption,
+                    lineHeight = TypeScale.CaptionLine,
                 )
                 if (state.pendingChars > 0) PrimaryButton("开始整理", onClick = { vm.buildCharacters(chapter, block, char) })
             }
-            state.pendingChars > 0 -> Text("读到的地方之后还有约 ${wan(state.pendingChars)}字没整理，点右上角“更新”。", color = c.secondary, fontSize = 13.sp)
+            state.pendingChars > 0 -> Text("读到的地方之后还有约 ${wan(state.pendingChars)}字没整理，点右上角“更新”。", color = c.secondary, fontSize = TypeScale.Caption)
         }
         state.error?.let { ErrorText(it) }
         table?.characters?.forEach { ch -> CharacterCard(ch) }
@@ -209,7 +208,7 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
                     java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(table.updatedAt)) +
                     " · 长按正文里的人名也能看到",
                 color = c.tertiary,
-                fontSize = 12.sp,
+                fontSize = TypeScale.Footnote,
             )
         }
     }
@@ -220,19 +219,19 @@ private fun CharacterSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int
 internal fun CharacterCard(ch: BookCharacter, modifier: Modifier = Modifier) {
     val c = LocalGroupedColors.current
     Column(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.cell).padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.Medium)).background(c.cell).padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(ch.name, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Text(ch.name, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
             if (ch.aliases.isNotEmpty()) {
-                Text("又称 " + ch.aliases.joinToString("、"), color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp, bottom = 2.dp))
+                Text("又称 " + ch.aliases.joinToString("、"), color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp, bottom = 2.dp))
             }
         }
-        if (ch.role.isNotEmpty()) Text(ch.role, color = c.tint, fontSize = 13.sp)
-        if (ch.summary.isNotEmpty()) Text(ch.summary, color = c.label, fontSize = 14.sp, lineHeight = 21.sp)
+        if (ch.role.isNotEmpty()) Text(ch.role, color = c.tint, fontSize = TypeScale.Caption)
+        if (ch.summary.isNotEmpty()) Text(ch.summary, color = c.label, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         if (ch.relations.isNotEmpty()) {
-            Text(ch.relations.joinToString("　") { (n, r) -> "$n：$r" }, color = c.secondary, fontSize = 13.sp, lineHeight = 19.sp)
+            Text(ch.relations.joinToString("　") { (n, r) -> "$n：$r" }, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
         }
     }
 }
@@ -261,15 +260,15 @@ private fun NotesSheet(vm: AppViewModel) {
         when {
             state.text.isEmpty() && state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spinner()
-                Text("正在整理……", color = c.secondary, fontSize = 14.sp)
+                Text("正在整理……", color = c.secondary, fontSize = TypeScale.Caption)
             }
             state.text.isEmpty() -> {
                 Text(
                     if (state.hasMarks) "把这本书的划线和批注整理成一篇读书笔记：每章要点、摘句、你的想法，最后是总结。只发划线和批注，不发正文。"
                     else "这本书还没有划线和批注。读的时候划几句、写点想法，再来整理。",
                     color = c.secondary,
-                    fontSize = 14.sp,
-                    lineHeight = 21.sp,
+                    fontSize = TypeScale.Caption,
+                    lineHeight = TypeScale.CaptionLine,
                 )
                 if (state.hasMarks) PrimaryButton("开始整理", vm::buildReadingNotes)
             }
@@ -285,7 +284,7 @@ private fun NotesSheet(vm: AppViewModel) {
                         ).forEach { (label, action) -> PillButton(label, action, style = PillStyle.Tinted) }
                     }
                     if (state.at > 0) {
-                        Text("整理于 " + java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(state.at)), color = c.tertiary, fontSize = 12.sp)
+                        Text("整理于 " + java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(state.at)), color = c.tertiary, fontSize = TypeScale.Footnote)
                     }
                 }
             }
@@ -308,22 +307,22 @@ internal fun MarkdownText(text: String) {
                     Text(
                         inlineBold(line.drop(level).trim(), c.label),
                         color = c.label,
-                        fontSize = if (level <= 1) 20.sp else if (level == 2) 17.sp else 16.sp,
+                        fontSize = if (level <= 1) TypeScale.Title else if (level == 2) TypeScale.Headline else TypeScale.Headline,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(top = if (level <= 2) 8.dp else 4.dp),
                     )
                 }
                 line.trimStart().startsWith(">") -> Row(Modifier.height(IntrinsicSize.Min)) {
-                    Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(c.tint.copy(alpha = 0.5f)))
-                    Text(inlineBold(line.trimStart().removePrefix(">").trim(), c.label), color = c.secondary, fontSize = 15.sp, lineHeight = 23.sp, modifier = Modifier.padding(start = 10.dp))
+                    Box(Modifier.width(3.dp).fillMaxHeight().clip(Radius.Full).background(c.tint.copy(alpha = 0.5f)))
+                    Text(inlineBold(line.trimStart().removePrefix(">").trim(), c.label), color = c.secondary, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.padding(start = 10.dp))
                 }
                 Regex("""^\s*([-*•]|\d+[.、])\s+.*""").matches(line) -> Row {
                     val marker = Regex("""^\s*([-*•]|\d+[.、])\s+""").find(line)!!
                     val bullet = marker.groupValues[1].let { if (it.first().isDigit()) it else "•" }
-                    Text(bullet, color = c.tint, fontSize = 15.sp, modifier = Modifier.width(22.dp))
-                    Text(inlineBold(line.substring(marker.range.last + 1), c.label), color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                    Text(bullet, color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.width(22.dp))
+                    Text(inlineBold(line.substring(marker.range.last + 1), c.label), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
-                else -> Text(inlineBold(line, c.label), color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                else -> Text(inlineBold(line, c.label), color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
             }
         }
     }
@@ -373,8 +372,8 @@ private fun TranslateSheet(vm: AppViewModel, chapter: Int, onClose: () -> Unit) 
         Text(
             "把「${ch?.title.orEmpty()}」（约 ${ch?.charCount ?: 0} 字）分批交给 AI 翻译，译文接在每段原文下面，存在本机，不影响书签批注和进度。",
             color = c.secondary,
-            fontSize = 14.sp,
-            lineHeight = 21.sp,
+            fontSize = TypeScale.Caption,
+            lineHeight = TypeScale.CaptionLine,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
         GroupedSection(header = "译成") {
@@ -384,8 +383,8 @@ private fun TranslateSheet(vm: AppViewModel, chapter: Int, onClose: () -> Unit) 
             if (state.running != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Spinner()
-                    Text("正在翻译第${state.running!! + 1}章：${state.progress.orEmpty()} 批", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Text("停止", color = c.tint, fontSize = 15.sp, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelTranslate).padding(8.dp))
+                    Text("正在翻译第${state.running!! + 1}章：${state.progress.orEmpty()} 批", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
+                    Text("停止", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.clickable(role = Role.Button, onClick = vm::cancelTranslate).padding(8.dp))
                 }
             } else {
                 PrimaryButton(if (translated) "重新翻译本章" else "翻译本章", onClick = { vm.translateChapter(chapter, target) })
@@ -429,34 +428,34 @@ private fun CompanionSheet(vm: AppViewModel, chapter: Int, onDiscuss: (String) -
     val data = state.data.takeIf { state.chapter == chapter }
     SheetNavBar("本章伴读", back = null, action = if (data != null && !state.loading) "重新生成" to { vm.openCompanion(chapter, regenerate = true) } else null) {}
     Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(book?.content?.chapters?.getOrNull(chapter)?.title.orEmpty() + " · 按整章生成，建议读完本章再看", color = c.secondary, fontSize = 13.sp)
+        Text(book?.content?.chapters?.getOrNull(chapter)?.title.orEmpty() + " · 按整章生成，建议读完本章再看", color = c.secondary, fontSize = TypeScale.Caption)
         when {
             state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spinner()
-                Text("正在读这一章……", color = c.secondary, fontSize = 14.sp)
+                Text("正在读这一章……", color = c.secondary, fontSize = TypeScale.Caption)
             }
             data != null -> {
-                Text("本章要点", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("本章要点", color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold)
                 data.points.forEach { p ->
                     Row {
-                        Text("•", color = c.tint, fontSize = 15.sp, modifier = Modifier.width(18.dp))
-                        Text(p, color = c.label, fontSize = 15.sp, lineHeight = 23.sp)
+                        Text("•", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.width(18.dp))
+                        Text(p, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                     }
                 }
                 if (data.questions.isNotEmpty()) {
-                    Text("想一想", color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-                    Text("点一道题，和 AI 聊聊（只看你读过的部分）。", color = c.secondary, fontSize = 12.sp)
+                    Text("想一想", color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                    Text("点一道题，和 AI 聊聊（只看你读过的部分）。", color = c.secondary, fontSize = TypeScale.Footnote)
                     data.questions.forEach { q ->
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(Radius.Medium))
                                 .background(c.cell)
                                 .clickable(role = Role.Button) { onDiscuss(q) }
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(q, color = c.label, fontSize = 15.sp, lineHeight = 22.sp, modifier = Modifier.weight(1f))
+                            Text(q, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine, modifier = Modifier.weight(1f))
                             Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.padding(start = 8.dp).size(14.dp))
                         }
                     }
@@ -490,15 +489,15 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
         row { SegmentedRow(TalkScope.entries.map { it to it.label }, scope) { scope = it } }
         row { SegmentedRow(TalkStyle.entries.map { it to it.label }, style) { style = it } }
     }
-    val voice = if (config.enabled && config.speech.complete) "AI 语音 · ${config.speech.label}" else "系统语音（在 AI 助手设置里可以换成 AI 语音）"
+    val voice = if (config.enabled && config.speech.complete) "AI 语音 · ${config.speech.label}" else "系统语音（在“我的 → AI 服务”里可以换成 AI 语音）"
     Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when {
             state.loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spinner()
-                Text("正在写讲书稿……", color = c.secondary, fontSize = 14.sp)
+                Text("正在写讲书稿……", color = c.secondary, fontSize = TypeScale.Caption)
             }
             talk == null -> {
-                Text("把${if (scope == TalkScope.CHAPTER) "这一章" else "读过的部分"}讲成一段${if (style == TalkStyle.DUO) "两人对谈的播客" else "讲书节目"}，约 1500 字，再用$voice 读出来。只讲读过的，不剧透。", color = c.secondary, fontSize = 14.sp, lineHeight = 21.sp)
+                Text("把${if (scope == TalkScope.CHAPTER) "这一章" else "读过的部分"}讲成一段${if (style == TalkStyle.DUO) "两人对谈的播客" else "讲书节目"}，约 1500 字，再用$voice 读出来。只讲读过的，不剧透。", color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                 PrimaryButton("生成讲书稿", onClick = { vm.openTalk(chapter, block, scope, style, char = char) })
             }
         }
@@ -508,8 +507,8 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
         val playback = player?.state?.collectAsStateWithLifecycle()?.value
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(talk.title, color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(voice, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(talk.title, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(voice, color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Box(
                 Modifier.size(52.dp).clip(androidx.compose.foundation.shape.CircleShape).background(c.tint).clickable(role = Role.Button) { vm.playTalk() },
@@ -533,15 +532,15 @@ private fun TalkSheet(vm: AppViewModel, chapter: Int, block: Int, char: Int) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(Radius.Medium))
                         .background(if (now) c.tint.copy(alpha = 0.1f) else Color.Transparent)
                         .clickable(role = Role.Button) { vm.playTalk(i) }
                         .padding(horizontal = 8.dp, vertical = 7.dp),
                 ) {
                     if (style == TalkStyle.DUO || talk.lines.any { it.speaker == 1 }) {
-                        Text(AiTalk.NAMES[line.speaker], color = if (line.speaker == 0) c.tint else c.secondary, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.width(40.dp).padding(top = 2.dp))
+                        Text(AiTalk.NAMES[line.speaker], color = if (line.speaker == 0) c.tint else c.secondary, fontSize = TypeScale.Footnote, fontWeight = FontWeight.Medium, modifier = Modifier.width(40.dp).padding(top = 2.dp))
                     }
-                    Text(line.text, color = if (now) c.label else c.label.copy(alpha = 0.85f), fontSize = 15.sp, lineHeight = 23.sp)
+                    Text(line.text, color = if (now) c.label else c.label.copy(alpha = 0.85f), fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
             }
         }

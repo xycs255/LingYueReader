@@ -66,7 +66,8 @@ class FontUiTest {
         waitForText("第 1/")
         waitForText("测试字体灵阅")
         compose.onRoot().performTouchInput { click(center) }
-        compose.onNodeWithText("设置").performClick()
+        // 字体在“外观”首页（“更多”那页不再重复列）。
+        compose.onNodeWithText("外观").performClick()
         compose.onNodeWithText("字体").performScrollTo().performClick()
         waitForText("TestBlocks")
         // 长按导入的字体，下面出现红色的“删除”。

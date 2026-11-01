@@ -17,7 +17,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.ai.DraftParagraphDiff
 import com.xycs.lingyuereader.ai.TextDiff
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +37,11 @@ private sealed interface DraftDiffUiState {
  */
 @Composable
 internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterpart: String?, counterpartLabel: String,
-                               onReject: ((Int) -> Unit)? = null, rejectEnabled: Boolean = true) {
+                               onReject: ((Int) -> Unit)? = null, rejectEnabled: Boolean = true,
+                               /** 对比里删掉、加上的段落上面的小字；设定文档的 AI 改用“原稿中”“新稿中”。 */
+                               removedLabel: String = "对照稿中", addedLabel: String = "当前稿中", currentLabel: String = "当前稿",
+                               /** 段首空两格：正文要，设定文档（Markdown 的标题、表格）不要。 */
+                               indent: Boolean = true) {
     val c = LocalGroupedColors.current
     val comparison = counterpart?.takeIf { it.isNotBlank() }
     val diff = produceState<DraftDiffUiState>(DraftDiffUiState.Loading, view, current, comparison) {
@@ -51,27 +54,27 @@ internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterp
     SelectionContainer {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             when (view) {
-                DraftVersionView.CURRENT -> if (onReject == null) DraftVersionText(current) else DraftRejectableText(current, rejectEnabled, onReject)
-                DraftVersionView.COUNTERPART -> DraftVersionText(comparison ?: current)
-                DraftVersionView.DIFFERENCE -> if (comparison == null) DraftVersionText(current)
+                DraftVersionView.CURRENT -> if (onReject == null) DraftVersionText(current, indent) else DraftRejectableText(current, rejectEnabled, onReject)
+                DraftVersionView.COUNTERPART -> DraftVersionText(comparison ?: current, indent)
+                DraftVersionView.DIFFERENCE -> if (comparison == null) DraftVersionText(current, indent)
                 else if (diff == DraftDiffUiState.Loading) {
-                    Text("正在对齐段落……", color = c.secondary, fontSize = 13.sp)
+                    Text("正在对齐段落……", color = c.secondary, fontSize = TypeScale.Caption)
                 } else if (diff == DraftDiffUiState.Unaligned) {
-                    Text("段落无法可靠对齐，以下展示两份完整稿件。", color = c.secondary, fontSize = 13.sp)
-                    Text(counterpartLabel, color = c.secondary, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
-                    DraftVersionText(comparison)
-                    Text("当前稿", color = c.secondary, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp))
-                    DraftVersionText(current)
+                    Text("段落无法可靠对齐，以下展示两份完整稿件。", color = c.secondary, fontSize = TypeScale.Caption)
+                    Text(counterpartLabel, color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.padding(top = 12.dp))
+                    DraftVersionText(comparison, indent)
+                    Text(currentLabel, color = c.secondary, fontSize = TypeScale.Footnote, modifier = Modifier.padding(top = 16.dp))
+                    DraftVersionText(current, indent)
                 } else (diff as DraftDiffUiState.Aligned).pieces.forEach { piece ->
                     val changed = piece.kind != TextDiff.Kind.SAME
-                    if (changed) Text(if (piece.kind == TextDiff.Kind.DELETED) "对照稿中" else "当前稿中",
+                    if (changed) Text(if (piece.kind == TextDiff.Kind.DELETED) removedLabel else addedLabel,
                         color = if (piece.kind == TextDiff.Kind.DELETED) c.destructive else c.success,
-                        fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp, bottom = 3.dp))
+                        fontSize = TypeScale.Footnote, modifier = Modifier.padding(top = 8.dp, bottom = 3.dp))
                     Text(piece.paragraphs.joinToString("\n"),
-                        color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
+                        color = c.label, fontSize = TypeScale.Headline, lineHeight = TypeScale.HeadlineLine,
                         modifier = Modifier.fillMaxWidth()
                             .background(if (!changed) c.cell else if (piece.kind == TextDiff.Kind.DELETED)
-                                c.destructive.copy(alpha = 0.10f) else c.success.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                                c.destructive.copy(alpha = 0.10f) else c.success.copy(alpha = 0.10f), RoundedCornerShape(Radius.Small))
                             .padding(if (changed) 8.dp else 0.dp))
                 }
             }
@@ -80,10 +83,10 @@ internal fun DraftRevisionBody(view: DraftVersionView, current: String, counterp
 }
 
 @Composable
-private fun DraftVersionText(text: String) {
+private fun DraftVersionText(text: String, indent: Boolean = true) {
     val c = LocalGroupedColors.current
-    Text(text, color = c.label, fontSize = 17.sp, lineHeight = 30.sp,
-        style = androidx.compose.ui.text.TextStyle(textIndent = TextIndent(firstLine = 2.em)),
+    Text(text, color = c.label, fontSize = TypeScale.Headline, lineHeight = TypeScale.HeadlineLine,
+        style = androidx.compose.ui.text.TextStyle(textIndent = if (indent) TextIndent(firstLine = 2.em) else TextIndent.None),
         modifier = Modifier.fillMaxWidth())
 }
 

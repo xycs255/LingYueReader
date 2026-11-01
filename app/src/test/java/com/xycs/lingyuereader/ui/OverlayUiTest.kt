@@ -71,8 +71,8 @@ class OverlayUiTest {
     @Test
     fun settingsSheetOpens() {
         openReaderMenu()
-        compose.onNodeWithText("设置").performClick()
-        waitForText("阅读设置")
+        compose.onNodeWithText("更多").performClick()
+        waitForText("更多设置")
         compose.onNodeWithText("排版").performScrollTo().performClick()
         compose.onNodeWithText("恢复默认排版").assertExists()
     }
@@ -135,8 +135,12 @@ class OverlayUiTest {
     fun shelfMenuAndDialogsOpen() {
         waitForText("测试书")
         compose.onAllNodesWithText("测试书")[0].performTouchInput { longClick() }
-        waitForText("重命名")
-        compose.onNodeWithText("重命名").performClick()
+        // 书的菜单只有“详情 / 分组… / 移除”：重命名、从原文件刷新在详情页里。
+        waitForText("分组…")
+        assertTrue(compose.onAllNodesWithText("重命名").fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodesWithText("从原文件刷新").fetchSemanticsNodes().isEmpty())
+        compose.onNodeWithText("分组…").performClick()
+        waitForText("《测试书》的分组")
         waitForText("确定")
         compose.onNodeWithText("取消").performClick()
         compose.waitForIdle()

@@ -163,7 +163,7 @@ class WritingLearnUiTest {
         compose.runOnUiThread { vm.open(Screen.ChapterFinish(workId, chapterId)) }
         waitFor { seen("从这章的改稿里学") }
         compose.onNode(hasText("从这章的改稿里学") and isToggleable()).assertIsOn()
-        press("开始")
+        press("开始收尾")
         waitFor { seen("从改稿里学到的") }
         // 本机比对的黑名单词（默认勾上）和它的例子；AI 归纳的规则默认不勾。
         val banTitle = "黑名单词：「$ban」"
@@ -211,7 +211,10 @@ class WritingLearnUiTest {
         compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
         press("从改稿学到的")
         waitFor { has("长句拆短。") }
-        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("对白说完就收住。")
+        // 列表在上；右上“+”弹对话框加一条。
+        compose.onNodeWithContentDescription("加一条写法").performClick()
+        waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("对白说完就收住。")
         press("加进去")
         waitFor { "对白说完就收住。" in store.assist(workId).learned }
         waitFor { has("对白说完就收住。") && has("2 条") }

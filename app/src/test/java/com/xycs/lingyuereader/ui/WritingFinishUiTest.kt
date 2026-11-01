@@ -201,7 +201,7 @@ class WritingFinishUiTest {
         waitForText("收尾要做的")
         // 默认：定稿固定勾上不能取消，整理、摘要勾上，审稿不勾。
         compose.onNode(hasText("定稿") and isToggleable()).assertIsOn().assertIsNotEnabled()
-        compose.onNode(hasText("整理入账") and isToggleable()).assertIsOn()
+        compose.onNode(hasText("整理进设定包和账本") and isToggleable()).assertIsOn()
         compose.onNode(hasText("写本章摘要") and isToggleable()).assertIsOn()
         compose.onNode(hasText("顺带三道审稿") and isToggleable()).assertIsOff()
         assertTrue(asked.isEmpty())
@@ -225,7 +225,7 @@ class WritingFinishUiTest {
     @Test
     fun theWholeFlowSyncsSummarizesAndFinalizesInOneRequest() {
         openFinishFromMenu()
-        press("开始")
+        press("开始收尾")
         waitFor { seen("完成收尾") }
         // 整理和摘要合成了一次请求。
         assertEquals(1, asked.size)
@@ -264,7 +264,7 @@ class WritingFinishUiTest {
         openFinishFromMenu()
         compose.onNodeWithText("顺带三道审稿").performClick()
         waitFor { store.assist(workId).finish.review }
-        press("开始")
+        press("开始收尾")
         waitForText("审出 2 条问题")
         assertEquals(FinishStage.REVIEW_FOUND, stage())
         // 停在选择处：还没整理。
@@ -283,11 +283,11 @@ class WritingFinishUiTest {
     @Test
     fun withNoAiOnlyFinalizingIsPossible() {
         openFinishFromMenu()
-        compose.onNode(hasText("整理入账") and isToggleable()).assertIsOff().assertIsNotEnabled()
+        compose.onNode(hasText("整理进设定包和账本") and isToggleable()).assertIsOff().assertIsNotEnabled()
         compose.onNode(hasText("写本章摘要") and isToggleable()).assertIsOff().assertIsNotEnabled()
         compose.onNode(hasText("顺带三道审稿") and isToggleable()).assertIsOff().assertIsNotEnabled()
         assertTrue(has("没设置 AI"))
-        press("开始")
+        press("开始收尾")
         // 只有定稿：直接到确认，“完成收尾”就是定稿。
         waitFor { seen("完成收尾") }
         assertFalse(has("本章摘要"))
@@ -302,7 +302,7 @@ class WritingFinishUiTest {
     @Test
     fun aFailedWriteIsRetriedWithoutWritingTwice() {
         openFinishFromMenu()
-        press("开始")
+        press("开始收尾")
         waitFor { seen("完成收尾") }
         // 等确认的时候，作者在细纲卡页上自己写了摘要：写摘要那一步不盖掉它，停下。
         store.saveCard(workId, chapterId, store.card(workId, chapterId).copy(summary = "沈默写的另一版摘要"))

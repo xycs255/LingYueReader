@@ -141,8 +141,10 @@ class MarksUiTest {
         compose.onNodeWithText("批注 1").performClick()
         waitForText("导出全部批注")
         // 存到了书的目录里
-        val saved = File(context.filesDir, "books/b1/marks.json").readText()
-        assertEquals(1, JSONObject(saved).getJSONArray("notes").length())
+        // 划线在后台存盘：等文件写好再读（盘慢时界面已经显示了，文件可能还没落盘）。
+        val file = File(context.filesDir, "books/b1/marks.json")
+        compose.waitUntil(15_000) { file.isFile && runCatching { JSONObject(file.readText()) }.isSuccess }
+        assertEquals(1, JSONObject(file.readText()).getJSONArray("notes").length())
     }
 
     @Test

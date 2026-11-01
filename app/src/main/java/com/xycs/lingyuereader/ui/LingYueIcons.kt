@@ -685,18 +685,40 @@ object LingYueIcons {
         }
     }
 
-    /** 工具：四个圆角小方块排成田字，编辑器底栏打开写作工具。 */
-    val Tools by lazy {
-        glyph("Tools") {
+    /** 外链：一个缺了右上角的方框，一支箭头从框里斜着指出去（项目主页这类打开外面网页的）。和分享（向上箭头出托盘）分得开。 */
+    val External by lazy {
+        glyph("External", autoMirror = true) {
             trace {
-                listOf(4.5f to 4.5f, 13.5f to 4.5f, 4.5f to 13.5f, 13.5f to 13.5f).forEach { (x, y) ->
-                    moveTo(x + 1.5f, y)
-                    lineTo(x + 4.5f, y); quadTo(x + 6f, y, x + 6f, y + 1.5f)
-                    lineTo(x + 6f, y + 4.5f); quadTo(x + 6f, y + 6f, x + 4.5f, y + 6f)
-                    lineTo(x + 1.5f, y + 6f); quadTo(x, y + 6f, x, y + 4.5f)
-                    lineTo(x, y + 1.5f); quadTo(x, y, x + 1.5f, y)
-                    close()
-                }
+                moveTo(11f, 5f); lineTo(6.7f, 5f)
+                curveTo(5.7f, 5f, 5f, 5.7f, 5f, 6.7f)
+                lineTo(5f, 17.3f)
+                curveTo(5f, 18.3f, 5.7f, 19f, 6.7f, 19f)
+                lineTo(17.3f, 19f)
+                curveTo(18.3f, 19f, 19f, 18.3f, 19f, 17.3f)
+                lineTo(19f, 13f)
+                moveTo(11.5f, 12.5f); lineTo(19.5f, 4.5f)
+                moveTo(14f, 4.5f); lineTo(19.5f, 4.5f); lineTo(19.5f, 10f)
+            }
+        }
+    }
+
+    /** 警示：圆角三角形里一道竖线一个点（闪退记录）。和信息（圆里的 i）分得开。 */
+    val Warning by lazy {
+        glyph("Warning") {
+            trace {
+                moveTo(10.5f, 4.6f)
+                quadTo(12f, 2.2f, 13.5f, 4.6f)
+                lineTo(20.6f, 17.2f)
+                quadTo(21.9f, 19.6f, 19.2f, 19.6f)
+                lineTo(4.8f, 19.6f)
+                quadTo(2.1f, 19.6f, 3.4f, 17.2f)
+                close()
+                moveTo(12f, 9.2f); lineTo(12f, 13.4f)
+            }
+            solid {
+                moveTo(12f, 15.4f)
+                arcTo(1.05f, 1.05f, 0f, true, true, 11.99f, 15.4f)
+                close()
             }
         }
     }

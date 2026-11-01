@@ -64,6 +64,18 @@ data class ChapterCard(
     val aiOutline: Boolean = false,
     /** 节拍是一键写本章时 AI 拆的，作者还没确认（改过节拍或点了确认就清掉，见 [withBeats]）。 */
     val aiBeats: Boolean = false,
+    /**
+     * 本章改变了什么：一两句话，写这一章过后人物关系、处境、知道的事有什么变化。连写几百章容易出“热闹了一章、什么都没变”的水章，
+     * 写明这一项，写正文时放进任务卡，事实审稿核对它有没有落到正文里。不算进 [auto] 的指纹（细纲文档里没有这一项）。
+     */
+    val change: String = "",
+    /** 伏笔动作：这一章对哪些伏笔做什么（埋、推进、回收、暂缓），见 [ForeshadowMoves]。同样不算进 [auto] 的指纹。 */
+    val moves: List<ForeshadowMove> = emptyList(),
+    /**
+     * 本章摘要过期了：定稿章解锁改过、重新定稿时标上（见 [FinalCascade]），下次收尾或作者改摘要时重新写。
+     * 摘要一改就清掉（[WorkStore.saveCard]、[WorkStore.updateCard]）。
+     */
+    val summaryStale: Boolean = false,
 ) {
     /** 写之前的六项是不是都空着：判断要不要从细纲提取、算不算作者手写的细纲时看它。 */
     val outlineEmpty: Boolean get() = listOf(facts, boundary, pov, countdown, hook, threads).all { it.isBlank() }
@@ -82,13 +94,15 @@ data class ChapterCard(
         countdown = planned.countdown.ifBlank { ai.countdown },
         hook = planned.hook.ifBlank { ai.hook },
         threads = planned.threads.ifBlank { ai.threads },
+        change = planned.change.ifBlank { ai.change },
+        moves = planned.moves.ifEmpty { ai.moves },
         auto = 0,
         aiOutline = true,
     )
 }
 
 /** 变更登记的种类。 */
-enum class ChangeKind(val label: String) { UNLOCK("解锁修改"), FINALIZE("定稿"), CANON("设定变更") }
+enum class ChangeKind(val label: String) { UNLOCK("解锁修改"), FINALIZE("定稿"), CANON("设定变更"), CASCADE("改定稿后核对") }
 
 /**
  * 一条变更登记：哪一章、为什么改。[canon] 为真表示改动涉及不变量或设定，要同步改设定包（不变量、细纲、人物档案、察觉表），
@@ -103,6 +117,12 @@ data class ChangeEntry(
     val reason: String = "",
     val canon: Boolean = false,
     val synced: Boolean = false,
+    /** 解锁时正文的指纹（[ChapterSyncs.hash]）：重新定稿时比一比，改过才做级联核对（[FinalCascade]）。旧登记没有，为空。 */
+    val textHash: Int? = null,
+    /**
+     * 解锁时细纲卡摘要的指纹：重新定稿时摘要已经换过（收尾写了新摘要）就不再标过期（[FinalCascade]）。旧登记没有，为空。
+     */
+    val summaryHash: Int? = null,
 ) {
     val pending: Boolean get() = canon && !synced
 }
@@ -219,6 +239,13 @@ data class WorkAssist(
      * 写正文、改稿时带最近 [PROMPT_LEARNED] 条（见 [com.xycs.lingyuereader.ai.WritePrompts.proseTail]）。
      */
     val learned: List<String> = emptyList(),
+    /**
+     * 数值与持有（[LedgerKind.HOLD]）：整理入账时让 AI 提议境界、钱财、关键物品在谁手里，写正文时带上出场人物的当前值。
+     * 默认关：只对有修炼、金手指、货币、关键物品体系的书有用，别的书打开只多噪音。
+     */
+    val holdings: Boolean = false,
+    /** 拟细纲前先给 3 个走向（[com.xycs.lingyuereader.ai.WritePrompts.planOptions]）：细纲卡页、一键写本章都先停下等作者挑。默认关。 */
+    val planOptions: Boolean = false,
 ) {
     /** 挑文风范例用的设置。 */
     val sampleOptions: SampleOptions get() = SampleOptions(sampleLimit, sampleSkip.toSet(), sampleShift)
@@ -701,6 +728,7 @@ class WorkStore(
         check(!pendingSave(workId).exists()) { "上次写作保存未能修复，暂不能删除章节" }
         val text = text(workId, chapterId)
         if (text.isNotBlank()) snapshot(workId, chapterId, text)
+        val before = get(workId)
         val work = update(workId) { w -> w.copy(volumes = w.volumes.map { v -> v.copy(chapters = v.chapters.filterNot { it.id == chapterId }) }) }
         chapterFile(workId, chapterId).delete()
         cardFile(workId, chapterId).delete()
@@ -714,7 +742,32 @@ class WorkStore(
         runCatching { if (File(dir(workId), LEARN).isFile) updateLearning(workId) { EditLearning.forgetChapter(it, chapterId) } }
         // 这章的交接卡也清掉；清不掉也不挡删章（备份时按现有的章过滤）。
         runCatching { if (File(dir(workId), HANDOFFS).isFile) saveHandoff(workId, chapterId, null) }
+        // 分层前情里这章的内容也要去掉；清不掉也不挡删章。
+        runCatching { if (before != null && work != null && File(dir(workId), DIGESTS).isFile) forgetDigestChapter(workId, before, work, chapterId) }
         return work
+    }
+
+    /**
+     * 删章以后整理分层前情：卷摘要的 [VolumeDigest.chapters] 去掉这一章，卷摘要标过期（里面还有这章的事，下次收尾重新汇总）；
+     * 故事至今盖到了这一章（写到这章或更后面）也标过期；写到的正是这一章，改成写到它前面那一章（章号跟着改），
+     * “写到哪”不丢，回头重收旧章时不动梗概的保护照样成立。作者改过的不标过期（下次也不会自动重整），只改章列表、写到哪。
+     */
+    private fun forgetDigestChapter(workId: String, before: Work, after: Work, chapterId: String) {
+        val index = before.chapters.indexOfFirst { it.id == chapterId }
+        updateDigests(workId) { d ->
+            val volumes = d.volumes.mapValues { (_, v) ->
+                if (chapterId !in v.chapters) v else v.copy(chapters = v.chapters - chapterId, stale = v.stale || !v.edited)
+            }
+            val story = d.story?.let { s ->
+                val at = before.chapters.indexOfFirst { it.id == s.throughId }
+                if (index < 0 || at < index) return@let s
+                // 写到的正是这一章而前面没有章了：梗概只剩这章的事，去掉。
+                val through = if (s.throughId != chapterId) s.throughId else before.chapters.getOrNull(index - 1)?.id ?: return@let null
+                // 后面的章章号往前挪了一位，写到哪的章号跟着改。
+                s.copy(throughId = through, throughNo = chapterNo(after, through) ?: s.throughNo, stale = s.stale || !s.edited)
+            }
+            d.copy(story = story, volumes = volumes)
+        }
     }
 
     // ---------- 状态与变更登记 ----------
@@ -736,7 +789,8 @@ class WorkStore(
         if (c.status == status) return work
         if (c.locked) require(reason.isNotBlank()) { "改定稿的章节要先写原因" }
         when {
-            c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon))
+            c.locked -> addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.UNLOCK, c.id, c.title, reason.trim(), canon,
+                textHash = ChapterSyncs.hash(text(workId, chapterId)), summaryHash = ChapterSyncs.hash(card(workId, chapterId).summary)))
             status == ChapterStatus.FINAL -> {
                 text(workId, chapterId).takeIf { it.isNotBlank() }?.let { snapshot(workId, chapterId, it) }
                 addChange(workId, ChangeEntry(newId(), clock(), ChangeKind.FINALIZE, c.id, c.title, reason.trim(), canon))
@@ -875,6 +929,10 @@ class WorkStore(
         require(ID.matches(chapterId)) { "章节 id 无效" }
         return File(dir(workId), "$chapterId.card.json")
     }
+
+    /** 细纲卡文件的指纹（修改时间和大小，不读内容）：体检这类只想知道卡变没变的用。没有卡为 0。 */
+    fun cardStamp(workId: String, chapterId: String): Long =
+        cardFile(workId, chapterId).let { f -> if (f.isFile) f.lastModified() * 31 + f.length() else 0L }
 
     @Synchronized
     fun card(workId: String, chapterId: String): ChapterCard {
@@ -1045,9 +1103,17 @@ class WorkStore(
     fun saveCard(workId: String, chapterId: String, card: ChapterCard) {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val old = card(workId, chapterId)
-        val next = card.copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
+        val next = linkMoves(workId, card).let { if (it.summary != old.summary) it.copy(summaryStale = false) else it }
+            .copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
         check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
         update(workId) { it }
+    }
+
+    /** 伏笔动作里还没对上账本的，按内容对一次（见 [ForeshadowMoves.link]）；都对上了、没有账本时不读账本。 */
+    private fun linkMoves(workId: String, card: ChapterCard): ChapterCard {
+        if (card.moves.none { it.ledgerId.isEmpty() } || !File(dir(workId), LEDGER).isFile) return card
+        val ledger = runCatching { ledger(workId) }.getOrNull() ?: return card
+        return card.copy(moves = ForeshadowMoves.link(card.moves, ledger))
     }
 
     /**
@@ -1059,7 +1125,8 @@ class WorkStore(
     fun updateCard(workId: String, chapterId: String, transform: (ChapterCard) -> ChapterCard): ChapterCard {
         require(get(workId)?.chapter(chapterId) != null) { "章节不在了" }
         val old = card(workId, chapterId)
-        val changed = transform(old)
+        val changed = transform(old).let { if (it.moves != old.moves) linkMoves(workId, it) else it }
+            .let { if (it.summary != old.summary) it.copy(summaryStale = false) else it }
         if (changed.copy(updatedAt = old.updatedAt) == old) return old
         val next = changed.copy(updatedAt = maxOf(clock(), old.updatedAt + 1))
         check(DurableFiles.write(cardFile(workId, chapterId), next.toJson().toString().toByteArray())) { "无法保存细纲卡" }
@@ -1073,7 +1140,10 @@ class WorkStore(
         val work = get(workId) ?: return null
         if (work.volumes.size <= 1) return work
         work.volumes.firstOrNull { it.id == volumeId }?.chapters?.forEach { deleteChapter(workId, it.id) }
-        return update(workId) { w -> w.copy(volumes = w.volumes.filterNot { it.id == volumeId }) }
+        val next = update(workId) { w -> w.copy(volumes = w.volumes.filterNot { it.id == volumeId }) }
+        // 这一卷的卷摘要一起清掉；清不掉也不挡删卷（备份时按现有的卷过滤）。
+        runCatching { if (File(dir(workId), DIGESTS).isFile) updateDigests(workId) { it.copy(volumes = it.volumes - volumeId) } }
+        return next
     }
 
     /**
@@ -1376,6 +1446,37 @@ class WorkStore(
         val next = if (card == null) old - chapterId else old + (chapterId to card)
         if (next == old) return
         check(DurableFiles.write(File(d, HANDOFFS), Handoffs.toJson(next).toString().toByteArray())) { "无法保存交接卡" }
+    }
+
+    // ---------- 分层前情：故事至今、卷摘要 ----------
+
+    /** 这部作品的故事至今和卷摘要（[StoryDigests]）：没有为空；读不出时坏文件另存一份，当作空的（下次收尾重新整理）。 */
+    @Synchronized
+    fun digests(workId: String): Digests {
+        val file = File(dir(workId), DIGESTS)
+        if (!file.isFile) return Digests()
+        return try {
+            StoryDigests.fromJson(JSONObject(file.readText()))
+        } catch (e: Exception) {
+            DurableFiles.keepDamaged(file)
+            Digests()
+        }
+    }
+
+    /**
+     * 改分层前情：整份读、改、写临时文件再改名。不在了的卷顺手去掉。返回改后的。
+     * 不改作品的修改时间：和交接卡一样，是从摘要整理出来的附属物。
+     */
+    @Synchronized
+    fun updateDigests(workId: String, transform: (Digests) -> Digests): Digests {
+        val d = dir(workId)
+        require(File(d, WORK).isFile) { "作品不在了" }
+        val volumeIds = get(workId)?.volumes?.map { it.id }?.toSet().orEmpty()
+        val old = digests(workId)
+        val next = transform(old).let { it.copy(volumes = it.volumes.filterKeys { id -> id in volumeIds }) }
+        if (next == old) return old
+        check(DurableFiles.write(File(d, DIGESTS), StoryDigests.toJson(next).toString().toByteArray())) { "无法保存前情" }
+        return next
     }
 
     // ---------- 文风范例的挑选缓存 ----------
@@ -1841,6 +1942,10 @@ class WorkStore(
             val handoffSource = File(dir(w.id), HANDOFFS)
             if (handoffSource.isFile) component(handoffSource, "交接卡读不出，没有放进备份") { Handoffs.fromJsonAll(JSONObject(it)) }
                 ?.let { all -> entry.put("handoffs", Handoffs.toJson(all.filterKeys { id -> w.chapter(id) != null })) }
+            // 故事至今和卷摘要：只带还在的卷。读不出就不放这个键，恢复时保留那台手机上原来的。
+            val digestSource = File(dir(w.id), DIGESTS)
+            if (digestSource.isFile) component(digestSource, "故事至今和卷摘要读不出，没有放进备份") { StoryDigests.fromJson(JSONObject(it)) }
+                ?.let { d -> entry.put("digests", StoryDigests.toJson(d.copy(volumes = d.volumes.filterKeys { id -> w.volumes.any { v -> v.id == id } }))) }
             array.put(entry)
         }
         val backup = JSONObject().put("format", 1).put("works", array)
@@ -1902,6 +2007,8 @@ class WorkStore(
         val learn: LearnData? = null,
         /** 各章的交接卡；旧备份没有这一项（空），恢复时保留本机的。 */
         val handoffs: Map<String, ChapterHandoff>? = null,
+        /** 故事至今和卷摘要；旧备份没有这一项（空），恢复时保留本机的。 */
+        val digests: Digests? = null,
     )
 
     /**
@@ -1959,16 +2066,17 @@ class WorkStore(
             raw.keys().asSequence().associateWith { id ->
                 require(id in chapterIds) { "备份细纲卡引用未知章节" }
                 val cardJson = raw.getJSONObject(id)
-                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan", "beats").forEach { key ->
+                listOf("facts", "boundary", "pov", "countdown", "hook", "threads", "summary", "plan", "beats", "change").forEach { key ->
                     require(!cardJson.has(key) || cardJson.opt(key) is String) { "备份细纲卡结构损坏" }
                 }
                 if (cardJson.has("beatsDone")) {
                     val done = cardJson.opt("beatsDone")
                     require(done is JSONArray && (0 until done.length()).all { (done.opt(it) as? Number)?.toLong() in 1L..Beats.MAX.toLong() }) { "备份细纲卡节拍损坏" }
                 }
-                listOf("aiOutline", "aiBeats").forEach { key ->
+                listOf("aiOutline", "aiBeats", "summaryStale").forEach { key ->
                     require(!cardJson.has(key) || cardJson.opt(key) is Boolean) { "备份细纲卡标记损坏" }
                 }
+                require(!cardJson.has("moves") || cardJson.opt("moves") is JSONArray) { "备份细纲卡伏笔动作损坏" }
                 cardJson.checkedInteger("auto", Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(), "备份细纲卡指纹损坏")
                 cardJson.checkedInteger("updatedAt", 0, Long.MAX_VALUE, "备份细纲卡时间损坏")
                 cardJson.toCard()
@@ -2007,6 +2115,7 @@ class WorkStore(
         val assist = if (o.has("assist")) o.getJSONObject("assist").toAssist() else null
         val learn = if (o.has("learn")) EditLearning.fromJson(o.getJSONObject("learn")).keep(chapterIds.toSet()) else null
         val handoffs = if (o.has("handoffs")) Handoffs.fromJsonAll(o.getJSONObject("handoffs")).filterKeys { it in chapterIds } else null
+        val digests = if (o.has("digests")) StoryDigests.fromJson(o.getJSONObject("digests")).let { d -> d.copy(volumes = d.volumes.filterKeys { it in volumeIds }) } else null
         val references = if (o.has("references")) WritingReferenceBackup.parse(o.getJSONObject("references"), chapterIds.toSet()) { title, reason ->
             skipped += WritingSkip(incoming.title, "${WritingReferences.DIRECTORY}/$title", reason)
         } else null
@@ -2140,7 +2249,7 @@ class WorkStore(
         }
         return RestoreWork(incoming, local, texts, drafts?.filterKeys { it !in omittedDrafts },
             draftSources?.filterKeys { it !in omittedDrafts }, draftRevisions?.filterKeys { it !in omittedDrafts }, cards, changes, ledger,
-            pack, localPack, assist, references, learn, handoffs)
+            pack, localPack, assist, references, learn, handoffs, digests)
     }
 
     /** Validate writing data before the outer app restore replaces any books. */
@@ -2260,6 +2369,13 @@ class WorkStore(
             runCatching { Handoffs.fromJsonAll(JSONObject(f.readText())).filterKeys { it in chapterIds } }.getOrNull()
         }
         handoffs?.let { check(DurableFiles.write(handoffTarget, Handoffs.toJson(it).toString().toByteArray())) { "无法暂存交接卡" } }
+        // 故事至今和卷摘要：备份里有就用备份的；没有（旧备份）就留本机的，只去掉恢复后不在了的卷。
+        val digestTarget = File(destination, DIGESTS)
+        val volumeIds = incoming.volumes.map { it.id }.toSet()
+        val digests = plan.digests ?: digestTarget.takeIf { it.isFile }?.let { f ->
+            runCatching { StoryDigests.fromJson(JSONObject(f.readText())).let { d -> d.copy(volumes = d.volumes.filterKeys { it in volumeIds }) } }.getOrNull()
+        }
+        digests?.let { check(DurableFiles.write(digestTarget, StoryDigests.toJson(it).toString().toByteArray())) { "无法暂存前情" } }
         // 中断修复的标记只留在换下来的旧目录里：提交后恢复的作品不再带着它；回滚时旧目录连同标记一起换回来。
         val guard = File(destination, RECOVERED_SAVE)
         check(!guard.exists() || guard.delete()) { "无法清理中断修复标记" }
@@ -2370,6 +2486,7 @@ class WorkStore(
         private const val LEARN = "learn.json"
         /** 各章的交接卡（章 id → 卡），见 [ChapterHandoff]。 */
         private const val HANDOFFS = "handoffs.json"
+        private const val DIGESTS = "digests.json"
         private const val LEDGER_HISTORY = "ledger-history"
         /** 账本留几个历史版本。 */
         private const val LEDGER_KEEP = 30
@@ -2402,22 +2519,30 @@ class WorkStore(
             .put("summary", summary).put("plan", plan).put("auto", auto).put("updatedAt", updatedAt)
             .put("beats", beats).put("beatsDone", JSONArray(beatsDone))
             .put("aiOutline", aiOutline).put("aiBeats", aiBeats)
+            .put("change", change).put("moves", ForeshadowMoves.toJson(moves))
+            .apply { if (summaryStale) put("summaryStale", true) }
 
-        // 旧卡片没有节拍两项、AI 拟的两个标记：读成空的、没标。
+        // 旧卡片没有节拍两项、AI 拟的两个标记、本章改变了什么和伏笔动作：读成空的、没标。
         private fun JSONObject.toCard() =
             ChapterCard(optString("facts"), optString("boundary"), optString("pov"), optString("countdown"), optString("hook"), optString("threads"), optString("summary"), optString("plan"), optInt("auto"), optLong("updatedAt"),
                 beats = optString("beats"),
                 beatsDone = optJSONArray("beatsDone")?.let { a -> (0 until a.length()).mapNotNull { (a.opt(it) as? Number)?.toInt() } }.orEmpty(),
-                aiOutline = optBoolean("aiOutline"), aiBeats = optBoolean("aiBeats"))
+                aiOutline = optBoolean("aiOutline"), aiBeats = optBoolean("aiBeats"),
+                change = optString("change"), moves = ForeshadowMoves.fromJson(optJSONArray("moves")),
+                summaryStale = optBoolean("summaryStale"))
 
         private fun ChangeEntry.toJson(): JSONObject = JSONObject()
             .put("id", id).put("at", at).put("kind", kind.name).put("chapterId", chapterId).put("chapterTitle", chapterTitle)
             .put("reason", reason).put("canon", canon).put("synced", synced)
+            .apply { textHash?.let { put("textHash", it) } }
+            .apply { summaryHash?.let { put("summaryHash", it) } }
 
         private fun JSONObject.toChange(): ChangeEntry? {
             val id = optString("id").takeIf { it.isNotEmpty() } ?: return null
             val kind = runCatching { ChangeKind.valueOf(optString("kind")) }.getOrDefault(ChangeKind.CANON)
-            return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"))
+            return ChangeEntry(id, optLong("at"), kind, optString("chapterId"), optString("chapterTitle"), optString("reason"), optBoolean("canon"), optBoolean("synced"),
+                textHash = if (has("textHash") && !isNull("textHash")) (opt("textHash") as? Number)?.toInt() else null,
+                summaryHash = if (has("summaryHash") && !isNull("summaryHash")) (opt("summaryHash") as? Number)?.toInt() else null)
         }
 
         private fun PackDoc.toJson(): JSONObject = JSONObject()
@@ -2458,6 +2583,7 @@ class WorkStore(
                 .put("handoff", finish.handoff))
             .put("draftPrep", draftPrep)
             .put("learned", JSONArray(learned))
+            .put("holdings", holdings).put("planOptions", planOptions)
             .put("draftIntents", JSONObject().apply { draftIntents.forEach { (id, intent) ->
                 put(id, JSONObject().put("instruction", intent.instruction).put("targetLength", intent.targetLength).apply {
                     intent.workflowChoice?.let { put("workflowChoice", it) }
@@ -2551,6 +2677,9 @@ class WorkStore(
                 draftPrep = optBoolean("draftPrep", true),
                 // 旧数据没有这一项：还没学到什么。
                 learned = WorkAssist.cleanLearned(optJSONArray("learned")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()),
+                // 旧数据没有这两项：数值与持有、先给 3 个走向都关着。
+                holdings = optBoolean("holdings", false),
+                planOptions = optBoolean("planOptions", false),
             )
         }
 

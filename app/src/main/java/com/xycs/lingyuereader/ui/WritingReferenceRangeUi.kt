@@ -15,7 +15,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ReferencePart
 import top.yukonga.miuix.kmp.basic.Text
 
@@ -35,9 +34,9 @@ internal fun ReferenceRangeRuler(
     Column(modifier.fillMaxWidth().semantics { contentDescription = description },
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("所选${part.label}", color = c.label, fontSize = 13.sp)
+            Text("所选${part.label}", color = c.label, fontSize = TypeScale.Caption)
             Text("第 ${start + 1}—$end 字符" + if (valid) " · 全章 $chapterLength 字符" else "",
-                color = c.secondary, fontSize = 12.sp)
+                color = c.secondary, fontSize = TypeScale.Footnote)
         }
         if (valid) {
             Canvas(Modifier.fillMaxWidth().height(16.dp)) {
@@ -52,8 +51,8 @@ internal fun ReferenceRangeRuler(
                 drawCircle(c.tint, radius = 5.dp.toPx(), center = Offset(right.coerceIn(0f, size.width), size.height / 2f))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("章首", color = c.tertiary, fontSize = 11.sp)
-                Text("章末", color = c.tertiary, fontSize = 11.sp)
+                Text("章首", color = c.tertiary, fontSize = TypeScale.Micro)
+                Text("章末", color = c.tertiary, fontSize = TypeScale.Micro)
             }
         }
     }

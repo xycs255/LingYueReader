@@ -1,5 +1,7 @@
 package com.xycs.lingyuereader.ui.glass
 
+import com.xycs.lingyuereader.ui.TypeScale
+import com.xycs.lingyuereader.ui.Radius
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,7 +58,6 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -131,6 +132,7 @@ private fun isDarkSurface(): Boolean = MiuixTheme.colorScheme.surface.luminance(
  * @param blur 模糊半径。
  * @param refraction 边缘折射的宽度；0 不折射（贴屏幕边的顶栏）。
  * @param highlight 高光描边，null 不画。
+ * @param solidAlpha 关了模糊时底色至少多不透明（背后的字没有被糊开，会透出来）。
  */
 fun Modifier.glass(
     backdrop: Backdrop?,
@@ -140,6 +142,7 @@ fun Modifier.glass(
     refraction: Dp = 0.dp,
     highlight: Highlight? = null,
     fallbackAlpha: Float = 0.96f,
+    solidAlpha: Float = 0.82f,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
 ): Modifier {
     if (backdrop == null || !liquidGlassSupported()) {
@@ -148,7 +151,7 @@ fun Modifier.glass(
     val blurOn = GlassStyle.blur
     val lensOn = GlassStyle.lens
     // 不模糊时背后的字会透出来，底色加厚些。
-    val surface = if (blurOn) tint else tint.copy(alpha = maxOf(tint.alpha, 0.82f))
+    val surface = tint.copy(alpha = glassSurfaceAlpha(tint.alpha, blurOn, solidAlpha))
     return drawBackdrop(
         backdrop = backdrop,
         shape = { shape },
@@ -202,6 +205,15 @@ fun glassHighlight(dark: Boolean, big: Boolean): Highlight = when {
 @Composable
 fun panelHighlight(big: Boolean = true): Highlight = glassHighlight(isDarkSurface(), big)
 
+/** 玻璃底色的不透明度：开着模糊用 [tint] 自己的，关了模糊至少 [solid]。 */
+internal fun glassSurfaceAlpha(tint: Float, blurOn: Boolean, solid: Float): Float = if (blurOn) tint else maxOf(tint, solid)
+
+/**
+ * 阅读页的玻璃关了模糊时的不透明度。底下是密密的正文：以前退到 82%，“上一章 · 章名 · 下一章”和进度那行压在字上几乎读不清；
+ * 墨水屏、省电和低端机都会关模糊，所以提到 94%，只透一点点书页的颜色。
+ */
+internal const val READER_GLASS_SOLID_ALPHA = 0.94f
+
 /** 阅读页里浮着的控件（菜单栏、控制条、选字操作条）：取样书页，用书页配色。墨水屏上换成描边的纯色块。 */
 fun Modifier.readerGlass(shape: CornerBasedShape, palette: ReaderPalette, backdrop: Backdrop?): Modifier = if (Effects.reduced) {
     border(1.dp, palette.text, shape).background(palette.background, shape).clip(shape)
@@ -215,6 +227,7 @@ fun Modifier.readerGlass(shape: CornerBasedShape, palette: ReaderPalette, backdr
         blur = 16.dp,
         refraction = 14.dp,
         highlight = glassHighlight(palette.isDark, big = false),
+        solidAlpha = READER_GLASS_SOLID_ALPHA,
     )
     .clip(shape)
 
@@ -279,7 +292,7 @@ fun GlassMenu(content: @Composable () -> Unit) {
     Box(
         Modifier.glass(
             backdrop = LocalGlassBackdrop.current,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(Radius.Large),
             tint = panelTint(MiuixTheme.colorScheme.surface),
             blur = 16.dp,
             refraction = 10.dp,
@@ -311,6 +324,7 @@ fun GlassDialog(
     }
     val glass = Modifier.glass(
         backdrop = LocalGlassBackdrop.current,
+        // 对话框和 miuix 的弹窗一样用 32dp 圆角，和系统弹窗看着是一类。
         shape = RoundedCornerShape(32.dp),
         tint = panelTint(),
         blur = 24.dp,
@@ -367,6 +381,7 @@ private fun StillDialog(
                 Modifier
                     .widthIn(max = DialogDefaults.MaxWidth)
                     .fillMaxWidth()
+                    // 同上：对话框和 miuix 的弹窗一样 32dp。
                     .clip(RoundedCornerShape(32.dp))
                     .background(MiuixTheme.colorScheme.background)
                     .clickable(interactionSource = null, indication = null) {}
@@ -427,7 +442,7 @@ fun GlassSheet(
                     Text(
                         title,
                         color = titleColor,
-                        fontSize = 18.sp,
+                        fontSize = TypeScale.Headline,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
@@ -458,7 +473,7 @@ fun GlassSheet(
                 Text(
                     title,
                     color = titleColor,
-                    fontSize = 18.sp,
+                    fontSize = TypeScale.Headline,
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),

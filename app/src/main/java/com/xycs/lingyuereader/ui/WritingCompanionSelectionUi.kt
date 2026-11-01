@@ -7,7 +7,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import com.xycs.lingyuereader.data.ReferenceAnalysis
 import com.xycs.lingyuereader.ui.glass.GlassDialog
@@ -25,7 +24,7 @@ internal fun WritingCompanionSelectionDialog(
     val c = LocalGroupedColors.current
     GlassDialog(
         show = true,
-        title = "选择 AI 写作范本",
+        title = "选择写作范本",
         summary = "选本章已分析的片段。AI 只借叙事与对白手法，按你的构思写新正文。",
         onDismissRequest = onDismiss,
     ) {
@@ -33,7 +32,7 @@ internal fun WritingCompanionSelectionDialog(
             Text(
                 "本章还没有范本分析。可先导入并分析，也可以不用范本写作。",
                 color = c.secondary,
-                fontSize = 14.sp,
+                fontSize = TypeScale.Caption,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
             )
         } else {

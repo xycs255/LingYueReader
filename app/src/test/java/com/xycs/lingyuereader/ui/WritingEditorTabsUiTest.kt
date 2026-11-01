@@ -105,6 +105,8 @@ class WritingEditorTabsUiTest {
             store.saveText(w.id, ids[0], text)
             store.saveText(w.id, ids[1], "天终于亮了。")
             store.saveCard(w.id, ids[0], ChapterCard(facts = "林月在药铺等人", beats = "林月看雨\n杜娘开门\n林月识破沈默", beatsDone = listOf(1)))
+            // 状态行那条测试要有问题数：检查规则禁掉正文里的一句。
+            if ("statusLine" in method) store.addPackDoc(w.id, com.xycs.lingyuereader.data.PackKind.RULES, "检查规则", "禁用：抖了抖\n")
         }
 
         override fun after() {
@@ -206,9 +208,38 @@ class WritingEditorTabsUiTest {
         openEditor()
         compose.onNodeWithContentDescription("更多").performClick()
         EDITOR_OVERFLOW.forEach { waitForText(it.label) }
-        listOf("细纲卡", "预览本章", "历史版本", "改章名").forEach { assertFalse(it, has(it)) }
+        listOf("细纲卡", "预览本章", "历史版本", "改章名", "三道审稿").forEach { assertFalse(it, has(it)) }
         compose.onNodeWithText("设定包").performClick()
         waitFor { top() is Screen.WorkPack }
+        // “写作 AI 设置”进的是这部书的设置（不是全局的 AI 服务），不用先退回作品页。
+        back()
+        compose.onNodeWithContentDescription("更多").performClick()
+        waitForText("写作 AI 设置")
+        compose.onNodeWithText("写作 AI 设置").performClick()
+        waitFor { top() == Screen.WorkAi(workId) }
+    }
+
+    /**
+     * 360dp 宽：问题数不再挤在状态行里（以前和别的字一起被截成“已保存 ·”），挂在底栏“查”的角标上，读屏念“查，N 处问题”；
+     * 状态行照旧露着章节状态，读屏照旧念整行（带着问题数），点它照旧打开问题面板。
+     */
+    @Test
+    @Config(qualifiers = "w360dp-h740dp")
+    fun theProblemCountLivesOnTheCheckTabOnASmallPhone() {
+        openEditor()
+        waitFor { hasDescription("处问题", substring = true) }
+        val tab = compose.onNodeWithContentDescription("查，", substring = true).fetchSemanticsNode()
+        val count = Regex("查，(\\d+) 处问题").find(tab.config[SemanticsProperties.ContentDescription].single())!!.groupValues[1]
+        // 角标上就是这个数。
+        assertTrue(compose.onAllNodesWithText(count).fetchSemanticsNodes().isNotEmpty())
+        val line = androidx.compose.ui.test.SemanticsMatcher.keyIsDefined(EditorStatusShown)
+        val node = compose.onNode(line).fetchSemanticsNode()
+        val shown = node.config[EditorStatusShown]
+        assertTrue("章节状态一直露着：$shown", EditorStatusPart.STATE in shown)
+        val spoken = node.config[SemanticsProperties.Text].joinToString { it.text }
+        assertTrue(spoken, "$count 处问题" in spoken && "字" in spoken)
+        compose.onNode(line).performClick()
+        waitFor { hasDescription("收起") }
     }
 
     /** 章名两边的箭头换章；第一章没有上一章、最后一章没有下一章，那一边变灰（最后一章“更多”里有“写下一章”）。 */

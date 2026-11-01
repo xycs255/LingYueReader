@@ -151,7 +151,6 @@ import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.SnackbarResult
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -311,26 +310,26 @@ fun WritingHomeScreen(vm: AppViewModel) {
                     ) {
                         row {
                             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("今天", fontSize = 13.sp, color = c.secondary)
+                                Text("今天", fontSize = TypeScale.Caption, color = c.secondary)
                                 Row(verticalAlignment = Alignment.Bottom) {
-                                    Text("$written", color = c.label, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("$written", color = c.label, fontSize = TypeScale.Display, fontWeight = FontWeight.SemiBold)
                                     Text(
                                         if (stats.goal > 0) " / ${stats.goal} 字" else " 字",
                                         color = c.secondary,
-                                        fontSize = 15.sp,
+                                        fontSize = TypeScale.Body,
                                         modifier = Modifier.padding(start = 2.dp, bottom = 6.dp),
                                     )
                                 }
                                 if (stats.goal > 0) {
                                     // 进度条打开时从 0 长到今天写到的地方（和统计页一样）；减少动效时直接画好。
                                     val fraction = animateFromZero((written.toFloat() / stats.goal).coerceIn(0f, 1f))
-                                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.fill)) {
-                                        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(RoundedCornerShape(3.dp)).background(c.tint))
+                                    Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(Radius.Full).background(c.fill)) {
+                                        Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(Radius.Full).background(c.tint))
                                     }
                                     Text(
                                         if (written >= stats.goal) "今天的目标完成了" else "还差 ${stats.goal - written} 字",
                                         color = c.secondary,
-                                        fontSize = 13.sp,
+                                        fontSize = TypeScale.Caption,
                                         modifier = Modifier.padding(top = 8.dp),
                                     )
                                 }
@@ -393,10 +392,10 @@ private fun WorkInfoDialog(
     var author by remember { mutableStateOf(initial.author) }
     var synopsis by remember { mutableStateOf(initial.synopsis) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
-        TextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+        GroupedTextField(value = name, onValueChange = { name = it }, label = "书名", singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = author, onValueChange = { author = it }, label = "笔名（可不填）", singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
         if (withSynopsis) {
-            TextField(
+            GroupedTextField(
                 value = synopsis,
                 onValueChange = { synopsis = it },
                 label = "简介",
@@ -438,11 +437,26 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         vm.writing.loadLedger(workId)
     }
     val ledgers by vm.writing.ledgers.collectAsStateWithLifecycle()
+    // 故事账本卡片上的伏笔提醒：账本和设定包伏笔表合起来算（没导入账本的也算），设定包、账本变了重算。账本还没读出来时不算。
+    var promises by remember { mutableStateOf<PromiseCounts?>(null) }
+    LaunchedEffect(workId, pack, ledgers[workId]) {
+        val ledger = ledgers[workId] ?: return@LaunchedEffect
+        promises = try {
+            val (legacy, latest) = vm.writing.foreshadows(workId)
+            promiseCounts(mergeWritingForeshadows(legacy, ledger), latest)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            null
+        }
+    }
     val snackbar = rememberWritingMessages(vm)
     var menu by remember { mutableStateOf(false) }
     var editingInfo by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var addingVolume by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
     // 长按哪一章 / 点了哪一卷弹出菜单；菜单里选了改名、删除再弹对话框。
     var chapterMenu by remember { mutableStateOf<String?>(null) }
     var volumeMenu by remember { mutableStateOf<String?>(null) }
@@ -483,18 +497,6 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     LaunchedEffect(workId, work, assist?.synced) { assist?.let { unsynced = vm.writing.unsynced(workId, it.synced) } }
     var syncConfirm by remember { mutableStateOf(false) }
     var syncTipFor by remember { mutableStateOf<WorkChapter?>(null) }
-    var foreshadowNote by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(workId, pack, ledgers[workId]) {
-        val (legacy, latest) = vm.writing.foreshadows(workId)
-        val list = mergeWritingForeshadows(legacy, ledgers[workId].orEmpty()).map { it.display }
-        val open = list.filter { !it.done }
-        val due = open.count { it.payoff != null && it.payoff <= latest }
-        foreshadowNote = when {
-            list.isEmpty() -> null
-            due > 0 -> "$due 条该回收了"
-            else -> "${open.size} 条没回收"
-        }
-    }
     var statusHits by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(statusFor) { statusHits = statusFor?.let { ch -> vm.writing.checkChapter(workId, ch.id)?.hits?.size } }
     // 摘要写完时那一组要收起来：收起的那一下还显示最后一次的进度，不先变空。
@@ -503,6 +505,26 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
     if (summary != null) lastSummary[0] = summary
 
     LaunchedEffect(workId, work, ledgers[workId]) { treeMarks = vm.writing.treeMarks(workId) }
+    // 分层前情（故事至今、卷摘要）：规划树上看、改；作品变了（收尾刚整理过）重读。
+    val allDigests by vm.writing.digests.collectAsStateWithLifecycle()
+    LaunchedEffect(workId, work) { vm.writing.loadDigests(workId) }
+    var editingStory by remember { mutableStateOf(false) }
+    var digestVolume by remember { mutableStateOf<Volume?>(null) }
+    // 线索与节奏体检：在后台算（有缓存），作品或账本变了重算；体检表开着时显示这一份。
+    var pulseRows by remember { mutableStateOf<List<com.xycs.lingyuereader.data.PulseRow>?>(null) }
+    var pulseOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(workId, work, ledgers[workId]) {
+        pulseRows = try {
+            vm.writing.pulse(workId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList()
+        }
+    }
+
+    val pulseAlerts = pulseRows.orEmpty().count { it.state == com.xycs.lingyuereader.data.PulseState.COLD || it.state == com.xycs.lingyuereader.data.PulseState.STALLED }
 
     // 作品被删了（或从备份恢复时没了）：退回去。
     LaunchedEffect(loaded, work == null) { if (loaded && work == null) vm.back() }
@@ -511,7 +533,16 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
 
     val moveTips = remember(snackbar) { UndoTips(snackbar) }
     val treeActions = WritingTreeActions(
-        onOpenOutline = { vm.open(Screen.WorkPack(workId)) },
+        // 规划树的“总纲”打开总纲那份文档，名实一致；还没有就新建一份（带总纲模板）再打开。设定包没读出来时退回设定包页。
+        onOpenOutline = {
+            val docs = pack
+            val outline = docs?.firstOrNull { it.kind == PackKind.OUTLINE }
+            when {
+                docs == null -> vm.open(Screen.WorkPack(workId))
+                outline != null -> vm.open(Screen.PackDoc(workId, outline.id))
+                else -> vm.writing.addDoc(workId, PackKind.OUTLINE, PackKind.OUTLINE.label) { vm.open(Screen.PackDoc(workId, it.id)) }
+            }
+        },
         onToggleVolume = { id ->
             collapsedVolumeIds = if (id in collapsedVolumeIds) collapsedVolumeIds - id else collapsedVolumeIds + id
         },
@@ -531,7 +562,11 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             vm.writing.addChapter(workId, v.id) { vm.open(Screen.Editor(workId, it.id)) }
         },
         onToggleReorder = { reorderMode = !reorderMode },
-        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id)) },
+        // 规划树上的伏笔记号：去账本的“伏笔”标签、翻到这一章（原来单独的伏笔页并进了这里）。
+        onOpenLedger = { vm.open(Screen.WorkLedger(workId, it.id, promises = true)) },
+        onOpenStory = { editingStory = true },
+        onVolumeDigest = { digestVolume = it },
+        onOpenPulse = { pulseOpen = true },
         onDropChapter = { ch, volumeId, index ->
             vm.writing.moveChapterTo(workId, ch.id, volumeId, index) { move ->
                 // 提示上带“撤销”：撤销时比对目录，之后又改过就不撤（见 [WorkStore.undoChapterMove]）。只留最新一次的提示。
@@ -551,30 +586,32 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
         actions = {
             Box(Modifier.padding(end = 12.dp)) {
                 IconButton(onClick = { menu = true }, enabled = !busy) { Icon(LingYueIcons.More, contentDescription = "更多") }
+                // 菜单画在最外层的弹层宿主里，读不到这里的配色：先读好再传进去。
+                val destructive = LocalGroupedColors.current.destructive
+                val divider = LocalGroupedColors.current.separator
                 OverlayListPopup(show = menu, alignment = PopupPositionProvider.Align.End, onDismissRequest = { menu = false }) {
                     GlassMenu {
                         ListPopupColumn {
-                            val items = listOf<Pair<String, () -> Unit>>(
-                                "当书预览" to { vm.previewWork(workId, null) },
-                                "新建一卷" to { addingVolume = true },
-                                "作品信息" to { editingInfo = true },
-                                "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
-                                "全书排版" to { vm.open(Screen.WorkFormat(workId)) },
-                                "排版设置" to { vm.open(Screen.WorkFormatSettings(workId)) },
-                                "整理没整理的章节" to {
-                                    val blocked = vm.writingAi.syncBlocked
-                                    when {
-                                        blocked != null -> vm.showMessage(blocked)
-                                        unsynced.isEmpty() -> vm.showMessage("有正文的章都整理过了")
-                                        else -> syncConfirm = true
+                            // 分三节：作品、导出、删除（单独一节、红字、放最后）。当书预览、整理没整理的章节在页面上就有，这里不再重复；
+                            // 全书排版和排版设置合成一项“排版…”，进全书排版页，那页右上角是“设置”。
+                            // 导出的几种格式合成一项“导出…”、点了再选：菜单不用滚，360dp 的屏上也看得到最后的“删除作品”。
+                            val sections = listOf<List<Pair<String, () -> Unit>>>(
+                                listOf(
+                                    "新建一卷" to { addingVolume = true },
+                                    "作品信息" to { editingInfo = true },
+                                    "补写章节摘要" to { vm.writingAi.summarizeAll(workId) },
+                                    "排版…" to { vm.open(Screen.WorkFormat(workId)) },
+                                ),
+                                listOf("导出…" to { exporting = true }),
+                                listOf("删除作品" to { deleting = true }),
+                            )
+                            sections.forEachIndexed { i, items ->
+                                if (i > 0) MenuDivider(divider)
+                                items.forEach { (label, action) ->
+                                    LingYueMenuItem(label, selected = false, color = if (i == sections.lastIndex) destructive else Color.Unspecified) {
+                                        menu = false
+                                        action()
                                     }
-                                },
-                            ) + ExportFormat.entries.map { f -> "导出 ${f.label}" to { launchers.getValue(f).launch("${work.title}.${f.ext}") } } +
-                                ("删除作品" to { deleting = true })
-                            items.forEach { (label, action) ->
-                                LingYueMenuItem(label, selected = false) {
-                                    menu = false
-                                    action()
                                 }
                             }
                         }
@@ -637,16 +674,19 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                         aiAdviceEnabled = assist?.realtime == true,
                         pendingChanges = pendingChanges,
                         unsyncedChapters = unsynced.size,
-                        foreshadowNote = foreshadowNote,
                         ruleCount = ruleCount,
                         busy = busy,
                         unsyncedIds = if (pack?.isNotEmpty() == true) unsynced else emptySet(),
-                        openPromises = ledgers[workId]?.count { it.kind == com.xycs.lingyuereader.data.LedgerKind.PROMISE && !it.done },
+                        promises = promises,
                         aiProvider = aiConfig.takeIf { it.ready }?.providerLabel,
                         todayWords = stats.on(LocalDate.now()),
                         dailyGoal = stats.goal,
                         mapMenuId = mapMenu,
                         chapterMenu = { ch -> ChapterMenuPopup(true, ch, treeActions, onDismiss = { mapMenu = null }) },
+                        story = allDigests[workId]?.story,
+                        pulse = pulseRows?.let(::pulseNote) ?: "正在体检……",
+                        pulseWarn = pulseAlerts > 0,
+                        pulseAlerts = pulseAlerts,
                         actions = WritingWorkOverviewActions(
                             openChapter = { ch -> vm.open(Screen.Editor(workId, ch.id)) },
                             newChapter = {
@@ -655,11 +695,11 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 }
                             },
                             openPack = { vm.open(Screen.WorkPack(workId)) },
-                            openLedger = { vm.open(Screen.WorkLedger(workId)) },
+                            // 有该回收的伏笔时卡片上写着“N 条该回收”：点进去直接是“伏笔”标签，不落在人物上再自己找。
+                            openLedger = { vm.open(Screen.WorkLedger(workId, promises = (promises?.due ?: 0) > 0)) },
                             openAi = { vm.open(Screen.WorkAi(workId)) },
                             preview = { vm.previewWork(workId, null) },
                             openChanges = { vm.open(Screen.WorkChanges(workId)) },
-                            openForeshadows = { vm.open(Screen.Foreshadows(workId)) },
                             openRules = { vm.open(Screen.WorkRules(workId)) },
                             organizeUnsynced = {
                                 val blocked = vm.writingAi.syncBlocked
@@ -670,6 +710,9 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                                 }
                             },
                             openChapterMenu = { mapMenu = it.id },
+                            editInfo = { editingInfo = true },
+                            openStory = { editingStory = true },
+                            openPulse = { pulseOpen = true },
                         ),
                     )
                 }
@@ -685,6 +728,7 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                     marks = treeMarks,
                     length = lengthRule,
                     drag = drag,
+                    digests = allDigests[workId] ?: com.xycs.lingyuereader.data.Digests(),
                 )
             }
             // 规划树拖着的那一章浮在列表上面跟手。
@@ -703,6 +747,18 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
             WorkInfoDialog("作品信息", work, "保存", withSynopsis = true, onDismiss = { editingInfo = false }) { t, a, s ->
                 editingInfo = false
                 vm.writing.updateInfo(workId, t, a, s)
+            }
+        }
+        if (exporting) {
+            GlassDialog(show = true, title = "导出《${work.title}》", summary = "选一种格式，再选存到哪里。", onDismissRequest = { exporting = false }) {
+                DialogOptionList(
+                    ExportFormat.entries.map { it to it.label },
+                    onPick = { f ->
+                        exporting = false
+                        launchers.getValue(f).launch("${work.title}.${f.ext}")
+                    },
+                )
+                TextButton(text = "取消", onClick = { exporting = false }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
             }
         }
         if (addingVolume) {
@@ -792,6 +848,33 @@ fun WorkScreen(vm: AppViewModel, workId: String) {
                 )
             }
         }
+        if (editingStory) {
+            val story = allDigests[workId]?.story
+            DigestEditDialog(
+                title = "故事至今",
+                summary = STORY_SUMMARY,
+                initial = story?.text.orEmpty(),
+                edited = story?.edited == true,
+                label = "一行一句，按发生的先后",
+                onDismiss = { editingStory = false },
+                onSave = { vm.writing.saveStory(workId, it) },
+                onResume = { vm.writing.resumeDigest(workId, null) },
+            )
+        }
+        digestVolume?.let { v ->
+            val d = allDigests[workId]?.volumes?.get(v.id)
+            DigestEditDialog(
+                title = "${v.title} · 卷摘要",
+                summary = VOLUME_SUMMARY,
+                initial = d?.text.orEmpty(),
+                edited = d?.edited == true,
+                label = "主线进展、人物变化、世界变化、没收的伏笔、留给下一卷的悬念",
+                onDismiss = { digestVolume = null },
+                onSave = { vm.writing.saveVolumeDigest(workId, v.id, it) },
+                onResume = { vm.writing.resumeDigest(workId, v.id) },
+            )
+        }
+        if (pulseOpen) PulseDialog(pulseRows, onDismiss = { pulseOpen = false }) { row -> vm.writing.carryToNext(workId, row) }
         renamingVolume?.let { v ->
             NameDialog("卷名", v.title, "好", onDismiss = { renamingVolume = null }) { name ->
                 renamingVolume = null
@@ -826,7 +909,7 @@ private fun MenuAction(label: String, color: Color, onClick: () -> Unit) {
         Modifier
             .widthIn(min = 200.dp)
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(Radius.Medium))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -852,8 +935,8 @@ private fun VolumeRow(
     val c = LocalGroupedColors.current
     Box {
         GroupedRow(onClick = onClick) {
-            Text(v.title, color = c.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
+            Text(v.title, color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("${v.chapters.size} 章 · ${words(v.chapters.sumOf { it.words })}", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(start = 12.dp))
             Icon(LingYueIcons.More, contentDescription = "卷设置", tint = c.tertiary, modifier = Modifier.padding(start = 4.dp).size(16.dp))
         }
         OverlayListPopup(show = showMenu, alignment = PopupPositionProvider.Align.End, onDismissRequest = onDismissMenu) {
@@ -915,7 +998,7 @@ private fun ChapterRow(
 private fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var name by remember { mutableStateOf(initial) }
     GlassDialog(show = true, title = title, onDismissRequest = onDismiss) {
-        TextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        GroupedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
         DialogButtons(onDismiss = onDismiss, onConfirm = { onConfirm(name) }, confirmText = confirm, confirmEnabled = name.isNotBlank())
     }
 }
@@ -1083,10 +1166,62 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
     val problemText = current?.text?.toString().orEmpty()
     var problems by remember(workId, chapterId) { mutableStateOf<List<Problem>>(emptyList()) }
     val problemsFor = remember(workId, chapterId) { arrayOfNulls<String>(1) }
-    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview) {
+    // 本书高频说法、句式单调：最近十章的叙述，在后台算（别的章按修改时间记着，只重算这一章）；停笔一会儿再算。
+    // 点了“不再提”、黑名单变了也重算。定稿的章不查（反正不能改）。
+    var repeats by remember(workId, chapterId) { mutableStateOf<com.xycs.lingyuereader.data.RepeatReport?>(null) }
+    var repeatTick by remember(workId, chapterId) { mutableStateOf(0) }
+    val bannedNow = assists[workId]?.banned
+    LaunchedEffect(problemText, repeatTick, bannedNow, locked) {
+        if (locked) { repeats = null; return@LaunchedEffect }
+        delay(REPEAT_DEBOUNCE_MS)
+        repeats = try {
+            vm.writing.repeatScan(workId, chapterId, problemText)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            null
+        }
+    }
+    // AI 腔审读：作者在问题面板点了“AI 查 AI 腔”才查（默认不跑），结果只在这次打开的编辑器里，换章、离开就没了。
+    var tones by remember(workId, chapterId) { mutableStateOf<List<com.xycs.lingyuereader.data.ToneIssue>>(emptyList()) }
+    var tone by remember(workId, chapterId) { mutableStateOf(ToneState()) }
+    val toneScope = rememberCoroutineScope()
+    fun startTone() {
+        if (tone.running) return
+        tone = ToneState(running = true)
+        val text = problemText
+        toneScope.launch {
+            tone = try {
+                val found = vm.writingAi.toneReview(workId, chapterId, text)
+                tones = found
+                ToneState(note = if (found.isEmpty()) "AI 没查出明显的 AI 腔。" else "AI 查出 ${found.size} 处，列在“建议”里；只是建议，看着改。")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ToneState(error = e.message ?: "请求失败")
+            }
+        }
+    }
+    // 数值与持有对账（本机算）：账本里有这一类时，打开问题面板、换章时算一次。
+    var holds by remember(workId, chapterId) { mutableStateOf<List<com.xycs.lingyuereader.data.HoldIssue>>(emptyList()) }
+    LaunchedEffect(workId, chapterId, problemsOpen) {
+        holds = try {
+            vm.writing.holdIssues(workId, chapterId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.xycs.lingyuereader.CrashLog.caught(e)
+            emptyList()
+        }
+    }
+    LaunchedEffect(problemText, report, shownRealtime.issues, chapterReview, repeats, tones, holds) {
         if (problemsFor[0] != null && problemsFor[0] != problemText) delay(PROBLEMS_DEBOUNCE_MS)
         val issues = shownRealtime.issues
-        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview) }
+        val found = repeats
+        val toneFound = tones
+        val holdFound = holds
+        problems = withContext(Dispatchers.Default) { collectProblems(problemText, report, issues, chapterReview, found, toneFound, holdFound) }
         problemsFor[0] = problemText
     }
 
@@ -1379,6 +1514,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
             EditorEntry.SYNC -> startSync()
             EditorEntry.REFERENCE -> { saveNow(); vm.open(Screen.WritingReference(workId, chapterId)) }
             EditorEntry.PACK -> vm.open(Screen.WorkPack(workId))
+            EditorEntry.WORK_AI -> vm.open(Screen.WorkAi(workId))
             EditorEntry.PREV_CHAPTER -> chapters.getOrNull(index - 1)?.let { goTo(it.id) }
             EditorEntry.NEXT_CHAPTER -> if (index >= 0) chapters.getOrNull(index + 1)?.let { goTo(it.id) }
         }
@@ -1438,40 +1574,34 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                     // 点章名改名；点下面一行（有问题时）打开问题面板。
                     Column(Modifier.weight(1f)) {
                         Text(
-                            chapter?.title.orEmpty(), color = c.label, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { renaming = true },
+                            chapter?.title.orEmpty(), color = c.label, fontSize = TypeScale.Headline, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clip(RoundedCornerShape(Radius.Small)).combinedClickableCompat { renaming = true },
                         )
                         val text = current?.text
                         val count = remember(text) { text?.let { WordCount.of(it.toString()) } ?: 0 }
-                        val head = (chapter?.status?.label?.let { "$it · " } ?: "") + "$count 字 · "
+                        val state = chapter?.status?.label.orEmpty()
                         val saving = if (locked) "已锁定" else if (text == null) "载入中" else if (text.toString() == savedText) "已保存" else "编辑中"
-                        // 规则、AI 腔、写作建议、审稿没处理的合成一个数；分类在问题面板里看。写作建议开着留一个短标识。
-                        val issues = if (problems.isNotEmpty()) " · ${problems.size} 处问题" else ""
-                        val tail = if (realtimeOn) " · 写作建议已开" else ""
-                        // 保存状态“编辑中 / 已保存”只淡入淡出（[Motion.SHORT]），不挪动别的字（几种状态都是三个字宽）；读屏照旧念一整行。
-                        Row(
+                        // 规则、AI 腔、写作建议、审稿没处理的合成一个数，挂在底栏“查”的角标上，这一行不再写（小屏上会和别的字一起被截掉）；
+                        // 读屏照旧念一整行，带着问题数，点这一行也照旧打开问题面板。写作建议开着留一个短标识。
+                        val issues = if (problems.isNotEmpty()) "${problems.size} 处问题" else ""
+                        val tail = if (realtimeOn) "写作建议已开" else ""
+                        val whole = listOf(state, "$count 字", saving, issues, tail).filter { it.isNotEmpty() }.joinToString(" · ")
+                        EditorStatusLine(
+                            mapOf(
+                                EditorStatusPart.STATE to state,
+                                EditorStatusPart.WORDS to "$count 字",
+                                EditorStatusPart.SAVING to saving,
+                                EditorStatusPart.TAIL to tail,
+                            ),
                             Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier)
-                                .clearAndSetSemantics {
-                                    this.text = AnnotatedString(head + saving + issues + tail)
-                                    onClick(label = if (problemsOpen) "收起问题面板" else "打开问题面板") {
-                                        if (problemsOpen) problemsOpen = false else openProblems()
-                                        true
-                                    }
-                                },
+                                .clip(RoundedCornerShape(Radius.Small))
+                                .then(if (current != null) Modifier.combinedClickableCompat { if (problemsOpen) problemsOpen = false else openProblems() } else Modifier),
                         ) {
-                            Text(head, color = c.secondary, fontSize = 12.sp, maxLines = 1)
-                            AnimatedContent(
-                                saving,
-                                transitionSpec = {
-                                    ContentTransform(Effects.enter(fadeIn(Motion.standard(Motion.SHORT))), Effects.exit(fadeOut(Motion.exit())), sizeTransform = null)
-                                },
-                                label = "saveState",
-                            ) { Text(it, color = c.secondary, fontSize = 12.sp, maxLines = 1) }
-                            // “N 处问题”用提醒色，看得出能点。
-                            if (issues.isNotEmpty()) Text(issues, color = c.warning, fontSize = 12.sp, maxLines = 1)
-                            Text(tail, color = c.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            this.text = AnnotatedString(whole)
+                            onClick(label = if (problemsOpen) "收起问题面板" else "打开问题面板") {
+                                if (problemsOpen) problemsOpen = false else openProblems()
+                                true
+                            }
                         }
                     }
                     StepIconButton(LingYueIcons.ChevronForward, "下一章", enabled = index >= 0 && index < chapters.lastIndex, onClick = { onEntry(EditorEntry.NEXT_CHAPTER) })
@@ -1557,12 +1687,15 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                 }
                 val marks = remember(issueSpans, ruleSpans, c) {
                     // 按“哪条建议”“哪条规则的第几处”认，不按位置：正文一改位置就变，淡入淡出不能跟着乱。
+                    // 底色很淡，主要靠划线分（见 EditorMarks.kt）；同一条规则第 4 处起只画线不铺底，整页不像打满补丁。
                     val nth = HashMap<String, Int>()
-                    val ruleBack = c.warning.copy(alpha = 0.2f)
-                    ruleSpans.map { (r, h) -> TextMark(h.key to nth.merge(h.key, 1) { a, b -> a + b }, r.first, r.last + 1, ruleBack) } +
+                    ruleSpans.map { (r, h) ->
+                        val n = nth.merge(h.key, 1) { a, b -> a + b }!!
+                        TextMark(h.key to n, r.first, r.last + 1, markFill(c.warning, c.dark, n), line = ruleMarkLine, lineColor = markLineColor(c.warning))
+                    } +
                         issueSpans.map { (r, i) ->
                             val color = suggestColor(i.kind, c)
-                            TextMark(i, r.first, r.last + 1, color.copy(alpha = 0.14f), line = suggestLine(i.kind), lineColor = color)
+                            TextMark(i, r.first, r.last + 1, markFill(color, c.dark), line = suggestLine(i.kind), lineColor = color)
                         }
                 }
                 val markFades = remember(current) { MarkFades(effects) }
@@ -1683,6 +1816,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                 // 矮屏（键盘弹出）时底下少留一点，多露半行正文。
                                 .padding(start = 22.dp, end = 22.dp, top = padding.calculateTopPadding() + 12.dp, bottom = if (compact) 4.dp else 12.dp),
                             // 每段首行空两格（只是显示，存的正文不带缩进），段和折行一眼分得清。
+                            // 编辑器正文的字号、行距单独定（像书页，不跟界面字号档走）。
                             textStyle = TextStyle(color = scheme.onSurface, fontSize = 18.sp, lineHeight = 32.sp, textIndent = TextIndent(firstLine = 2.em)),
                             cursorBrush = SolidColor(if (companionPosition == null) scheme.primary else Color.Unspecified),
                             lineLimits = TextFieldLineLimits.MultiLine(),
@@ -1706,7 +1840,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         },
                                 ) {
                                     if (current.text.isEmpty()) {
-                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp)
+                                        Text("从这里开始写……\n换行就是另起一段。", color = c.tertiary, fontSize = 18.sp, lineHeight = 32.sp) // 和编辑器正文一样大
                                     }
                                     inner()
                                 }
@@ -1724,7 +1858,7 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                         Modifier.fillMaxWidth().background(c.background).padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("已定稿，正文锁定。要改先登记原因。", color = c.secondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text("已定稿，正文锁定。要改先登记原因。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.weight(1f))
                         TextButton(text = "解锁修改", onClick = { statusDialog = true })
                     }
                 }
@@ -1964,6 +2098,23 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                                         chapterReview?.let { com.xycs.lingyuereader.ReviewFix(gate, issue, it.at, it.textHash) },
                                     )
                                 }.takeIf { !locked },
+                                jumpRange = { r ->
+                                    st.edit { selection = clampRange(r, length) }
+                                    runCatching { focus.requestFocus() }
+                                },
+                                dismissRepeat = { key ->
+                                    vm.writing.dismissRepeat(workId, key) { repeatTick++ }
+                                    vm.showMessage("以后不再提")
+                                },
+                                jumpQuote = { q -> vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, q) },
+                                // 接到“这段不行”：选中原句所在的那一段，按这一条的原因和意见让 AI 只重写这一段，照常先看对比再采纳。
+                                rewriteTone = { t: com.xycs.lingyuereader.data.ToneIssue ->
+                                    val paragraph = textNow.split('\n').firstOrNull { t.quote in it }?.trim()
+                                    if (paragraph.isNullOrEmpty()) vm.showMessage("正文里没找到这一句，可能已经改过了")
+                                    else vm.writing.jump.value = com.xycs.lingyuereader.Jump(chapterId, paragraph, t.instruction())
+                                }.takeIf { !locked },
+                                dropTone = { t -> tones = tones - t },
+                                openLedger = { saveNow(); vm.open(Screen.WorkLedger(workId, chapterId)) },
                             ),
                             onClose = {
                                 problemsOpen = false
@@ -1972,6 +2123,8 @@ fun EditorScreen(vm: AppViewModel, workId: String, chapterId: String, check: Boo
                             onCliche = { startCliche() }.takeIf { !locked && report?.hits?.any(AiCliche::isVoice) == true },
                             onOpenRules = { vm.open(Screen.WorkRules(workId)) },
                             onOpenReview = { saveNow(); vm.open(Screen.ChapterReview(workId, chapterId)) },
+                            onTone = { startTone() }.takeIf { aiConfig.ready && !aiConfig.onDevice && !locked && textNow.isNotBlank() },
+                            tone = tone,
                         )
                         EditorPanel.None -> Spacer(Modifier.fillMaxWidth())
                     }
@@ -2457,7 +2610,7 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
         open?.let { (s, text) ->
             GlassDialog(show = true, title = whenLabel(s.at), summary = words(s.words), onDismissRequest = { open = null }) {
                 Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = 15.sp, lineHeight = 24.sp)
+                    Text(text.ifBlank { "（空）" }, color = c.label, fontSize = TypeScale.Body, lineHeight = TypeScale.BodyLine)
                 }
                 DialogButtons(
                     onDismiss = { open = null },
@@ -2475,3 +2628,6 @@ fun WorkHistoryScreen(vm: AppViewModel, workId: String, chapterId: String, docId
 
 /** 问题清单在作者打字时停笔多久再重算（检查规则也是停笔 400 毫秒才查）。 */
 internal const val PROBLEMS_DEBOUNCE_MS = 300L
+
+/** 本书高频说法停笔多久再查：要读最近十章（有缓存），比规则检查重一点，打字时不跟着算。 */
+internal const val REPEAT_DEBOUNCE_MS = 800L

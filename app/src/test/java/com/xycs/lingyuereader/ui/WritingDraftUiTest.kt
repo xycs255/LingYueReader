@@ -183,7 +183,7 @@ class WritingDraftUiTest {
         waitForText("你的构思")
         waitForText("AI 拟写法")
         compose.onNodeWithText("写作范本").performScrollTo().performClick()
-        waitForText("AI 写作范本")
+        waitForText("不使用范本")
         compose.onNodeWithText("《${book.title}》 · ${book.chapters.single().title}").performClick()
         waitFor { vm.companionReference(workId, c2) == analysis.id }
         waitForText("写法图与原文范围")
@@ -340,6 +340,15 @@ class WritingDraftUiTest {
         assertTrue("资料变了不能再显示可供采纳",
             compose.onAllNodesWithText("可供采纳").fetchSemanticsNodes().isEmpty())
         waitForText("审读：未通过或已失效")
+        // 审读过时也不拦作者：说清原因，给“重新审读”，“放进正文”照样能点，对话框里提醒自己把关。
+        waitFor { compose.onAllNodes(hasText("审读没过：", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        waitForText("重新审读")
+        val candidate = vm.writingAi.drafts.value[workId to c2]!!.text
+        waitForEnabled("放进正文")
+        compose.onNodeWithText("放进正文").performScrollTo().performClick()
+        waitFor { compose.onAllNodes(hasText("审读没过或已过时，放进去以后", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("替换正文").performClick()
+        waitFor { store.text(workId, c2) == candidate }
     }
 
     @Test

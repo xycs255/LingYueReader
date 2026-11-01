@@ -35,7 +35,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.tts.ReadAloud
 import com.xycs.lingyuereader.tts.ReadAloudEngine
 import com.xycs.lingyuereader.tts.ReadAloudState
@@ -60,7 +59,7 @@ internal fun ReadAloudBar(
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(start = 16.dp, end = 16.dp, bottom = 36.dp)
             .fillMaxWidth()
-            .readerGlass(RoundedCornerShape(20.dp), palette, LocalGlassBackdrop.current)
+            .readerGlass(RoundedCornerShape(Radius.XLarge), palette, LocalGlassBackdrop.current)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -75,7 +74,7 @@ internal fun ReadAloudBar(
             Modifier
                 .weight(1f)
                 .heightIn(min = 48.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(Radius.Medium))
                 .clickable(role = Role.Button, onClick = onSettings)
                 .semantics { contentDescription = "打开听书设置" }
                 .padding(horizontal = 6.dp),
@@ -84,14 +83,14 @@ internal fun ReadAloudBar(
             Text(
                 state.error ?: if (state.playing) "正在听书" else "已暂停",
                 color = if (state.error != null) danger else palette.text,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 listOfNotNull(state.chapterTitle, progressLabel(state), timerLabel(state.timer)).joinToString(" · "),
                 color = palette.secondary,
-                fontSize = 11.sp,
+                fontSize = TypeScale.Micro,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -151,7 +150,7 @@ internal fun ReadAloudSheet(
             Text(
                 if (state.sentences > 0) "${state.chapterTitle} · 第 ${state.sentence + 1} / ${state.sentences} 句" else state.chapterTitle,
                 color = c.secondary,
-                fontSize = 13.sp,
+                fontSize = TypeScale.Caption,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),

@@ -65,8 +65,8 @@ internal fun ReaderSidebar(
                     Modifier
                         .width((maxWidth * 0.86f).coerceAtMost(360.dp))
                         .fillMaxHeight()
-                        .shadow(16.dp, RoundedCornerShape(topEnd = 22.dp, bottomEnd = 22.dp))
-                        .clip(RoundedCornerShape(topEnd = 22.dp, bottomEnd = 22.dp))
+                        .shadow(16.dp, RoundedCornerShape(topEnd = Radius.XLarge, bottomEnd = Radius.XLarge))
+                        .clip(RoundedCornerShape(topEnd = Radius.XLarge, bottomEnd = Radius.XLarge))
                         .background(background)
                         .clickable(interactionSource = null, indication = null) {},
                 ) {

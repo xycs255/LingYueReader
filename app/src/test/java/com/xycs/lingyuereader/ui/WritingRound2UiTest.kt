@@ -131,7 +131,8 @@ class WritingRound2UiTest {
         val store = WorkStore(writingDir)
         compose.runOnUiThread { vm.open(Screen.Editor(workId, chapterId)) }
         waitFor { compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("更多").performClick()
+        // 三道审稿在底栏“查”里（右上“⋯”不再重复）。
+        compose.onNodeWithText("查").performClick()
         compose.onNodeWithText("三道审稿").performClick()
         compose.onNodeWithText("开始审稿").performClick()
         waitForGate("事实关：2 处")
@@ -205,7 +206,9 @@ class WritingRound2UiTest {
         waitForText("系统提示（")
         compose.onNodeWithText("好").performClick()
 
-        // “AI 记录”也在高级设置的“记录”里。
+        // “AI 记录”在作品 AI 设置首屏的最底下（不在高级设置里）。
+        compose.runOnUiThread { vm.open(Screen.WorkAi(workId)) }
+        waitForText("高级设置")
         compose.onNodeWithText("AI 记录").performScrollTo().performClick()
         waitForText("让门外有脚步声")
         compose.onAllNodesWithText("让门外有脚步声", substring = true)[0].performClick()

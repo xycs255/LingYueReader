@@ -68,11 +68,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.xycs.lingyuereader.data.ChapterStatus
 import com.xycs.lingyuereader.data.ChapterTreeMarks
 import com.xycs.lingyuereader.data.CheckRule
 import com.xycs.lingyuereader.data.Volume
+import com.xycs.lingyuereader.data.Digests
 import com.xycs.lingyuereader.data.Work
 import com.xycs.lingyuereader.data.WorkChapter
 import com.xycs.lingyuereader.ui.glass.GlassMenu
@@ -110,6 +110,10 @@ internal data class WritingTreeActions(
     val onOpenLedger: (WorkChapter) -> Unit = {},
     /** 拖动松手：把这一章移到某卷的第几个（从 0 数，按去掉这一章后的那一卷算）。 */
     val onDropChapter: (WorkChapter, String, Int) -> Unit = { _, _, _ -> },
+    /** 作品页“更多功能”里的“故事至今”“线索与节奏体检”、卷菜单里的“卷摘要”：看、改。 */
+    val onOpenStory: () -> Unit = {},
+    val onVolumeDigest: (Volume) -> Unit = {},
+    val onOpenPulse: () -> Unit = {},
 )
 
 /** Save only stable IDs, using a Bundle-compatible list so folds survive configuration changes. */
@@ -270,8 +274,8 @@ internal fun TreeDragGhost(drag: TreeDragController, modifier: Modifier = Modifi
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
             .alpha(0.88f)
-            .shadow(8.dp, RoundedCornerShape(14.dp))
-            .clip(RoundedCornerShape(14.dp))
+            .shadow(8.dp, RoundedCornerShape(Radius.Medium))
+            .clip(RoundedCornerShape(Radius.Medium))
             .background(c.cell)
             .heightIn(min = 52.dp)
             .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -281,8 +285,8 @@ internal fun TreeDragGhost(drag: TreeDragController, modifier: Modifier = Modifi
             StatusGlyph(chapter.status)
             Spacer(Modifier.width(10.dp))
             Column {
-                Text(chapter.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(drag.drop?.let { if (it.same) "在原位松手不改" else "松手移到这里" } ?: "拖到想放的位置", color = c.secondary, fontSize = 12.sp)
+                Text(chapter.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(drag.drop?.let { if (it.same) "在原位松手不改" else "松手移到这里" } ?: "拖到想放的位置", color = c.secondary, fontSize = TypeScale.Footnote)
             }
         }
     }
@@ -318,16 +322,18 @@ internal fun LazyListScope.writingPlanningTreeItems(
     marks: Map<String, ChapterTreeMarks> = emptyMap(),
     length: CheckRule.Length? = null,
     drag: TreeDragController? = null,
+    /** 分层前情（为空时卷菜单里没有“卷摘要”；故事至今和线索体检在作品页的“更多功能”里）。 */
+    digests: Digests? = null,
 ) {
     val chapters = work.chapters
     val positions = chapters.withIndex().associate { it.value.id to it.index }
     val dragOn = drag != null && !reorderMode
+    // 标题右边一个小“排序”钮：调整顺序不常用，以前是总纲上面带图标、带说明的一整行，比总纲还显眼。
     item(key = "tree:heading", contentType = "tree-heading") {
-        GroupedListHeader("规划树")
+        GroupedHeaderRow("规划树") { TreeReorderButton(reorderMode, actions.onToggleReorder) }
     }
     item(key = "tree:outline", contentType = "tree-outline") {
         GroupedListCell(first = true, last = work.volumes.isEmpty(), gap = 12.dp, modifier = Modifier.animateItem(Motion.listItem(), Motion.listItem(), Motion.listItem())) {
-            TreeReorderRow(reorderMode, actions.onToggleReorder)
             TreeOutlineRow(work, hasChildren = work.volumes.isNotEmpty(), onClick = actions.onOpenOutline)
         }
     }
@@ -342,6 +348,7 @@ internal fun LazyListScope.writingPlanningTreeItems(
                     lastVolume = lastVolume,
                     menuOpen = volumeMenuId == volume.id,
                     canDelete = work.volumes.size > 1,
+                    digest = digests?.let { d -> d.volumes[volume.id]?.let { if (it.edited) TAG_EDITED else "有卷摘要" } ?: "" },
                     actions = actions,
                     indicator = drag?.drop?.takeIf { it.anchor == volumeKey(volume.id) && !it.same },
                 )
@@ -376,11 +383,9 @@ internal fun LazyListScope.writingPlanningTreeItems(
         }
     }
     item(key = "tree:hint", contentType = "tree-hint") {
-        Text(
-            "点章写正文，点右侧卡片看细纲；长按章节弹出菜单（改名、改状态、删除），长按后拖动可以直接调整顺序。",
-            color = LocalGroupedColors.current.secondary,
-            fontSize = 13.sp,
-            modifier = Modifier.padding(horizontal = 28.dp),
+        GroupedListFooter(
+            if (reorderMode) "用每章右侧的箭头上移、下移，调好了点标题右边的“完成”。"
+            else "点章写正文，点右侧卡片看细纲；长按章节弹出菜单，长按后拖动可以直接调整顺序。",
         )
     }
 }
@@ -417,34 +422,27 @@ private fun TreeOutlineRow(work: Work, hasChildren: Boolean, onClick: () -> Unit
     ) {
         RowIcon(LingYueIcons.Book, c.tint)
         Column(Modifier.weight(1f)) {
-            Text("总纲 · ${work.title}", color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 设定包", color = c.secondary, fontSize = 12.sp)
+            Text("总纲 · ${work.title}", color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // 点这一行打开总纲那份文档（设定包在作品页的“设定包”卡片里）。
+            Text("${work.volumes.size} 卷 · ${work.chapters.size} 章 · 总纲文档", color = c.secondary, fontSize = TypeScale.Footnote)
         }
         Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
     }
 }
 
 /**
- * 进出调整模式的一行：和下面的总纲一样带行首图标、名字下面一行说明，看得出能点；
- * 调整中换成强调色的“完成调整”，右边挂“调整中”标签，再点一下收起。拖不动（读屏、手不方便）时用它逐章上移、下移。
+ * 规划树标题右边的“排序”小钮：进调整模式（拖不动的时候——读屏、手不方便——逐章上移、下移）；调整中换成淡强调色的“完成”，再点一下收起。
+ * 读屏念“调整章节顺序”“完成调整”。
  */
 @Composable
-private fun TreeReorderRow(active: Boolean, onToggle: () -> Unit) {
-    val c = LocalGroupedColors.current
-    GroupedRow(onClick = onToggle) {
-        RowIcon(if (active) LingYueIcons.Check else LingYueIcons.Sort, c.tint)
-        Column(Modifier.weight(1f)) {
-            Text(
-                if (active) "完成调整" else "调整章节顺序",
-                color = if (active) c.tint else c.label,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(if (active) "用每章右侧的箭头上移、下移" else "逐章上移、下移；也可以长按章节直接拖", color = c.secondary, fontSize = 12.sp)
-        }
-        if (active) Tag("调整中", c.tint)
-        else Icon(LingYueIcons.ChevronForward, contentDescription = null, tint = c.tertiary, modifier = Modifier.size(16.dp))
-    }
+private fun TreeReorderButton(active: Boolean, onToggle: () -> Unit) {
+    HeaderButton(
+        if (active) "完成" else "排序",
+        onToggle,
+        description = if (active) "完成调整" else "调整章节顺序",
+        icon = if (active) LingYueIcons.Check else LingYueIcons.Sort,
+        active = active,
+    )
 }
 
 @Composable
@@ -456,6 +454,8 @@ private fun TreeVolumeRow(
     canDelete: Boolean,
     actions: WritingTreeActions,
     indicator: TreeDrop?,
+    /** 卷摘要的状况（“有卷摘要”“你改过的”，没有为空串）；为空（null）时菜单里没有“卷摘要”。 */
+    digest: String? = null,
 ) {
     val c = LocalGroupedColors.current
     val line = treeLine()
@@ -473,16 +473,16 @@ private fun TreeVolumeRow(
             },
         ) {
             Spacer(Modifier.width(VolumeX - 16.dp - 14.dp))
-            Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(c.fill), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(Radius.Small)).background(c.fill), contentAlignment = Alignment.Center) {
                 Icon(LingYueIcons.Book, contentDescription = null, tint = c.tint, modifier = Modifier.size(17.dp))
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(volume.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(volume.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "$total 章 · 定稿 $finals · ${treeWords(volume.chapters.sumOf { it.words })}",
+                    "$total 章 · 定稿 $finals · ${treeWords(volume.chapters.sumOf { it.words })}" + digest?.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty(),
                     color = c.secondary,
-                    fontSize = 12.sp,
+                    fontSize = TypeScale.Footnote,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -503,6 +503,7 @@ private fun TreeVolumeRow(
             GlassMenu {
                 ListPopupColumn {
                     TreeMenuAction("改名", c.label) { actions.onDismissVolumeMenu(); actions.onRenameVolume(volume) }
+                    if (digest != null) TreeMenuAction("卷摘要", c.label) { actions.onDismissVolumeMenu(); actions.onVolumeDigest(volume) }
                     if (canDelete) TreeMenuAction("删除本卷", c.destructive) { actions.onDismissVolumeMenu(); actions.onDeleteVolume(volume) }
                 }
             }
@@ -556,11 +557,11 @@ private fun TreeChapterRow(
             StatusGlyph(chapter.status)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(chapter.title, color = c.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(chapter.title, color = c.label, fontSize = TypeScale.Body, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${chapter.status.label} · ${treeWords(chapter.words)}", color = c.secondary, fontSize = 12.sp, maxLines = 1)
-                        if (unsynced) Text("· 未整理", color = c.warning, fontSize = 12.sp, maxLines = 1)
+                        Text("${chapter.status.label} · ${treeWords(chapter.words)}", color = c.secondary, fontSize = TypeScale.Footnote, maxLines = 1)
+                        if (unsynced) Text("· 未整理", color = c.warning, fontSize = TypeScale.Footnote, maxLines = 1)
                     }
                     lengthFraction(chapter.words, length)?.let { (fraction, over) ->
                         FillBar(
@@ -662,7 +663,7 @@ private fun Modifier.chapterGestures(chapter: WorkChapter, drag: TreeDragControl
 }
 
 /**
- * 伏笔记号：账本里这一章埋下的（旗子）和计划这一章收的（勾）各几条，点了去账本、筛到这一章。
+ * 伏笔记号：账本里这一章埋下的（旗子）和计划这一章收的（勾）各几条，点了去账本的“伏笔”标签、筛到这一章。
  * 能点 48dp，读屏念全句。
  */
 @Composable
@@ -692,7 +693,7 @@ private fun MarkCount(icon: androidx.compose.ui.graphics.vector.ImageVector, cou
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(12.dp))
         Spacer(Modifier.width(2.dp))
-        Text("$count", color = color, fontSize = 11.sp, maxLines = 1)
+        Text("$count", color = color, fontSize = TypeScale.Micro, maxLines = 1)
     }
 }
 
@@ -722,7 +723,7 @@ private fun TreeAddRow(lastVolume: Boolean, indicator: TreeDrop?, onClick: () ->
             Spacer(Modifier.width(ChapterDotX - 16.dp))
             Icon(LingYueIcons.Add, contentDescription = null, tint = c.tint, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
-            Text("新的一章", color = c.tint, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Text("新的一章", color = c.tint, fontSize = TypeScale.Body, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -774,7 +775,7 @@ private fun MoveArrow(up: Boolean, enabled: Boolean, label: String, onClick: () 
 @Composable
 private fun TreeMenuAction(label: String, color: Color, onClick: () -> Unit) {
     Row(
-        Modifier.widthIn(min = 200.dp).heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+        Modifier.widthIn(min = 200.dp).heightIn(min = 48.dp).clip(RoundedCornerShape(Radius.Medium))
             .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
