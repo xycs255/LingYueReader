@@ -2984,8 +2984,11 @@ class WritingAi(
         return writingTask(workId, chapterId, d.taskInstruction ?: d.instruction, d.taskTargetLength ?: d.targetLength)
     }
 
-    /** Validate the manuscript and material versions immediately before the author adopts a candidate. */
-    suspend fun draftBlocked(workId: String, chapterId: String): String? {
+    /**
+     * Validate the manuscript and material versions immediately before the author adopts a candidate.
+     * [review] 为 false：作者看过审读没过（或过时）的稿，自己决定采纳，只查稿件和范本来源，不再拿审读拦。
+     */
+    suspend fun draftBlocked(workId: String, chapterId: String, review: Boolean = true): String? {
         val d = _drafts.value[workId to chapterId] ?: return "没有可采纳的草稿"
         if (d.loading) return "本章流程还在进行，请先等它完成或停止"
         if (d.revisionWarning?.contains("无法安全留底") == true) return d.revisionWarning
@@ -3002,6 +3005,7 @@ class WritingAi(
             catch (e: Exception) { return e.message ?: "范本来源已变化，请重新选择后写一版" }
         }
         val task = reviewTask(workId, chapterId) ?: return "作品或章节不在了"
+        if (!review) return null
         // 项目章一律要审读才能采纳，和重开后 loadDraft 的判定一致；“创作后审读、修订”开关只决定写完要不要自动走流程。
         if (!d.workflow && !task.project) return null
         if (task.blocking.isNotEmpty()) return task.blocking.joinToString("；")

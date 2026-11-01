@@ -133,6 +133,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     var pendingContinuation by remember { mutableStateOf<(() -> Unit)?>(null) }
     val scope = rememberCoroutineScope()
     var placing by remember { mutableStateOf(false) }
+    // 这次“放进正文”是作者越过没过的审读放的：对话框里提醒一句，采纳时只查稿件和来源。
+    var placingUnreviewed by remember { mutableStateOf(false) }
     var editingDraft by remember { mutableStateOf(false) }
     var editedDraft by remember { mutableStateOf("") }
     var versionView by rememberSaveable(workId, chapterId) { mutableStateOf(DraftVersionView.CURRENT) }
@@ -252,6 +254,16 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
     // 项目章一律要审读才能采纳，与 draftBlocked 一致，不看开关。
     val reviewRequired = draft?.workflow == true || task?.project == true || reviewTask?.project == true
     val text = draft?.text.orEmpty()
+    // 审读没过时说清为什么（资料缺项、没审读、资料变了、有必改问题），不只给一句笼统的“未通过或已失效”。
+    // 用页面已有的审读任务和结果判断，不再重编一次任务。
+    val reviewNote = when {
+        draft == null || text.isBlank() -> null
+        reviewTask?.blocking?.isNotEmpty() == true -> "资料缺项（" + reviewTask!!.blocking.joinToString("；") + "）"
+        draft.assessment == null -> "这一稿还没审读"
+        !reviewCurrent -> "细纲或资料改过，旧的审读结果过时了"
+        draft.assessment.passed != true || draft.stage != DraftStage.READY -> "审读提出了必改问题，上方“本稿审读”可展开看"
+        else -> null
+    }
     val words = WordCount.of(text)
     // 整章草稿比目标长 30% 以上：字数旁标出来，下面可以一键压到目标。全章目标是区间时按区间上限算。
     val lengthText = task?.targetLength ?: draft?.taskTargetLength ?: targetLength
@@ -731,10 +743,19 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                                 Text(reviewSummary, color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine)
                             }
                         }
-                        row { ActionRow("放进正文", enabled = !locked && !revisionWriteBlocked && text.isNotBlank() && reviewed && draft?.error == null && sourceChecked) { placing = true } }
+                        // 审读没过或过时也能放：作者说了算。按下去的对话框里写明审读的情况，定稿前自己把关。
+                        row { ActionRow("放进正文", enabled = !locked && !revisionWriteBlocked && text.isNotBlank() && draft?.error == null && sourceChecked) {
+                            placingUnreviewed = !reviewed
+                            placing = true
+                        } }
                         if (!sourceChecked && draft?.error == null) row { Text("这份候选稿所用范本尚未完成核验，请重新写一版后再采纳。", color = c.secondary, fontSize = TypeScale.Caption,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
-                        if (!reviewed && draft?.error == null) row { Text("本稿还不能采纳：先处理必改问题、资料缺项，或重新审读。", color = c.secondary, fontSize = TypeScale.Caption, modifier = Modifier.padding(16.dp)) }
+                        if (!reviewed && draft?.error == null) {
+                            row { Text((reviewNote?.let { "审读没过：$it。" } ?: "审读没过或已过时。") + "你通读过觉得可以，也能直接放进正文。",
+                                color = c.secondary, fontSize = TypeScale.Caption, lineHeight = TypeScale.CaptionLine,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) }
+                            row { ActionRow("重新审读", enabled = canReview && !locked && !revisionWriteBlocked) { startDraft(reviewOnly = true) } }
+                        }
                         row { ActionRow("修改此稿", enabled = !locked && !revisionWriteBlocked) { editedDraft = text; editingDraft = true } }
                         if (overBy != null && lengthBudget != null) row {
                             ActionRow("压到约 ${lengthBudget.target} 字", enabled = !locked && !revisionWriteBlocked) {
@@ -843,7 +864,7 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
                 placing = false
                 scope.launch {
                     // 采纳前要重编一次任务核对审读：这里出的任何错（含内存不够）都只报一句，不能漏出去闪退。
-                    val blocked = try { vm.writingAi.draftBlocked(workId, chapterId) }
+                    val blocked = try { vm.writingAi.draftBlocked(workId, chapterId, review = !placingUnreviewed) }
                         catch (e: CancellationException) { throw e }
                         catch (e: Throwable) {
                             if (e !is Exception) CrashLog.caught(e)
@@ -860,7 +881,8 @@ fun ChapterDraftScreen(vm: AppViewModel, workId: String, chapterId: String) {
             GlassDialog(
                 show = true,
                 title = "放进正文",
-                summary = if (empty) "这一章还没有正文，草稿直接放进去。" else "正文现在有 ${chapter?.words} 字。原来的正文会先存一个历史版本。AI 写的字不算码字数。",
+                summary = (if (placingUnreviewed) "这一稿 AI 审读没过或已过时，放进去以后定稿前请自己把关。" else "") +
+                    (if (empty) "这一章还没有正文，草稿直接放进去。" else "正文现在有 ${chapter?.words} 字。原来的正文会先存一个历史版本。AI 写的字不算码字数。"),
                 onDismissRequest = { placing = false },
             ) {
                 if (empty) {
